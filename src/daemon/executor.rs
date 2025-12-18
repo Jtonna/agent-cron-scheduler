@@ -138,6 +138,7 @@ impl Executor {
         let cmd = Self::build_command(job);
 
         // Clone things for the spawned task
+        let execution = job.execution.clone();
         let event_tx = self.event_tx.clone();
         let log_store = Arc::clone(&self.log_store);
         let pty_spawner = Arc::clone(&self.pty_spawner);
@@ -200,6 +201,20 @@ impl Executor {
                     return;
                 }
             };
+
+            // Write command header to log
+            let command_str = match &execution {
+                ExecutionType::ShellCommand(cmd) => cmd.clone(),
+                ExecutionType::ScriptFile(script) => format!("[script] {}", script),
+            };
+            let header = format!("$ {}\n", command_str);
+            let _ = log_store.append_log(job_id, run_id, header.as_bytes()).await;
+            let _ = event_tx.send(JobEvent::Output {
+                job_id,
+                run_id,
+                data: Arc::from(header.as_str()),
+                timestamp: Utc::now(),
+            });
 
             // Create mpsc channel for log writer (capacity 256 per SPEC)
             let (log_tx, log_rx) = mpsc::channel::<Vec<u8>>(256);
@@ -748,15 +763,15 @@ mod tests {
             events.push(event);
         }
 
-        // Count Output events
+        // Count Output events (includes 1 command header + 3 chunks = 4)
         let output_count = events
             .iter()
             .filter(|e| matches!(e, JobEvent::Output { .. }))
             .count();
 
         assert_eq!(
-            output_count, 3,
-            "Expected 3 Output events for 3 chunks, got {}",
+            output_count, 4,
+            "Expected 4 Output events (1 header + 3 chunks), got {}",
             output_count
         );
     }
@@ -883,12 +898,12 @@ mod tests {
             events.push(event);
         }
 
-        // Should have Started and Completed events (no Output)
+        // Should have Started, command header Output, and Completed events
         let output_count = events
             .iter()
             .filter(|e| matches!(e, JobEvent::Output { .. }))
             .count();
-        assert_eq!(output_count, 0, "Should have no Output events");
+        assert_eq!(output_count, 1, "Should have only the command header Output event");
 
         let completed = events
             .iter()

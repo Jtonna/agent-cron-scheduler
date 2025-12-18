@@ -55,21 +55,53 @@
       </table>
     </div>
 
-    <!-- Log Viewer -->
-    <div class="log-viewer-section" id="log-viewer-section">
-      <div class="log-viewer-header">
-        <h2 class="section-title">
-          Log Viewer
-          <span class="log-job-name" id="log-job-name"></span>
-        </h2>
-        <div class="log-actions">
-          <button class="btn btn-sm" id="btn-clear-log">Clear</button>
-          <button class="btn btn-sm" id="btn-close-log">Close</button>
+  </main>
+
+  <!-- ================================================================== -->
+  <!-- Job Detail Sidebar                                                 -->
+  <!-- ================================================================== -->
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+  <aside class="job-sidebar" id="job-sidebar">
+    <div class="sidebar-header">
+      <h2 class="sidebar-title" id="sidebar-job-name">Job Details</h2>
+      <div class="sidebar-actions">
+        <button class="btn btn-sm sidebar-action-btn" id="btn-sidebar-run" title="Run now">
+          <i data-lucide="play"></i> <span>Run</span>
+        </button>
+        <button class="btn btn-sm sidebar-action-btn" id="btn-sidebar-edit" title="Edit job">
+          <i data-lucide="pencil"></i> <span>Edit</span>
+        </button>
+        <button class="btn btn-sm btn-danger sidebar-action-btn" id="btn-sidebar-delete" title="Delete job">
+          <i data-lucide="trash-2"></i> <span>Delete</span>
+        </button>
+        <div class="sidebar-action-group">
+          <button class="btn btn-sm sidebar-action-btn" id="btn-refresh-runs" title="Refresh runs">
+            <i data-lucide="refresh-cw"></i> <span>Refresh</span>
+          </button>
+          <button class="btn-icon sidebar-close" id="btn-close-sidebar" title="Close">
+            <i data-lucide="x"></i>
+          </button>
         </div>
       </div>
-      <div class="log-output" id="log-output"></div>
     </div>
-  </main>
+    <div class="sidebar-body">
+      <div class="runs-list-panel" id="runs-list-panel">
+        <div class="runs-list-header">Runs</div>
+        <div class="runs-list" id="runs-list">
+          <div class="runs-empty">No runs yet</div>
+        </div>
+      </div>
+      <div class="sidebar-log-section">
+        <div class="sidebar-log-header">
+          <span class="sidebar-log-title">Log Output</span>
+          <button class="btn btn-sm sidebar-action-btn" id="btn-clear-log" title="Clear log">
+            <i data-lucide="eraser"></i> <span>Clear</span>
+          </button>
+        </div>
+        <div class="log-output" id="log-output"></div>
+      </div>
+    </div>
+  </aside>
 
   <!-- ================================================================== -->
   <!-- Job Modal (Add / Edit)                                             -->
@@ -157,6 +189,7 @@
   <!-- ================================================================== -->
   <div class="toast-container" id="toast-container"></div>
 
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

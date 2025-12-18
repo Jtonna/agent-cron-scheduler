@@ -32,7 +32,10 @@
     healthTimer: null,
     jobsTimer: null,
     logLineCount: 0,
-    sseConnected: false
+    sseConnected: false,
+    selectedRunId: null,
+    runs: [],
+    runsTotal: 0
   };
 
   // -------------------------------------------------------------------
@@ -66,12 +69,18 @@
     dom.deleteModalClose = document.getElementById("delete-modal-close");
     dom.btnCancelDelete = document.getElementById("btn-cancel-delete");
     dom.btnConfirmDelete = document.getElementById("btn-confirm-delete");
-    dom.logSection = document.getElementById("log-viewer-section");
-    dom.logJobName = document.getElementById("log-job-name");
+    dom.sidebar = document.getElementById("job-sidebar");
+    dom.sidebarBackdrop = document.getElementById("sidebar-backdrop");
+    dom.sidebarJobName = document.getElementById("sidebar-job-name");
+    dom.btnCloseSidebar = document.getElementById("btn-close-sidebar");
+    dom.btnSidebarRun = document.getElementById("btn-sidebar-run");
+    dom.btnSidebarEdit = document.getElementById("btn-sidebar-edit");
+    dom.btnSidebarDelete = document.getElementById("btn-sidebar-delete");
     dom.logOutput = document.getElementById("log-output");
     dom.btnClearLog = document.getElementById("btn-clear-log");
-    dom.btnCloseLog = document.getElementById("btn-close-log");
     dom.toastContainer = document.getElementById("toast-container");
+    dom.runsList = document.getElementById("runs-list");
+    dom.btnRefreshRuns = document.getElementById("btn-refresh-runs");
   }
 
   // -------------------------------------------------------------------
@@ -178,6 +187,97 @@
     return hh + ":" + mm + ":" + ss;
   }
 
+  /**
+   * Convert a 5-field cron expression to human-readable text.
+   * Returns null for expressions too complex to describe simply.
+   */
+  function cronToHuman(expr) {
+    if (!expr || typeof expr !== "string") return null;
+    var parts = expr.trim().split(/\s+/);
+    if (parts.length !== 5) return null;
+    var min = parts[0], hour = parts[1], dom = parts[2], month = parts[3], dow = parts[4];
+
+    function formatTime(h, m) {
+      var hi = parseInt(h, 10), mi = parseInt(m, 10);
+      var suffix = hi >= 12 ? "PM" : "AM";
+      var h12 = hi % 12;
+      if (h12 === 0) h12 = 12;
+      if (mi === 0) return h12 + ":00 " + suffix;
+      return h12 + ":" + String(mi).padStart(2, "0") + " " + suffix;
+    }
+
+    var dowNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+    function parseDow(field) {
+      if (/^\d-\d$/.test(field)) {
+        var s = parseInt(field[0], 10), e = parseInt(field[2], 10);
+        if (s >= 0 && s <= 7 && e >= 0 && e <= 7) {
+          return dowNames[s % 7] + "\u2013" + dowNames[e % 7];
+        }
+      }
+      if (/^\d(,\d)+$/.test(field)) {
+        return field.split(",").map(function (d) {
+          var n = parseInt(d, 10);
+          return (n >= 0 && n <= 7) ? dowNames[n % 7] : d;
+        }).join(", ");
+      }
+      return null;
+    }
+
+    function ordinal(n) {
+      var s = ["th", "st", "nd", "rd"];
+      var v = n % 100;
+      return n + (s[(v - 20) % 10] || s[v] || s[0]);
+    }
+
+    // Every minute
+    if (min === "*" && hour === "*" && dom === "*" && month === "*" && dow === "*") return "Every minute";
+
+    // Every N minutes
+    var stepMin = min.match(/^\*\/(\d+)$/);
+    if (stepMin && hour === "*" && dom === "*" && month === "*" && dow === "*") {
+      var n = parseInt(stepMin[1], 10);
+      return n === 1 ? "Every minute" : "Every " + n + " minutes";
+    }
+
+    // Every hour
+    if (min === "0" && hour === "*" && dom === "*" && month === "*" && dow === "*") return "Every hour";
+
+    // Every N hours
+    var stepHour = hour.match(/^\*\/(\d+)$/);
+    if (min === "0" && stepHour && dom === "*" && month === "*" && dow === "*") {
+      var nh = parseInt(stepHour[1], 10);
+      return nh === 1 ? "Every hour" : "Every " + nh + " hours";
+    }
+
+    // Hourly at :MM
+    if (/^\d+$/.test(min) && hour === "*" && dom === "*" && month === "*" && dow === "*") {
+      return "Hourly at :" + String(parseInt(min, 10)).padStart(2, "0");
+    }
+
+    // Daily at H:MM
+    if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === "*" && month === "*" && dow === "*") {
+      if (parseInt(hour, 10) === 0 && parseInt(min, 10) === 0) return "Daily at midnight";
+      if (parseInt(hour, 10) === 12 && parseInt(min, 10) === 0) return "Daily at noon";
+      return "Daily at " + formatTime(hour, min);
+    }
+
+    // Weekly: specific day(s) of week
+    if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === "*" && month === "*" && dow !== "*") {
+      var dowText = parseDow(dow);
+      if (dowText) return "At " + formatTime(hour, min) + ", " + dowText;
+    }
+
+    // Monthly on the Nth
+    if (/^\d+$/.test(min) && /^\d+$/.test(hour) && /^\d+$/.test(dom) && month === "*" && dow === "*") {
+      var dayNum = parseInt(dom, 10);
+      if (parseInt(hour, 10) === 0 && parseInt(min, 10) === 0) return "Monthly on the " + ordinal(dayNum);
+      return "Monthly on the " + ordinal(dayNum) + " at " + formatTime(hour, min);
+    }
+
+    return null;
+  }
+
   // -------------------------------------------------------------------
   // Toast Notifications
   // -------------------------------------------------------------------
@@ -274,7 +374,7 @@
   }
 
   function fetchRuns(jobId) {
-    return apiFetch("/api/jobs/" + jobId + "/runs?limit=10&offset=0");
+    return apiFetch("/api/jobs/" + jobId + "/runs?limit=20&offset=0");
   }
 
   function fetchLog(runId) {
@@ -318,6 +418,7 @@
 
     // Attach event listeners to newly rendered elements
     attachRowListeners();
+    lucide.createIcons();
   }
 
   function renderJobRow(job) {
@@ -338,9 +439,9 @@
     var checkedAttr = job.enabled ? " checked" : "";
 
     return (
-      '<tr data-job-id="' + escapeHtml(job.id) + '">' +
+      '<tr class="job-row" data-job-id="' + escapeHtml(job.id) + '" data-job-name="' + escapeHtml(job.name) + '">' +
       '<td><span class="job-name">' + escapeHtml(job.name) + '</span></td>' +
-      '<td><span class="job-schedule">' + escapeHtml(job.schedule) + '</span></td>' +
+      (function () { var h = cronToHuman(job.schedule); return h ? '<td><span class="schedule-human">' + escapeHtml(h) + '</span><span class="schedule-cron">' + escapeHtml(job.schedule) + '</span></td>' : '<td><span class="job-schedule">' + escapeHtml(job.schedule) + '</span></td>'; })() +
       '<td>' +
         '<label class="toggle-switch">' +
           '<input type="checkbox" class="toggle-enabled" data-job-id="' + escapeHtml(job.id) + '"' + checkedAttr + '>' +
@@ -352,10 +453,10 @@
       '<td>' + exitCodeHtml + '</td>' +
       '<td>' +
         '<div class="actions-cell">' +
-          '<button class="btn-icon trigger" title="Trigger" data-action="trigger" data-job-id="' + escapeHtml(job.id) + '">&#9654;</button>' +
-          '<button class="btn-icon logs" title="View Logs" data-action="logs" data-job-id="' + escapeHtml(job.id) + '" data-job-name="' + escapeHtml(job.name) + '">&#128196;</button>' +
-          '<button class="btn-icon edit" title="Edit" data-action="edit" data-job-id="' + escapeHtml(job.id) + '">&#9998;</button>' +
-          '<button class="btn-icon delete" title="Delete" data-action="delete" data-job-id="' + escapeHtml(job.id) + '" data-job-name="' + escapeHtml(job.name) + '">&#10005;</button>' +
+          '<button class="btn-icon trigger" title="Trigger" data-action="trigger" data-job-id="' + escapeHtml(job.id) + '"><i data-lucide="play"></i></button>' +
+          '<button class="btn-icon logs" title="View Logs" data-action="logs" data-job-id="' + escapeHtml(job.id) + '" data-job-name="' + escapeHtml(job.name) + '"><i data-lucide="file-text"></i></button>' +
+          '<button class="btn-icon edit" title="Edit" data-action="edit" data-job-id="' + escapeHtml(job.id) + '"><i data-lucide="pencil"></i></button>' +
+          '<button class="btn-icon delete" title="Delete" data-action="delete" data-job-id="' + escapeHtml(job.id) + '" data-job-name="' + escapeHtml(job.name) + '"><i data-lucide="trash-2"></i></button>' +
         '</div>' +
       '</td>' +
       '</tr>'
@@ -373,6 +474,12 @@
     var buttons = document.querySelectorAll(".btn-icon[data-action]");
     for (var j = 0; j < buttons.length; j++) {
       buttons[j].addEventListener("click", handleActionButton);
+    }
+
+    // Row click to open sidebar
+    var rows = document.querySelectorAll(".job-row");
+    for (var k = 0; k < rows.length; k++) {
+      rows[k].addEventListener("click", handleRowClick);
     }
   }
 
@@ -397,6 +504,29 @@
         showToast(msg, "error");
       }
     });
+  }
+
+  // -------------------------------------------------------------------
+  // Event Handlers — Row Click
+  // -------------------------------------------------------------------
+
+  function handleRowClick(e) {
+    // Don't open sidebar if user clicked an interactive element
+    var target = e.target;
+    while (target && target !== e.currentTarget) {
+      if (target.tagName === "BUTTON" || target.tagName === "INPUT" ||
+          target.tagName === "LABEL" || target.classList.contains("btn-icon") ||
+          target.classList.contains("toggle-switch")) {
+        return;
+      }
+      target = target.parentElement;
+    }
+
+    var jobId = e.currentTarget.getAttribute("data-job-id");
+    var jobName = e.currentTarget.getAttribute("data-job-name");
+    if (jobId) {
+      openSidebar(jobId, jobName);
+    }
   }
 
   // -------------------------------------------------------------------
@@ -437,49 +567,23 @@
   }
 
   function handleViewLogs(jobId, jobName) {
+    openSidebar(jobId, jobName);
+  }
+
+  function openSidebar(jobId, jobName) {
     state.selectedJobId = jobId;
     state.selectedJobName = jobName;
-    dom.logJobName.textContent = jobName || jobId;
+    state.selectedRunId = null;
+    state.runs = [];
+    state.runsTotal = 0;
+    dom.sidebarJobName.textContent = jobName || jobId;
     dom.logOutput.innerHTML = "";
+    dom.runsList.innerHTML = '<div class="runs-empty">Loading runs...</div>';
     state.logLineCount = 0;
-    dom.logSection.classList.add("visible");
-
-    appendLogLine("Fetching recent runs...", "log-info");
-
-    // Load recent runs, then show the latest log
-    fetchRuns(jobId).then(function (res) {
-      if (res.ok && res.data && res.data.runs && res.data.runs.length > 0) {
-        var latestRun = res.data.runs[0];
-        appendLogLine("Loading log for run " + latestRun.run_id + " (" + latestRun.status + ")", "log-info");
-
-        // Fetch the log text
-        var logUrl = API_BASE + "/api/runs/" + latestRun.run_id + "/log";
-        fetch(logUrl)
-          .then(function (r) { return r.text(); })
-          .then(function (text) {
-            if (text) {
-              appendLogLine("--- Historical log ---", "log-info");
-              var lines = text.split("\n");
-              for (var k = 0; k < lines.length; k++) {
-                if (lines[k]) appendLogLine(lines[k], "");
-              }
-              appendLogLine("--- End of historical log ---", "log-info");
-            } else {
-              appendLogLine("No log output found for this run.", "log-info");
-            }
-            appendLogLine("Listening for live output...", "log-info");
-          })
-          .catch(function () {
-            appendLogLine("Could not fetch log.", "log-failed");
-            appendLogLine("Listening for live output...", "log-info");
-          });
-      } else {
-        appendLogLine("No previous runs found.", "log-info");
-        appendLogLine("Listening for live output...", "log-info");
-      }
-    });
-
-    // Reconnect SSE with job filter if not already connected for this job
+    dom.sidebarBackdrop.classList.add("visible");
+    dom.sidebar.classList.add("open");
+    document.body.style.overflow = "hidden";
+    loadRunsList(jobId);
     connectSSE();
   }
 
@@ -705,11 +809,145 @@
     state.logLineCount = 0;
   }
 
-  function closeLogViewer() {
-    dom.logSection.classList.remove("visible");
+  function closeSidebar() {
+    dom.sidebar.classList.remove("open");
+    dom.sidebarBackdrop.classList.remove("visible");
+    document.body.style.overflow = "";
     state.selectedJobId = null;
     state.selectedJobName = null;
+    state.selectedRunId = null;
+    state.runs = [];
+    state.runsTotal = 0;
     clearLog();
+  }
+
+  function closeLogViewer() {
+    closeSidebar();
+  }
+
+  function loadRunsList(jobId) {
+    fetchRuns(jobId).then(function (res) {
+      if (res.ok && res.data && res.data.runs) {
+        state.runs = res.data.runs;
+        state.runsTotal = res.data.total || res.data.runs.length;
+      } else {
+        state.runs = [];
+        state.runsTotal = 0;
+      }
+      renderRunsList();
+      // Auto-select the newest run if nothing is selected
+      if (!state.selectedRunId && state.runs.length > 0) {
+        handleSelectRun(state.runs[0].run_id);
+      } else if (state.runs.length === 0) {
+        dom.runsList.innerHTML = '<div class="runs-empty">No runs yet</div>';
+        dom.logOutput.innerHTML = "";
+        appendLogLine("No previous runs. Listening for live output...", "log-info");
+      }
+    });
+  }
+
+  function renderRunsList() {
+    if (state.runs.length === 0) {
+      dom.runsList.innerHTML = '<div class="runs-empty">No runs yet</div>';
+      return;
+    }
+
+    // Clear and rebuild with DOM methods (XSS-safe)
+    dom.runsList.innerHTML = "";
+    for (var i = 0; i < state.runs.length; i++) {
+      var run = state.runs[i];
+      var item = document.createElement("div");
+      item.className = "run-item" + (run.run_id === state.selectedRunId ? " active" : "");
+      item.setAttribute("data-run-id", run.run_id);
+
+      var topRow = document.createElement("div");
+      topRow.className = "run-item-top";
+
+      var dot = document.createElement("span");
+      var statusClass = "status-" + (run.status || "unknown").toLowerCase();
+      dot.className = "run-status-dot " + statusClass;
+      topRow.appendChild(dot);
+
+      var label = document.createElement("span");
+      label.className = "run-status-label";
+      label.textContent = run.status || "Unknown";
+      topRow.appendChild(label);
+
+      if (run.exit_code !== null && run.exit_code !== undefined) {
+        var exitSpan = document.createElement("span");
+        exitSpan.className = "run-exit-code";
+        exitSpan.textContent = "exit " + run.exit_code;
+        topRow.appendChild(exitSpan);
+      }
+
+      item.appendChild(topRow);
+
+      var timeEl = document.createElement("div");
+      timeEl.className = "run-item-time";
+      var ts = run.started_at || run.created_at;
+      if (ts) {
+        var d = new Date(ts);
+        timeEl.textContent = isNaN(d.getTime()) ? "" : d.toLocaleString();
+      }
+      item.appendChild(timeEl);
+
+      // Click handler via closure
+      (function (runId) {
+        item.addEventListener("click", function () {
+          handleSelectRun(runId);
+        });
+      })(run.run_id);
+
+      dom.runsList.appendChild(item);
+    }
+  }
+
+  function handleSelectRun(runId) {
+    state.selectedRunId = runId;
+
+    // Update active class on run items
+    var items = dom.runsList.querySelectorAll(".run-item");
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].getAttribute("data-run-id") === runId) {
+        items[i].classList.add("active");
+      } else {
+        items[i].classList.remove("active");
+      }
+    }
+
+    // Clear log and load the selected run's log
+    clearLog();
+
+    // Find the run in state
+    var run = null;
+    for (var j = 0; j < state.runs.length; j++) {
+      if (state.runs[j].run_id === runId) {
+        run = state.runs[j];
+        break;
+      }
+    }
+
+    if (run && run.status === "Running") {
+      appendLogLine("Streaming live output...", "log-info");
+    }
+
+    // Fetch the log content
+    var logUrl = API_BASE + "/api/runs/" + runId + "/log";
+    fetch(logUrl)
+      .then(function (r) { return r.text(); })
+      .then(function (text) {
+        if (text) {
+          var lines = text.split("\n");
+          for (var k = 0; k < lines.length; k++) {
+            if (lines[k]) appendLogLine(lines[k], "");
+          }
+        } else if (!run || run.status !== "Running") {
+          appendLogLine("No log output for this run.", "log-info");
+        }
+      })
+      .catch(function () {
+        appendLogLine("Could not fetch log.", "log-failed");
+      });
   }
 
   // -------------------------------------------------------------------
@@ -807,25 +1045,30 @@
   }
 
   function handleJobStarted(data) {
-    var jobName = data.job_name || data.job_id;
-    // Show in log viewer if this is the selected job
     if (state.selectedJobId && data.job_id === state.selectedJobId) {
-      appendLogLineWithTimestamp(
-        "Job started: " + jobName + " (run: " + (data.run_id || "").substring(0, 8) + "...)",
-        data.timestamp,
-        "log-started"
-      );
+      // Create a synthetic run object and prepend to the runs list
+      var newRun = {
+        run_id: data.run_id,
+        job_id: data.job_id,
+        status: "Running",
+        exit_code: null,
+        started_at: data.timestamp,
+        finished_at: null
+      };
+      state.runs.unshift(newRun);
+      renderRunsList();
+      // Auto-select the new run
+      handleSelectRun(data.run_id);
     }
   }
 
   function handleJobOutput(data) {
-    // Show output in log viewer if this is the selected job
-    if (state.selectedJobId && data.job_id === state.selectedJobId) {
+    // Only render output if viewing this job AND this specific run
+    if (state.selectedJobId && data.job_id === state.selectedJobId &&
+        state.selectedRunId && data.run_id === state.selectedRunId) {
       var output = data.data || "";
-      // Output may contain multiple lines
       var lines = output.split("\n");
       for (var i = 0; i < lines.length; i++) {
-        // Skip empty trailing line from split
         if (i === lines.length - 1 && lines[i] === "") continue;
         appendLogLineWithTimestamp(lines[i], data.timestamp, "");
       }
@@ -833,15 +1076,28 @@
   }
 
   function handleJobCompleted(data) {
-    // Refresh job list to update last_run_at and exit code
     fetchJobs();
 
     if (state.selectedJobId && data.job_id === state.selectedJobId) {
-      appendLogLineWithTimestamp(
-        "Job completed with exit code " + data.exit_code,
-        data.timestamp,
-        data.exit_code === 0 ? "log-completed" : "log-failed"
-      );
+      // Update the run in state.runs
+      for (var i = 0; i < state.runs.length; i++) {
+        if (state.runs[i].run_id === data.run_id) {
+          state.runs[i].status = "Completed";
+          state.runs[i].exit_code = data.exit_code;
+          state.runs[i].finished_at = data.timestamp;
+          break;
+        }
+      }
+      renderRunsList();
+
+      // Only show completion message if viewing this run
+      if (state.selectedRunId === data.run_id) {
+        appendLogLineWithTimestamp(
+          "Job completed with exit code " + data.exit_code,
+          data.timestamp,
+          data.exit_code === 0 ? "log-completed" : "log-failed"
+        );
+      }
     }
   }
 
@@ -849,11 +1105,23 @@
     fetchJobs();
 
     if (state.selectedJobId && data.job_id === state.selectedJobId) {
-      appendLogLineWithTimestamp(
-        "Job failed: " + (data.error || "unknown error"),
-        data.timestamp,
-        "log-failed"
-      );
+      // Update the run in state.runs
+      for (var i = 0; i < state.runs.length; i++) {
+        if (state.runs[i].run_id === data.run_id) {
+          state.runs[i].status = "Failed";
+          state.runs[i].finished_at = data.timestamp;
+          break;
+        }
+      }
+      renderRunsList();
+
+      if (state.selectedRunId === data.run_id) {
+        appendLogLineWithTimestamp(
+          "Job failed: " + (data.error || "unknown error"),
+          data.timestamp,
+          "log-failed"
+        );
+      }
     }
   }
 
@@ -864,7 +1132,7 @@
     var change = data.change || "unknown";
     if (change === "Removed" && state.selectedJobId === data.job_id) {
       appendLogLine("Job has been deleted.", "log-failed");
-      state.selectedJobId = null;
+      closeSidebar();
     }
   }
 
@@ -888,10 +1156,13 @@
 
   function handleKeydown(e) {
     if (e.key === "Escape") {
+      // Check highest z-index modals first (delete/edit at 1000, sidebar at 201)
       if (dom.deleteOverlay.classList.contains("visible")) {
         closeDeleteModal();
       } else if (dom.modalOverlay.classList.contains("visible")) {
         closeModal();
+      } else if (dom.sidebar.classList.contains("open")) {
+        closeSidebar();
       }
     }
   }
@@ -957,9 +1228,27 @@
       if (e.target === dom.deleteOverlay) closeDeleteModal();
     });
 
-    // Event listeners — Log Viewer
+    // Event listeners — Sidebar
+    dom.btnCloseSidebar.addEventListener("click", closeSidebar);
+    dom.sidebarBackdrop.addEventListener("click", closeSidebar);
     dom.btnClearLog.addEventListener("click", clearLog);
-    dom.btnCloseLog.addEventListener("click", closeLogViewer);
+    dom.btnRefreshRuns.addEventListener("click", function () {
+      if (state.selectedJobId) loadRunsList(state.selectedJobId);
+    });
+    dom.btnSidebarRun.addEventListener("click", function () {
+      if (state.selectedJobId) handleTrigger(state.selectedJobId);
+    });
+    dom.btnSidebarEdit.addEventListener("click", function () {
+      if (state.selectedJobId) {
+        closeSidebar();
+        handleEdit(state.selectedJobId);
+      }
+    });
+    dom.btnSidebarDelete.addEventListener("click", function () {
+      if (state.selectedJobId) {
+        handleDeletePrompt(state.selectedJobId, state.selectedJobName);
+      }
+    });
 
     // Keyboard
     document.addEventListener("keydown", handleKeydown);
@@ -969,6 +1258,7 @@
     startJobsPolling();
     startRelativeTimeRefresh();
     connectSSE();
+    lucide.createIcons();
   }
 
   // -------------------------------------------------------------------

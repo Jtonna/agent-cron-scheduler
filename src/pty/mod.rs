@@ -144,14 +144,44 @@ impl PtySpawner for NoPtySpawner {
         let program = args[0].to_string_lossy().to_string();
         let mut command = Command::new(&program);
 
-        for arg in &args[1..] {
-            command.arg(arg);
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, cmd.exe /C needs the command string passed without
+            // Rust's automatic re-quoting, otherwise embedded quotes get mangled.
+            // Rust's Command::arg() uses MSVC C runtime escaping (backslash-escaping
+            // internal quotes), but cmd.exe does not recognize backslash as an escape
+            // character — it uses its own parsing rules. Using raw_arg bypasses
+            // Rust's automatic quoting and sends the string to CreateProcessW as-is.
+            use std::os::windows::process::CommandExt;
+            let raw_args: String = args[1..]
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            command.raw_arg(raw_args);
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            for arg in &args[1..] {
+                command.arg(arg);
+            }
         }
 
         command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
+
+        // Forward working directory and environment variables from CommandBuilder.
+        // Previously these were silently dropped, causing jobs with working_dir
+        // or env_vars to ignore those settings.
+        if let Some(cwd) = cmd.get_cwd() {
+            command.current_dir(cwd);
+        }
+        for (key, val) in cmd.iter_extra_env_as_str() {
+            command.env(key, val);
+        }
 
         let child = command.spawn()?;
 
