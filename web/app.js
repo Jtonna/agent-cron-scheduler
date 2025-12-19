@@ -81,6 +81,23 @@
     dom.toastContainer = document.getElementById("toast-container");
     dom.runsList = document.getElementById("runs-list");
     dom.btnRefreshRuns = document.getElementById("btn-refresh-runs");
+    // Schedule tabs and simple schedule builder
+    dom.tabSimple = document.getElementById("tab-simple");
+    dom.tabCron = document.getElementById("tab-cron");
+    dom.panelSimple = document.getElementById("panel-simple");
+    dom.panelCron = document.getElementById("panel-cron");
+    dom.formFrequency = document.getElementById("form-frequency");
+    dom.formInterval = document.getElementById("form-interval");
+    dom.formTime = document.getElementById("form-time");
+    dom.formDow = document.getElementById("form-dow");
+    dom.formDom = document.getElementById("form-dom");
+    dom.formMinute = document.getElementById("form-minute");
+    dom.groupInterval = document.getElementById("group-interval");
+    dom.groupTime = document.getElementById("group-time");
+    dom.groupDow = document.getElementById("group-day-of-week");
+    dom.groupDom = document.getElementById("group-day-of-month");
+    dom.groupMinute = document.getElementById("group-minute");
+    dom.schedulePreview = document.getElementById("schedule-preview");
   }
 
   // -------------------------------------------------------------------
@@ -276,6 +293,170 @@
     }
 
     return null;
+  }
+
+  /**
+   * Build a cron expression from simple schedule settings.
+   */
+  function buildCronFromSimple() {
+    var freq = dom.formFrequency.value;
+    var interval = parseInt(dom.formInterval.value, 10) || 5;
+    var timeParts = (dom.formTime.value || "09:00").split(":");
+    var hour = parseInt(timeParts[0], 10) || 0;
+    var minute = parseInt(timeParts[1], 10) || 0;
+    var dow = dom.formDow.value || "0";
+    var dayOfMonth = parseInt(dom.formDom.value, 10) || 1;
+    var minuteOnly = parseInt(dom.formMinute.value, 10) || 0;
+
+    switch (freq) {
+      case "every_minutes":
+        return "*/" + interval + " * * * *";
+      case "hourly":
+        return minuteOnly + " * * * *";
+      case "daily":
+        return minute + " " + hour + " * * *";
+      case "weekly":
+        return minute + " " + hour + " * * " + dow;
+      case "monthly":
+        return minute + " " + hour + " " + dayOfMonth + " * *";
+      default:
+        return "*/5 * * * *";
+    }
+  }
+
+  /**
+   * Update the schedule preview text based on current simple settings.
+   */
+  function updateSchedulePreview() {
+    var cron = buildCronFromSimple();
+    var human = cronToHuman(cron);
+    dom.schedulePreview.textContent = human || cron;
+  }
+
+  /**
+   * Show/hide schedule fields based on selected frequency.
+   */
+  function updateScheduleFields() {
+    var freq = dom.formFrequency.value;
+    // Hide all optional groups first
+    dom.groupInterval.style.display = "none";
+    dom.groupTime.style.display = "none";
+    dom.groupDow.style.display = "none";
+    dom.groupDom.style.display = "none";
+    dom.groupMinute.style.display = "none";
+
+    switch (freq) {
+      case "every_minutes":
+        dom.groupInterval.style.display = "";
+        break;
+      case "hourly":
+        dom.groupMinute.style.display = "";
+        break;
+      case "daily":
+        dom.groupTime.style.display = "";
+        break;
+      case "weekly":
+        dom.groupTime.style.display = "";
+        dom.groupDow.style.display = "";
+        break;
+      case "monthly":
+        dom.groupTime.style.display = "";
+        dom.groupDom.style.display = "";
+        break;
+    }
+    updateSchedulePreview();
+  }
+
+  /**
+   * Switch between simple and cron schedule modes.
+   */
+  function setScheduleMode(mode) {
+    if (mode === "simple") {
+      dom.tabSimple.classList.add("active");
+      dom.tabCron.classList.remove("active");
+      dom.panelSimple.style.display = "";
+      dom.panelCron.style.display = "none";
+    } else {
+      dom.tabSimple.classList.remove("active");
+      dom.tabCron.classList.add("active");
+      dom.panelSimple.style.display = "none";
+      dom.panelCron.style.display = "";
+    }
+  }
+
+  /**
+   * Get the current schedule mode ("simple" or "cron").
+   */
+  function getScheduleMode() {
+    return dom.tabSimple.classList.contains("active") ? "simple" : "cron";
+  }
+
+  /**
+   * Get the final cron expression based on current mode.
+   */
+  function getScheduleValue() {
+    if (getScheduleMode() === "simple") {
+      return buildCronFromSimple();
+    } else {
+      return dom.formSchedule.value.trim();
+    }
+  }
+
+  /**
+   * Try to parse a cron expression and populate simple schedule fields.
+   * Returns true if successfully mapped to simple mode, false otherwise.
+   */
+  function tryPopulateSimpleFromCron(cron) {
+    if (!cron) return false;
+    var parts = cron.trim().split(/\s+/);
+    if (parts.length !== 5) return false;
+
+    var min = parts[0], hour = parts[1], dayOfMonth = parts[2], month = parts[3], dayOfWeek = parts[4];
+
+    // Every N minutes: */N * * * *
+    var stepMin = min.match(/^\*\/(\d+)$/);
+    if (stepMin && hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+      dom.formFrequency.value = "every_minutes";
+      dom.formInterval.value = stepMin[1];
+      updateScheduleFields();
+      return true;
+    }
+
+    // Hourly: M * * * *
+    if (/^\d+$/.test(min) && hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+      dom.formFrequency.value = "hourly";
+      dom.formMinute.value = min;
+      updateScheduleFields();
+      return true;
+    }
+
+    // Daily: M H * * *
+    if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+      dom.formFrequency.value = "daily";
+      dom.formTime.value = String(hour).padStart(2, "0") + ":" + String(min).padStart(2, "0");
+      updateScheduleFields();
+      return true;
+    }
+
+    // Weekly: M H * * D
+    if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dayOfMonth === "*" && month === "*" && /^\d$/.test(dayOfWeek)) {
+      dom.formFrequency.value = "weekly";
+      dom.formTime.value = String(hour).padStart(2, "0") + ":" + String(min).padStart(2, "0");
+      dom.formDow.value = dayOfWeek;
+      updateScheduleFields();
+      return true;
+    }
+
+    // Monthly: M H D * *
+    if (/^\d+$/.test(min) && /^\d+$/.test(hour) && /^\d+$/.test(dayOfMonth) && month === "*" && dayOfWeek === "*") {
+      dom.formFrequency.value = "monthly";
+      dom.formTime.value = String(hour).padStart(2, "0") + ":" + String(min).padStart(2, "0");
+      dom.formDom.value = dayOfMonth;
+      updateScheduleFields();
+      return true;
+    }
+
+    return false;
   }
 
   // -------------------------------------------------------------------
@@ -606,7 +787,14 @@
     dom.btnSubmitForm.textContent = "Save Changes";
     dom.formJobId.value = jobId;
     dom.formName.value = job.name;
+
+    // Try to populate simple schedule mode, fall back to cron mode
     dom.formSchedule.value = job.schedule;
+    if (tryPopulateSimpleFromCron(job.schedule)) {
+      setScheduleMode("simple");
+    } else {
+      setScheduleMode("cron");
+    }
 
     // Execution type
     if (job.execution && job.execution.type === "ScriptFile") {
@@ -676,6 +864,15 @@
     dom.jobForm.reset();
     dom.formExecType.value = "ShellCommand";
     dom.formExecValueLabel.textContent = "Command";
+    // Reset to simple schedule mode with defaults
+    setScheduleMode("simple");
+    dom.formFrequency.value = "every_minutes";
+    dom.formInterval.value = "5";
+    dom.formTime.value = "09:00";
+    dom.formDow.value = "1";
+    dom.formDom.value = "1";
+    dom.formMinute.value = "0";
+    updateScheduleFields();
     openModal();
   }
 
@@ -685,7 +882,7 @@
     var execType = dom.formExecType.value;
     var execValue = dom.formExecValue.value.trim();
     var name = dom.formName.value.trim();
-    var schedule = dom.formSchedule.value.trim();
+    var schedule = getScheduleValue();
 
     if (!name || !schedule || !execValue) {
       showToast("Please fill in all required fields", "error");
@@ -1215,6 +1412,18 @@
     dom.jobForm.addEventListener("submit", handleFormSubmit);
     dom.formExecType.addEventListener("change", handleExecTypeChange);
 
+    // Schedule tabs
+    dom.tabSimple.addEventListener("click", function () { setScheduleMode("simple"); });
+    dom.tabCron.addEventListener("click", function () { setScheduleMode("cron"); });
+
+    // Simple schedule fields — update preview on change
+    dom.formFrequency.addEventListener("change", updateScheduleFields);
+    dom.formInterval.addEventListener("input", updateSchedulePreview);
+    dom.formTime.addEventListener("input", updateSchedulePreview);
+    dom.formDow.addEventListener("change", updateSchedulePreview);
+    dom.formDom.addEventListener("input", updateSchedulePreview);
+    dom.formMinute.addEventListener("input", updateSchedulePreview);
+
     // Close modal when clicking overlay background
     dom.modalOverlay.addEventListener("click", function (e) {
       if (e.target === dom.modalOverlay) closeModal();
@@ -1240,8 +1449,9 @@
     });
     dom.btnSidebarEdit.addEventListener("click", function () {
       if (state.selectedJobId) {
+        var jobId = state.selectedJobId;
         closeSidebar();
-        handleEdit(state.selectedJobId);
+        handleEdit(jobId);
       }
     });
     dom.btnSidebarDelete.addEventListener("click", function () {

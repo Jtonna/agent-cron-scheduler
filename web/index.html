@@ -115,43 +115,99 @@
       <form id="job-form" class="modal-body">
         <input type="hidden" id="form-job-id">
 
-        <div class="form-group">
-          <label for="form-name">Name</label>
-          <input type="text" id="form-name" required placeholder="my-backup-job" autocomplete="off">
+        <!-- Row 1: Name and Execution Type -->
+        <div class="form-row">
+          <div class="form-group">
+            <label for="form-name">Name</label>
+            <input type="text" id="form-name" required placeholder="my-backup-job" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="form-exec-type">Execution Type</label>
+            <select id="form-exec-type">
+              <option value="ShellCommand">Shell Command</option>
+              <option value="ScriptFile">Script File</option>
+            </select>
+          </div>
         </div>
 
-        <div class="form-group">
-          <label for="form-schedule">Schedule (cron)</label>
-          <input type="text" id="form-schedule" required placeholder="*/5 * * * *" autocomplete="off">
-          <span class="form-hint">5-field cron: min hour dom month dow</span>
-        </div>
-
-        <div class="form-group">
-          <label for="form-exec-type">Execution Type</label>
-          <select id="form-exec-type">
-            <option value="ShellCommand">Shell Command</option>
-            <option value="ScriptFile">Script File</option>
-          </select>
-        </div>
-
+        <!-- Row 2: Command (full width) -->
         <div class="form-group">
           <label for="form-exec-value" id="form-exec-value-label">Command</label>
           <input type="text" id="form-exec-value" required placeholder="echo hello" autocomplete="off">
         </div>
 
+        <!-- Row 3: Schedule section -->
         <div class="form-group">
-          <label for="form-timezone">Timezone (optional)</label>
-          <input type="text" id="form-timezone" placeholder="UTC" autocomplete="off">
-          <span class="form-hint">IANA timezone, e.g. America/New_York</span>
+          <label>Schedule</label>
+          <div class="schedule-tabs">
+            <button type="button" class="schedule-tab active" data-mode="simple" id="tab-simple">Simple</button>
+            <button type="button" class="schedule-tab" data-mode="cron" id="tab-cron">Cron</button>
+          </div>
+          <div class="schedule-panel" id="panel-simple">
+            <div class="form-row">
+              <div class="form-group form-group-inline">
+                <label for="form-frequency">Frequency</label>
+                <select id="form-frequency">
+                  <option value="every_minutes">Every N minutes</option>
+                  <option value="hourly">Hourly</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+              <div class="form-group form-group-inline" id="group-interval">
+                <label for="form-interval">Interval</label>
+                <input type="number" id="form-interval" min="1" max="59" value="5" autocomplete="off">
+              </div>
+              <div class="form-group form-group-inline" id="group-time" style="display:none;">
+                <label for="form-time">Time</label>
+                <input type="time" id="form-time" value="09:00">
+              </div>
+              <div class="form-group form-group-inline" id="group-day-of-week" style="display:none;">
+                <label for="form-dow">Day</label>
+                <select id="form-dow">
+                  <option value="0">Sunday</option>
+                  <option value="1">Monday</option>
+                  <option value="2">Tuesday</option>
+                  <option value="3">Wednesday</option>
+                  <option value="4">Thursday</option>
+                  <option value="5">Friday</option>
+                  <option value="6">Saturday</option>
+                </select>
+              </div>
+              <div class="form-group form-group-inline" id="group-day-of-month" style="display:none;">
+                <label for="form-dom">Day</label>
+                <input type="number" id="form-dom" min="1" max="31" value="1" autocomplete="off">
+              </div>
+              <div class="form-group form-group-inline" id="group-minute" style="display:none;">
+                <label for="form-minute">Minute</label>
+                <input type="number" id="form-minute" min="0" max="59" value="0" autocomplete="off">
+              </div>
+            </div>
+            <div class="schedule-preview" id="schedule-preview">Every 5 minutes</div>
+          </div>
+          <div class="schedule-panel" id="panel-cron" style="display:none;">
+            <input type="text" id="form-schedule" placeholder="*/5 * * * *" autocomplete="off">
+            <span class="form-hint">5-field cron: minute hour day-of-month month day-of-week</span>
+          </div>
         </div>
 
-        <div class="form-group">
-          <label for="form-working-dir">Working Directory (optional)</label>
-          <input type="text" id="form-working-dir" placeholder="/home/user/project" autocomplete="off">
+        <!-- Row 4: Timezone and Working Directory -->
+        <div class="form-row">
+          <div class="form-group">
+            <label for="form-timezone">Timezone <span class="label-optional">(optional)</span></label>
+            <input type="text" id="form-timezone" placeholder="UTC" autocomplete="off">
+            <span class="form-hint">IANA timezone, e.g. America/New_York</span>
+          </div>
+          <div class="form-group">
+            <label for="form-working-dir">Working Directory <span class="label-optional">(optional)</span></label>
+            <input type="text" id="form-working-dir" placeholder="/home/user/project" autocomplete="off">
+          </div>
         </div>
 
+        <!-- Row 5: Environment Variables (full width) -->
         <div class="form-group">
-          <label for="form-env-vars">Environment Variables (optional)</label>
+          <label for="form-env-vars">Environment Variables <span class="label-optional">(optional)</span></label>
           <textarea id="form-env-vars" rows="3" placeholder="KEY=VALUE&#10;ANOTHER=value2"></textarea>
           <span class="form-hint">One per line: KEY=VALUE</span>
         </div>

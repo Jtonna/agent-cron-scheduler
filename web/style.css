@@ -825,14 +825,14 @@ body {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   width: 100%;
-  max-width: 520px;
+  max-width: 720px;
   max-height: 90vh;
   overflow-y: auto;
   animation: modal-enter 200ms ease-out;
 }
 
 .modal-sm {
-  max-width: 420px;
+  max-width: 480px;
 }
 
 @keyframes modal-enter {
@@ -850,12 +850,12 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
+  padding: 20px 28px;
   border-bottom: 1px solid var(--color-border);
 }
 
 .modal-title {
-  font-size: 1.1rem;
+  font-size: 1.25rem;
   font-weight: 600;
 }
 
@@ -877,30 +877,30 @@ body {
 }
 
 .modal-body {
-  padding: 20px;
+  padding: 24px 28px 28px;
 }
 
 /* ===================================================================== */
 /* Forms                                                                 */
 /* ===================================================================== */
 .form-group {
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 
 .form-group label {
   display: block;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   font-weight: 600;
   color: var(--color-text);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .form-group input,
 .form-group textarea,
 .form-group select {
   width: 100%;
-  padding: 8px 12px;
-  font-size: 0.875rem;
+  padding: 10px 14px;
+  font-size: 0.95rem;
   font-family: var(--font-sans);
   background-color: var(--color-input-bg);
   border: 1px solid var(--color-input-border);
@@ -925,7 +925,8 @@ body {
 .form-group textarea {
   resize: vertical;
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: 0.875rem;
+  min-height: 80px;
 }
 
 .form-group select {
@@ -942,8 +943,114 @@ body {
 .form-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 20px;
+  gap: 12px;
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--color-border-light);
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+}
+
+.form-row > .form-group {
+  flex: 1;
+  min-width: 0;
+}
+
+.form-group-inline {
+  margin-bottom: 0;
+}
+
+.label-optional {
+  font-weight: 400;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+/* Schedule Tabs */
+.schedule-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border: 1px solid var(--color-input-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  width: fit-content;
+}
+
+.schedule-tab {
+  padding: 6px 16px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  background-color: var(--color-surface);
+  border: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.schedule-tab:not(:last-child) {
+  border-right: 1px solid var(--color-input-border);
+}
+
+.schedule-tab:hover {
+  background-color: var(--color-surface-hover);
+}
+
+.schedule-tab.active {
+  background-color: var(--color-primary);
+  color: var(--color-primary-text);
+}
+
+.schedule-panel {
+  padding: 16px;
+  background-color: var(--color-surface-hover);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-light);
+}
+
+.schedule-panel .form-row {
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.schedule-panel .form-group-inline {
+  flex: 0 0 auto;
+  min-width: 100px;
+}
+
+.schedule-panel .form-group-inline:first-child {
+  flex: 1;
+  min-width: 160px;
+}
+
+.schedule-panel input[type="number"] {
+  width: 80px;
+}
+
+.schedule-panel input[type="time"] {
+  width: 120px;
+}
+
+.schedule-preview {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background-color: var(--color-surface);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  color: var(--color-text);
+  border-left: 3px solid var(--color-primary);
+}
+
+#panel-cron {
+  padding: 12px 16px;
+}
+
+#panel-cron input {
+  margin-bottom: 4px;
 }
 
 .text-muted {
@@ -1077,6 +1184,15 @@ body {
   .modal {
     max-width: 100%;
     margin: 16px;
+  }
+
+  .form-row {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .schedule-panel .form-row {
+    flex-direction: row;
   }
 
   .toolbar {
