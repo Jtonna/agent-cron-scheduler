@@ -14,19 +14,23 @@ This document catalogs differences between `SPEC.md` (the original design specif
 - **Impact**: Programs that check `isatty()` will detect non-TTY mode. ANSI escape sequences from child processes are passed through raw rather than being interpreted by a terminal emulator.
 - **Severity**: Medium. Affects terminal-dependent programs but not typical shell commands and scripts.
 
-### 2. Auto Service Registration
+### ~~2. Auto Service Registration~~ ✅ FIXED
 
 - **Spec**: "On first run, the daemon automatically registers itself as a system service" (Windows Service, launchd, systemd). `acs start` step 2: "If not registered as a system service, auto-register."
-- **Actual**: Service install/uninstall functions exist in `src/daemon/service.rs` but `cmd_start` in `src/cli/daemon.rs` never calls them. The daemon runs only via `--foreground` mode.
-- **Impact**: The daemon does not survive reboots or user logoff unless the user manually registers it as a service.
-- **Severity**: Medium. Core daemon functionality works but persistence across reboots requires manual setup.
+- **Status**: **IMPLEMENTED**. Running `acs start` without `--foreground` will now:
+  1. Check if the service is already registered
+  2. Auto-register as a system service if not (Windows Service, launchd plist, or systemd user unit)
+  3. Start the daemon via the system service manager
+- **Note**: Service registration may require elevated privileges on some systems.
 
-### 3. Background Daemonization
+### ~~3. Background Daemonization~~ ✅ FIXED
 
-- **Spec**: `acs start` without `--foreground` should spawn itself as a detached background process (`process_group(0)` on Unix, `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on Windows) then exit.
-- **Actual**: The `--foreground` flag is effectively required. There is no background spawn path -- running without `--foreground` does not detach the process.
-- **Impact**: Users must keep a terminal open or use `--foreground` with an external process manager (screen, tmux, nohup, etc.).
-- **Severity**: Low. The `--foreground` mode is the recommended development path, and auto-service registration (if implemented) would handle production use.
+- **Spec**: `acs start` without `--foreground` should start the daemon as a background service.
+- **Status**: **IMPLEMENTED**. The daemon now starts via the system service manager when `--foreground` is not specified:
+  - **Windows**: Uses Windows Service Manager to start `AgentCronScheduler` service
+  - **macOS**: Uses `launchctl start com.acs.scheduler`
+  - **Linux**: Uses `systemctl --user start acs.service`
+- **Note**: The `--foreground` flag runs the daemon directly in the current process (useful for development and debugging).
 
 ### 4. Graceful Child Process Shutdown
 
@@ -49,17 +53,21 @@ This document catalogs differences between `SPEC.md` (the original design specif
 - **Impact**: Deleting a job while it is running leaves the run executing. The run will complete and attempt to update a job that no longer exists. Orphaned log files are cleaned up on next daemon startup.
 - **Severity**: Low. Edge case that only matters when deleting actively running jobs.
 
-### 7. `acs stop --force`
+### ~~7. `acs stop --force`~~ ✅ FIXED
 
 - **Spec**: `acs stop [--force]` should force-kill the daemon process.
-- **Actual**: The `--force` flag is parsed by clap but the handler sends a graceful shutdown request via `POST /api/shutdown` regardless. There is no force-kill path.
-- **Severity**: Low. Graceful shutdown works; users can `kill -9` / `taskkill /F` as a workaround.
+- **Status**: **IMPLEMENTED**. `acs stop --force` now:
+  1. Reads the PID file from the data directory
+  2. Sends SIGKILL (Unix) or uses `taskkill /F` (Windows) to terminate the process
+  3. Cleans up the PID file
 
-### 8. `acs uninstall --purge`
+### ~~8. `acs uninstall --purge`~~ ✅ FIXED
 
 - **Spec**: `acs uninstall --purge` should remove the system service registration and delete all data (data directory, logs, config).
-- **Actual**: The `--purge` flag is parsed by clap but the handler does not delete the data directory. Uninstall only attempts service deregistration.
-- **Severity**: Low. Users can manually delete the data directory.
+- **Status**: **IMPLEMENTED**. `acs uninstall --purge` now:
+  1. Stops the daemon (via API or service manager)
+  2. Removes the system service registration
+  3. Deletes the entire data directory when `--purge` is specified
 
 ---
 
@@ -145,10 +153,17 @@ This document catalogs differences between `SPEC.md` (the original design specif
 
 | Category | Count | Items |
 |---|---|---|
-| Not implemented | 8 | PTY, auto-service, daemonize, child shutdown, log truncation, delete-kills-run, stop --force, uninstall --purge |
+| Not implemented | 6 | PTY, child shutdown, log truncation, delete-kills-run, ~~stop --force~~, ~~uninstall --purge~~ |
+| ~~Fixed~~ | 4 | ~~auto-service~~, ~~daemonize~~, stop --force, uninstall --purge |
 | Different behavior | 3 | Corrupted recovery, invalid cron handling, script paths |
 | Config not implemented | 2 | ACS_LOG_LEVEL, coverage enforcement |
 | Dead dependencies | 1 | fs4 |
 | Missing status codes | 1 | 503 |
 | Additions beyond spec | 2 | dispatch_tx, per-job timeout |
-| **Total deviations** | **17** | |
+| **Total remaining deviations** | **13** | |
+
+### Recently Fixed
+- **Auto Service Registration** (#2): `acs start` now auto-registers and starts via system service manager
+- **Background Daemonization** (#3): Daemon starts as background service when `--foreground` is not specified
+- **`acs stop --force`** (#7): Now reads PID file and force-kills the daemon process
+- **`acs uninstall --purge`** (#8): Now removes the data directory when `--purge` is specified

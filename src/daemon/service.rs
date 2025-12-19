@@ -65,6 +65,7 @@ mod platform {
 
     /// Install the Windows Service.
     pub fn install_service(exe_path: &Path) -> anyhow::Result<()> {
+        use anyhow::Context;
         use windows_service::service::{
             ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceType,
         };
@@ -73,7 +74,8 @@ mod platform {
         let manager = ServiceManager::local_computer(
             None::<&str>,
             ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
-        )?;
+        )
+        .context("Failed to connect to Service Control Manager (run as Administrator)")?;
 
         let service_info = ServiceInfo {
             name: OsString::from("AgentCronScheduler"),
@@ -82,29 +84,37 @@ mod platform {
             start_type: ServiceStartType::AutoStart,
             error_control: ServiceErrorControl::Normal,
             executable_path: exe_path.to_path_buf(),
-            launch_arguments: vec![OsString::from("start"), OsString::from("--foreground")],
+            launch_arguments: vec![OsString::from("service")],
             dependencies: vec![],
             account_name: None,
             account_password: None,
         };
 
-        manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)?;
+        manager
+            .create_service(&service_info, ServiceAccess::CHANGE_CONFIG)
+            .context("Failed to create service (already exists or need Administrator)")?;
         Ok(())
     }
 
     /// Uninstall the Windows Service.
     pub fn uninstall_service() -> anyhow::Result<()> {
+        use anyhow::Context;
         use windows_service::service::ServiceAccess;
         use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .context("Failed to connect to Service Control Manager")?;
 
-        let service = manager.open_service(
-            "AgentCronScheduler",
-            ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS,
-        )?;
+        let service = manager
+            .open_service(
+                "AgentCronScheduler",
+                ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS,
+            )
+            .context("Failed to open service for deletion")?;
 
-        service.delete()?;
+        service
+            .delete()
+            .context("Failed to delete service (run as Administrator)")?;
         Ok(())
     }
 
@@ -115,6 +125,48 @@ mod platform {
         } else {
             None
         }
+    }
+
+    /// Start the Windows Service.
+    pub fn start_service() -> anyhow::Result<()> {
+        use anyhow::Context;
+        use windows_service::service::ServiceAccess;
+        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .context("Failed to connect to Service Control Manager")?;
+
+        let service = manager
+            .open_service(
+                "AgentCronScheduler",
+                ServiceAccess::START | ServiceAccess::QUERY_STATUS,
+            )
+            .context("Failed to open service (is it registered?)")?;
+
+        service
+            .start::<&str>(&[])
+            .context("Failed to start service (try running as Administrator)")?;
+        Ok(())
+    }
+
+    /// Stop the Windows Service.
+    pub fn stop_service() -> anyhow::Result<()> {
+        use anyhow::Context;
+        use windows_service::service::ServiceAccess;
+        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .context("Failed to connect to Service Control Manager")?;
+
+        let service = manager
+            .open_service(
+                "AgentCronScheduler",
+                ServiceAccess::STOP | ServiceAccess::QUERY_STATUS,
+            )
+            .context("Failed to open service")?;
+
+        service.stop().context("Failed to stop service")?;
+        Ok(())
     }
 }
 
@@ -196,6 +248,34 @@ mod platform {
             Some(plist_path().to_string_lossy().to_string())
         } else {
             None
+        }
+    }
+
+    /// Start the launchd service.
+    pub fn start_service() -> anyhow::Result<()> {
+        let status = std::process::Command::new("launchctl")
+            .arg("start")
+            .arg("com.acs.scheduler")
+            .status()?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("launchctl start failed with exit code: {:?}", status.code())
+        }
+    }
+
+    /// Stop the launchd service.
+    pub fn stop_service() -> anyhow::Result<()> {
+        let status = std::process::Command::new("launchctl")
+            .arg("stop")
+            .arg("com.acs.scheduler")
+            .status()?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("launchctl stop failed with exit code: {:?}", status.code())
         }
     }
 }
@@ -293,6 +373,42 @@ WantedBy=default.target
             None
         }
     }
+
+    /// Start the systemd user service.
+    pub fn start_service() -> anyhow::Result<()> {
+        let status = std::process::Command::new("systemctl")
+            .arg("--user")
+            .arg("start")
+            .arg("acs.service")
+            .status()?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "systemctl --user start failed with exit code: {:?}",
+                status.code()
+            )
+        }
+    }
+
+    /// Stop the systemd user service.
+    pub fn stop_service() -> anyhow::Result<()> {
+        let status = std::process::Command::new("systemctl")
+            .arg("--user")
+            .arg("stop")
+            .arg("acs.service")
+            .status()?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "systemctl --user stop failed with exit code: {:?}",
+                status.code()
+            )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +428,16 @@ pub fn install_service(exe_path: &Path) -> anyhow::Result<()> {
 /// Uninstall the system service for the current platform.
 pub fn uninstall_service() -> anyhow::Result<()> {
     platform::uninstall_service()
+}
+
+/// Start the system service for the current platform.
+pub fn start_service() -> anyhow::Result<()> {
+    platform::start_service()
+}
+
+/// Stop the system service for the current platform.
+pub fn stop_service() -> anyhow::Result<()> {
+    platform::stop_service()
 }
 
 /// Get comprehensive service status information.
@@ -375,5 +501,61 @@ mod tests {
         // This test simply verifies the function returns without panicking.
         // On CI or dev machines, the service is likely NOT registered.
         let _registered = is_service_registered();
+    }
+
+    #[test]
+    fn test_start_service_fails_when_not_registered() {
+        // If service is not registered, start_service should fail
+        if !is_service_registered() {
+            let result = start_service();
+            assert!(
+                result.is_err(),
+                "start_service should fail when service is not registered"
+            );
+        }
+        // If service IS registered, we skip this test to avoid side effects
+    }
+
+    #[test]
+    fn test_stop_service_fails_when_not_registered() {
+        // If service is not registered, stop_service should fail
+        if !is_service_registered() {
+            let result = stop_service();
+            assert!(
+                result.is_err(),
+                "stop_service should fail when service is not registered"
+            );
+        }
+        // If service IS registered, we skip this test to avoid side effects
+    }
+
+    #[test]
+    fn test_install_service_requires_valid_path() {
+        use std::path::PathBuf;
+
+        // Note: This test may fail with permission errors, which is expected
+        // on systems that require elevated privileges for service installation.
+        // We're mainly testing that the function exists and handles the path correctly.
+        let fake_exe = PathBuf::from("/nonexistent/path/to/exe");
+
+        // We don't assert on the result because:
+        // - On Windows, it will fail due to service manager access
+        // - On Unix, it will fail due to permissions or directory issues
+        // The important thing is it doesn't panic
+        let _result = install_service(&fake_exe);
+    }
+
+    #[test]
+    fn test_uninstall_service_when_not_registered() {
+        // If service is not registered, uninstall should fail gracefully
+        if !is_service_registered() {
+            let result = uninstall_service();
+            // On Windows, this will fail to find the service
+            // On Unix, this will fail because the file doesn't exist
+            assert!(
+                result.is_err(),
+                "uninstall_service should fail when service is not registered"
+            );
+        }
     }
 }

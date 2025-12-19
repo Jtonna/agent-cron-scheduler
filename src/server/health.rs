@@ -15,6 +15,7 @@ pub struct HealthResponse {
     pub active_jobs: usize,
     pub total_jobs: usize,
     pub version: String,
+    pub data_dir: String,
 }
 
 pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -30,12 +31,20 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
         Err(_) => (0, 0),
     };
 
+    let data_dir = state
+        .config
+        .data_dir
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
     let response = HealthResponse {
         status: "ok".to_string(),
         uptime_seconds: uptime,
         active_jobs: total_jobs.0,
         total_jobs: total_jobs.1,
         version: "0.1.0".to_string(),
+        data_dir,
     };
 
     (StatusCode::OK, Json(response))

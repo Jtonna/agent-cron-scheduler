@@ -67,6 +67,11 @@ pub enum Commands {
         purge: bool,
     },
 
+    /// Run as Windows Service (internal use only, called by SCM)
+    #[cfg(target_os = "windows")]
+    #[clap(hide = true)]
+    Service,
+
     /// Add a new scheduled job
     Add {
         /// Job name (must be unique)
@@ -232,6 +237,9 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Some(Commands::Uninstall { purge }) => {
             daemon::cmd_uninstall(&cli.host, cli.port, *purge).await
         }
+        #[cfg(target_os = "windows")]
+        Some(Commands::Service) => crate::daemon::windows_service::run()
+            .map_err(|e| anyhow::anyhow!("Windows Service error: {}", e)),
         Some(Commands::Add {
             name,
             schedule,

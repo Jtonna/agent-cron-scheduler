@@ -1,3 +1,4 @@
+pub mod assets;
 pub mod health;
 pub mod routes;
 pub mod sse;
@@ -31,13 +32,6 @@ pub struct AppState {
 
 /// Create the Axum router with all routes.
 pub fn create_router(state: Arc<AppState>) -> Router {
-    // Resolve web UI directory: try exe_dir/web/ first, then ./web/
-    let web_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("web")))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| std::path::PathBuf::from("web"));
-
     Router::new()
         .route("/health", get(health::health_check))
         .route("/api/jobs", get(routes::list_jobs).post(routes::create_job))
@@ -56,7 +50,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/shutdown", post(routes::shutdown))
         .route("/api/service/status", get(routes::service_status))
         .with_state(state)
-        .fallback_service(tower_http::services::ServeDir::new(web_dir))
+        .fallback(assets::serve_embedded)
 }
 
 // ===========================================================================
