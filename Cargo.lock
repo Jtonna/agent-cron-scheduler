@@ -18,6 +18,7 @@ dependencies = [
  "fs4",
  "futures-util",
  "http-body-util",
+ "libc",
  "portable-pty",
  "predicates",
  "reqwest",

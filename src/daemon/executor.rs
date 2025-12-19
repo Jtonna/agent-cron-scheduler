@@ -208,7 +208,9 @@ impl Executor {
                 ExecutionType::ScriptFile(script) => format!("[script] {}", script),
             };
             let header = format!("$ {}\n", command_str);
-            let _ = log_store.append_log(job_id, run_id, header.as_bytes()).await;
+            let _ = log_store
+                .append_log(job_id, run_id, header.as_bytes())
+                .await;
             let _ = event_tx.send(JobEvent::Output {
                 job_id,
                 run_id,
@@ -903,7 +905,10 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, JobEvent::Output { .. }))
             .count();
-        assert_eq!(output_count, 1, "Should have only the command header Output event");
+        assert_eq!(
+            output_count, 1,
+            "Should have only the command header Output event"
+        );
 
         let completed = events
             .iter()
