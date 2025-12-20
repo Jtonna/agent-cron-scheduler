@@ -6,6 +6,9 @@ pub mod executor;
 pub mod scheduler;
 pub mod service;
 
+#[cfg(target_os = "windows")]
+pub mod windows_service;
+
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -226,7 +229,12 @@ pub fn load_config(config_path: Option<&Path>) -> Result<DaemonConfig> {
 }
 
 /// Resolve the data directory. If `override_dir` is Some, use it.
-/// Otherwise, use the platform default via `dirs::data_dir()`.
+/// Otherwise, use the platform default.
+///
+/// Platform defaults:
+/// - Windows: `C:\ProgramData\agent-cron-scheduler` (shared across all users,
+///   appropriate for services running under LOCAL SYSTEM)
+/// - macOS/Linux: `~/.local/share/agent-cron-scheduler` via `dirs::data_dir()`
 pub fn resolve_data_dir(override_dir: Option<&Path>) -> PathBuf {
     if let Some(dir) = override_dir {
         return dir.to_path_buf();
@@ -238,9 +246,21 @@ pub fn resolve_data_dir(override_dir: Option<&Path>) -> PathBuf {
     }
 
     // Platform default
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("agent-cron-scheduler")
+    #[cfg(target_os = "windows")]
+    {
+        // Use ProgramData on Windows - appropriate for services and shared across users
+        std::env::var("PROGRAMDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("C:\\ProgramData"))
+            .join("agent-cron-scheduler")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("agent-cron-scheduler")
+    }
 }
 
 /// Remove log directories for jobs that no longer exist in the job store.
@@ -407,6 +427,235 @@ pub async fn graceful_shutdown(
 // ---------------------------------------------------------------------------
 // Daemon bootstrap
 // ---------------------------------------------------------------------------
+
+/// Run the daemon until an external shutdown signal is received.
+///
+/// This function is used by the Windows Service implementation. It performs
+/// all the same initialization as `start_daemon` but waits for a shutdown
+/// signal from the provided receiver instead of OS signals.
+///
+/// # Arguments
+/// * `shutdown_rx` - Receiver that signals when the service should stop
+#[cfg(target_os = "windows")]
+pub async fn run_daemon_until_shutdown(shutdown_rx: std::sync::mpsc::Receiver<()>) -> Result<()> {
+    // Load config from default location
+    let config_path: Option<&Path> = None;
+    let mut config = load_config(config_path)?;
+
+    // Resolve data dir
+    let data_dir = if let Some(ref d) = config.data_dir {
+        d.clone()
+    } else {
+        resolve_data_dir(None)
+    };
+    config.data_dir = Some(data_dir.clone());
+
+    let config = Arc::new(config);
+
+    // Create data directories
+    create_data_dirs(&data_dir).await?;
+
+    // Acquire PID file
+    let pid_file_path = data_dir.join("acs.pid");
+    let pid_file = PidFile::new(pid_file_path);
+    pid_file.acquire()?;
+
+    // Initialize storage
+    let job_store = Arc::new(crate::storage::jobs::JsonJobStore::new(data_dir.clone()).await?)
+        as Arc<dyn crate::storage::JobStore>;
+
+    let log_store = Arc::new(crate::storage::logs::FsLogStore::new(data_dir.clone()).await?)
+        as Arc<dyn crate::storage::LogStore>;
+
+    // Clean up orphaned log directories
+    if let Err(e) = cleanup_orphaned_logs(&data_dir, job_store.as_ref()).await {
+        tracing::warn!("Failed to cleanup orphaned logs: {}", e);
+    }
+
+    // Create broadcast channel
+    let (event_tx, _event_rx) = broadcast::channel::<JobEvent>(config.broadcast_capacity);
+
+    // Create scheduler notify
+    let scheduler_notify = Arc::new(Notify::new());
+
+    // Shutdown channel for HTTP server (and API-initiated shutdown detection)
+    let (http_shutdown_tx, mut http_shutdown_rx) = tokio::sync::watch::channel(());
+    let mut api_shutdown_rx = http_shutdown_tx.subscribe();
+
+    // Active runs tracking
+    let active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>> = Arc::new(RwLock::new(HashMap::new()));
+
+    // Create dispatch channel (used by both scheduler and API trigger)
+    let (dispatch_tx, mut dispatch_rx) = tokio::sync::mpsc::channel::<crate::models::Job>(64);
+    let dispatch_tx_for_api = dispatch_tx.clone();
+
+    // Create AppState
+    let state = Arc::new(AppState {
+        job_store: Arc::clone(&job_store),
+        log_store: Arc::clone(&log_store),
+        event_tx: event_tx.clone(),
+        scheduler_notify: Arc::clone(&scheduler_notify),
+        config: Arc::clone(&config),
+        start_time: Instant::now(),
+        active_runs: Arc::clone(&active_runs),
+        shutdown_tx: Some(http_shutdown_tx.clone()),
+        dispatch_tx: Some(dispatch_tx_for_api),
+    });
+
+    // Create Executor
+    let pty_spawner: Arc<dyn crate::pty::PtySpawner> = Arc::new(crate::pty::NoPtySpawner);
+    let executor = Executor::new(
+        event_tx.clone(),
+        Arc::clone(&log_store),
+        Arc::clone(&config),
+        pty_spawner,
+    );
+
+    // Start Scheduler
+    let sched_clock: Arc<dyn scheduler::Clock> = Arc::new(scheduler::SystemClock);
+    let scheduler = Scheduler::new(
+        Arc::clone(&job_store),
+        sched_clock,
+        Arc::clone(&scheduler_notify),
+        dispatch_tx,
+    );
+
+    let scheduler_handle = tokio::spawn(async move {
+        if let Err(e) = scheduler.run().await {
+            tracing::error!("Scheduler error: {}", e);
+        }
+    });
+
+    // Dispatch loop: receives jobs from scheduler and spawns them via executor
+    let dispatch_active_runs = Arc::clone(&active_runs);
+    let dispatch_handle = tokio::spawn(async move {
+        while let Some(job) = dispatch_rx.recv().await {
+            match executor.spawn_job(&job).await {
+                Ok(handle) => {
+                    let job_id = handle.job_id;
+                    dispatch_active_runs.write().await.insert(job_id, handle);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to spawn job {}: {}", job.name, e);
+                }
+            }
+        }
+    });
+
+    // Job metadata updater
+    let updater_job_store = Arc::clone(&job_store);
+    let mut updater_rx = event_tx.subscribe();
+    let updater_handle = tokio::spawn(async move {
+        loop {
+            match updater_rx.recv().await {
+                Ok(JobEvent::Started {
+                    job_name, run_id, ..
+                }) => {
+                    tracing::info!("Job '{}' started (run: {})", job_name, run_id);
+                }
+                Ok(JobEvent::Completed {
+                    job_id,
+                    run_id,
+                    exit_code,
+                    timestamp,
+                }) => {
+                    tracing::info!("Job run {} completed (exit code: {})", run_id, exit_code);
+                    let update = crate::models::JobUpdate {
+                        last_run_at: Some(Some(timestamp)),
+                        last_exit_code: Some(Some(exit_code)),
+                        ..Default::default()
+                    };
+                    if let Err(e) = updater_job_store.update_job(job_id, update).await {
+                        tracing::error!("Failed to update job metadata after completion: {}", e);
+                    }
+                }
+                Ok(JobEvent::Failed {
+                    job_id,
+                    run_id,
+                    ref error,
+                    timestamp,
+                }) => {
+                    tracing::warn!("Job run {} failed: {}", run_id, error);
+                    let update = crate::models::JobUpdate {
+                        last_run_at: Some(Some(timestamp)),
+                        ..Default::default()
+                    };
+                    if let Err(e) = updater_job_store.update_job(job_id, update).await {
+                        tracing::error!("Failed to update job metadata after failure: {}", e);
+                    }
+                }
+                Ok(_) => {} // Ignore other events
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("Job metadata updater lagged by {} events", n);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    break;
+                }
+            }
+        }
+    });
+
+    // Create router and start HTTP server
+    let router = server::create_router(Arc::clone(&state));
+    let bind_addr = format!("{}:{}", config.host, config.port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .context(format!("Failed to bind to {}", bind_addr))?;
+
+    tracing::info!(
+        "Daemon started (Windows Service mode). Listening on http://{}",
+        bind_addr
+    );
+
+    // Start server with graceful shutdown support
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                http_shutdown_rx.changed().await.ok();
+                tracing::info!("HTTP server received shutdown signal");
+            })
+            .await
+            .ok();
+    });
+
+    // Wait for shutdown signal from EITHER:
+    // 1. Windows Service Control Manager (SCM sends stop request)
+    // 2. HTTP API (POST /api/shutdown sends via watch channel)
+    let scm_shutdown = tokio::task::spawn_blocking(move || {
+        let _ = shutdown_rx.recv();
+    });
+
+    tokio::select! {
+        _ = scm_shutdown => {
+            tracing::info!("Received shutdown signal from Windows Service Manager");
+        }
+        _ = api_shutdown_rx.changed() => {
+            tracing::info!("Received shutdown signal from HTTP API");
+        }
+    }
+
+    // Ensure HTTP server is notified to shut down (no-op if API already triggered it)
+    let _ = http_shutdown_tx.send(());
+
+    // Stop scheduler, dispatch loop, and updater
+    scheduler_handle.abort();
+    dispatch_handle.abort();
+    updater_handle.abort();
+
+    // Run graceful shutdown sequence
+    graceful_shutdown(
+        Arc::clone(&active_runs),
+        Arc::clone(&log_store),
+        Some(&pid_file),
+    )
+    .await;
+
+    // Wait for HTTP server to finish
+    let _ = server_handle.await;
+
+    tracing::info!("Daemon exited cleanly.");
+    Ok(())
+}
 
 /// Start the daemon.
 ///
