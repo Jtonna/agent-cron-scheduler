@@ -62,6 +62,7 @@
     dom.formTimezone = document.getElementById("form-timezone");
     dom.formWorkingDir = document.getElementById("form-working-dir");
     dom.formEnvVars = document.getElementById("form-env-vars");
+    dom.formLogEnv = document.getElementById("form-log-env");
     dom.btnCancelForm = document.getElementById("btn-cancel-form");
     dom.btnSubmitForm = document.getElementById("btn-submit-form");
     dom.deleteOverlay = document.getElementById("delete-overlay");
@@ -809,6 +810,7 @@
     dom.formTimezone.value = job.timezone || "";
     dom.formWorkingDir.value = job.working_dir || "";
     dom.formEnvVars.value = serializeEnvVars(job.env_vars);
+    dom.formLogEnv.checked = job.log_environment || false;
 
     openModal();
   }
@@ -903,6 +905,7 @@
       if (timezone) updatePayload.timezone = timezone;
       if (workingDir) updatePayload.working_dir = workingDir;
       if (envVars) updatePayload.env_vars = envVars;
+      updatePayload.log_environment = dom.formLogEnv.checked;
 
       dom.btnSubmitForm.disabled = true;
       updateJob(state.editingJobId, updatePayload).then(function (res) {
@@ -926,6 +929,7 @@
       if (timezone) createPayload.timezone = timezone;
       if (workingDir) createPayload.working_dir = workingDir;
       if (envVars) createPayload.env_vars = envVars;
+      if (dom.formLogEnv.checked) createPayload.log_environment = true;
 
       dom.btnSubmitForm.disabled = true;
       createJob(createPayload).then(function (res) {

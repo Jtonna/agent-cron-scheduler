@@ -121,6 +121,7 @@ impl JobStore for JsonJobStore {
             working_dir: new.working_dir,
             env_vars: new.env_vars,
             timeout_secs: new.timeout_secs,
+            log_environment: new.log_environment,
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -181,6 +182,9 @@ impl JobStore for JsonJobStore {
         if let Some(timeout_secs) = update.timeout_secs {
             job.timeout_secs = timeout_secs;
         }
+        if let Some(log_environment) = update.log_environment {
+            job.log_environment = log_environment;
+        }
         // Internal metadata fields (not user-editable, set by the daemon)
         if let Some(last_run_at) = update.last_run_at {
             job.last_run_at = last_run_at;
@@ -227,6 +231,7 @@ mod tests {
             working_dir: None,
             env_vars: None,
             timeout_secs: 0,
+            log_environment: false,
         }
     }
 

@@ -212,6 +212,15 @@
           <span class="form-hint">One per line: KEY=VALUE</span>
         </div>
 
+        <!-- Row 6: Log Environment checkbox -->
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="form-log-env">
+            Include full environment in run logs
+          </label>
+          <span class="form-hint">When enabled, all environment variables are logged before each run (useful for debugging)</span>
+        </div>
+
         <div class="form-actions">
           <button type="button" class="btn" id="btn-cancel-form">Cancel</button>
           <button type="submit" class="btn btn-primary" id="btn-submit-form">Create Job</button>

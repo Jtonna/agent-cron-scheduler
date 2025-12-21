@@ -63,6 +63,7 @@ pub async fn cmd_add(
     working_dir: Option<&str>,
     env: &[String],
     disabled: bool,
+    log_env: bool,
 ) -> anyhow::Result<()> {
     let execution = match (cmd, script) {
         (Some(c), None) => ExecutionType::ShellCommand(c.to_string()),
@@ -88,6 +89,7 @@ pub async fn cmd_add(
         working_dir: working_dir.map(|s| s.to_string()),
         env_vars,
         timeout_secs: 0,
+        log_environment: log_env,
     };
 
     let client = Client::new();

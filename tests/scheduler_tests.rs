@@ -29,6 +29,7 @@ fn make_job(name: &str) -> Job {
         working_dir: None,
         env_vars: None,
         timeout_secs: 0,
+        log_environment: false,
         created_at: now,
         updated_at: now,
         last_run_at: None,

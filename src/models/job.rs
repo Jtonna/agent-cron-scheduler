@@ -25,6 +25,8 @@ pub struct Job {
     pub env_vars: Option<HashMap<String, String>>,
     #[serde(default)]
     pub timeout_secs: u64,
+    #[serde(default)]
+    pub log_environment: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_run_at: Option<DateTime<Utc>>,
@@ -44,6 +46,7 @@ impl PartialEq for Job {
             && self.working_dir == other.working_dir
             && self.env_vars == other.env_vars
             && self.timeout_secs == other.timeout_secs
+            && self.log_environment == other.log_environment
             && self.created_at == other.created_at
             && self.updated_at == other.updated_at
             && self.last_run_at == other.last_run_at
@@ -64,6 +67,8 @@ pub struct NewJob {
     pub env_vars: Option<HashMap<String, String>>,
     #[serde(default)]
     pub timeout_secs: u64,
+    #[serde(default)]
+    pub log_environment: bool,
 }
 
 fn default_enabled() -> bool {
@@ -80,6 +85,7 @@ pub struct JobUpdate {
     pub working_dir: Option<String>,
     pub env_vars: Option<HashMap<String, String>>,
     pub timeout_secs: Option<u64>,
+    pub log_environment: Option<bool>,
     /// Internal metadata: set to Some(Some(ts)) to update, Some(None) to clear.
     /// Skipped during JSON deserialization from API clients (not user-editable).
     #[serde(skip)]
@@ -166,6 +172,7 @@ mod tests {
             working_dir: None,
             env_vars: None,
             timeout_secs: 0,
+            log_environment: false,
         }
     }
 
@@ -185,6 +192,7 @@ mod tests {
                 m
             }),
             timeout_secs: 0,
+            log_environment: false,
             created_at: now,
             updated_at: now,
             last_run_at: None,

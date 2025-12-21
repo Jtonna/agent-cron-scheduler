@@ -103,6 +103,9 @@ cargo run -- add -n "env-test" -s "*/10 * * * *" -c "echo $MY_VAR" -e MY_VAR=hel
 # Add a job that runs a script file
 cargo run -- add -n "deploy" -s "0 2 * * *" --script deploy.sh
 
+# Add a job that logs the full environment before each run (useful for debugging)
+cargo run -- add -n "debug-job" -s "*/5 * * * *" -c "echo hello" --log-env
+
 # Add a job in disabled state
 cargo run -- add -n "paused-job" -s "0 * * * *" -c "echo paused" --disabled
 
@@ -180,6 +183,11 @@ curl http://127.0.0.1:8377/api/jobs?enabled=true
 curl -X POST http://127.0.0.1:8377/api/jobs \
   -H "Content-Type: application/json" \
   -d '{"name":"curl-test","schedule":"* * * * *","execution":{"type":"ShellCommand","value":"echo from curl"}}'
+
+# Create a job with environment logging enabled (dumps all env vars before each run)
+curl -X POST http://127.0.0.1:8377/api/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"name":"debug-test","schedule":"* * * * *","execution":{"type":"ShellCommand","value":"echo hello"},"log_environment":true}'
 
 # Get a job by name or UUID
 curl http://127.0.0.1:8377/api/jobs/curl-test

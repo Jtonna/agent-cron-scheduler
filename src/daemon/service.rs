@@ -1,6 +1,6 @@
 // Platform service registration for daemon persistence.
 //
-// - Windows: Windows Service via `windows-service` crate
+// - Windows: Task Scheduler (runs as current user, inherits user environment)
 // - macOS:   launchd plist to ~/Library/LaunchAgents/com.acs.scheduler.plist
 // - Linux:   systemd user unit to ~/.config/systemd/user/acs.service
 
@@ -40,133 +40,113 @@ pub fn service_name() -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Windows service implementation
+// Windows implementation — uses Task Scheduler (runs as the current user,
+// inheriting their full environment: PATH, USERPROFILE, APPDATA, etc.)
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "windows")]
 mod platform {
     use super::*;
-    use std::ffi::OsString;
 
-    /// Check if the Windows Service is registered.
+    const TASK_NAME: &str = "AgentCronScheduler";
+
+    /// Check if the scheduled task is registered.
     pub fn is_service_registered() -> bool {
-        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
-
-        let manager =
-            match ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) {
-                Ok(m) => m,
-                Err(_) => return false,
-            };
-
-        use windows_service::service::ServiceAccess;
-        manager
-            .open_service("AgentCronScheduler", ServiceAccess::QUERY_STATUS)
-            .is_ok()
+        std::process::Command::new("schtasks")
+            .args(["/Query", "/TN", TASK_NAME])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
-    /// Install the Windows Service.
+    /// Create a scheduled task that runs the daemon at user logon.
     pub fn install_service(exe_path: &Path) -> anyhow::Result<()> {
         use anyhow::Context;
-        use windows_service::service::{
-            ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceType,
-        };
-        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-        let manager = ServiceManager::local_computer(
-            None::<&str>,
-            ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
-        )
-        .context("Failed to connect to Service Control Manager (run as Administrator)")?;
+        let exe = exe_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid executable path"))?;
 
-        let service_info = ServiceInfo {
-            name: OsString::from("AgentCronScheduler"),
-            display_name: OsString::from("Agent Cron Scheduler"),
-            service_type: ServiceType::OWN_PROCESS,
-            start_type: ServiceStartType::AutoStart,
-            error_control: ServiceErrorControl::Normal,
-            executable_path: exe_path.to_path_buf(),
-            launch_arguments: vec![OsString::from("service")],
-            dependencies: vec![],
-            account_name: None,
-            account_password: None,
-        };
+        // The task runs `acs start` (not --foreground) as the current user.
+        // `acs start` spawns the daemon as a hidden background process and exits,
+        // so the task completes quickly while the daemon runs independently.
+        let tr = format!("\"{}\" start", exe);
 
-        manager
-            .create_service(&service_info, ServiceAccess::CHANGE_CONFIG)
-            .context("Failed to create service (already exists or need Administrator)")?;
-        Ok(())
+        let status = std::process::Command::new("schtasks")
+            .args([
+                "/Create",
+                "/TN", TASK_NAME,
+                "/TR", &tr,
+                "/SC", "ONLOGON",
+                "/RL", "HIGHEST",
+                "/F",
+            ])
+            .status()
+            .context("Failed to run schtasks")?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("schtasks /Create failed (exit code {:?})", status.code())
+        }
     }
 
-    /// Uninstall the Windows Service.
+    /// Delete the scheduled task.
     pub fn uninstall_service() -> anyhow::Result<()> {
         use anyhow::Context;
-        use windows_service::service::ServiceAccess;
-        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-            .context("Failed to connect to Service Control Manager")?;
+        let status = std::process::Command::new("schtasks")
+            .args(["/Delete", "/TN", TASK_NAME, "/F"])
+            .status()
+            .context("Failed to run schtasks")?;
 
-        let service = manager
-            .open_service(
-                "AgentCronScheduler",
-                ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS,
-            )
-            .context("Failed to open service for deletion")?;
-
-        service
-            .delete()
-            .context("Failed to delete service (run as Administrator)")?;
-        Ok(())
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("schtasks /Delete failed (exit code {:?})", status.code())
+        }
     }
 
-    /// Get the service file/registry path on Windows (not a simple file path).
+    /// Get a human-readable description of where the task is registered.
     pub fn service_path() -> Option<String> {
         if is_service_registered() {
-            Some("HKLM\\SYSTEM\\CurrentControlSet\\Services\\AgentCronScheduler".to_string())
+            Some(format!("Task Scheduler: {}", TASK_NAME))
         } else {
             None
         }
     }
 
-    /// Start the Windows Service.
+    /// Start the scheduled task immediately.
     pub fn start_service() -> anyhow::Result<()> {
         use anyhow::Context;
-        use windows_service::service::ServiceAccess;
-        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-            .context("Failed to connect to Service Control Manager")?;
+        let status = std::process::Command::new("schtasks")
+            .args(["/Run", "/TN", TASK_NAME])
+            .status()
+            .context("Failed to run schtasks")?;
 
-        let service = manager
-            .open_service(
-                "AgentCronScheduler",
-                ServiceAccess::START | ServiceAccess::QUERY_STATUS,
-            )
-            .context("Failed to open service (is it registered?)")?;
-
-        service
-            .start::<&str>(&[])
-            .context("Failed to start service (try running as Administrator)")?;
-        Ok(())
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("schtasks /Run failed (exit code {:?})", status.code())
+        }
     }
 
-    /// Stop the Windows Service.
+    /// End (hard-kill) the scheduled task.
     pub fn stop_service() -> anyhow::Result<()> {
         use anyhow::Context;
-        use windows_service::service::ServiceAccess;
-        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-            .context("Failed to connect to Service Control Manager")?;
+        let status = std::process::Command::new("schtasks")
+            .args(["/End", "/TN", TASK_NAME])
+            .status()
+            .context("Failed to run schtasks")?;
 
-        let service = manager
-            .open_service(
-                "AgentCronScheduler",
-                ServiceAccess::STOP | ServiceAccess::QUERY_STATUS,
-            )
-            .context("Failed to open service")?;
-
-        service.stop().context("Failed to stop service")?;
-        Ok(())
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("schtasks /End failed (exit code {:?})", status.code())
+        }
     }
 }
 

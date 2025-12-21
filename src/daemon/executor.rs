@@ -139,6 +139,8 @@ impl Executor {
 
         // Clone things for the spawned task
         let execution = job.execution.clone();
+        let log_environment = job.log_environment;
+        let job_env_vars = job.env_vars.clone();
         let event_tx = self.event_tx.clone();
         let log_store = Arc::clone(&self.log_store);
         let pty_spawner = Arc::clone(&self.pty_spawner);
@@ -201,6 +203,31 @@ impl Executor {
                     return;
                 }
             };
+
+            // If log_environment is enabled, dump full environment before command
+            if log_environment {
+                let mut env_map: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+                // Merge job-specific env vars (these override inherited ones)
+                if let Some(ref job_envs) = job_env_vars {
+                    for (k, v) in job_envs {
+                        env_map.insert(k.clone(), v.clone());
+                    }
+                }
+                let mut env_dump = String::from("=== Environment ===\n");
+                for (key, value) in &env_map {
+                    env_dump.push_str(&format!("{}={}\n", key, value));
+                }
+                env_dump.push_str("===================\n");
+                let _ = log_store
+                    .append_log(job_id, run_id, env_dump.as_bytes())
+                    .await;
+                let _ = event_tx.send(JobEvent::Output {
+                    job_id,
+                    run_id,
+                    data: Arc::from(env_dump.as_str()),
+                    timestamp: Utc::now(),
+                });
+            }
 
             // Write command header to log
             let command_str = match &execution {
@@ -577,6 +604,7 @@ mod tests {
             working_dir: None,
             env_vars: None,
             timeout_secs: 0,
+            log_environment: false,
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -928,6 +956,7 @@ mod tests {
             working_dir: None,
             env_vars: None,
             timeout_secs: 0,
+            log_environment: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
@@ -961,6 +990,7 @@ mod tests {
             working_dir: None,
             env_vars: None,
             timeout_secs: 0,
+            log_environment: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,

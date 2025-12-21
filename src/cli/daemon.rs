@@ -19,7 +19,7 @@ fn handle_request_error(err: reqwest::Error, host: &str, port: u16) -> anyhow::E
 /// acs start
 pub async fn cmd_start(
     host: &str,
-    _port: u16,
+    port: u16,
     foreground: bool,
     config: Option<&str>,
     port_override: Option<u16>,
@@ -37,45 +37,100 @@ pub async fn cmd_start(
         return run_daemon_foreground(host, config, port_override, data_dir).await;
     }
 
-    // Background mode: use system service manager
+    // Background mode: spawn daemon as a hidden process, register for auto-start
     let exe_path = std::env::current_exe().context("Failed to determine executable path")?;
 
-    // Check if service is already registered
+    // Register scheduled task for auto-start at logon (if not already)
     if !service::is_service_registered() {
-        println!("Registering system service...");
+        println!("Registering auto-start task...");
         if let Err(e) = service::install_service(&exe_path) {
-            // On failure, provide helpful message and fall back to foreground suggestion
-            eprintln!("Warning: Could not register system service: {}", e);
-            eprintln!("This may require elevated privileges (admin/sudo).");
-            eprintln!("You can run with --foreground to start the daemon in the current terminal.");
-            return Err(e);
+            eprintln!("Warning: Could not register auto-start: {}", e);
+            eprintln!("The daemon will start now but won't persist across reboots.");
+            eprintln!("You may need elevated privileges to register the task.");
+        } else {
+            println!(
+                "Auto-start registered ({} on {}).",
+                service::service_name(),
+                service::platform_name()
+            );
         }
-        println!(
-            "Service registered successfully ({} on {}).",
-            service::service_name(),
-            service::platform_name()
-        );
     }
 
-    // Start the daemon via the service manager
-    println!("Starting daemon via system service...");
-    match service::start_service() {
-        Ok(()) => {
-            println!("Daemon started successfully.");
-            println!(
-                "The daemon is now running as a system service and will persist across reboots."
-            );
-            println!("Use 'acs status' to check daemon status.");
-            println!("Use 'acs stop' to stop the daemon.");
-            Ok(())
+    // Quick check: is the daemon already running?
+    let check_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+        .ok();
+    if let Some(client) = check_client {
+        let port = port_override.unwrap_or(port);
+        if client
+            .get(format!("{}/health", super::base_url(host, port)))
+            .send()
+            .await
+            .is_ok()
+        {
+            println!("Daemon is already running.");
+            return Ok(());
         }
-        Err(e) => {
-            eprintln!("Failed to start service: {}", e);
-            eprintln!("You can try:");
-            eprintln!("  - Running with elevated privileges (admin/sudo)");
-            eprintln!("  - Using 'acs start --foreground' to run in the current terminal");
-            Err(e)
+    }
+
+    // Spawn the daemon as a hidden background process
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        // Redirect stderr to a log file so startup errors aren't lost
+        let data_dir = crate::daemon::resolve_data_dir(data_dir.map(std::path::Path::new));
+        let _ = std::fs::create_dir_all(&data_dir);
+        let log_file = std::fs::File::create(data_dir.join("daemon.log"))
+            .context("Failed to create daemon log file")?;
+
+        let mut cmd = std::process::Command::new(&exe_path);
+        cmd.args(["start", "--foreground"]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.stderr(log_file);
+        cmd.stdout(std::process::Stdio::null());
+        cmd.spawn()
+            .context("Failed to spawn daemon process")?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // On macOS/Linux, use the service manager (launchd/systemd) to start
+        service::start_service().context("Failed to start daemon via service manager")?;
+    }
+
+    // Wait for the daemon to become healthy (up to 3 seconds)
+    let port = port_override.unwrap_or(port);
+    let health_url = format!("{}/health", super::base_url(host, port));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+        .unwrap_or_default();
+
+    let mut started = false;
+    for _ in 0..6 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if client.get(&health_url).send().await.is_ok() {
+            started = true;
+            break;
         }
+    }
+
+    if started {
+        println!("Daemon started in background.");
+        println!("Use 'acs status' to check daemon status.");
+        println!("Use 'acs stop' to stop the daemon.");
+        Ok(())
+    } else {
+        eprintln!("Warning: Daemon was spawned but is not responding on port {}.", port);
+        #[cfg(target_os = "windows")]
+        {
+            let data_dir = crate::daemon::resolve_data_dir(data_dir.map(std::path::Path::new));
+            eprintln!("Check {} for errors.", data_dir.join("daemon.log").display());
+        }
+        Err(anyhow::anyhow!("Daemon failed to start"))
     }
 }
 
@@ -115,23 +170,7 @@ pub async fn cmd_stop(host: &str, port: u16, force: bool) -> anyhow::Result<()> 
         return force_kill_daemon();
     }
 
-    // If running as a service, use SCM to stop (this is the proper way).
-    // SCM will signal the service, which triggers graceful shutdown internally.
-    if service::is_service_registered() {
-        println!("Stopping daemon via service manager...");
-        match service::stop_service() {
-            Ok(()) => {
-                println!("Daemon is shutting down...");
-                return Ok(());
-            }
-            Err(e) => {
-                // SCM stop failed, fall through to try API
-                tracing::debug!("Service manager stop failed: {}, trying API", e);
-            }
-        }
-    }
-
-    // Fall back to API shutdown (for foreground mode or if SCM stop failed)
+    // Try graceful API shutdown first (works for both foreground and task scheduler)
     let client = Client::new();
     let url = format!("{}/api/shutdown", base_url(host, port));
 
@@ -153,6 +192,19 @@ pub async fn cmd_stop(host: &str, port: u16, force: bool) -> anyhow::Result<()> 
             }
         }
         Err(e) if e.is_connect() || e.is_timeout() => {
+            // API unreachable — if registered as a task, try ending it
+            if service::is_service_registered() {
+                println!("API unreachable, ending scheduled task...");
+                match service::stop_service() {
+                    Ok(()) => {
+                        println!("Daemon task ended.");
+                        return Ok(());
+                    }
+                    Err(stop_err) => {
+                        tracing::debug!("Task end also failed: {}", stop_err);
+                    }
+                }
+            }
             Err(handle_request_error(e, host, port))
         }
         Err(e) => Err(anyhow::anyhow!("Request failed: {}", e)),
@@ -283,41 +335,27 @@ pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<
 
 /// acs uninstall
 pub async fn cmd_uninstall(host: &str, port: u16, purge: bool) -> anyhow::Result<()> {
-    // Stop the daemon — prefer SCM if registered, then fall back to API
-    if service::is_service_registered() {
-        println!("Stopping daemon via service manager...");
-        match service::stop_service() {
-            Ok(()) => {
-                println!("Daemon stopped.");
-                // Give it a moment to shut down
-                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-            }
-            Err(e) => {
-                tracing::debug!("Service manager stop failed: {}, trying API", e);
-                // Fall back to API shutdown
-                let client = Client::new();
-                let url = format!("{}/api/shutdown", base_url(host, port));
-                match client.post(&url).send().await {
-                    Ok(response) if response.status().is_success() => {
-                        println!("Daemon stopped via API.");
+    // Stop the daemon — try API first (graceful), fall back to task end
+    let client = Client::new();
+    let url = format!("{}/api/shutdown", base_url(host, port));
+    match client.post(&url).send().await {
+        Ok(response) if response.status().is_success() => {
+            println!("Daemon stopped via API.");
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        }
+        _ => {
+            // API unreachable — try ending the scheduled task
+            if service::is_service_registered() {
+                match service::stop_service() {
+                    Ok(()) => {
+                        println!("Daemon task ended.");
                         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     }
-                    _ => {
+                    Err(_) => {
                         println!("Warning: Could not stop daemon (may already be stopped).");
                     }
                 }
-            }
-        }
-    } else {
-        // No service registered, try API
-        let client = Client::new();
-        let url = format!("{}/api/shutdown", base_url(host, port));
-        match client.post(&url).send().await {
-            Ok(response) if response.status().is_success() => {
-                println!("Daemon stopped via API.");
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-            _ => {
+            } else {
                 println!("Daemon is not running (or not reachable).");
             }
         }
@@ -434,16 +472,19 @@ mod tests {
     #[tokio::test]
     async fn test_cmd_stop_graceful_connection_error() {
         let result = cmd_stop("127.0.0.1", 1, false).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        // When service is registered, it may try service manager stop which gives different error
-        assert!(
-            err.contains("Could not connect")
-                || err.contains("Request failed")
-                || err.contains("IO error"),
-            "Got: {}",
-            err
-        );
+        // When the API is unreachable, cmd_stop falls back to ending the
+        // scheduled task. If a task is registered, this may succeed (Ok).
+        // If no task is registered, it returns a connection error (Err).
+        if let Err(err) = result {
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Could not connect")
+                    || msg.contains("Request failed")
+                    || msg.contains("IO error"),
+                "Got: {}",
+                msg
+            );
+        }
     }
 
     #[test]

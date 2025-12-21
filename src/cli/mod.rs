@@ -67,11 +67,6 @@ pub enum Commands {
         purge: bool,
     },
 
-    /// Run as Windows Service (internal use only, called by SCM)
-    #[cfg(target_os = "windows")]
-    #[clap(hide = true)]
-    Service,
-
     /// Add a new scheduled job
     Add {
         /// Job name (must be unique)
@@ -105,6 +100,10 @@ pub enum Commands {
         /// Create the job in disabled state
         #[arg(long)]
         disabled: bool,
+
+        /// Include full environment variables in run logs
+        #[arg(long)]
+        log_env: bool,
     },
 
     /// Remove a scheduled job
@@ -238,8 +237,6 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
             daemon::cmd_uninstall(&cli.host, cli.port, *purge).await
         }
         #[cfg(target_os = "windows")]
-        Some(Commands::Service) => crate::daemon::windows_service::run()
-            .map_err(|e| anyhow::anyhow!("Windows Service error: {}", e)),
         Some(Commands::Add {
             name,
             schedule,
@@ -249,6 +246,7 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
             working_dir,
             env,
             disabled,
+            log_env,
         }) => {
             jobs::cmd_add(
                 &cli.host,
@@ -261,6 +259,7 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
                 working_dir.as_deref(),
                 env,
                 *disabled,
+                *log_env,
             )
             .await
         }

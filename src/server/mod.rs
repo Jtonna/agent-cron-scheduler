@@ -126,6 +126,7 @@ mod tests {
                 working_dir: new.working_dir,
                 env_vars: new.env_vars,
                 timeout_secs: new.timeout_secs,
+                log_environment: new.log_environment,
                 created_at: now,
                 updated_at: now,
                 last_run_at: None,
@@ -440,6 +441,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -526,6 +528,7 @@ mod tests {
                     working_dir: None,
                     env_vars: None,
                     timeout_secs: 0,
+                    log_environment: false,
                 })
                 .await
                 .unwrap();
@@ -569,6 +572,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -584,6 +588,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -626,6 +631,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -664,6 +670,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -729,6 +736,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -781,6 +789,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -796,6 +805,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -847,6 +857,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -886,6 +897,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -931,6 +943,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -976,6 +989,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -1021,6 +1035,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -1081,6 +1096,7 @@ mod tests {
                 working_dir: None,
                 env_vars: None,
                 timeout_secs: 0,
+                log_environment: false,
             })
             .await
             .unwrap();
@@ -1347,6 +1363,7 @@ mod tests {
                     working_dir: None,
                     env_vars: None,
                     timeout_secs: 0,
+                    log_environment: false,
                 })
                 .await
                 .unwrap();
