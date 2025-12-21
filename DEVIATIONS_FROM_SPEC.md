@@ -19,15 +19,15 @@ This document catalogs differences between `SPEC.md` (the original design specif
 - **Spec**: "On first run, the daemon automatically registers itself as a system service" (Windows Service, launchd, systemd). `acs start` step 2: "If not registered as a system service, auto-register."
 - **Status**: **IMPLEMENTED**. Running `acs start` without `--foreground` will now:
   1. Check if the service is already registered
-  2. Auto-register as a system service if not (Windows Service, launchd plist, or systemd user unit)
-  3. Start the daemon via the system service manager
-- **Note**: Service registration may require elevated privileges on some systems.
+  2. Auto-register if not (Task Scheduler on Windows, launchd plist on macOS, systemd user unit on Linux)
+  3. Start the daemon as a background process
+- **Note**: On Windows, Task Scheduler is used instead of Windows Service because Windows Services run as LOCAL SYSTEM with a minimal environment (missing USERPROFILE, APPDATA, user PATH entries, etc.), causing child processes like `claude` to fail. Task Scheduler runs as the current user, inheriting their full environment.
 
 ### ~~3. Background Daemonization~~ ✅ FIXED
 
 - **Spec**: `acs start` without `--foreground` should start the daemon as a background service.
-- **Status**: **IMPLEMENTED**. The daemon now starts via the system service manager when `--foreground` is not specified:
-  - **Windows**: Uses Windows Service Manager to start `AgentCronScheduler` service
+- **Status**: **IMPLEMENTED**. The daemon now starts in the background when `--foreground` is not specified:
+  - **Windows**: Spawns the daemon as a hidden background process (`CREATE_NO_WINDOW`). Task Scheduler handles auto-start at user logon.
   - **macOS**: Uses `launchctl start com.acs.scheduler`
   - **Linux**: Uses `systemctl --user start acs.service`
 - **Note**: The `--foreground` flag runs the daemon directly in the current process (useful for development and debugging).
@@ -147,6 +147,12 @@ This document catalogs differences between `SPEC.md` (the original design specif
 - **Actual**: The `Job` struct includes `pub timeout_secs: u64`. If non-zero, it overrides the config-level default. If zero, the config default is used.
 - **Rationale**: Useful addition that allows fine-grained timeout control per job.
 
+### 18. Per-Job `log_environment`
+
+- **Not in spec**: The spec does not include an option to log environment variables before job execution.
+- **Actual**: Jobs have a `log_environment: bool` field (default `false`). When enabled, all inherited environment variables (the daemon's environment merged with job-specific `env_vars` overrides) are dumped into the run log before the command executes. Configurable via CLI (`--log-env`), REST API (`log_environment: true`), and web UI checkbox.
+- **Rationale**: Necessary for diagnosing environment differences between service and user contexts (e.g., Windows Task Scheduler vs foreground mode).
+
 ---
 
 ## Summary
@@ -159,11 +165,11 @@ This document catalogs differences between `SPEC.md` (the original design specif
 | Config not implemented | 2 | ACS_LOG_LEVEL, coverage enforcement |
 | Dead dependencies | 1 | fs4 |
 | Missing status codes | 1 | 503 |
-| Additions beyond spec | 2 | dispatch_tx, per-job timeout |
+| Additions beyond spec | 3 | dispatch_tx, per-job timeout, per-job log_environment |
 | **Total remaining deviations** | **13** | |
 
 ### Recently Fixed
-- **Auto Service Registration** (#2): `acs start` now auto-registers and starts via system service manager
-- **Background Daemonization** (#3): Daemon starts as background service when `--foreground` is not specified
+- **Auto Service Registration** (#2): `acs start` now auto-registers and starts via platform service manager (Task Scheduler on Windows, launchd on macOS, systemd on Linux)
+- **Background Daemonization** (#3): Daemon starts as a hidden background process (Windows) or via service manager (macOS/Linux) when `--foreground` is not specified
 - **`acs stop --force`** (#7): Now reads PID file and force-kills the daemon process
 - **`acs uninstall --purge`** (#8): Now removes the data directory when `--purge` is specified
