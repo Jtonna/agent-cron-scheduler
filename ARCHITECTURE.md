@@ -64,8 +64,8 @@ src/
     logs.rs          -- Log viewing CLI commands + SSE follow
     daemon.rs        -- Daemon start/stop/status/uninstall commands
   pty/
-    mod.rs           -- PtySpawner + PtyProcess traits, RealPtySpawner,
-                        NoPtySpawner, MockPtySpawner
+    mod.rs           -- PtySpawner + PtyProcess traits, NoPtySpawner,
+                        MockPtySpawner
 web/
   index.html         -- Single-page dashboard HTML
   app.js             -- Vanilla JS application logic (IIFE)
@@ -619,22 +619,9 @@ pub trait PtyProcess: Send {
 
 ### Implementations
 
-**RealPtySpawner**: Uses `portable_pty` to create a real PTY pair. Spawns the
-child on the slave side, reads from the master side. A background `std::thread`
-waits for the child to exit and then drops the master handle to (attempt to)
-unblock the reader.
-
-**KNOWN ISSUE (documented in code):** On Windows, ConPTY has a well-known bug
-where the master-side reader pipe does not receive EOF after the child process
-exits. Dropping the master handle does not reliably unblock the reader, causing
-job runs to hang in "Running" status forever. This is extensively documented in
-a code comment block.
-
-**NoPtySpawner** (USED IN PRODUCTION): A fallback implementation using plain
-`std::process::Command` with piped stdout/stderr and null stdin. This trades PTY
-features (terminal emulation, ANSI escape handling) for reliability. The
-`start_daemon()` function explicitly uses `NoPtySpawner` with a comment explaining
-the Windows ConPTY EOF issue.
+**NoPtySpawner** (production): Uses plain `std::process::Command` with piped
+stdout/stderr and null stdin for process spawning. Reliably handles EOF on all
+platforms.
 
 **MockPtySpawner** (testing): Configurable mock with:
 - Preset output chunks (returned sequentially from `read()`).
@@ -740,10 +727,8 @@ All service configurations launch with `{exe} start --foreground`. Linux uses
 
 ### PTY Behavior
 
-The ConPTY EOF issue on Windows is the most significant cross-platform difference.
-It resulted in `NoPtySpawner` being used in production across all platforms rather
-than using `RealPtySpawner`. This means that on all platforms, executed commands
-do not get a real terminal -- they get piped stdout/stderr. Programs that check
+`NoPtySpawner` is used for process spawning on all platforms. Executed commands
+get piped stdout/stderr rather than a real terminal. Programs that check
 `isatty()` will detect non-TTY mode.
 
 ### Config and Data Directories

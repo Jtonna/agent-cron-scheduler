@@ -519,11 +519,8 @@ pub async fn start_daemon(
     });
 
     // Create Executor
-    // NOTE: We use NoPtySpawner (plain std::process::Command with piped I/O) instead of
-    // RealPtySpawner because Windows ConPTY has a known issue where the master-side reader
-    // never receives EOF after the child process exits, causing job runs to hang in "Running"
-    // status forever. NoPtySpawner reliably handles EOF on all platforms. This trades PTY
-    // features (ANSI escape handling, terminal emulation) for reliability.
+    // NoPtySpawner uses plain std::process::Command with piped I/O for process spawning.
+    // This reliably handles EOF on all platforms.
     let pty_spawner: Arc<dyn crate::pty::PtySpawner> = Arc::new(crate::pty::NoPtySpawner);
     let executor = Executor::new(
         event_tx.clone(),

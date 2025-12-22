@@ -6,13 +6,10 @@ This document catalogs differences between `SPEC.md` (the original design specif
 
 ## Features Not Implemented
 
-### 1. PTY Emulation
+### ~~1. PTY Emulation~~ ✅ FIXED
 
 - **Spec**: "All process spawning uses PTY emulation for compatibility with programs that require a terminal environment." A `--no-pty` flag is described as an opt-in fallback.
-- **Actual**: `NoPtySpawner` (piped stdout/stderr via `std::process::Command`) is hardcoded as the production spawner in `start_daemon()`. `RealPtySpawner` exists but is dead code. No `--no-pty` CLI flag exists because piped I/O is the only mode.
-- **Reason**: Windows ConPTY has a known bug where the master-side reader does not receive EOF after the child process exits, causing all job runs to hang in "Running" status indefinitely. Extensively documented in `src/pty/mod.rs`.
-- **Impact**: Programs that check `isatty()` will detect non-TTY mode. ANSI escape sequences from child processes are passed through raw rather than being interpreted by a terminal emulator.
-- **Severity**: Medium. Affects terminal-dependent programs but not typical shell commands and scripts.
+- **Status**: **RESOLVED (intentional deviation)**. PTY emulation was intentionally removed. The production spawner uses piped I/O (`NoPtySpawner`) via `std::process::Command`, which reliably handles EOF on all platforms. `RealPtySpawner` dead code has been removed. Programs that check `isatty()` will see non-TTY mode, but this does not affect typical cron job workloads.
 
 ### ~~2. Auto Service Registration~~ ✅ FIXED
 
@@ -159,16 +156,17 @@ This document catalogs differences between `SPEC.md` (the original design specif
 
 | Category | Count | Items |
 |---|---|---|
-| Not implemented | 6 | PTY, child shutdown, log truncation, delete-kills-run, ~~stop --force~~, ~~uninstall --purge~~ |
-| ~~Fixed~~ | 4 | ~~auto-service~~, ~~daemonize~~, stop --force, uninstall --purge |
+| Not implemented | 5 | child shutdown, log truncation, delete-kills-run, ~~stop --force~~, ~~uninstall --purge~~ |
+| ~~Fixed~~ | 5 | ~~PTY~~, ~~auto-service~~, ~~daemonize~~, stop --force, uninstall --purge |
 | Different behavior | 3 | Corrupted recovery, invalid cron handling, script paths |
 | Config not implemented | 2 | ACS_LOG_LEVEL, coverage enforcement |
 | Dead dependencies | 1 | fs4 |
 | Missing status codes | 1 | 503 |
 | Additions beyond spec | 3 | dispatch_tx, per-job timeout, per-job log_environment |
-| **Total remaining deviations** | **13** | |
+| **Total remaining deviations** | **12** | |
 
 ### Recently Fixed
+- **PTY Emulation** (#1): Intentionally resolved -- production spawner uses piped I/O (`NoPtySpawner`), `RealPtySpawner` dead code removed
 - **Auto Service Registration** (#2): `acs start` now auto-registers and starts via platform service manager (Task Scheduler on Windows, launchd on macOS, systemd on Linux)
 - **Background Daemonization** (#3): Daemon starts as a hidden background process (Windows) or via service manager (macOS/Linux) when `--foreground` is not specified
 - **`acs stop --force`** (#7): Now reads PID file and force-kills the daemon process

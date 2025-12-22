@@ -256,9 +256,7 @@ See `config.example.json` for a template.
 
 ### Process spawning
 
-The daemon uses `NoPtySpawner` by default, which spawns child processes via `std::process::Command` with piped stdout/stderr. This is used instead of the `RealPtySpawner` (ConPTY on Windows, forkpty on Unix) because Windows ConPTY has a known issue where the master-side reader does not receive EOF after the child process exits, causing job runs to hang in "Running" status. The piped I/O approach reliably handles EOF on all platforms.
-
-If full PTY emulation is needed (for programs that require a terminal environment), the `RealPtySpawner` implementation exists in `src/pty/mod.rs` but is not used by the daemon by default.
+The daemon uses piped I/O (`NoPtySpawner`) for process spawning, which runs child processes via `std::process::Command` with piped stdout/stderr. This reliably handles EOF on all platforms.
 
 ### Verbose logging
 
@@ -318,7 +316,7 @@ src/
     logs.rs            # logs --follow, --run, --last, --tail
     daemon.rs          # start, stop, status, uninstall
   pty/
-    mod.rs             # PTY abstraction (RealPtySpawner, NoPtySpawner, MockPtySpawner)
+    mod.rs             # PTY abstraction (NoPtySpawner, MockPtySpawner)
 web/
   index.html           # Dashboard UI
   style.css            # Styles (dark/light theme)

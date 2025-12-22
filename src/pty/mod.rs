@@ -1,5 +1,5 @@
-// PTY module - Phase 2 implementation
-// Cross-platform PTY abstraction with real and mock implementations.
+// PTY module - Process spawning abstraction.
+// Provides NoPtySpawner (piped I/O) for production and MockPtySpawner for testing.
 
 use std::io;
 use std::process::ExitStatus;
@@ -21,106 +21,11 @@ pub trait PtyProcess: Send {
     fn wait(&mut self) -> io::Result<ExitStatus>;
 }
 
-// --- Real PTY implementation using portable-pty ---
-//
-// KNOWN ISSUE (Windows ConPTY):
-// On Windows, the ConPTY subsystem has a well-known problem where the master-side
-// reader pipe does not receive EOF after the child process exits. The background
-// thread below attempts to work around this by:
-//   1. Waiting for the child to exit via child.wait()
-//   2. Dropping the master handle to try to signal EOF to the reader
-//
-// However, drop(master) does NOT reliably unblock the reader on Windows ConPTY.
-// The internal ConPTY pipe handle can remain open even after the master is closed,
-// leaving the reader blocked in a read() call indefinitely. This causes job runs
-// to get stuck in "Running" status forever with 0 bytes of output.
-//
-// WORKAROUND: Use NoPtySpawner (see below) for production use. It uses plain
-// std::process::Command with piped stdout/stderr, which properly handles EOF
-// on all platforms including Windows. The daemon's start_daemon() function
-// uses NoPtySpawner by default for this reason.
-//
-// If ConPTY support is needed in the future, possible approaches include:
-//   - Using a timeout on the reader with CancelIoEx on the pipe handle
-//   - Polling the child exit status from the reader side
-//   - Using a different PTY library that handles ConPTY cleanup correctly
+// This module provides NoPtySpawner as the production process spawner.
+// It uses piped I/O via std::process::Command, which reliably handles EOF
+// on all platforms. PTY emulation is intentionally not used.
 
-pub struct RealPtySpawner;
-
-impl PtySpawner for RealPtySpawner {
-    fn spawn(
-        &self,
-        cmd: portable_pty::CommandBuilder,
-        rows: u16,
-        cols: u16,
-    ) -> anyhow::Result<Box<dyn PtyProcess>> {
-        use portable_pty::{native_pty_system, PtySize};
-
-        let pty_system = native_pty_system();
-        let pair = pty_system.openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
-
-        let mut child = pair.slave.spawn_command(cmd)?;
-
-        // Drop slave to avoid holding the other end of the PTY
-        drop(pair.slave);
-
-        let reader = pair.master.try_clone_reader()?;
-        let master = pair.master;
-
-        // Channel to receive exit status from background thread
-        let (exit_tx, exit_rx) = std::sync::mpsc::sync_channel(1);
-
-        // Background thread: wait for child to exit, then drop master to unblock reader
-        std::thread::spawn(move || {
-            let status = child.wait();
-            let result = match status {
-                Ok(pty_status) => {
-                    let code = if pty_status.success() { 0 } else { 1 };
-                    Ok(exit_status_from_code(code))
-                }
-                Err(e) => Err(io::Error::other(format!("Child wait failed: {}", e))),
-            };
-            let _ = exit_tx.send(result);
-            // Drop master AFTER sending exit status.
-            // On Windows ConPTY, this unblocks the reader so the read loop can exit.
-            drop(master);
-        });
-
-        Ok(Box::new(RealPtyProcess { reader, exit_rx }))
-    }
-}
-
-struct RealPtyProcess {
-    reader: Box<dyn std::io::Read + Send>,
-    exit_rx: std::sync::mpsc::Receiver<io::Result<ExitStatus>>,
-}
-
-impl PtyProcess for RealPtyProcess {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.reader.read(buf)
-    }
-
-    fn kill(&mut self) -> io::Result<()> {
-        // The child process is managed by the background thread.
-        // When the executor abandons this PtyProcess (drops it),
-        // the reader is dropped, and the background thread will
-        // eventually clean up when the child exits.
-        Ok(())
-    }
-
-    fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.exit_rx
-            .recv()
-            .map_err(|_| io::Error::other("Child wait channel closed unexpectedly"))?
-    }
-}
-
-// --- NoPty fallback implementation using std::process::Command ---
+// --- NoPty implementation using std::process::Command ---
 
 /// A PTY spawner that uses plain std::process::Command with piped I/O
 /// instead of a real PTY. Useful for testing and environments where
