@@ -4,73 +4,154 @@ A cross-platform cron scheduler daemon with a CLI and web dashboard. Manages sch
 
 Supports Windows, macOS, and Linux.
 
-## Prerequisites
-
-- [Rust](https://rustup.rs/) stable toolchain (1.88+)
-
-## Building
+## Installation
 
 ```sh
-# Debug build
-cargo build
-
-# Release build (optimized)
-cargo build --release
+# Build from source
+cargo install --path .
 ```
 
-The binary is named `acs` and will be at `target/debug/acs` (or `target/release/acs`).
+The binary `acs` will be installed to your Cargo bin directory (typically `~/.cargo/bin/`).
 
-## Running Tests
+## Quick Start
 
 ```sh
-# Run the full test suite
-cargo test
+# Start the daemon (registers as a system service and runs in background)
+acs start
 
-# Run tests with output visible
-cargo test -- --nocapture
+# Open the web dashboard
+# http://127.0.0.1:8377/
 
-# Run a specific test module
-cargo test storage::
-cargo test daemon::scheduler::
-cargo test cli::
-cargo test server::
+# Add a job that runs every minute
+acs add -n "hello" -s "* * * * *" -c "echo hello world"
 
-# Run integration tests only
-cargo test --test api_tests
-cargo test --test cli_tests
-cargo test --test scheduler_tests
+# Trigger it immediately and follow the output
+acs trigger hello --follow
 
-# Check for lint warnings
-cargo clippy -- -D warnings
-
-# Check formatting
-cargo fmt -- --check
+# Check daemon status
+acs status
 ```
 
-## Running Locally
+## CLI Reference
 
-### 1. Start the daemon
+### Daemon Management
 
 ```sh
-# Foreground mode (recommended for development -- logs print to the terminal)
-cargo run -- start --foreground
+# Start the daemon (background, auto-registers as system service)
+acs start
 
-# With verbose (debug-level) logging
-cargo run -- start --foreground -v
+# Start in foreground (logs to terminal)
+acs start --foreground
 
-# Custom port
-cargo run -- start --foreground --port 9000
+# Start with verbose logging
+acs start --foreground -v
 
-# Custom config file
-cargo run -- start --foreground --config /path/to/config.json
+# Start on a custom port
+acs start --port 9000
 
-# Custom data directory
-cargo run -- start --foreground --data-dir /path/to/data
+# Start with a custom config file
+acs start --config /path/to/config.json
+
+# Start with a custom data directory
+acs start --data-dir /path/to/data
+
+# Check daemon status
+acs status
+
+# Stop the daemon gracefully
+acs stop
+
+# Force-kill the daemon
+acs stop --force
+
+# Remove system service registration
+acs uninstall
+
+# Remove service and delete all data
+acs uninstall --purge
 ```
 
-The daemon starts an HTTP server on `127.0.0.1:8377` by default.
+### Managing Jobs
 
-### 2. Open the web dashboard
+```sh
+# Add a job with a cron schedule
+acs add -n "hello" -s "* * * * *" -c "echo hello world"
+
+# Add a job that runs every 5 minutes
+acs add -n "date-check" -s "*/5 * * * *" -c "date"
+
+# Add a job with a timezone
+acs add -n "ny-morning" -s "0 9 * * *" -c "echo good morning" --timezone "America/New_York"
+
+# Add a job with environment variables
+acs add -n "env-test" -s "*/10 * * * *" -c "echo $MY_VAR" -e MY_VAR=hello -e OTHER=world
+
+# Add a job that runs a script file
+acs add -n "deploy" -s "0 2 * * *" --script deploy.sh
+
+# Add a job that logs the full environment before each run
+acs add -n "debug-job" -s "*/5 * * * *" -c "echo hello" --log-env
+
+# Add a job in disabled state
+acs add -n "paused-job" -s "0 * * * *" -c "echo paused" --disabled
+
+# List all jobs
+acs list
+
+# List as JSON
+acs list --json
+
+# List only enabled/disabled jobs
+acs list --enabled
+acs list --disabled
+
+# Enable/disable a job
+acs enable hello
+acs disable hello
+
+# Remove a job
+acs remove hello
+
+# Remove without confirmation prompt
+acs remove hello --yes
+```
+
+### Triggering and Logs
+
+```sh
+# Manually trigger a job
+acs trigger hello
+
+# Trigger and follow output live
+acs trigger hello --follow
+
+# View recent runs for a job
+acs logs hello
+
+# View last 5 runs
+acs logs hello --last 5
+
+# View a specific run's log
+acs logs hello --run <RUN_UUID>
+
+# Follow live output for a job
+acs logs hello --follow
+
+# Show last N lines of a run's log
+acs logs hello --tail 50
+```
+
+### Global Options
+
+```sh
+# Connect to a daemon on a different host/port
+acs --host 192.168.1.10 --port 9000 list
+
+# Verbose output
+acs -v status
+```
+
+## Web Dashboard
 
 Once the daemon is running, open your browser to:
 
@@ -80,94 +161,9 @@ http://127.0.0.1:8377/
 
 The web UI lets you add/edit/delete jobs, toggle enable/disable, trigger manual runs, and view live log output.
 
-### 3. Use the CLI
+## REST API
 
-Open a second terminal to interact with the running daemon:
-
-```sh
-# Check daemon status
-cargo run -- status
-
-# Add a job that runs every minute
-cargo run -- add -n "hello" -s "* * * * *" -c "echo hello world"
-
-# Add a job that runs every 5 minutes
-cargo run -- add -n "date-check" -s "*/5 * * * *" -c "date"
-
-# Add a job with a timezone
-cargo run -- add -n "ny-morning" -s "0 9 * * *" -c "echo good morning" --timezone "America/New_York"
-
-# Add a job with environment variables
-cargo run -- add -n "env-test" -s "*/10 * * * *" -c "echo $MY_VAR" -e MY_VAR=hello -e OTHER=world
-
-# Add a job that runs a script file
-cargo run -- add -n "deploy" -s "0 2 * * *" --script deploy.sh
-
-# Add a job that logs the full environment before each run (useful for debugging)
-cargo run -- add -n "debug-job" -s "*/5 * * * *" -c "echo hello" --log-env
-
-# Add a job in disabled state
-cargo run -- add -n "paused-job" -s "0 * * * *" -c "echo paused" --disabled
-
-# List all jobs
-cargo run -- list
-
-# List as JSON
-cargo run -- list --json
-
-# List only enabled jobs
-cargo run -- list --enabled
-
-# List only disabled jobs
-cargo run -- list --disabled
-
-# Manually trigger a job (don't wait for the cron schedule)
-cargo run -- trigger hello
-
-# Trigger and follow output live
-cargo run -- trigger hello --follow
-
-# View recent runs for a job
-cargo run -- logs hello
-
-# View last 5 runs
-cargo run -- logs hello --last 5
-
-# View a specific run's log (use the run ID from the list)
-cargo run -- logs hello --run <RUN_UUID>
-
-# Follow live output for a job
-cargo run -- logs hello --follow
-
-# Show last N lines of a run's log
-cargo run -- logs hello --tail 50
-
-# Enable/disable a job
-cargo run -- disable hello
-cargo run -- enable hello
-
-# Remove a job
-cargo run -- remove hello
-
-# Remove without confirmation prompt
-cargo run -- remove hello --yes
-
-# Stop the daemon
-cargo run -- stop
-
-# Force-kill the daemon
-cargo run -- stop --force
-
-# Remove system service registration
-cargo run -- uninstall
-
-# Remove service and all data
-cargo run -- uninstall --purge
-```
-
-### 4. REST API
-
-The daemon exposes a REST API you can hit directly:
+The daemon exposes a REST API:
 
 ```sh
 # Health check
@@ -184,7 +180,7 @@ curl -X POST http://127.0.0.1:8377/api/jobs \
   -H "Content-Type: application/json" \
   -d '{"name":"curl-test","schedule":"* * * * *","execution":{"type":"ShellCommand","value":"echo from curl"}}'
 
-# Create a job with environment logging enabled (dumps all env vars before each run)
+# Create a job with environment logging enabled
 curl -X POST http://127.0.0.1:8377/api/jobs \
   -H "Content-Type: application/json" \
   -d '{"name":"debug-test","schedule":"* * * * *","execution":{"type":"ShellCommand","value":"echo hello"},"log_environment":true}'
@@ -242,25 +238,7 @@ Configuration is resolved in this order (highest priority first):
 | `ACS_TIMEOUT` | Default job timeout (0 = none) | `0` |
 | `ACS_BROADCAST_CAPACITY` | SSE broadcast channel size | `4096` |
 
-Additional config fields (set via config file only):
-
-| Field | Description | Default |
-|---|---|---|
-| `max_log_file_size` | Max size per log file (bytes) | `10485760` (10 MB) |
-| `pty_rows` | PTY terminal rows | `24` |
-| `pty_cols` | PTY terminal columns | `80` |
-
 See `config.example.json` for a template.
-
-## Platform Notes
-
-### Process spawning
-
-The daemon uses piped I/O (`NoPtySpawner`) for process spawning, which runs child processes via `std::process::Command` with piped stdout/stderr. This reliably handles EOF on all platforms.
-
-### Verbose logging
-
-The `-v` flag enables debug-level tracing output. When running in foreground mode with `-v`, the daemon logs all scheduler ticks, job dispatches, executor events, and HTTP requests to the terminal.
 
 ## Cron Schedule Format
 
@@ -282,50 +260,6 @@ Examples:
 - `0 * * * *` -- every hour
 - `0 9 * * 1-5` -- 9 AM weekdays
 - `0 0 1 * *` -- midnight on the 1st of each month
-
-## Project Structure
-
-```
-src/
-  main.rs              # Entry point, CLI dispatch
-  lib.rs               # Module declarations
-  errors.rs            # Error types
-  models/
-    mod.rs             # Re-exports
-    job.rs             # Job, NewJob, JobUpdate, ExecutionType
-    run.rs             # JobRun, RunStatus
-    config.rs          # DaemonConfig
-  storage/
-    mod.rs             # Storage traits (JobStore, LogStore)
-    jobs.rs            # JSON file persistence for jobs
-    logs.rs            # Per-run log file management
-  daemon/
-    mod.rs             # Daemon bootstrap, PID file, config loading, shutdown
-    scheduler.rs       # Cron tick engine
-    executor.rs        # Process spawning, output capture
-    events.rs          # JobEvent enum, broadcast channel
-    service.rs         # Platform service install/uninstall
-  server/
-    mod.rs             # Axum router, AppState
-    routes.rs          # REST endpoint handlers
-    sse.rs             # SSE streaming handler
-    health.rs          # Health check endpoint
-  cli/
-    mod.rs             # CLI definition (clap), command dispatch
-    jobs.rs            # add, remove, list, enable, disable, trigger
-    logs.rs            # logs --follow, --run, --last, --tail
-    daemon.rs          # start, stop, status, uninstall
-  pty/
-    mod.rs             # PTY abstraction (NoPtySpawner, MockPtySpawner)
-web/
-  index.html           # Dashboard UI
-  style.css            # Styles (dark/light theme)
-  app.js               # Frontend logic (SSE, API calls)
-tests/
-  api_tests.rs         # HTTP API integration tests
-  cli_tests.rs         # CLI integration tests
-  scheduler_tests.rs   # End-to-end scheduler tests
-```
 
 ## License
 
