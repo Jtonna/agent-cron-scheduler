@@ -109,14 +109,11 @@ This document catalogs differences between `SPEC.md` (the original design specif
 
 ---
 
-## Dead Dependencies
+## ~~Dead Dependencies~~
 
-### 14. `fs4` Crate
+### ~~14. `fs4` Crate~~ ✅ FIXED
 
-- **Spec**: "Atomic file writes use `fs4` for locking + write-to-temp + rename pattern."
-- **Actual**: `fs4` (version 0.13, tokio feature) is listed in `Cargo.toml` but is not imported or used anywhere in the source code. The JSON job store uses atomic tmp+rename without file locking.
-- **Impact**: Unnecessary compile-time dependency. No functional impact.
-- **Severity**: Trivial.
+- **Status**: **RESOLVED**. The dead `fs4` dependency has been removed from `Cargo.toml`. The JSON job store uses atomic tmp+rename without file locking, so `fs4` was never needed.
 
 ---
 
@@ -157,13 +154,13 @@ This document catalogs differences between `SPEC.md` (the original design specif
 | Category | Count | Items |
 |---|---|---|
 | Not implemented | 5 | child shutdown, log truncation, delete-kills-run, ~~stop --force~~, ~~uninstall --purge~~ |
-| ~~Fixed~~ | 5 | ~~PTY~~, ~~auto-service~~, ~~daemonize~~, stop --force, uninstall --purge |
+| ~~Fixed~~ | 6 | ~~PTY~~, ~~auto-service~~, ~~daemonize~~, stop --force, uninstall --purge, fs4 |
 | Different behavior | 3 | Corrupted recovery, invalid cron handling, script paths |
 | Config not implemented | 2 | ACS_LOG_LEVEL, coverage enforcement |
-| Dead dependencies | 1 | fs4 |
+| Dead dependencies | 0 | |
 | Missing status codes | 1 | 503 |
 | Additions beyond spec | 3 | dispatch_tx, per-job timeout, per-job log_environment |
-| **Total remaining deviations** | **12** | |
+| **Total remaining deviations** | **11** | |
 
 ### Recently Fixed
 - **PTY Emulation** (#1): Intentionally resolved -- production spawner uses piped I/O (`NoPtySpawner`), `RealPtySpawner` dead code removed
@@ -171,3 +168,4 @@ This document catalogs differences between `SPEC.md` (the original design specif
 - **Background Daemonization** (#3): Daemon starts as a hidden background process (Windows) or via service manager (macOS/Linux) when `--foreground` is not specified
 - **`acs stop --force`** (#7): Now reads PID file and force-kills the daemon process
 - **`acs uninstall --purge`** (#8): Now removes the data directory when `--purge` is specified
+- **`fs4` Crate** (#14): Dead dependency removed from `Cargo.toml`

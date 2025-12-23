@@ -31,7 +31,6 @@ thiserror = "2"
 async-trait = "0.1"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-util = "0.3"
-fs4 = { version = "0.13", features = ["tokio"] }
 dirs = "6"
 
 [target.'cfg(unix)'.dependencies]
