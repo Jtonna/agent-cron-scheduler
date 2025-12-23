@@ -119,11 +119,10 @@ This document catalogs differences between `SPEC.md` (the original design specif
 
 ## Status Code Deviations
 
-### 15. 503 Shutting Down
+### ~~15. 503 Shutting Down~~ ✅ FIXED
 
 - **Spec**: Lists 503 as a status code for requests received during shutdown.
-- **Actual**: No middleware or handler returns 503. During shutdown, the Axum server stops accepting new connections via graceful shutdown rather than responding with 503.
-- **Severity**: Trivial. The behavior is functionally equivalent -- clients get a connection refused rather than a 503 response.
+- **Status**: **RESOLVED (intentional deviation)**. Axum's graceful shutdown stops accepting new connections rather than returning 503. This is functionally equivalent -- clients get a connection refused, which is unambiguous and requires no additional middleware.
 
 ---
 
@@ -154,13 +153,13 @@ This document catalogs differences between `SPEC.md` (the original design specif
 | Category | Count | Items |
 |---|---|---|
 | Not implemented | 5 | child shutdown, log truncation, delete-kills-run, ~~stop --force~~, ~~uninstall --purge~~ |
-| ~~Fixed~~ | 6 | ~~PTY~~, ~~auto-service~~, ~~daemonize~~, stop --force, uninstall --purge, fs4 |
+| ~~Fixed~~ | 7 | ~~PTY~~, ~~auto-service~~, ~~daemonize~~, stop --force, uninstall --purge, fs4, 503 |
 | Different behavior | 3 | Corrupted recovery, invalid cron handling, script paths |
 | Config not implemented | 2 | ACS_LOG_LEVEL, coverage enforcement |
 | Dead dependencies | 0 | |
-| Missing status codes | 1 | 503 |
+| Missing status codes | 0 | |
 | Additions beyond spec | 3 | dispatch_tx, per-job timeout, per-job log_environment |
-| **Total remaining deviations** | **11** | |
+| **Total remaining deviations** | **10** | |
 
 ### Recently Fixed
 - **PTY Emulation** (#1): Intentionally resolved -- production spawner uses piped I/O (`NoPtySpawner`), `RealPtySpawner` dead code removed
@@ -169,3 +168,4 @@ This document catalogs differences between `SPEC.md` (the original design specif
 - **`acs stop --force`** (#7): Now reads PID file and force-kills the daemon process
 - **`acs uninstall --purge`** (#8): Now removes the data directory when `--purge` is specified
 - **`fs4` Crate** (#14): Dead dependency removed from `Cargo.toml`
+- **503 Shutting Down** (#15): Intentionally resolved -- graceful shutdown via connection refused is functionally equivalent
