@@ -76,9 +76,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_serve_css_file() {
+    async fn test_serve_404_html() {
         let req = Request::builder()
-            .uri("/style.css")
+            .uri("/404.html")
             .body(Body::empty())
             .unwrap();
 
@@ -91,28 +91,7 @@ mod tests {
             .unwrap()
             .to_str()
             .unwrap();
-        assert!(content_type.contains("text/css"));
-    }
-
-    #[tokio::test]
-    async fn test_serve_js_file() {
-        let req = Request::builder()
-            .uri("/app.js")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = serve_embedded(req).await;
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let content_type = response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert!(
-            content_type.contains("javascript") || content_type.contains("application/javascript")
-        );
+        assert!(content_type.contains("text/html"));
     }
 
     #[tokio::test]

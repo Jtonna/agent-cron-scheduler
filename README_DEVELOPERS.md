@@ -5,6 +5,7 @@ This document covers building, testing, and contributing to Agent Cron Scheduler
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) stable toolchain (1.88+)
+- [Node.js](https://nodejs.org/) 20+ (for the frontend build)
 
 ## Building
 
@@ -17,6 +18,10 @@ cargo build --release
 ```
 
 The binary is named `acs` and will be at `target/debug/acs` (or `target/release/acs`).
+
+`cargo build` automatically builds the Next.js frontend (in `frontend/`) and copies
+the static output to `web/`, where it is embedded into the binary via `rust-embed`.
+Node.js and npm must be installed for this step.
 
 ## Running in Development
 
@@ -144,10 +149,11 @@ src/
     daemon.rs          # start, stop, status, uninstall
   pty/
     mod.rs             # PTY abstraction (NoPtySpawner, MockPtySpawner)
-web/
-  index.html           # Dashboard UI
-  style.css            # Styles (dark/light theme)
-  app.js               # Frontend logic (SSE, API calls)
+frontend/              # Next.js frontend (source)
+  src/app/             # App Router pages and layouts
+  next.config.ts       # Static export configuration
+  package.json         # Frontend dependencies
+web/                   # Build artifact (generated from frontend/)
 tests/
   api_tests.rs         # HTTP API integration tests
   cli_tests.rs         # CLI integration tests
