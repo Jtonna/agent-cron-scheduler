@@ -1,26 +1,62 @@
-@import "tailwindcss";
+/* Custom overrides for Once UI */
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* Log viewer monospace font */
+.font-log {
+  font-family: var(--font-code), monospace;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* Log viewer pre block */
+.log-pre {
+  font-family: var(--font-code), monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--neutral-background-strong);
+  color: var(--neutral-on-background-strong);
+  padding: var(--static-space-16);
+  border-radius: var(--radius-m);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Table styles */
+.data-table {
+  width: 100%;
+  font-size: var(--font-size-body-s);
+  border-collapse: collapse;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+.data-table th {
+  text-align: left;
+  padding: var(--static-space-12) var(--static-space-16);
+  font-weight: 500;
+  color: var(--neutral-on-background-weak);
+  font-size: var(--font-size-label-s);
+  border-bottom: 1px solid var(--neutral-border-medium);
 }
+
+.data-table td {
+  padding: var(--static-space-12) var(--static-space-16);
+  border-bottom: 1px solid var(--neutral-alpha-weak);
+  color: var(--neutral-on-background-medium);
+}
+
+.data-table tbody tr {
+  transition: background var(--transition-duration) var(--transition-timing);
+}
+
+.data-table tbody tr:hover {
+  background: var(--neutral-alpha-weak);
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table tbody tr.selected {
+  background: var(--brand-alpha-weak);
+}
+
+
