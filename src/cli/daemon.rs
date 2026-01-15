@@ -25,13 +25,6 @@ pub async fn cmd_start(
     port_override: Option<u16>,
     data_dir: Option<&str>,
 ) -> anyhow::Result<()> {
-    // Ensure tracing is initialized for daemon mode
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .try_init();
-
     // If --foreground is specified, run the daemon directly in this process
     if foreground {
         return run_daemon_foreground(host, config, port_override, data_dir).await;
@@ -394,6 +387,61 @@ pub async fn cmd_uninstall(host: &str, port: u16, purge: bool) -> anyhow::Result
     println!("Uninstall complete.");
 
     Ok(())
+}
+
+/// acs restart
+pub async fn cmd_restart(host: &str, port: u16) -> anyhow::Result<()> {
+    let client = Client::new();
+    let url = format!("{}/api/restart", base_url(host, port));
+
+    println!("Requesting daemon restart...");
+
+    match client.post(&url).send().await {
+        Ok(response) => {
+            let status = response.status();
+            let body: Value = response
+                .json()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to parse response: {}", e))?;
+
+            if !status.is_success() {
+                let message = body["message"].as_str().unwrap_or("Unknown error");
+                eprintln!("Error: {}", message);
+                std::process::exit(1);
+            }
+
+            println!("Restart initiated. Waiting for daemon to come back up...");
+        }
+        Err(e) => {
+            return Err(handle_request_error(e, host, port));
+        }
+    }
+
+    // Poll /health until the new process is responding (up to 10 seconds)
+    let health_url = format!("{}/health", base_url(host, port));
+    let poll_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+        .unwrap_or_default();
+
+    let mut came_back = false;
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if poll_client.get(&health_url).send().await.is_ok() {
+            came_back = true;
+            break;
+        }
+    }
+
+    if came_back {
+        println!("Daemon restarted successfully.");
+        Ok(())
+    } else {
+        eprintln!("Warning: Daemon did not respond within 10 seconds after restart.");
+        Err(anyhow::anyhow!(
+            "Daemon failed to come back up after restart"
+        ))
+    }
 }
 
 /// Format uptime seconds into a human-readable string.

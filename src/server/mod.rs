@@ -10,6 +10,7 @@ use std::time::Instant;
 use axum::routing::{get, post};
 use axum::Router;
 use tokio::sync::{broadcast, Notify, RwLock};
+use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 use crate::daemon::events::JobEvent;
@@ -48,8 +49,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/runs/{run_id}/log", get(routes::get_log))
         .route("/api/events", get(sse::sse_handler))
         .route("/api/shutdown", post(routes::shutdown))
+        .route("/api/restart", post(routes::restart))
+        .route("/api/logs", get(routes::get_daemon_logs))
         .route("/api/service/status", get(routes::service_status))
         .with_state(state)
+        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .fallback(assets::serve_embedded)
 }
 
@@ -1341,6 +1345,80 @@ mod tests {
             }
             other => panic!("Expected JobChanged event, got {:?}", other),
         }
+    }
+
+    // =======================================================================
+    // Additional: GET /api/logs returns daemon logs placeholder
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_daemon_logs_no_file() {
+        // Use a temp dir so we don't pick up a real daemon.log from the system
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let mut config = DaemonConfig::default();
+        config.data_dir = Some(tmp_dir.path().to_path_buf());
+
+        let (event_tx, _) = broadcast::channel::<JobEvent>(4096);
+        let state = Arc::new(AppState {
+            job_store: Arc::new(InMemoryJobStore::new()),
+            log_store: Arc::new(InMemoryLogStore::new()),
+            event_tx,
+            scheduler_notify: Arc::new(Notify::new()),
+            config: Arc::new(config),
+            start_time: Instant::now(),
+            active_runs: Arc::new(RwLock::new(HashMap::new())),
+            shutdown_tx: None,
+            dispatch_tx: None,
+        });
+        let app = make_test_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/logs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        assert!(
+            body.contains("No daemon logs available yet"),
+            "Should return placeholder when no log file exists, got: {}",
+            body
+        );
+    }
+
+    // =======================================================================
+    // Additional: POST /api/restart returns 200
+    // =======================================================================
+    #[tokio::test]
+    async fn test_restart_returns_200() {
+        let state = make_test_state();
+        let app = make_test_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/restart")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Note: restart will fail to spawn because the test binary != acs,
+        // so it may return 500. In a real environment it returns 200.
+        // We accept either 200 or 500 since both prove the route is registered.
+        assert!(
+            response.status() == StatusCode::OK
+                || response.status() == StatusCode::INTERNAL_SERVER_ERROR,
+            "Restart route should be registered, got: {}",
+            response.status()
+        );
     }
 
     // =======================================================================

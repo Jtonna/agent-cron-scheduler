@@ -153,6 +153,9 @@ pub enum Commands {
         follow: bool,
     },
 
+    /// Restart the daemon
+    Restart,
+
     /// View job run logs
     Logs {
         /// Job name or UUID
@@ -232,6 +235,7 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
             .await
         }
         Some(Commands::Stop { force }) => daemon::cmd_stop(&cli.host, cli.port, *force).await,
+        Some(Commands::Restart) => daemon::cmd_restart(&cli.host, cli.port).await,
         Some(Commands::Status) => daemon::cmd_status(&cli.host, cli.port, cli.verbose).await,
         Some(Commands::Uninstall { purge }) => {
             daemon::cmd_uninstall(&cli.host, cli.port, *purge).await
@@ -899,6 +903,15 @@ mod tests {
             }
             other => panic!("Expected Logs command, got: {:?}", other),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional: restart command parses
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_cli_restart_parses() {
+        let cli = Cli::try_parse_from(["acs", "restart"]).expect("Should parse restart");
+        assert!(matches!(cli.command, Some(Commands::Restart)));
     }
 
     // -----------------------------------------------------------------------

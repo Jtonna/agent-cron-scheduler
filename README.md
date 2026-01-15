@@ -1,6 +1,6 @@
 # Agent Cron Scheduler (acs)
 
-A cross-platform cron scheduler daemon with a CLI and web dashboard. Manages scheduled jobs using standard 5-field cron expressions, captures output via piped I/O, and streams it in real time via SSE.
+A cross-platform cron scheduler daemon with a CLI and REST API. Manages scheduled jobs using standard 5-field cron expressions, captures output via piped I/O, and streams it in real time via SSE.
 
 Supports Windows, macOS, and Linux.
 
@@ -19,7 +19,7 @@ The binary `acs` will be installed to your Cargo bin directory (typically `~/.ca
 # Start the daemon (registers as a system service and runs in background)
 acs start
 
-# Open the web dashboard
+# View the API & CLI reference page
 # http://127.0.0.1:8377/
 
 # Add a job that runs every minute
@@ -57,6 +57,9 @@ acs start --data-dir /path/to/data
 
 # Check daemon status
 acs status
+
+# Restart the daemon
+acs restart
 
 # Stop the daemon gracefully
 acs stop
@@ -151,7 +154,21 @@ acs --host 192.168.1.10 --port 9000 list
 acs -v status
 ```
 
-## Web Dashboard
+## Daemon Logs
+
+The daemon writes logs to `daemon.log` inside the data directory:
+
+- **Windows**: `%LOCALAPPDATA%\agent-cron-scheduler\daemon.log`
+- **macOS/Linux**: `~/.local/share/agent-cron-scheduler/daemon.log`
+- **Custom**: set `ACS_DATA_DIR` or use `--data-dir` to change the location.
+
+The log file is truncated on each daemon startup so every session begins fresh. During operation, if the file grows beyond 1 GB the oldest 25% is automatically dropped, keeping the newest 75%. You can also view recent daemon logs via the API:
+
+```sh
+curl http://127.0.0.1:8377/api/logs?tail=200
+```
+
+## Embedded Reference Page
 
 Once the daemon is running, open your browser to:
 
@@ -159,7 +176,31 @@ Once the daemon is running, open your browser to:
 http://127.0.0.1:8377/
 ```
 
-The web UI lets you add/edit/delete jobs, toggle enable/disable, trigger manual runs, and view live log output.
+The embedded page is a static API and CLI reference -- a quick-reference guide
+to available endpoints and CLI commands. It is not an interactive dashboard.
+
+### Interactive Frontend (Optional)
+
+An interactive Next.js dashboard lives in `frontend/` and runs independently
+from the daemon. It is not embedded into the binary.
+
+```sh
+# Terminal 1: start the backend daemon
+cargo run -- start --foreground
+
+# Terminal 2: start the frontend dev server
+cd frontend
+npm run dev
+# Open http://localhost:3000
+```
+
+The frontend dev server runs on `localhost:3000` and proxies API requests to the
+backend on `127.0.0.1:8377` via rewrites configured in `next.config.ts`.
+
+**Port discovery:** The daemon writes an `acs.port` file (alongside `acs.pid`)
+in the data directory containing the port number it is listening on. The frontend
+or external tooling can read this file to discover the backend port
+automatically.
 
 ## REST API
 
@@ -211,6 +252,15 @@ curl http://127.0.0.1:8377/api/runs/<RUN_UUID>/log
 
 # Stream events (SSE)
 curl -N http://127.0.0.1:8377/api/events
+
+# Daemon logs
+curl http://127.0.0.1:8377/api/logs
+
+# Daemon logs (last 100 lines)
+curl http://127.0.0.1:8377/api/logs?tail=100
+
+# Restart the daemon
+curl -X POST http://127.0.0.1:8377/api/restart
 
 # Service status
 curl http://127.0.0.1:8377/api/service/status

@@ -1,6 +1,5 @@
 /target
 .claude/settings.local.json
-/web
 /frontend/out
 /frontend/.next
 /frontend/node_modules

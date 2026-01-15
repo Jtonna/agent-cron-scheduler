@@ -11,7 +11,7 @@ or contains notable design choices, those are called out explicitly.
 
 ACS is a single-binary Rust application (binary name: `acs`, crate name:
 `agent_cron_scheduler`) that functions as a local cron daemon with an HTTP API, a
-CLI client, real-time event streaming via SSE, and a browser-based dashboard. It
+CLI client, and real-time event streaming via SSE. It
 runs as a long-lived background process, scheduling and executing shell commands
 or script files on cron schedules with optional timezone awareness.
 
@@ -62,15 +62,15 @@ src/
     mod.rs           -- Clap CLI definition, dispatch function
     jobs.rs          -- Job CRUD CLI commands + SSE follow for trigger
     logs.rs          -- Log viewing CLI commands + SSE follow
-    daemon.rs        -- Daemon start/stop/status/uninstall commands
+    daemon.rs        -- Daemon start/stop/restart/status/uninstall commands
   pty/
     mod.rs           -- PtySpawner + PtyProcess traits, NoPtySpawner,
                         MockPtySpawner
-frontend/            -- Next.js frontend (source)
+frontend/            -- Next.js interactive dashboard (runs independently)
   src/app/           -- App Router pages and layouts
   next.config.ts     -- Static export configuration
   package.json       -- Frontend dependencies
-web/                 -- Build artifact (generated from frontend/ by build.rs)
+web/                 -- Static API & CLI reference page (embedded into binary via rust-embed)
 web.backup/          -- Original vanilla JS/CSS/HTML frontend (preserved for reference)
 tests/
   api_tests.rs       -- HTTP integration tests (real server, reqwest)
@@ -85,7 +85,7 @@ tests/
 ### Job Creation Flow
 
 ```
-CLI (acs add) or Web UI
+CLI (acs add) or Frontend
   --> POST /api/jobs
     --> validate_new_job() -- cron, timezone, name constraints
     --> find_by_name() -- duplicate check
@@ -124,7 +124,7 @@ Scheduler::run() loop
 ### Manual Trigger Flow
 
 ```
-CLI (acs trigger) or Web UI
+CLI (acs trigger) or Frontend
   --> POST /api/jobs/{id}/trigger
     --> resolve_job (UUID or name)
     --> send Job over dispatch_tx (mpsc)
@@ -139,7 +139,7 @@ broadcast::channel<JobEvent>
   --> Executor broadcasts: Started, Output, Completed, Failed
   --> Route handlers broadcast: JobChanged (Added/Updated/Removed/Enabled/Disabled)
   --> SSE clients: BroadcastStream -> filter by job_id/run_id -> SSE Event
-  --> Web dashboard: EventSource -> update job table / stream logs
+  --> Frontend: EventSource -> update job table / stream logs
   --> CLI --follow: reqwest streaming -> parse SSE text protocol
 ```
 
@@ -176,6 +176,33 @@ ACS runs as a single process containing several concurrent Tokio tasks:
 file creation (`create_new(true)` / `O_EXCL`). If the file exists, the recorded
 PID is checked via platform-specific liveness detection (Unix: `kill(pid, 0)`;
 Windows: `OpenProcess` FFI). Stale PID files are automatically removed.
+
+**Port file:** Alongside the PID file, the daemon writes `acs.port` containing
+the port number it is listening on. This allows external tools (including the
+frontend dev server) to discover the backend port without hardcoding it. The port
+file is removed during graceful shutdown alongside the PID file.
+
+### Daemon Log Management
+
+The daemon writes structured logs to `{data_dir}/daemon.log` in addition to
+stderr. Log management operates as follows:
+
+- **Fresh start**: On each daemon startup, `daemon.log` is truncated to zero
+  bytes so that each session starts with a clean log file.
+- **Size cap**: A `SizeManagedWriter` wraps the underlying `std::fs::File` and
+  tracks cumulative bytes written. When the file exceeds 1 GB
+  (`DAEMON_LOG_MAX_BYTES = 1_073_741_824`), the writer automatically drops the
+  oldest 25% of the file and keeps the newest 75%.
+- **Newline alignment**: The truncation point is advanced past the 25% byte
+  offset to the next newline boundary, ensuring no log line is split in half.
+- **Atomic rewrite**: The retained content is written to a temporary file
+  (`daemon.log.tmp`) and then renamed over the original, avoiding partial-write
+  corruption.
+- **Non-blocking I/O**: The `SizeManagedWriter` is wrapped in
+  `tracing_appender::non_blocking()` so that log writes never block the async
+  runtime. The non-blocking guard is held alive via `std::mem::forget(_guard)`.
+- **Graceful fallback**: If the log file cannot be opened (e.g., permission
+  errors), the daemon falls back to stderr-only logging without crashing.
 
 ---
 
@@ -400,7 +427,7 @@ that `Arc::ptr_eq` holds across clones.
 - **Job metadata updater task**: `Completed` and `Failed` (updates `last_run_at`
   and `last_exit_code` on the Job).
 - **CLI follow mode**: `Started`, `Output`, `Completed`, `Failed`.
-- **Web dashboard**: all event types via EventSource.
+- **Frontend**: all event types via EventSource.
 
 ---
 
@@ -424,6 +451,8 @@ Framework: Axum 0.8
 | GET    | /api/jobs/{id}/runs       | list_runs         | 200, 404, 500      |
 | GET    | /api/runs/{run_id}/log    | get_log           | 200, 400, 404, 500 |
 | GET    | /api/events               | sse_handler       | 200 (streaming)    |
+| GET    | /api/logs                 | get_daemon_logs   | 200, 500           |
+| POST   | /api/restart              | restart           | 200, 500           |
 | POST   | /api/shutdown             | shutdown          | 200                |
 | GET    | /api/service/status       | service_status    | 200                |
 | *      | /*                        | ServeDir(web/)    | (static files)     |
@@ -441,6 +470,7 @@ prohibited from being valid UUIDs (enforced by validation).
 - `GET /api/jobs/{id}/runs?limit={n}&offset={n}&status={str}` -- pagination and
   status filter (default limit: 20).
 - `GET /api/runs/{run_id}/log?tail={n}` -- last N lines.
+- `GET /api/logs?tail={n}` -- last N lines of daemon logs.
 
 ### Computed Fields
 
@@ -468,6 +498,16 @@ clients to know the job-to-run mapping.
 
 The router falls back to `tower_http::services::ServeDir` for the `web/` directory.
 The web directory is resolved by checking `{exe_dir}/web/` first, then `./web/`.
+
+### CORS Configuration
+
+The router includes a permissive CORS middleware layer
+(`CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)`)
+that allows cross-origin requests from any origin. This enables the frontend
+development server (running on `localhost:3000`) to make API calls directly to
+the backend (on `127.0.0.1:8377`) without being blocked by browser same-origin
+policy. Since the daemon binds to localhost only, the permissive CORS policy does
+not expose the API to the wider network.
 
 ---
 
@@ -518,6 +558,7 @@ Framework: Clap 4.5 with derive macros.
 |-----------|---------------------------------------|
 | start     | Start the daemon (-f foreground, -c config, -p port, --data-dir) |
 | stop      | Stop a running daemon (--force placeholder) |
+| restart   | Restart the daemon (POST /api/restart, poll until healthy) |
 | status    | Show daemon health info               |
 | uninstall | Uninstall service registration (--purge placeholder) |
 | add       | Create a new job                      |
@@ -555,50 +596,29 @@ line) rather than using an SSE client library.
 
 ---
 
-## 12. Web Dashboard
+## 12. Embedded Web Content
 
-Source: `frontend/` (Next.js with TypeScript and Tailwind CSS)
-Build output: `web/` (static export, generated by `build.rs` during `cargo build`)
+Source: `web/` (static HTML/CSS)
 
-The frontend is a Next.js application configured for static export (`output: "export"`
-in `next.config.ts`). The `build.rs` script runs `npm run build` and copies the
-output from `frontend/out/` to `web/`, where `rust-embed` embeds it into the binary.
-The original vanilla JS/CSS/HTML frontend is preserved in `web.backup/` for reference.
+The `web/` directory contains a static API and CLI reference page -- a
+quick-reference guide to available endpoints and CLI commands. It is not an
+interactive dashboard. The `build.rs` script verifies that `web/` exists (but
+does not build it or run npm). `rust-embed` embeds the contents of `web/` into
+the binary, and the HTTP server serves them as static files at the root path.
 
-### Features
+The original vanilla JS/CSS/HTML frontend is preserved in `web.backup/` for
+reference.
 
-- **Job table**: displays all jobs with name, schedule, status badge, last run,
-  next run, and action buttons (trigger, logs, edit, delete).
-- **Toggle switches**: inline enable/disable switches in the job table.
-- **Log viewer**: historical log retrieval via `/api/runs/{run_id}/log` combined
-  with live SSE streaming for real-time output. Maximum 2000 log lines with FIFO
-  removal of oldest lines.
-- **Add/Edit modal**: form for creating or editing jobs, supporting shell commands
-  and script files, timezone, working directory, and environment variables.
-- **Delete confirmation modal**.
-- **Toast notifications**: success/error messages with auto-dismiss animation.
-- **Health indicator**: small status dot in the header, polled every 5 seconds.
+### Interactive Frontend (Separate)
 
-### Polling and Real-time Updates
+An interactive Next.js dashboard lives in `frontend/` (TypeScript, Tailwind CSS).
+It is developed and run independently from the Rust binary and is **not** embedded
+into the binary.
 
-- Health: polled every 5 seconds via `GET /health`.
-- Job list: polled every 10 seconds as a fallback. Primary updates come from SSE
-  `job_changed` events, which trigger an immediate re-fetch.
-- SSE: `EventSource` connection to `/api/events` with automatic reconnection
-  after 3 seconds on error.
-
-### Security
-
-- XSS protection via `escapeHtml()` function applied to all user-provided content
-  before DOM insertion.
-- No authentication or authorization (daemon binds to localhost only).
-
-### Theming
-
-- Light theme by default.
-- Dark theme via `@media (prefers-color-scheme: dark)`.
-- All colors use CSS custom properties for consistency.
-- Responsive breakpoints at 768px and 640px.
+The frontend dev server runs on `localhost:3000` and proxies API requests to the
+backend via rewrites configured in `next.config.ts`. Alternatively, set
+`NEXT_PUBLIC_API_URL=http://127.0.0.1:8377` to have the frontend call the
+backend directly (the backend's CORS middleware permits cross-origin requests).
 
 ---
 
@@ -771,6 +791,7 @@ Resolution order for data directory:
 | chrono-tz       | 0.10    | IANA timezone database                           |
 | tracing         | 0.1     | Structured logging                               |
 | tracing-subscriber | 0.3  | Log output (env-filter feature)                  |
+| tracing-appender  | 0.2  | Non-blocking file log writer for daemon.log       |
 | uuid            | 1       | UUID generation (v7 + serde features)            |
 | anyhow          | 1       | Flexible error handling                          |
 | thiserror       | 2       | Derive-based error types                         |
@@ -803,6 +824,8 @@ Resolution order for data directory:
   visible in the source code. The JSON job store uses atomic tmp+rename rather than
   file locking.
 
-- **tower-http** CORS feature is enabled but no CORS middleware is configured in
-  `create_router()`. The `fs` and `trace` features are used (ServeDir for static
-  files).
+- **tower-http** CORS, `fs`, and `trace` features are used. CORS middleware is
+  configured in `create_router()` with a permissive policy (`allow_origin(Any)`)
+  to support the frontend development server making cross-origin API calls.
+  `ServeDir` is used as a fallback for serving static files from the embedded
+  `web/` directory.

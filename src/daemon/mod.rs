@@ -61,11 +61,28 @@ impl PidFile {
                 .context("Failed to parse PID from PID file")?;
 
             if is_process_alive(existing_pid) {
-                return Err(anyhow::anyhow!(
-                    "Daemon is already running (PID {existing_pid}). \
-                     PID file: {}",
-                    self.path.display()
-                ));
+                // The existing process is alive — it may be shutting down
+                // (e.g., during a restart). Retry for up to 10 seconds.
+                let mut acquired = false;
+                for attempt in 0..20 {
+                    tracing::info!(
+                        "PID {} is still alive, waiting for it to exit (attempt {}/20)...",
+                        existing_pid,
+                        attempt + 1
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    if !is_process_alive(existing_pid) {
+                        acquired = true;
+                        break;
+                    }
+                }
+                if !acquired {
+                    return Err(anyhow::anyhow!(
+                        "Daemon is already running (PID {existing_pid}). \
+                         PID file: {}",
+                        self.path.display()
+                    ));
+                }
             }
 
             // Stale PID file — remove it
@@ -160,6 +177,77 @@ extern "system" {
 }
 
 // ---------------------------------------------------------------------------
+// PortFile — writes the server's bound port to a discoverable file
+// ---------------------------------------------------------------------------
+
+/// Manages a port file so the frontend (and CLI) can discover which port the
+/// daemon is listening on. The file is written after the server binds and
+/// removed during graceful shutdown.
+pub struct PortFile {
+    path: PathBuf,
+}
+
+impl PortFile {
+    /// Create a new PortFile handle (does not write yet).
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    /// Write the given port number to the port file in the default data
+    /// directory.
+    pub fn write(port: u16) -> Result<Self> {
+        let data_dir = resolve_data_dir(None);
+        let path = data_dir.join("acs.port");
+        Self::write_to(path, port)
+    }
+
+    /// Write the given port number to a specific path (useful for tests and
+    /// when the data directory is already known).
+    pub fn write_to(path: PathBuf, port: u16) -> Result<Self> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .context("Failed to create port file")?;
+
+        write!(file, "{}", port).context("Failed to write port to port file")?;
+        file.flush().context("Failed to flush port file")?;
+
+        tracing::info!("Port file written: {} (port {})", path.display(), port);
+        Ok(Self { path })
+    }
+
+    /// Read the port number from the port file in the given data directory,
+    /// returning `None` if the file does not exist or contains invalid data.
+    pub fn read(data_dir: &Path) -> Option<u16> {
+        let path = data_dir.join("acs.port");
+        Self::read_from(&path)
+    }
+
+    /// Read the port number from a specific path.
+    pub fn read_from(path: &Path) -> Option<u16> {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|content| content.trim().parse::<u16>().ok())
+    }
+
+    /// Remove the port file. Succeeds silently if the file does not exist.
+    pub fn remove(&self) -> Result<()> {
+        if self.path.exists() {
+            std::fs::remove_file(&self.path).context("Failed to remove port file")?;
+            tracing::info!("Port file removed: {}", self.path.display());
+        }
+        Ok(())
+    }
+
+    /// Return the path to this port file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Config loading
 // ---------------------------------------------------------------------------
 
@@ -229,8 +317,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<DaemonConfig> {
 /// Otherwise, use the platform default.
 ///
 /// Platform defaults:
-/// - Windows: `C:\ProgramData\agent-cron-scheduler` (shared across all users,
-///   appropriate for services running under LOCAL SYSTEM)
+/// - Windows: `%LOCALAPPDATA%\agent-cron-scheduler` (per-user, no admin required)
 /// - macOS/Linux: `~/.local/share/agent-cron-scheduler` via `dirs::data_dir()`
 pub fn resolve_data_dir(override_dir: Option<&Path>) -> PathBuf {
     if let Some(dir) = override_dir {
@@ -245,10 +332,10 @@ pub fn resolve_data_dir(override_dir: Option<&Path>) -> PathBuf {
     // Platform default
     #[cfg(target_os = "windows")]
     {
-        // Use ProgramData on Windows - appropriate for services and shared across users
-        std::env::var("PROGRAMDATA")
+        // Use LOCALAPPDATA on Windows — writable without admin elevation.
+        std::env::var("LOCALAPPDATA")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("C:\\ProgramData"))
+            .expect("LOCALAPPDATA environment variable must be set on Windows")
             .join("agent-cron-scheduler")
     }
 
@@ -335,12 +422,13 @@ pub async fn create_data_dirs(data_dir: &Path) -> Result<()> {
 /// 3. Kill all running child processes (30s grace)
 /// 4. Update all in-flight JobRun records to Killed status
 /// 5. Flush all log files                       (implicit with LogStore)
-/// 6. Remove PID file
+/// 6. Remove PID file and port file
 /// 7. Exit with code 0                          (handled by caller)
 pub async fn graceful_shutdown(
     active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>>,
     log_store: Arc<dyn LogStore>,
     pid_file: Option<&PidFile>,
+    port_file: Option<&PortFile>,
 ) {
     tracing::info!("Beginning graceful shutdown sequence...");
 
@@ -411,14 +499,141 @@ pub async fn graceful_shutdown(
 
     // Step 5: Flush all log files (implicit — LogStore writes are flushed)
 
-    // Step 6: Remove PID file
+    // Step 6: Remove PID file and port file
     if let Some(pf) = pid_file {
         if let Err(e) = pf.release() {
             tracing::error!("Failed to release PID file: {}", e);
         }
     }
+    if let Some(pf) = port_file {
+        if let Err(e) = pf.remove() {
+            tracing::error!("Failed to remove port file: {}", e);
+        }
+    }
 
     tracing::info!("Graceful shutdown complete.");
+}
+
+// ---------------------------------------------------------------------------
+// SizeManagedWriter — daemon.log file writer with automatic size management
+// ---------------------------------------------------------------------------
+
+/// Maximum daemon.log file size before truncation (1 GB).
+const DAEMON_LOG_MAX_BYTES: u64 = 1_073_741_824;
+
+/// A file writer that tracks cumulative bytes written and automatically
+/// truncates the oldest 25% of the file when it exceeds `max_size`.
+///
+/// This is used as the underlying writer for `tracing_appender::non_blocking`
+/// so the daemon.log file never grows unbounded.
+struct SizeManagedWriter {
+    file: std::fs::File,
+    path: PathBuf,
+    bytes_written: u64,
+    max_size: u64,
+}
+
+impl SizeManagedWriter {
+    /// Create a new SizeManagedWriter.
+    ///
+    /// Opens the file at `path` in create+append mode and seeds `bytes_written`
+    /// from the current file size so that truncation triggers correctly even
+    /// if the file already has content.
+    fn new(path: PathBuf, max_size: u64) -> std::io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let bytes_written = file.metadata().map(|m| m.len()).unwrap_or(0);
+        Ok(Self {
+            file,
+            path,
+            bytes_written,
+            max_size,
+        })
+    }
+
+    /// Drop the oldest 25% of the file, keeping the newest 75%.
+    ///
+    /// Reads the entire file, finds the 25% byte offset, advances to the
+    /// next newline boundary so we don't cut a line in half, then rewrites
+    /// the file with only the retained portion.
+    fn truncate_oldest_quarter(&mut self) -> std::io::Result<()> {
+        let content = std::fs::read(&self.path)?;
+        if content.is_empty() {
+            self.bytes_written = 0;
+            return Ok(());
+        }
+
+        let quarter = content.len() / 4;
+
+        // Find the next newline after the 25% mark so we don't split a line.
+        let cut_point = match content[quarter..].iter().position(|&b| b == b'\n') {
+            Some(offset) => quarter + offset + 1, // skip past the newline
+            None => {
+                // No newline found after the 25% mark — keep everything
+                // (degenerate case: single very long line).
+                self.bytes_written = content.len() as u64;
+                return Ok(());
+            }
+        };
+
+        if cut_point >= content.len() {
+            // Nothing left to keep after the cut — just truncate completely.
+            self.file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&self.path)?;
+            // Reopen in append mode for subsequent writes.
+            self.file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?;
+            self.bytes_written = 0;
+            return Ok(());
+        }
+
+        let retained = &content[cut_point..];
+
+        // Write retained content to a temporary file next to the log, then
+        // replace the original. This avoids partial-write corruption if the
+        // process is killed mid-write.
+        let tmp_path = self.path.with_extension("log.tmp");
+        std::fs::write(&tmp_path, retained)?;
+        std::fs::rename(&tmp_path, &self.path)?;
+
+        // Reopen the file in append mode.
+        self.file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        self.bytes_written = retained.len() as u64;
+
+        Ok(())
+    }
+}
+
+impl Write for SizeManagedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.file.write(buf)?;
+        self.bytes_written += n as u64;
+        if self.bytes_written >= self.max_size {
+            if let Err(e) = self.truncate_oldest_quarter() {
+                // Log a warning but don't fail the write — losing some log
+                // rotation is better than crashing the daemon's tracing pipeline.
+                eprintln!(
+                    "WARNING: daemon.log truncation failed: {}. Log file may grow beyond {}.",
+                    e, self.max_size
+                );
+            }
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +686,69 @@ pub async fn start_daemon(
 
     // Create data directories
     create_data_dirs(&data_dir).await?;
+
+    // Set up tracing: always stderr, optionally also daemon.log file
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "info".into());
+
+        let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+
+        let log_path = data_dir.join("daemon.log");
+
+        // Truncate daemon.log on startup so each daemon session starts fresh.
+        if log_path.exists() {
+            let _ = std::fs::File::create(&log_path);
+        }
+
+        // Try to create a SizeManagedWriter for daemon.log. This writer
+        // tracks cumulative bytes and automatically drops the oldest 25% of
+        // the file when it exceeds 1 GB, keeping the log from growing
+        // unbounded. May fail on Windows without admin when data_dir is under
+        // a restricted location. Fall back to stderr-only gracefully.
+        let writer_result = SizeManagedWriter::new(log_path.clone(), DAEMON_LOG_MAX_BYTES);
+
+        match writer_result {
+            Ok(writer) => {
+                let (non_blocking, _guard) = tracing_appender::non_blocking(writer);
+                let file_layer = tracing_subscriber::fmt::layer()
+                    .with_writer(non_blocking)
+                    .with_ansi(false);
+
+                let result = tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(stderr_layer)
+                    .with(file_layer)
+                    .try_init();
+
+                if result.is_ok() {
+                    tracing::info!("Logging to stderr and {}", log_path.display());
+                    tracing::info!("Data directory: {}", data_dir.display());
+                }
+
+                // Hold _guard alive for the daemon's entire lifetime.
+                std::mem::forget(_guard);
+            }
+            Err(e) => {
+                // File logging unavailable — stderr only
+                let result = tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(stderr_layer)
+                    .try_init();
+
+                if result.is_ok() {
+                    tracing::warn!(
+                        "Could not open log file {}: {}. Logging to stderr only.",
+                        log_path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
 
     // Acquire PID file
     let pid_file_path = data_dir.join("acs.pid");
@@ -621,6 +899,11 @@ pub async fn start_daemon(
         .await
         .context(format!("Failed to bind to {}", bind_addr))?;
 
+    // Write the port file now that we know the actual bound port
+    let actual_port = listener.local_addr()?.port();
+    let port_file_path = data_dir.join("acs.port");
+    let port_file = PortFile::write_to(port_file_path, actual_port)?;
+
     tracing::info!("Daemon started. Listening on http://{}", bind_addr);
 
     if foreground {
@@ -684,6 +967,7 @@ pub async fn start_daemon(
         Arc::clone(&active_runs),
         Arc::clone(&log_store),
         Some(&pid_file),
+        Some(&port_file),
     )
     .await;
 
@@ -940,6 +1224,7 @@ mod tests {
             Arc::clone(&active_runs),
             Arc::clone(&log_store) as Arc<dyn LogStore>,
             None,
+            None,
         )
         .await;
 
@@ -1185,7 +1470,7 @@ mod tests {
             Arc::new(RwLock::new(HashMap::new()));
         let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
 
-        graceful_shutdown(active_runs, log_store, Some(&pid_file)).await;
+        graceful_shutdown(active_runs, log_store, Some(&pid_file), None).await;
 
         assert!(
             !pid_path.exists(),
@@ -1203,7 +1488,174 @@ mod tests {
         let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
 
         // Should complete without error
-        graceful_shutdown(active_runs, log_store, None).await;
+        graceful_shutdown(active_runs, log_store, None, None).await;
+    }
+
+    // =======================================================================
+    // PortFile tests
+    // =======================================================================
+
+    #[test]
+    fn test_portfile_write_creates_file() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let port_path = tmp_dir.path().join("acs.port");
+
+        let port_file = PortFile::write_to(port_path.clone(), 8377).expect("write port file");
+
+        assert!(port_path.exists(), "Port file should exist after write");
+
+        let content = std::fs::read_to_string(&port_path).expect("read port file");
+        assert_eq!(content, "8377", "Port file should contain the port number");
+
+        port_file.remove().expect("remove");
+    }
+
+    #[test]
+    fn test_portfile_read_returns_port() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let port_path = tmp_dir.path().join("acs.port");
+
+        std::fs::write(&port_path, "9999").expect("write port");
+
+        let port = PortFile::read_from(&port_path);
+        assert_eq!(port, Some(9999), "Should read the written port");
+    }
+
+    #[test]
+    fn test_portfile_read_returns_none_for_missing_file() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let port_path = tmp_dir.path().join("nonexistent.port");
+
+        let port = PortFile::read_from(&port_path);
+        assert_eq!(port, None, "Should return None for missing file");
+    }
+
+    #[test]
+    fn test_portfile_read_returns_none_for_invalid_content() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let port_path = tmp_dir.path().join("acs.port");
+
+        std::fs::write(&port_path, "not-a-number").expect("write invalid");
+
+        let port = PortFile::read_from(&port_path);
+        assert_eq!(port, None, "Should return None for invalid content");
+    }
+
+    #[test]
+    fn test_portfile_read_with_data_dir() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let port_path = tmp_dir.path().join("acs.port");
+
+        std::fs::write(&port_path, "4567").expect("write port");
+
+        let port = PortFile::read(tmp_dir.path());
+        assert_eq!(port, Some(4567), "Should read port from data dir");
+    }
+
+    #[test]
+    fn test_portfile_remove_deletes_file() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let port_path = tmp_dir.path().join("acs.port");
+
+        let port_file = PortFile::write_to(port_path.clone(), 8080).expect("write");
+
+        assert!(port_path.exists(), "Port file should exist before remove");
+
+        port_file.remove().expect("remove");
+
+        assert!(
+            !port_path.exists(),
+            "Port file should NOT exist after remove"
+        );
+    }
+
+    #[test]
+    fn test_portfile_remove_is_idempotent() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let port_path = tmp_dir.path().join("acs.port");
+
+        let port_file = PortFile::write_to(port_path.clone(), 8080).expect("write");
+
+        port_file.remove().expect("first remove");
+        port_file
+            .remove()
+            .expect("second remove should also succeed");
+    }
+
+    #[test]
+    fn test_portfile_write_overwrites_existing() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let port_path = tmp_dir.path().join("acs.port");
+
+        let _pf1 = PortFile::write_to(port_path.clone(), 8000).expect("write first");
+        let content = std::fs::read_to_string(&port_path).expect("read");
+        assert_eq!(content, "8000");
+
+        let pf2 = PortFile::write_to(port_path.clone(), 9000).expect("write second");
+        let content = std::fs::read_to_string(&port_path).expect("read");
+        assert_eq!(content, "9000");
+
+        pf2.remove().expect("cleanup");
+    }
+
+    #[test]
+    fn test_portfile_path_accessor() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let port_path = tmp_dir.path().join("acs.port");
+
+        let port_file = PortFile::new(port_path.clone());
+        assert_eq!(port_file.path(), port_path.as_path());
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_removes_port_file() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let port_path = tmp_dir.path().join("acs.port");
+
+        let port_file = PortFile::write_to(port_path.clone(), 8377).expect("write");
+
+        assert!(port_path.exists(), "Port file should exist before shutdown");
+
+        let active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
+
+        graceful_shutdown(active_runs, log_store, None, Some(&port_file)).await;
+
+        assert!(
+            !port_path.exists(),
+            "Port file should be removed after shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_removes_both_pid_and_port_files() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let pid_path = tmp_dir.path().join("test.pid");
+        let port_path = tmp_dir.path().join("acs.port");
+
+        let pid_file = PidFile::new(pid_path.clone());
+        pid_file.acquire().expect("acquire PID file");
+
+        let port_file = PortFile::write_to(port_path.clone(), 8377).expect("write port file");
+
+        assert!(pid_path.exists(), "PID file should exist before shutdown");
+        assert!(port_path.exists(), "Port file should exist before shutdown");
+
+        let active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
+
+        graceful_shutdown(active_runs, log_store, Some(&pid_file), Some(&port_file)).await;
+
+        assert!(
+            !pid_path.exists(),
+            "PID file should be removed after shutdown"
+        );
+        assert!(
+            !port_path.exists(),
+            "Port file should be removed after shutdown"
+        );
     }
 
     // =======================================================================
@@ -1381,5 +1833,184 @@ mod tests {
         let job_store = InMemoryJobStore::new();
         let result = cleanup_orphaned_logs(&data_dir, &job_store).await;
         assert!(result.is_ok(), "Should succeed with empty logs dir");
+    }
+
+    // =======================================================================
+    // SizeManagedWriter tests
+    // =======================================================================
+
+    #[test]
+    fn test_size_managed_writer_tracks_bytes() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let log_path = tmp_dir.path().join("daemon.log");
+
+        let mut writer =
+            SizeManagedWriter::new(log_path.clone(), 1024).expect("create writer");
+
+        let data = b"hello world\n";
+        let n = writer.write(data).expect("write");
+        assert_eq!(n, data.len());
+        assert_eq!(writer.bytes_written, data.len() as u64);
+
+        writer.flush().expect("flush");
+        let content = std::fs::read_to_string(&log_path).expect("read");
+        assert_eq!(content, "hello world\n");
+    }
+
+    #[test]
+    fn test_size_managed_writer_truncates_at_max_size() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let log_path = tmp_dir.path().join("daemon.log");
+
+        // Use a small max_size so truncation triggers quickly.
+        let max_size: u64 = 100;
+        let mut writer =
+            SizeManagedWriter::new(log_path.clone(), max_size).expect("create writer");
+
+        // Write 10 lines of 12 bytes each = 120 bytes total, exceeding 100.
+        for i in 0..10 {
+            write!(writer, "line {:05}\n", i).expect("write line");
+        }
+        writer.flush().expect("flush");
+
+        let content = std::fs::read_to_string(&log_path).expect("read");
+        // After truncation, the oldest 25% should be dropped.
+        // The file had 120 bytes; 25% = 30 bytes. The first 3 lines are
+        // 36 bytes (3 * 12), so the cut will be after "line 00002\n" at byte 36.
+        // The remaining content should start at "line 00003\n".
+        assert!(
+            !content.contains("line 00000"),
+            "Oldest lines should be removed after truncation"
+        );
+        assert!(
+            content.contains("line 00009"),
+            "Newest lines should be preserved after truncation"
+        );
+        // The file should be smaller than the max_size after truncation.
+        let file_size = std::fs::metadata(&log_path).expect("metadata").len();
+        assert!(
+            file_size < max_size,
+            "File size ({}) should be less than max_size ({}) after truncation",
+            file_size,
+            max_size
+        );
+    }
+
+    #[test]
+    fn test_size_managed_writer_newline_alignment() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let log_path = tmp_dir.path().join("daemon.log");
+
+        let max_size: u64 = 40;
+        let mut writer =
+            SizeManagedWriter::new(log_path.clone(), max_size).expect("create writer");
+
+        // Write lines of varying lengths.
+        writer.write_all(b"short\n").expect("write");
+        writer.write_all(b"medium line\n").expect("write");
+        writer.write_all(b"another line here\n").expect("write");
+        writer.flush().expect("flush");
+
+        let content = std::fs::read_to_string(&log_path).expect("read");
+        // After truncation the content should start at the beginning of a line
+        // (i.e., the retained portion should not start mid-line).
+        if !content.is_empty() {
+            // Verify we didn't cut mid-line: check no partial line at the start
+            // by ensuring the content either starts at the first byte or after
+            // a newline boundary.
+            let lines: Vec<&str> = content.lines().collect();
+            assert!(
+                !lines.is_empty(),
+                "Should have at least one complete line"
+            );
+            // Every line should be one of the known lines (no partial lines).
+            for line in &lines {
+                assert!(
+                    *line == "short"
+                        || *line == "medium line"
+                        || *line == "another line here",
+                    "Found unexpected partial line: '{}'",
+                    line
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_size_managed_writer_empty_file_truncation() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let log_path = tmp_dir.path().join("daemon.log");
+
+        // Create an empty file, then call truncate_oldest_quarter directly.
+        let mut writer =
+            SizeManagedWriter::new(log_path.clone(), 100).expect("create writer");
+        writer.truncate_oldest_quarter().expect("truncate empty");
+        assert_eq!(writer.bytes_written, 0);
+    }
+
+    #[test]
+    fn test_size_managed_writer_small_file_no_truncation() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let log_path = tmp_dir.path().join("daemon.log");
+
+        // max_size is large; writes should not trigger truncation.
+        let mut writer =
+            SizeManagedWriter::new(log_path.clone(), 1_000_000).expect("create writer");
+        writer.write_all(b"tiny\n").expect("write");
+        writer.flush().expect("flush");
+
+        let content = std::fs::read_to_string(&log_path).expect("read");
+        assert_eq!(content, "tiny\n");
+        assert_eq!(writer.bytes_written, 5);
+    }
+
+    #[test]
+    fn test_size_managed_writer_seeds_from_existing_file() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let log_path = tmp_dir.path().join("daemon.log");
+
+        // Pre-populate the file.
+        std::fs::write(&log_path, "existing content\n").expect("write seed");
+
+        let writer =
+            SizeManagedWriter::new(log_path.clone(), 1024).expect("create writer");
+        assert_eq!(
+            writer.bytes_written, 17,
+            "bytes_written should be seeded from the existing file size"
+        );
+    }
+
+    #[test]
+    fn test_size_managed_writer_multiple_truncations() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let log_path = tmp_dir.path().join("daemon.log");
+
+        // Very small max_size to trigger multiple truncations.
+        let max_size: u64 = 50;
+        let mut writer =
+            SizeManagedWriter::new(log_path.clone(), max_size).expect("create writer");
+
+        // Write enough data to trigger truncation multiple times.
+        for i in 0..20 {
+            write!(writer, "iteration {:04}\n", i).expect("write");
+        }
+        writer.flush().expect("flush");
+
+        let content = std::fs::read_to_string(&log_path).expect("read");
+        // After multiple truncations, the file should still be valid text
+        // with complete lines and be under max_size.
+        let file_size = std::fs::metadata(&log_path).expect("metadata").len();
+        assert!(
+            file_size <= max_size,
+            "File ({} bytes) should not exceed max_size ({}) after truncations",
+            file_size,
+            max_size
+        );
+        // Should contain some of the latest iterations.
+        assert!(
+            content.contains("iteration 0019"),
+            "Latest data should be present: {}",
+            content
+        );
     }
 }

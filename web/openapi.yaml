@@ -1,0 +1,1145 @@
+openapi: "3.0.3"
+info:
+  title: Agent Cron Scheduler API
+  description: |
+    REST API for the Agent Cron Scheduler (ACS) daemon.
+
+    ACS is a cron-like job scheduler with a built-in HTTP API and web UI.
+    Jobs can be identified by either their UUID or their unique name in all
+    endpoints that accept an `{id}` path parameter.
+  version: "0.1.0"
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Local development daemon
+
+tags:
+  - name: Health
+    description: Daemon health and readiness checks
+  - name: Jobs
+    description: CRUD operations for scheduled jobs
+  - name: Runs
+    description: Job execution history and logs
+  - name: Events
+    description: Real-time server-sent events
+  - name: System
+    description: Daemon lifecycle and service management
+
+paths:
+  # -------------------------------------------------------------------------
+  # Health
+  # -------------------------------------------------------------------------
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      description: Returns daemon health status including uptime, job counts, and version.
+      tags: [Health]
+      responses:
+        "200":
+          description: Daemon is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                uptime_seconds: 3600
+                active_jobs: 5
+                total_jobs: 8
+                version: "0.1.0"
+                data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
+
+  # -------------------------------------------------------------------------
+  # Jobs
+  # -------------------------------------------------------------------------
+  /api/jobs:
+    get:
+      operationId: listJobs
+      summary: List all jobs
+      description: |
+        Returns all configured jobs. Optionally filter by enabled status.
+        Each returned job includes a computed `next_run_at` field (if enabled).
+      tags: [Jobs]
+      parameters:
+        - name: enabled
+          in: query
+          required: false
+          description: Filter jobs by enabled/disabled status.
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Array of jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Job"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      operationId: createJob
+      summary: Create a new job
+      description: |
+        Creates a new scheduled job. The `name` must be unique and must not be a
+        valid UUID. The `schedule` must be a valid cron expression. If `enabled`
+        is omitted it defaults to `true`.
+      tags: [Jobs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewJob"
+            example:
+              name: backup-db
+              schedule: "0 2 * * *"
+              execution:
+                type: ShellCommand
+                value: "pg_dump mydb > /backups/mydb.sql"
+              enabled: true
+              timezone: "America/New_York"
+              timeout_secs: 300
+      responses:
+        "201":
+          description: Job created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          description: Validation error (invalid cron, empty name, UUID-like name, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: validation_error
+                message: "Invalid cron expression '* * *': ..."
+        "409":
+          description: A job with the same name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: conflict
+                message: "A job with name 'backup-db' already exists"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/jobs/{id}:
+    get:
+      operationId: getJob
+      summary: Get a job by ID or name
+      description: |
+        Retrieves a single job. The `{id}` parameter can be either a UUID or
+        the job's unique name. The response includes a computed `next_run_at`
+        field if the job is enabled.
+      tags: [Jobs]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: not_found
+                message: "Job with id '550e8400-e29b-41d4-a716-446655440000' not found"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    patch:
+      operationId: updateJob
+      summary: Partially update a job
+      description: |
+        Updates one or more fields of an existing job. Only the fields included
+        in the request body are modified; omitted fields remain unchanged.
+        Validates cron expressions and timezone strings when provided. Name
+        uniqueness is enforced (409 if the new name conflicts with another job).
+      tags: [Jobs]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobUpdate"
+            example:
+              schedule: "0 3 * * *"
+              enabled: false
+      responses:
+        "200":
+          description: Job updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Name conflict with an existing job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: deleteJob
+      summary: Delete a job
+      description: |
+        Deletes a job by ID or name. If the job has an active run it will be
+        killed before deletion. Returns 204 on success with no body.
+      tags: [Jobs]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "204":
+          description: Job deleted (no content)
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/jobs/{id}/enable:
+    post:
+      operationId: enableJob
+      summary: Enable a job
+      description: Sets the job's `enabled` field to `true` and notifies the scheduler.
+      tags: [Jobs]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/jobs/{id}/disable:
+    post:
+      operationId: disableJob
+      summary: Disable a job
+      description: Sets the job's `enabled` field to `false` and notifies the scheduler.
+      tags: [Jobs]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/jobs/{id}/trigger:
+    post:
+      operationId: triggerJob
+      summary: Manually trigger a job
+      description: |
+        Dispatches an immediate execution of the job regardless of its cron
+        schedule. Returns 202 Accepted if the job was dispatched.
+      tags: [Jobs]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "202":
+          description: Job triggered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriggerResponse"
+              example:
+                message: Job triggered
+                job_id: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
+                job_name: backup-db
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error (dispatch failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # -------------------------------------------------------------------------
+  # Runs
+  # -------------------------------------------------------------------------
+  /api/jobs/{id}/runs:
+    get:
+      operationId: listRuns
+      summary: List runs for a job
+      description: |
+        Returns a paginated list of execution runs for the specified job.
+        Supports filtering by run status.
+      tags: [Runs]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of runs to return (default 20).
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+        - name: offset
+          in: query
+          required: false
+          description: Number of runs to skip for pagination (default 0).
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: status
+          in: query
+          required: false
+          description: Filter by run status (Running, Completed, Failed, Killed).
+          schema:
+            type: string
+            enum: [Running, Completed, Failed, Killed]
+      responses:
+        "200":
+          description: Paginated list of runs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunListResponse"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/runs/{run_id}/log:
+    get:
+      operationId: getRunLog
+      summary: Get log output for a run
+      description: |
+        Returns the raw log output (stdout + stderr) for a specific run as
+        plain text. Optionally return only the last N lines with `?tail=N`.
+      tags: [Runs]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          description: UUID of the run.
+          schema:
+            type: string
+            format: uuid
+        - name: tail
+          in: query
+          required: false
+          description: Return only the last N lines of output.
+          schema:
+            type: integer
+            minimum: 1
+        - name: format
+          in: query
+          required: false
+          description: Reserved for future use (e.g. "ansi").
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Log content as plain text
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                2024-01-15T02:00:01Z Starting backup...
+                2024-01-15T02:01:30Z Backup completed successfully.
+        "400":
+          description: Invalid run_id format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: validation_error
+                message: Invalid run_id format
+        "404":
+          description: Log not found for the given run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # -------------------------------------------------------------------------
+  # Events (SSE)
+  # -------------------------------------------------------------------------
+  /api/events:
+    get:
+      operationId: streamEvents
+      summary: Subscribe to real-time events (SSE)
+      description: |
+        Opens a Server-Sent Events stream for real-time job execution events.
+        Events include `started`, `output`, `completed`, `failed`, and
+        `job_changed`. Optionally filter by `job_id` and/or `run_id`.
+
+        The server sends a keepalive comment every 15 seconds.
+      tags: [Events]
+      parameters:
+        - name: job_id
+          in: query
+          required: false
+          description: Filter events to a specific job (UUID).
+          schema:
+            type: string
+            format: uuid
+        - name: run_id
+          in: query
+          required: false
+          description: Filter events to a specific run (UUID).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Server-Sent Events stream. Each event has an `event` field
+                  (type name) and a `data` field (JSON payload).
+
+                  Event types:
+                  - `started` — a job run has begun
+                  - `output` — incremental stdout/stderr output
+                  - `completed` — a job run finished successfully
+                  - `failed` — a job run failed
+                  - `job_changed` — a job was added, updated, removed, enabled, or disabled
+
+  # -------------------------------------------------------------------------
+  # System
+  # -------------------------------------------------------------------------
+  /api/logs:
+    get:
+      operationId: getDaemonLogs
+      summary: Get daemon logs
+      description: |
+        Returns the daemon's own log file (`daemon.log`) as plain text.
+        If the log file does not exist yet, returns a placeholder message.
+        Supports `?tail=N` to return only the last N lines.
+      tags: [System]
+      parameters:
+        - name: tail
+          in: query
+          required: false
+          description: Return only the last N lines.
+          schema:
+            type: integer
+            minimum: 1
+        - name: format
+          in: query
+          required: false
+          description: Reserved for future use.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Daemon log content as plain text
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                2024-01-15T02:00:00Z INFO  acs::daemon - Daemon started
+                2024-01-15T02:00:01Z INFO  acs::server - Listening on 0.0.0.0:3000
+        "500":
+          description: Failed to read log file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/shutdown:
+    post:
+      operationId: shutdown
+      summary: Shut down the daemon
+      description: Initiates a graceful shutdown of the daemon process.
+      tags: [System]
+      responses:
+        "200":
+          description: Shutdown initiated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: Shutdown initiated
+
+  /api/restart:
+    post:
+      operationId: restart
+      summary: Restart the daemon
+      description: |
+        Spawns a new daemon process and then shuts down the current one after a
+        short delay (500ms) to allow the response to be sent.
+      tags: [System]
+      responses:
+        "200":
+          description: Restart initiated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: Restart initiated
+        "500":
+          description: Failed to spawn new process or determine executable path
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/service/status:
+    get:
+      operationId: serviceStatus
+      summary: Get OS service status
+      description: |
+        Returns platform information and whether ACS is installed/running as
+        an OS-level service (Windows service, macOS launchd, or Linux systemd).
+      tags: [System]
+      responses:
+        "200":
+          description: Service status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceStatusResponse"
+              example:
+                platform: windows
+                service_installed: false
+                service_running: false
+
+# ===========================================================================
+# Components
+# ===========================================================================
+components:
+  parameters:
+    JobId:
+      name: id
+      in: path
+      required: true
+      description: Job identifier — either a UUID or the job's unique name.
+      schema:
+        type: string
+
+  schemas:
+    # -----------------------------------------------------------------------
+    # Health
+    # -----------------------------------------------------------------------
+    HealthResponse:
+      type: object
+      required: [status, uptime_seconds, active_jobs, total_jobs, version, data_dir]
+      properties:
+        status:
+          type: string
+          description: Always "ok" when healthy.
+          example: ok
+        uptime_seconds:
+          type: integer
+          format: int64
+          description: Seconds since the daemon started.
+          example: 3600
+        active_jobs:
+          type: integer
+          description: Number of enabled jobs.
+          example: 5
+        total_jobs:
+          type: integer
+          description: Total number of jobs (enabled + disabled).
+          example: 8
+        version:
+          type: string
+          description: Daemon version string.
+          example: "0.1.0"
+        data_dir:
+          type: string
+          description: Filesystem path to the data directory.
+          example: "C:\\Users\\J\\AppData\\Local\\acs\\data"
+
+    # -----------------------------------------------------------------------
+    # Execution type (tagged union)
+    # -----------------------------------------------------------------------
+    ExecutionType:
+      type: object
+      required: [type, value]
+      description: |
+        Tagged union describing how a job is executed. The `type` field selects
+        the variant and `value` carries the command string or script path.
+      properties:
+        type:
+          type: string
+          enum: [ShellCommand, ScriptFile]
+          description: |
+            - `ShellCommand` — run a shell command (via the system shell).
+            - `ScriptFile` — execute a script file by path.
+        value:
+          type: string
+          description: The command string or path to the script file.
+      example:
+        type: ShellCommand
+        value: "echo hello world"
+
+    # -----------------------------------------------------------------------
+    # Job
+    # -----------------------------------------------------------------------
+    Job:
+      type: object
+      required:
+        - id
+        - name
+        - schedule
+        - execution
+        - enabled
+        - timeout_secs
+        - log_environment
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique job identifier (UUIDv7).
+          example: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
+        name:
+          type: string
+          description: Unique human-readable job name.
+          example: backup-db
+        schedule:
+          type: string
+          description: Cron expression (5- or 6-field).
+          example: "0 2 * * *"
+        execution:
+          $ref: "#/components/schemas/ExecutionType"
+        enabled:
+          type: boolean
+          description: Whether the job is scheduled for automatic execution.
+          example: true
+        timezone:
+          type: string
+          nullable: true
+          description: IANA timezone name for cron evaluation. Null means UTC.
+          example: America/New_York
+        working_dir:
+          type: string
+          nullable: true
+          description: Working directory for the job process.
+          example: /home/user/project
+        env_vars:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: string
+          description: Extra environment variables passed to the job process.
+          example:
+            DATABASE_URL: "postgres://localhost/mydb"
+        timeout_secs:
+          type: integer
+          format: int64
+          description: Maximum execution time in seconds (0 = no timeout).
+          default: 0
+          example: 300
+        log_environment:
+          type: boolean
+          description: Whether to log the full environment at job start.
+          default: false
+          example: false
+        created_at:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp when the job was created.
+          example: "2024-01-15T00:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp when the job was last modified.
+          example: "2024-01-15T12:00:00Z"
+        last_run_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of the last completed run, or null if never run.
+          example: "2024-01-16T02:00:00Z"
+        last_exit_code:
+          type: integer
+          format: int32
+          nullable: true
+          description: Exit code of the last completed run, or null if never run.
+          example: 0
+        next_run_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Computed next scheduled run time. Only present when the job is
+            enabled. This field is not persisted and is calculated on read.
+          example: "2024-01-17T02:00:00Z"
+
+    # -----------------------------------------------------------------------
+    # NewJob (create request body)
+    # -----------------------------------------------------------------------
+    NewJob:
+      type: object
+      required: [name, schedule, execution]
+      properties:
+        name:
+          type: string
+          description: |
+            Unique job name. Must not be empty, whitespace-only, or a valid UUID.
+          example: backup-db
+        schedule:
+          type: string
+          description: Cron expression (5- or 6-field, validated on creation).
+          example: "0 2 * * *"
+        execution:
+          $ref: "#/components/schemas/ExecutionType"
+        enabled:
+          type: boolean
+          description: Whether the job starts enabled (default true).
+          default: true
+          example: true
+        timezone:
+          type: string
+          description: IANA timezone name (e.g. "America/New_York"). Validated on creation.
+          example: America/New_York
+        working_dir:
+          type: string
+          description: Working directory for the job process.
+          example: /home/user/project
+        env_vars:
+          type: object
+          additionalProperties:
+            type: string
+          description: Extra environment variables passed to the job process.
+          example:
+            NODE_ENV: production
+        timeout_secs:
+          type: integer
+          format: int64
+          description: Maximum execution time in seconds (0 = no timeout, default 0).
+          default: 0
+          example: 300
+        log_environment:
+          type: boolean
+          description: Whether to log the full environment at job start (default false).
+          default: false
+          example: false
+
+    # -----------------------------------------------------------------------
+    # JobUpdate (patch request body)
+    # -----------------------------------------------------------------------
+    JobUpdate:
+      type: object
+      description: |
+        Partial update for a job. All fields are optional; only provided fields
+        are modified.
+      properties:
+        name:
+          type: string
+          description: New job name (must be unique and not a UUID).
+          example: backup-db-v2
+        schedule:
+          type: string
+          description: New cron expression (validated).
+          example: "0 3 * * *"
+        execution:
+          $ref: "#/components/schemas/ExecutionType"
+        enabled:
+          type: boolean
+          description: Enable or disable the job.
+          example: false
+        timezone:
+          type: string
+          description: New IANA timezone (validated).
+          example: Europe/London
+        working_dir:
+          type: string
+          description: New working directory.
+          example: /opt/app
+        env_vars:
+          type: object
+          additionalProperties:
+            type: string
+          description: Replace environment variables.
+        timeout_secs:
+          type: integer
+          format: int64
+          description: New timeout in seconds.
+          example: 600
+        log_environment:
+          type: boolean
+          description: Whether to log environment on run start.
+
+    # -----------------------------------------------------------------------
+    # JobRun
+    # -----------------------------------------------------------------------
+    JobRun:
+      type: object
+      required: [run_id, job_id, started_at, status, log_size_bytes]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+          description: Unique run identifier (UUIDv7).
+          example: "01930000-0000-7000-8000-000000000001"
+        job_id:
+          type: string
+          format: uuid
+          description: ID of the job this run belongs to.
+          example: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
+        started_at:
+          type: string
+          format: date-time
+          description: Timestamp when the run started.
+          example: "2024-01-16T02:00:00Z"
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp when the run finished, or null if still running.
+          example: "2024-01-16T02:01:30Z"
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        exit_code:
+          type: integer
+          format: int32
+          nullable: true
+          description: Process exit code, or null if still running or failed to start.
+          example: 0
+        log_size_bytes:
+          type: integer
+          format: int64
+          description: Size of the captured log output in bytes.
+          example: 1024
+        error:
+          type: string
+          nullable: true
+          description: Error message if the run failed to start or was killed.
+          example: null
+
+    # -----------------------------------------------------------------------
+    # RunStatus enum
+    # -----------------------------------------------------------------------
+    RunStatus:
+      type: string
+      enum: [Running, Completed, Failed, Killed]
+      description: |
+        Current status of a job run:
+        - `Running` — the process is currently executing
+        - `Completed` — the process exited with code 0
+        - `Failed` — the process exited with a non-zero code or could not start
+        - `Killed` — the process was manually killed or timed out
+
+    # -----------------------------------------------------------------------
+    # RunListResponse (paginated)
+    # -----------------------------------------------------------------------
+    RunListResponse:
+      type: object
+      required: [runs, total, limit, offset]
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/JobRun"
+        total:
+          type: integer
+          description: Total number of runs for this job (before pagination).
+          example: 42
+        limit:
+          type: integer
+          description: Requested page size.
+          example: 20
+        offset:
+          type: integer
+          description: Requested offset.
+          example: 0
+
+    # -----------------------------------------------------------------------
+    # Trigger response
+    # -----------------------------------------------------------------------
+    TriggerResponse:
+      type: object
+      required: [message, job_id, job_name]
+      properties:
+        message:
+          type: string
+          example: Job triggered
+        job_id:
+          type: string
+          format: uuid
+          example: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
+        job_name:
+          type: string
+          example: backup-db
+
+    # -----------------------------------------------------------------------
+    # SSE event schemas
+    # -----------------------------------------------------------------------
+    SseEventStarted:
+      type: object
+      description: Emitted when a job run begins.
+      required: [event, data]
+      properties:
+        event:
+          type: string
+          enum: [Started]
+        data:
+          type: object
+          required: [job_id, run_id, job_name, timestamp]
+          properties:
+            job_id:
+              type: string
+              format: uuid
+            run_id:
+              type: string
+              format: uuid
+            job_name:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+
+    SseEventOutput:
+      type: object
+      description: Emitted for incremental stdout/stderr output.
+      required: [event, data]
+      properties:
+        event:
+          type: string
+          enum: [Output]
+        data:
+          type: object
+          required: [job_id, run_id, data, timestamp]
+          properties:
+            job_id:
+              type: string
+              format: uuid
+            run_id:
+              type: string
+              format: uuid
+            data:
+              type: string
+              description: Chunk of output text.
+            timestamp:
+              type: string
+              format: date-time
+
+    SseEventCompleted:
+      type: object
+      description: Emitted when a job run finishes successfully.
+      required: [event, data]
+      properties:
+        event:
+          type: string
+          enum: [Completed]
+        data:
+          type: object
+          required: [job_id, run_id, exit_code, timestamp]
+          properties:
+            job_id:
+              type: string
+              format: uuid
+            run_id:
+              type: string
+              format: uuid
+            exit_code:
+              type: integer
+              format: int32
+            timestamp:
+              type: string
+              format: date-time
+
+    SseEventFailed:
+      type: object
+      description: Emitted when a job run fails.
+      required: [event, data]
+      properties:
+        event:
+          type: string
+          enum: [Failed]
+        data:
+          type: object
+          required: [job_id, run_id, error, timestamp]
+          properties:
+            job_id:
+              type: string
+              format: uuid
+            run_id:
+              type: string
+              format: uuid
+            error:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+
+    SseEventJobChanged:
+      type: object
+      description: Emitted when a job is added, updated, removed, enabled, or disabled.
+      required: [event, data]
+      properties:
+        event:
+          type: string
+          enum: [JobChanged]
+        data:
+          type: object
+          required: [job_id, change, timestamp]
+          properties:
+            job_id:
+              type: string
+              format: uuid
+            change:
+              $ref: "#/components/schemas/JobChangeKind"
+            timestamp:
+              type: string
+              format: date-time
+
+    JobChangeKind:
+      type: string
+      enum: [Added, Updated, Removed, Enabled, Disabled]
+      description: The kind of change that occurred on a job.
+
+    # -----------------------------------------------------------------------
+    # Service status
+    # -----------------------------------------------------------------------
+    ServiceStatusResponse:
+      type: object
+      required: [platform, service_installed, service_running]
+      properties:
+        platform:
+          type: string
+          enum: [windows, macos, linux]
+          description: Operating system platform.
+          example: windows
+        service_installed:
+          type: boolean
+          description: Whether ACS is installed as an OS service.
+          example: false
+        service_running:
+          type: boolean
+          description: Whether the OS service is currently running.
+          example: false
+
+    # -----------------------------------------------------------------------
+    # Generic responses
+    # -----------------------------------------------------------------------
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          example: Shutdown initiated
+
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      description: Standard error envelope returned by all error responses.
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code.
+          example: not_found
+        message:
+          type: string
+          description: Human-readable error description.
+          example: "Job with id '550e8400-e29b-41d4-a716-446655440000' not found"

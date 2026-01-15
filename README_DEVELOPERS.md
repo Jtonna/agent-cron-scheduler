@@ -5,7 +5,7 @@ This document covers building, testing, and contributing to Agent Cron Scheduler
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) stable toolchain (1.88+)
-- [Node.js](https://nodejs.org/) 20+ (for the frontend build)
+- [Node.js](https://nodejs.org/) 20+ (for frontend development only -- not required for `cargo build`)
 
 ## Building
 
@@ -19,9 +19,10 @@ cargo build --release
 
 The binary is named `acs` and will be at `target/debug/acs` (or `target/release/acs`).
 
-`cargo build` automatically builds the Next.js frontend (in `frontend/`) and copies
-the static output to `web/`, where it is embedded into the binary via `rust-embed`.
-Node.js and npm must be installed for this step.
+`cargo build` does not build the frontend. The `web/` directory contains a static
+API and CLI reference page (plain HTML/CSS) that is embedded into the binary via
+`rust-embed`. The `build.rs` script verifies that `web/` exists but does not run
+npm or any frontend build step.
 
 ## Running in Development
 
@@ -50,6 +51,45 @@ cargo run -- add -n "test" -s "* * * * *" -c "echo hello"
 cargo run -- trigger test --follow
 cargo run -- stop
 ```
+
+### Frontend Development
+
+The interactive Next.js dashboard in `frontend/` is developed independently from
+the Rust binary. It is not embedded into the binary -- the embedded `web/`
+content is a static API and CLI reference page.
+
+Run the backend and frontend in separate terminals:
+
+```sh
+# Terminal 1: start the backend
+cargo run -- start --foreground
+
+# Terminal 2: start the Next.js dev server
+cd frontend
+npm run dev
+# Open http://localhost:3000
+```
+
+**How it works:**
+
+- The frontend API client (`frontend/src/lib/api.ts`) reads
+  `NEXT_PUBLIC_API_URL` to determine the API base URL. When empty (the default),
+  it uses relative paths (e.g., `/api/jobs`).
+- During `npm run dev`, `next.config.ts` configures rewrites that proxy `/api/*`
+  and `/health` to `http://127.0.0.1:8377`, so relative-path API calls reach the
+  backend automatically.
+- The backend includes CORS middleware (`CorsLayer` with `allow_origin(Any)`) so
+  cross-origin requests from `localhost:3000` to `127.0.0.1:8377` are permitted.
+  This is safe because the daemon binds to localhost only.
+- Alternatively, set `NEXT_PUBLIC_API_URL=http://127.0.0.1:8377` to bypass
+  rewrites and have the frontend call the backend directly (requires CORS).
+
+**Two API client modes:**
+
+| Mode | `NEXT_PUBLIC_API_URL` | Proxy | CORS needed |
+|---|---|---|---|
+| Dev server with rewrites | `""` (empty/unset) | Yes -- next.config.ts rewrites | No |
+| Dev server direct | `http://127.0.0.1:8377` | No | Yes |
 
 ## Testing
 
@@ -146,14 +186,14 @@ src/
     mod.rs             # CLI definition (clap), command dispatch
     jobs.rs            # add, remove, list, enable, disable, trigger
     logs.rs            # logs --follow, --run, --last, --tail
-    daemon.rs          # start, stop, status, uninstall
+    daemon.rs          # start, stop, restart, status, uninstall
   pty/
     mod.rs             # PTY abstraction (NoPtySpawner, MockPtySpawner)
-frontend/              # Next.js frontend (source)
+frontend/              # Next.js interactive dashboard (runs independently)
   src/app/             # App Router pages and layouts
   next.config.ts       # Static export configuration
   package.json         # Frontend dependencies
-web/                   # Build artifact (generated from frontend/)
+web/                   # Static API & CLI reference page (embedded into binary)
 tests/
   api_tests.rs         # HTTP API integration tests
   cli_tests.rs         # CLI integration tests

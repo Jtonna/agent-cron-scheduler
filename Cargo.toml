@@ -32,6 +32,7 @@ async-trait = "0.1"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-util = "0.3"
 dirs = "6"
+tracing-appender = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
