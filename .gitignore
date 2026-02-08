@@ -1,5 +1,6 @@
+# Rust build output
 /target
+/acs/target
+
+# Claude Code
 .claude/settings.local.json
-/frontend/out
-/frontend/.next
-/frontend/node_modules

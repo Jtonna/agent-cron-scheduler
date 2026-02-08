@@ -8,7 +8,7 @@ Supports Windows, macOS, and Linux.
 
 ```sh
 # Build from source
-cargo install --path .
+cargo install --path acs
 ```
 
 The binary `acs` will be installed to your Cargo bin directory (typically `~/.cargo/bin/`).
@@ -181,15 +181,16 @@ to available endpoints and CLI commands. It is not an interactive dashboard.
 
 ### Interactive Frontend (Optional)
 
-An interactive Next.js dashboard lives in `frontend/` and runs independently
+An interactive Next.js dashboard lives in `acs/frontend/` and runs independently
 from the daemon. It is not embedded into the binary.
 
 ```sh
-# Terminal 1: start the backend daemon
+# Terminal 1: start the backend daemon (from acs/ directory)
+cd acs
 cargo run -- start --foreground
 
 # Terminal 2: start the frontend dev server
-cd frontend
+cd acs/frontend
 npm run dev
 # Open http://localhost:3000
 ```
@@ -288,7 +289,7 @@ Configuration is resolved in this order (highest priority first):
 | `ACS_TIMEOUT` | Default job timeout (0 = none) | `0` |
 | `ACS_BROADCAST_CAPACITY` | SSE broadcast channel size | `4096` |
 
-See `config.example.json` for a template.
+See `acs/config.example.json` for a template.
 
 ## Cron Schedule Format
 

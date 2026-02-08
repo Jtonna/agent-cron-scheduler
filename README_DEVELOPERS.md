@@ -9,7 +9,11 @@ This document covers building, testing, and contributing to Agent Cron Scheduler
 
 ## Building
 
+All cargo commands are run from the `acs/` directory:
+
 ```sh
+cd acs
+
 # Debug build
 cargo build
 
@@ -17,7 +21,7 @@ cargo build
 cargo build --release
 ```
 
-The binary is named `acs` and will be at `target/debug/acs` (or `target/release/acs`).
+The binary is named `acs` and will be at `acs/target/debug/acs` (or `acs/target/release/acs`).
 
 `cargo build` does not build the frontend. The `web/` directory contains a static
 API and CLI reference page (plain HTML/CSS) that is embedded into the binary via
@@ -54,25 +58,26 @@ cargo run -- stop
 
 ### Frontend Development
 
-The interactive Next.js dashboard in `frontend/` is developed independently from
+The interactive Next.js dashboard in `acs/frontend/` is developed independently from
 the Rust binary. It is not embedded into the binary -- the embedded `web/`
 content is a static API and CLI reference page.
 
 Run the backend and frontend in separate terminals:
 
 ```sh
-# Terminal 1: start the backend
+# Terminal 1: start the backend (from acs/ directory)
+cd acs
 cargo run -- start --foreground
 
 # Terminal 2: start the Next.js dev server
-cd frontend
+cd acs/frontend
 npm run dev
 # Open http://localhost:3000
 ```
 
 **How it works:**
 
-- The frontend API client (`frontend/src/lib/api.ts`) reads
+- The frontend API client (`acs/frontend/src/lib/api.ts`) reads
   `NEXT_PUBLIC_API_URL` to determine the API base URL. When empty (the default),
   it uses relative paths (e.g., `/api/jobs`).
 - During `npm run dev`, `next.config.ts` configures rewrites that proxy `/api/*`
@@ -132,7 +137,7 @@ cargo llvm-cov --tests --lib
 
 # Generate HTML report
 cargo llvm-cov --tests --lib --html
-# Open target/llvm-cov/html/index.html
+# Open acs/target/llvm-cov/html/index.html
 ```
 
 ## Platform Notes
@@ -158,48 +163,53 @@ These fields are set via the config file and are not exposed as environment vari
 ## Project Structure
 
 ```
-src/
-  main.rs              # Entry point, CLI dispatch
-  lib.rs               # Module declarations
-  errors.rs            # Error types
-  models/
-    mod.rs             # Re-exports
-    job.rs             # Job, NewJob, JobUpdate, ExecutionType
-    run.rs             # JobRun, RunStatus
-    config.rs          # DaemonConfig
-  storage/
-    mod.rs             # Storage traits (JobStore, LogStore)
-    jobs.rs            # JSON file persistence for jobs
-    logs.rs            # Per-run log file management
-  daemon/
-    mod.rs             # Daemon bootstrap, PID file, config loading, shutdown
-    scheduler.rs       # Cron tick engine
-    executor.rs        # Process spawning, output capture
-    events.rs          # JobEvent enum, broadcast channel
-    service.rs         # Platform service install/uninstall
-  server/
-    mod.rs             # Axum router, AppState
-    routes.rs          # REST endpoint handlers
-    sse.rs             # SSE streaming handler
-    health.rs          # Health check endpoint
-  cli/
-    mod.rs             # CLI definition (clap), command dispatch
-    jobs.rs            # add, remove, list, enable, disable, trigger
-    logs.rs            # logs --follow, --run, --last, --tail
-    daemon.rs          # start, stop, restart, status, uninstall
-  pty/
-    mod.rs             # PTY abstraction (NoPtySpawner, MockPtySpawner)
-frontend/              # Next.js interactive dashboard (runs independently)
-  src/app/             # App Router pages and layouts
-  next.config.ts       # Static export configuration
-  package.json         # Frontend dependencies
-web/                   # Static API & CLI reference page (embedded into binary)
-tests/
-  api_tests.rs         # HTTP API integration tests
-  cli_tests.rs         # CLI integration tests
-  scheduler_tests.rs   # End-to-end scheduler tests
+acs/                     # Rust project root
+  src/
+    main.rs              # Entry point, CLI dispatch
+    lib.rs               # Module declarations
+    errors.rs            # Error types
+    models/
+      mod.rs             # Re-exports
+      job.rs             # Job, NewJob, JobUpdate, ExecutionType
+      run.rs             # JobRun, RunStatus
+      config.rs          # DaemonConfig
+    storage/
+      mod.rs             # Storage traits (JobStore, LogStore)
+      jobs.rs            # JSON file persistence for jobs
+      logs.rs            # Per-run log file management
+    daemon/
+      mod.rs             # Daemon bootstrap, PID file, config loading, shutdown
+      scheduler.rs       # Cron tick engine
+      executor.rs        # Process spawning, output capture
+      events.rs          # JobEvent enum, broadcast channel
+      service.rs         # Platform service install/uninstall
+    server/
+      mod.rs             # Axum router, AppState
+      routes.rs          # REST endpoint handlers
+      sse.rs             # SSE streaming handler
+      health.rs          # Health check endpoint
+    cli/
+      mod.rs             # CLI definition (clap), command dispatch
+      jobs.rs            # add, remove, list, enable, disable, trigger
+      logs.rs            # logs --follow, --run, --last, --tail
+      daemon.rs          # start, stop, restart, status, uninstall
+    pty/
+      mod.rs             # PTY abstraction (NoPtySpawner, MockPtySpawner)
+  frontend/              # Next.js interactive dashboard (runs independently)
+    src/app/             # App Router pages and layouts
+    next.config.ts       # Static export configuration
+    package.json         # Frontend dependencies
+  web/                   # Static API & CLI reference page (embedded into binary)
+  tests/
+    api_tests.rs         # HTTP API integration tests
+    cli_tests.rs         # CLI integration tests
+    scheduler_tests.rs   # End-to-end scheduler tests
+docs/                    # Documentation
+  ARCHITECTURE.md        # Detailed design documentation
+  DEVIATIONS_FROM_SPEC.md
+  SPEC.md                # Original design specification
 ```
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed design documentation.
