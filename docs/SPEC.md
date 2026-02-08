@@ -1,5 +1,7 @@
 # Agent Cron Scheduler — Development Specification
 
+*This was the initial specification used during Spec Driven Development and is preserved here for historical reference. See Section 14 for deviations between spec and implementation.*
+
 ## 1. Project Overview
 
 **Name**: agent-cron-scheduler
@@ -789,3 +791,121 @@ Coverage enforced at 90% minimum via CI.
 19. **Graceful shutdown** -- SIGTERM -> 30s grace -> SIGKILL -> mark Killed -> cleanup
 20. **TDD with cargo-llvm-cov** -- 90% line coverage, 85% branch coverage, cross-platform
 21. **Environment inheritance** -- Child processes inherit daemon environment, job `env_vars` applied as overrides
+
+---
+
+## 14. Deviations from Spec
+
+This section catalogs differences between the original specification above and the actual implementation. Each entry includes the spec expectation, actual behavior, and severity.
+
+### Features Not Implemented (Still Outstanding)
+
+#### 4. Graceful Child Process Shutdown
+
+- **Spec**: 9-step shutdown sequence including: send SIGTERM to all running child processes, wait up to 30 seconds for completion, SIGKILL any remaining processes, then mark runs as Killed.
+- **Actual**: Shutdown sends a watch channel signal, marks all in-flight `JobRun` records as `Killed`, and releases the PID file. Child processes are not explicitly signaled (no SIGTERM sent, no 30-second grace period, no SIGKILL escalation). Children are orphaned when the daemon exits.
+- **Severity**: Medium.
+
+#### 5. Log File Truncation
+
+- **Spec**: "Output exceeds max size: Truncate log file, append `[LOG TRUNCATED]` marker, process continues." `max_log_file_size` (default 10 MB) is specified in `DaemonConfig`.
+- **Actual**: `max_log_file_size` exists in the config struct but the log writer does not check file size during writes. Logs grow without bound.
+- **Severity**: Medium.
+
+#### 6. Delete Job Kills Active Run
+
+- **Spec**: "DELETE /api/jobs/{id} -> 204, kills active run if any."
+- **Actual**: Deleting a running job removes it from the store and broadcasts `JobChanged(Removed)` but does not check `active_runs` or send a kill signal to any running execution.
+- **Severity**: Low.
+
+### Features Not Implemented (Resolved)
+
+#### 1. PTY Emulation
+
+- **Status**: Intentionally resolved. Production uses piped I/O (`NoPtySpawner`) via `std::process::Command`. `RealPtySpawner` dead code has been removed.
+
+#### 2. Auto Service Registration
+
+- **Status**: Implemented. `acs start` auto-registers and starts via platform service manager (Task Scheduler on Windows, launchd on macOS, systemd on Linux).
+
+#### 3. Background Daemonization
+
+- **Status**: Implemented. Daemon starts as a hidden background process (Windows) or via service manager (macOS/Linux) when `--foreground` is not specified.
+
+#### 7. `acs stop --force`
+
+- **Status**: Implemented. Reads PID file and force-kills the daemon process.
+
+#### 8. `acs uninstall --purge`
+
+- **Status**: Implemented. Removes the data directory when `--purge` is specified.
+
+### Behavior Differs from Spec
+
+#### 9. Corrupted jobs.json Recovery
+
+- **Spec**: "Refuse to start, prompt user to fix or delete."
+- **Actual**: If `jobs.json` fails to parse, it is silently renamed to `jobs.json.bak` and the store starts with an empty job list. A warning is logged but the daemon continues.
+- **Severity**: Low.
+
+#### 10. Invalid Cron/Timezone Auto-Disable
+
+- **Spec**: "Invalid cron in jobs.json: Skip job, log error, auto-disable." The job should be persisted back with `enabled: false`.
+- **Actual**: Jobs with invalid cron expressions or timezones are logged and skipped on each scheduler tick but never written back as disabled. They remain `enabled: true` and are re-evaluated (and re-skipped) every cycle.
+- **Severity**: Low.
+
+#### 11. Script Path Resolution
+
+- **Spec**: "Relative to `{data_dir}/scripts/`. No `..` traversal. Absolute paths accepted but flagged as non-portable."
+- **Actual**: `ScriptFile` paths are passed directly to the shell command builder with no path resolution relative to `{data_dir}/scripts/` and no traversal protection.
+- **Severity**: Low.
+
+### Config/Environment Not Implemented
+
+#### 12. `ACS_LOG_LEVEL` Environment Variable
+
+- **Spec**: `ACS_LOG_LEVEL` controls the tracing filter level (default: `info`).
+- **Actual**: Not implemented. Log level is controlled only by the `-v` / `--verbose` CLI flag, which toggles between `info` and `debug`.
+- **Severity**: Low.
+
+#### 13. Coverage Enforcement in CI
+
+- **Spec**: "90% line coverage, 85% branch coverage" enforced via `cargo-llvm-cov` in CI with Codecov integration.
+- **Actual**: `cargo-llvm-cov` is not in CI. No coverage thresholds are enforced.
+- **Severity**: Low.
+
+### Resolved Cleanups
+
+#### 14 (fs4). `fs4` Crate
+
+- **Status**: Dead dependency removed from `Cargo.toml`. The JSON job store uses atomic tmp+rename without file locking.
+
+#### 15. 503 Shutting Down
+
+- **Status**: Intentionally resolved. Axum's graceful shutdown stops accepting new connections rather than returning 503. Connection refused is functionally equivalent.
+
+### Additions Beyond Original Spec
+
+#### 16. `dispatch_tx` in AppState
+
+- **Not in spec**: `AppState` contains `dispatch_tx: Option<mpsc::Sender<Job>>` which allows the trigger endpoint to dispatch jobs to the executor via the same channel the scheduler uses. Necessary for the trigger API to function.
+
+#### 17. Per-Job `timeout_secs`
+
+- **Not in spec**: The `Job` struct includes `timeout_secs: u64`. If non-zero, it overrides the config-level `default_timeout_secs`. If zero, the config default is used.
+
+#### 18. Per-Job `log_environment`
+
+- **Not in spec**: Jobs have a `log_environment: bool` field (default `false`). When enabled, all inherited environment variables are dumped into the run log before the command executes.
+
+### Summary Table
+
+| Category | Count | Items |
+|---|---|---|
+| Not implemented (outstanding) | 3 | #4 child shutdown, #5 log truncation, #6 delete-kills-run |
+| Not implemented (resolved) | 5 | #1 PTY, #2 auto-service, #3 daemonize, #7 stop --force, #8 uninstall --purge |
+| Different behavior | 3 | #9 corrupted recovery, #10 invalid cron handling, #11 script paths |
+| Config not implemented | 2 | #12 ACS_LOG_LEVEL, #13 coverage enforcement |
+| Resolved cleanups | 2 | #14 fs4, #15 503 status |
+| Additions beyond spec | 3 | #16 dispatch_tx, #17 per-job timeout, #18 per-job log_environment |
+| **Total remaining deviations** | **8** | |
