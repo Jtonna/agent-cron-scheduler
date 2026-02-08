@@ -24,11 +24,11 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: acs/frontend/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install frontend dependencies
         run: npm ci
-        working-directory: acs/frontend
+        working-directory: frontend
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

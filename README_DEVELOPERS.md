@@ -58,7 +58,7 @@ cargo run -- stop
 
 ### Frontend Development
 
-The interactive Next.js dashboard in `acs/frontend/` is developed independently from
+The interactive Next.js dashboard in `frontend/` is developed independently from
 the Rust binary. It is not embedded into the binary -- the embedded `web/`
 content is a static API and CLI reference page.
 
@@ -70,14 +70,14 @@ cd acs
 cargo run -- start --foreground
 
 # Terminal 2: start the Next.js dev server
-cd acs/frontend
+cd frontend
 npm run dev
 # Open http://localhost:3000
 ```
 
 **How it works:**
 
-- The frontend API client (`acs/frontend/src/lib/api.ts`) reads
+- The frontend API client (`frontend/src/lib/api.ts`) reads
   `NEXT_PUBLIC_API_URL` to determine the API base URL. When empty (the default),
   it uses relative paths (e.g., `/api/jobs`).
 - During `npm run dev`, `next.config.ts` configures rewrites that proxy `/api/*`
@@ -195,15 +195,15 @@ acs/                     # Rust project root
       daemon.rs          # start, stop, restart, status, uninstall
     pty/
       mod.rs             # PTY abstraction (NoPtySpawner, MockPtySpawner)
-  frontend/              # Next.js interactive dashboard (runs independently)
-    src/app/             # App Router pages and layouts
-    next.config.ts       # Static export configuration
-    package.json         # Frontend dependencies
   web/                   # Static API & CLI reference page (embedded into binary)
   tests/
     api_tests.rs         # HTTP API integration tests
     cli_tests.rs         # CLI integration tests
     scheduler_tests.rs   # End-to-end scheduler tests
+frontend/                # Next.js interactive dashboard (runs independently)
+  src/app/             # App Router pages and layouts
+  next.config.ts       # Static export configuration
+  package.json         # Frontend dependencies
 docs/                    # Documentation
   ARCHITECTURE.md        # Detailed design documentation
   DEVIATIONS_FROM_SPEC.md
