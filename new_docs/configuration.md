@@ -30,11 +30,11 @@ ACS uses a JSON configuration file. All fields are optional; any omitted field f
 | `port` | integer (u16) | `8377` | TCP port the daemon HTTP server listens on. |
 | `data_dir` | string or null | `null` | Override the data directory path. When `null`, the platform default is used (see [Data Directory Locations](#data-directory-locations)). |
 | `max_log_files_per_job` | integer | `50` | Maximum number of log files retained per job. Older logs are cleaned up automatically. |
-| `max_log_file_size` | integer (bytes) | `10485760` (10 MB) | Maximum size in bytes for individual job run log files. |
+| `max_log_file_size` | integer (bytes) | `10485760` (10 MB) | Maximum size in bytes for individual job run log files. **(Not currently enforced; reserved for future use.)** |
 | `default_timeout_secs` | integer | `0` | Default timeout in seconds for job execution. A value of `0` means no timeout limit. |
 | `broadcast_capacity` | integer | `4096` | Capacity of the internal broadcast channel used for job events (SSE streaming, log updates). |
-| `pty_rows` | integer (u16) | `24` | Number of rows for the pseudo-terminal allocated to job processes. |
-| `pty_cols` | integer (u16) | `80` | Number of columns for the pseudo-terminal allocated to job processes. |
+| `pty_rows` | integer (u16) | `24` | Number of rows for the pseudo-terminal allocated to job processes. **(No effect; the production spawner uses piped I/O, not a PTY.)** |
+| `pty_cols` | integer (u16) | `80` | Number of columns for the pseudo-terminal allocated to job processes. **(No effect; the production spawner uses piped I/O, not a PTY.)** |
 
 ### Partial Configuration
 
@@ -104,10 +104,14 @@ On startup, the daemon ensures the data directory and its subdirectories (`logs/
 |---|---|
 | `ACS_DATA_DIR` | Override the data directory location. Takes effect when no `--data-dir` CLI flag and no `data_dir` config field is set. |
 | `ACS_CONFIG_DIR` | Directory to search for `config.json`. Checked at priority 2 in the config resolution order, after the `--config` CLI flag but before platform and data directory fallbacks. |
-| `RUST_LOG` | Controls the tracing/logging filter level for the **daemon process only** (not CLI client commands). Follows the `tracing_subscriber::EnvFilter` syntax. Examples: `info`, `debug`, `acs=debug,tower=warn`. Defaults to `info` if not set. CLI commands use the `-v` flag for debug output instead. |
+| `RUST_LOG` | Controls the tracing/logging filter level for the **daemon process only** (not CLI client commands). Follows the `tracing_subscriber::EnvFilter` syntax. Examples: `info`, `debug`, `acs=debug,tower=warn`. Defaults to `info` if not set. **Important:** The `-v` flag initializes its own tracing subscriber before the daemon starts, so `RUST_LOG` is silently ignored when `-v` is present. Use one or the other, not both. |
 | `LOCALAPPDATA` | (Windows only) Used to determine the default data directory. This variable is set automatically by Windows and should not normally need to be changed. |
 
 ## CLI Override Precedence
+
+**Important:** There are two `--port` flags with different purposes:
+- **Global `--port`** (e.g., `acs --port 9000 status`): Tells the CLI client which port to connect to when communicating with an already-running daemon. This does **not** affect which port the daemon listens on.
+- **`acs start --port` (`-p`)** (e.g., `acs start -p 9000`): Sets the port the daemon binds to when starting.
 
 When `acs start` is invoked, the daemon's listening port is resolved with the following precedence (highest to lowest):
 

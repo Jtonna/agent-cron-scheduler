@@ -19,7 +19,7 @@ These options are available on every subcommand. They can appear before or after
 | `--host` | | `String` | `127.0.0.1` | Daemon host address |
 | `--port` | | `u16` | `8377` | Daemon port |
 | `--verbose` | `-v` | flag | `false` | Enable verbose output |
-| `--version` | | flag | | Print version and exit |
+| `--version` | `-V` | flag | | Print version and exit |
 | `--help` | `-h` | flag | | Print help and exit |
 
 ### Examples
@@ -112,7 +112,7 @@ acs stop [OPTIONS]
 | Code | Meaning |
 |------|---------|
 | 0 | Daemon stopped successfully |
-| 1 | API returned an error during graceful shutdown |
+| 1 | Error: API returned an error, or daemon is unreachable and no system service is registered |
 
 #### Examples
 
@@ -187,7 +187,7 @@ This command has no subcommand-specific options.
 | Code | Meaning |
 |------|---------|
 | 0 | Daemon restarted successfully |
-| 1 | Daemon did not respond within 10 seconds after restart |
+| 1 | Error: the restart API call failed, or the daemon did not respond within 10 seconds after restart |
 
 #### Examples
 
@@ -237,7 +237,7 @@ acs uninstall --purge
 
 ### `acs add`
 
-> **Note:** This subcommand is currently only available on **Windows**. On macOS and Linux, use the REST API (`POST /api/jobs`) to create jobs.
+> **Note:** This subcommand is parsed on all platforms, but its handler is gated behind `#[cfg(target_os = "windows")]`. On macOS and Linux, the command is accepted by the CLI parser but execution returns an error. Use the REST API (`POST /api/jobs`) or the web UI to create jobs on non-Windows platforms.
 
 Create a new scheduled job. Exactly one of `--cmd` or `--script` must be specified.
 
@@ -252,7 +252,7 @@ acs add [OPTIONS] --name <NAME> --schedule <SCHEDULE>
 | `--name` | `-n` | `String` | **required** | Job name (must be unique) |
 | `--schedule` | `-s` | `String` | **required** | Cron schedule expression (5-field) |
 | `--cmd` | `-c` | `String` | none | Shell command to execute (conflicts with `--script`) |
-| `--script` | | `String` | none | Script file to execute, relative to `data_dir/scripts/` (conflicts with `--cmd`) |
+| `--script` | | `String` | none | Script file path to execute (conflicts with `--cmd`). Paths are passed verbatim to the shell interpreter with no resolution relative to `data_dir/scripts/`. |
 | `--timezone` | | `String` | UTC | IANA timezone name (e.g., `America/New_York`) |
 | `--working-dir` | | `String` | none | Working directory for the command |
 | `--env` | `-e` | `String` | none | Environment variable in `KEY=VALUE` format (repeatable) |
@@ -469,13 +469,13 @@ acs trigger [OPTIONS] <JOB>
 #### Behavior
 
 - Without `--follow`: Triggers the job and returns immediately with a confirmation message.
-- With `--follow`: Opens an SSE connection before triggering the job (to avoid race conditions with fast-completing jobs), then streams output to stdout until the job completes or fails.
+- With `--follow`: Opens an SSE connection (filtered by `job_id`) before triggering the job (to avoid race conditions with fast-completing jobs), then streams output to stdout until the job completes or fails. Note: the stream filters by `job_id`, not `run_id`, so if multiple runs of the same job are active, their output may interleave.
 
 #### Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Job triggered (and completed, if `--follow` was used) |
+| 0 | Job triggered (and stream ended, if `--follow` was used). Note: exit code 0 indicates the CLI operation succeeded, not that the job itself succeeded. |
 | 1 | Error (e.g., job not found) |
 
 #### Examples
@@ -512,7 +512,7 @@ acs logs [OPTIONS] <JOB>
 |--------|-------|------|---------|-------------|
 | `--follow` | | flag | `false` | Follow live output via SSE (Ctrl+C to stop) |
 | `--run` | | `String` | none | Specific run ID to view log output for |
-| `--last` | | `usize` | `20` (runtime) | Show last N runs in the run list. Default is applied in code, not shown in `--help`. |
+| `--last` | | `usize` | `20` | Show last N runs in the run list. |
 | `--tail` | | `usize` | none | Show last N lines of log output (only with `--run`) |
 | `--json` | | flag | `false` | Output as JSON |
 
@@ -520,7 +520,7 @@ acs logs [OPTIONS] <JOB>
 
 1. **List runs** (default): When neither `--follow` nor `--run` is specified, displays a table of recent runs for the job, limited by `--last` (default 20).
 2. **View run log** (`--run <RUN_ID>`): Displays the full log output for a specific run. Use `--tail` to limit to the last N lines.
-3. **Follow live** (`--follow`): Opens an SSE stream and prints job output events in real time. Shows start markers, output text, completion status, and error messages.
+3. **Follow live** (`--follow`): Opens an SSE stream and prints job output events in real time. Shows start markers, output text, completion status, and error messages. This is a long-lived stream that does not auto-terminate on job completion; use Ctrl+C to stop.
 
 #### Output Columns (Run List Mode)
 

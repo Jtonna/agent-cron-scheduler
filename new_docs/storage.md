@@ -15,7 +15,7 @@ the **data directory** (`{data_dir}`).
 ├── config.json          # Daemon config (fallback location, priority 4 of 5; see configuration.md)
 ├── daemon.log           # Daemon process log (size-managed, max 1 GB)
 ├── jobs.json            # Authoritative list of all registered jobs
-├── scripts/             # Reserved directory for user scripts
+├── scripts/             # Reserved directory (created on startup; not currently used for ScriptFile path resolution)
 └── logs/
     └── {job_id}/        # One directory per job, named by UUID
         ├── {run_id}.log          # Raw process output for a single run
@@ -69,6 +69,8 @@ with `serde_json::to_string_pretty`.  Example:
   }
 ]
 ```
+
+Note: `next_run_at` is serialized to `jobs.json` but is always `null` on disk. It is skipped during deserialization (`#[serde(skip_deserializing)]`) and only computed at runtime in API response handlers.
 
 ### In-memory caching
 
@@ -165,6 +167,10 @@ the file with `create(true).append(true)` and calls `write_all` followed by
 
 ```rust
 async fn append_log(&self, job_id: Uuid, run_id: Uuid, data: &[u8]) -> Result<()> {
+    let job_dir = self.job_dir(job_id);
+    tokio::fs::create_dir_all(&job_dir)
+        .await
+        .context("Failed to create job log directory")?;
     let log_path = self.log_path(job_id, run_id);
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
@@ -208,11 +214,14 @@ is defined in `DaemonConfig` but is **not currently enforced** at runtime.
 The `cleanup` method is called after a job run completes.  It:
 
 1. Reads all `.meta.json` files in the job's log directory.
-2. If the count is within `max_files`, returns immediately (no-op).
+2. If the count does not exceed `max_files` (i.e., `<= max_files`), returns immediately (no-op).
 3. Sorts runs by `started_at` **ascending** (oldest first).
 4. Computes `to_remove = runs.len() - max_files`.
 5. For each of the `to_remove` oldest runs, deletes both the `.meta.json` and
    `.log` files.
+
+Malformed `.meta.json` files are skipped with a warning and are not counted
+toward the run total, so they will not be cleaned up by this method.
 
 This ensures the most recent runs are always preserved.
 

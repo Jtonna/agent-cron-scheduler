@@ -173,7 +173,8 @@ The `start_daemon()` function in `daemon::mod.rs` orchestrates startup:
 2.  Apply CLI overrides     -- host_override, port_override
 3.  resolve_data_dir()      -- Determine data directory
 4.  create_data_dirs()      -- Ensure data/, data/logs/, data/scripts/ exist
-5.  Set up tracing          -- stderr + daemon.log via SizeManagedWriter
+5.  Set up tracing          -- Truncate daemon.log, then stderr + daemon.log
+                                via SizeManagedWriter (falls back to stderr-only on error)
 6.  PidFile::acquire()      -- Exclusive PID file (acs.pid)
 7.  JsonJobStore::new()     -- Load jobs.json into memory cache
 8.  FsLogStore::new()       -- Initialize logs directory
@@ -271,7 +272,7 @@ executor.spawn_job(&job)
     Return RunHandle { run_id, job_id, join_handle, kill_tx }
 ```
 
-A separate **metadata updater** task subscribes to the broadcast channel and updates job-level metadata (`last_run_at`, `last_exit_code`) on `Completed` and `Failed` events by calling `job_store.update_job()`.
+A separate **metadata updater** task subscribes to the broadcast channel and updates job-level metadata on `Completed` and `Failed` events by calling `job_store.update_job()`. On `Completed`, it sets both `last_run_at` and `last_exit_code`. On `Failed`, it sets only `last_run_at` (not `last_exit_code`, since infrastructure failures have no process exit code).
 
 ### 3.4 Shutdown Sequence
 

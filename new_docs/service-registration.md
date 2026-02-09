@@ -2,7 +2,7 @@
 
 ## Overview
 
-ACS registers itself as a **user-level service** (not system-wide) so the daemon automatically starts at login without requiring root or administrator privileges. The service runs under the current user's session, inheriting their full environment (PATH, home directory, etc.).
+ACS registers itself as a **user-level service** (not system-wide) so the daemon automatically starts at login. On macOS and Linux, this does not require root or administrator privileges. On Windows, the `schtasks /Create` command may require elevated permissions, and the task runs at the highest available privilege level (`/RL HIGHEST`).
 
 Each platform uses its native service manager:
 
@@ -29,10 +29,10 @@ Windows uses **Task Scheduler** (`schtasks.exe`). The task is created for the cu
 ### Install (Register)
 
 ```
-schtasks /Create /TN AgentCronScheduler /TR "<exe_path> start" /SC ONLOGON /RL HIGHEST /F
+schtasks /Create /TN AgentCronScheduler /TR "\"<exe_path>\" start" /SC ONLOGON /RL HIGHEST /F
 ```
 
-The `/F` flag forces creation, overwriting any existing task with the same name. The task runs `acs start` (not `--foreground`), which means the task itself completes quickly: it spawns the daemon as a hidden background process and exits. The daemon then runs independently.
+The `/F` flag forces creation, overwriting any existing task with the same name. The quotes wrap only the executable path (to handle paths with spaces), not the entire command. The task runs `acs start` (not `--foreground`), which means the task itself completes quickly: it spawns the daemon as a hidden background process and exits. The daemon then runs independently.
 
 ### Detect Registration
 
@@ -46,13 +46,17 @@ A successful exit code means the task exists; a non-zero exit code means it does
 
 > **Note:** On Windows, `acs start` in background mode does **not** use `schtasks /Run`. Instead, it spawns `acs start --foreground` directly as a hidden process via `Command::new()`. The `schtasks /Run` function exists in the codebase but is not called during normal operation.
 
-### Stop
+### Stop (Service Fallback)
+
+In practice, `acs stop` first attempts a graceful shutdown via the HTTP API (`POST /api/shutdown`). The `schtasks /End` command is only used as a fallback when the API is unreachable and the service is registered:
 
 ```
 schtasks /End /TN AgentCronScheduler
 ```
 
-Hard-kills the running task instance.
+Terminates the running task instance.
+
+Additionally, `acs stop --force` bypasses both mechanisms and reads the PID file to force-kill the daemon via `taskkill /F /PID <pid>`.
 
 ### Uninstall (Unregister)
 
@@ -121,6 +125,8 @@ fn is_service_registered() -> bool {
 launchctl load ~/Library/LaunchAgents/com.acs.scheduler.plist
 ```
 
+Note: If `launchctl load` fails, the error is silently ignored. Verify registration manually with `launchctl list | grep com.acs.scheduler`.
+
 ### Start
 
 ```
@@ -140,6 +146,8 @@ launchctl stop com.acs.scheduler
 ```
 launchctl unload ~/Library/LaunchAgents/com.acs.scheduler.plist
 ```
+
+Note: If `launchctl unload` fails, the error is silently ignored. The plist file is still deleted in step 2.
 
 2. Delete the plist file from disk.
 
@@ -204,6 +212,8 @@ loginctl enable-linger
 
 The `loginctl enable-linger` command allows the user's systemd services to continue running after the user logs out. Without it, systemd would stop all user units when the session ends.
 
+Note: Failures from `systemctl` and `loginctl` commands during install are silently ignored. If service registration fails, verify manually with `systemctl --user status acs.service`.
+
 ### Start
 
 ```
@@ -232,5 +242,7 @@ systemctl --user disable acs.service
 ```
 systemctl --user daemon-reload
 ```
+
+Note: Failures from `systemctl --user stop`, `systemctl --user disable`, and `systemctl --user daemon-reload` during uninstall are silently ignored. If the unit file cannot be deleted, the error is propagated.
 
 For details on how `acs start`, `acs stop`, and `acs uninstall` use these service registration functions, see [CLI Reference](cli-reference.md).

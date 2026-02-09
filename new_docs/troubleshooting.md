@@ -10,7 +10,7 @@ Many troubleshooting steps reference files in the ACS data directory. See [Confi
 
 ### Stale PID File
 
-**Symptom:** You see an error like `Daemon is already running (PID 12345)` but no daemon process is actually running.
+**Symptom:** You see an error like `Daemon is already running (PID 12345). PID file: <path>` but no daemon process is actually running.
 
 **Cause:** The daemon previously crashed or was killed without performing a graceful shutdown, leaving behind a stale `acs.pid` file.
 
@@ -213,8 +213,9 @@ Timeout resolution follows a per-job then daemon-default fallback. See [Job Mana
 - On daemon startup, `daemon.log` is truncated (each daemon session starts with a fresh log).
 
 **Solution:**
-- You can safely delete `daemon.log` while the daemon is running. ACS will recreate it.
-- If the automatic truncation fails for any reason (e.g., file permissions), ACS logs a warning to stderr but continues operating.
+- Restart the daemon (`acs restart`) to truncate `daemon.log` -- each daemon session starts with a fresh log.
+- Do **not** delete `daemon.log` while the daemon is running. The daemon holds the file descriptor open; on Unix, deleting the file creates an invisible unlinked inode that continues consuming disk space. On Windows, the delete will likely fail because the file is locked.
+- If the automatic size-managed truncation fails for any reason (e.g., file permissions), ACS logs a warning to stderr but continues operating.
 
 ### Orphaned Log Directories
 
@@ -273,8 +274,10 @@ ACS creates the data directory and its subdirectories (`logs/`, `scripts/`) on s
 Run the daemon in the foreground with debug logging to see detailed output:
 
 ```
-RUST_LOG=debug acs start --foreground
+acs start --foreground -v
 ```
+
+Alternatively, when running WITHOUT `-v`, you can use `RUST_LOG` for fine-grained control over log filtering (e.g., `RUST_LOG=acs=debug,tower_http=warn acs start --foreground`). Note: the `-v` flag initializes its own tracing subscriber, so `RUST_LOG` is ignored when `-v` is present. Use one or the other, not both.
 
 This produces verbose log lines to both stderr and `daemon.log`, including:
 - Config resolution steps
@@ -290,7 +293,7 @@ acs status
 ```
 
 This contacts the daemon's `/health` endpoint and displays:
-- Daemon status (running/healthy)
+- Daemon status (`"ok"` when healthy)
 - Data directory path
 - Web UI URL
 - Active and total job counts
@@ -302,6 +305,7 @@ For raw JSON output, use the global `-v` flag:
 ```
 acs -v status
 ```
+Note: `-v` also enables debug-level tracing, so the raw JSON may be interspersed with debug log lines from HTTP and other subsystems.
 
 ### View Job Logs
 
@@ -309,7 +313,7 @@ acs -v status
 acs logs <job-name>
 ```
 
-This retrieves the output from the job's most recent run. Use the web UI at `http://localhost:8377` for a richer log viewing experience with run history.
+This retrieves the output from the job's most recent run. For a richer log viewing experience with full run history, use the REST API (`GET /api/jobs/{id}/runs`) or the [API Reference](api-reference.md).
 
 ### Daemon Log Location
 
@@ -323,7 +327,7 @@ The daemon's own log file is at:
 You can directly query the health endpoint for scripting or monitoring:
 
 ```
-curl http://localhost:8377/health
+curl http://127.0.0.1:8377/health
 ```
 
 This returns a JSON object with daemon status, version, uptime, job counts, and data directory information.
@@ -382,6 +386,20 @@ This returns a JSON object with daemon status, version, uptime, job counts, and 
    - Linux: `~/.local/share/agent-cron-scheduler/daemon.log`
 2. Try running in the foreground for immediate error output: `acs start --foreground`
 3. Common root causes: port conflict, permission issues, corrupted config file.
+
+### "Daemon failed to come back up after restart"
+
+**Cause:** The `acs restart` command stopped the old daemon but the new daemon process did not respond to health checks within 10 seconds (20 retries at 500ms intervals).
+
+**Solution:**
+1. Check the daemon log for startup errors (see [Daemon Log Location](#daemon-log-location) above).
+2. Try a manual stop-and-start cycle:
+   ```
+   acs stop
+   acs start
+   ```
+3. If that also fails, try running in the foreground to see the error: `acs start --foreground`
+4. Common root causes: port conflict (old process still releasing the port), permission issues, corrupted config file.
 
 ### "Request failed: ..."
 

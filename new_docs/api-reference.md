@@ -2,7 +2,7 @@
 
 This document provides a comprehensive reference for every endpoint exposed by the Agent Cron Scheduler (ACS) HTTP server.
 
-Base URL: `http://localhost:<port>` (default port configured in `DaemonConfig`)
+Base URL: `http://127.0.0.1:8377` (default port; see [Configuration](configuration.md) for how to change it)
 
 All request and response bodies use JSON (`Content-Type: application/json`) unless otherwise noted.
 
@@ -106,7 +106,7 @@ Returns the daemon health status including uptime and job counts.
   "active_jobs": 5,
   "total_jobs": 8,
   "version": "0.1.0",
-  "data_dir": "/home/user/.local/share/acs"
+  "data_dir": "/home/user/.local/share/agent-cron-scheduler"
 }
 ```
 
@@ -117,7 +117,7 @@ Returns the daemon health status including uptime and job counts.
 | `active_jobs`    | integer | Number of enabled jobs                         |
 | `total_jobs`     | integer | Total number of jobs (enabled + disabled)      |
 | `version`        | string  | ACS version string                             |
-| `data_dir`       | string  | Filesystem path to the data directory          |
+| `data_dir`       | string  | Filesystem path to the data directory. Returns `"unknown"` if not explicitly configured. |
 
 ---
 
@@ -193,7 +193,7 @@ Create a new scheduled job.
 | Field            | Type                            | Required | Default | Description                                          |
 |------------------|---------------------------------|----------|---------|------------------------------------------------------|
 | `name`           | string                          | Yes      |         | Unique human-readable name. Cannot be empty, whitespace-only, or a valid UUID. |
-| `schedule`       | string                          | Yes      |         | Cron expression. Supports 5-field and 6-field (with seconds) syntax. |
+| `schedule`       | string                          | Yes      |         | Cron expression. Standard 5-field cron syntax. |
 | `execution`      | [ExecutionType](#executiontype) | Yes      |         | What to execute when the job triggers.               |
 | `enabled`        | bool                            | No       | `true`  | Whether the job is active for scheduling.            |
 | `timezone`       | string                          | No       | `null`  | IANA timezone name (e.g., `"America/New_York"`, `"Europe/London"`, `"UTC"`). |
@@ -461,7 +461,9 @@ Manually trigger an immediate execution of the job, regardless of its cron sched
 }
 ```
 
-Note: A `202 Accepted` response means the job was placed on the dispatch queue. Execution is asynchronous; subscribe to SSE events to monitor run progress.
+Note: A `202 Accepted` response means the job was sent to the dispatch queue. Execution is asynchronous. The response does not include a `run_id`; to obtain it, subscribe to SSE events (filtered by `job_id`) and watch for the `Started` event.
+
+**Edge case:** If the daemon's internal dispatch channel is not available (e.g., the scheduler/executor subsystem has not fully initialized), the endpoint still returns `202 Accepted` but the job will not actually execute. This is a transient condition that can occur during daemon startup.
 
 ---
 
@@ -535,7 +537,7 @@ Retrieve the output log for a specific run.
 | Parameter | Type    | Required | Default | Description                                   |
 |-----------|---------|----------|---------|-----------------------------------------------|
 | `tail`    | integer | No       | (none)  | Return only the last N lines of the log.      |
-| `format`  | string  | No       | (none)  | Reserved for future use.                      |
+| `format`  | string  | No       | (none)  | Accepted but ignored; reserved for forward compatibility. |
 
 **Response:**
 
@@ -568,6 +570,8 @@ Server-Sent Events (SSE) stream for real-time job execution and lifecycle events
 | `run_id`  | string | No       | (none)  | Filter events to only those for this run UUID.        |
 
 Both filter parameters must be valid UUIDs if provided. Invalid UUIDs are silently ignored (no filtering applied for that parameter).
+
+**Important:** When a `run_id` filter is active, `JobChanged` events are **filtered out** because they do not carry a `run_id`. If you need both run-specific events and job lifecycle events, use only the `job_id` filter.
 
 **Response:** An SSE stream (`text/event-stream`). The connection is kept alive with a keepalive comment every 15 seconds.
 
@@ -653,7 +657,7 @@ Read the daemon's own log file (`daemon.log`).
 | Parameter | Type    | Required | Default | Description                              |
 |-----------|---------|----------|---------|------------------------------------------|
 | `tail`    | integer | No       | (none)  | Return only the last N lines of the log. |
-| `format`  | string  | No       | (none)  | Reserved for future use.                 |
+| `format`  | string  | No       | (none)  | Accepted but ignored; reserved for forward compatibility. |
 
 **Response:**
 
@@ -722,7 +726,7 @@ The full job object returned by GET, POST, and PATCH endpoints.
 | `updated_at`     | string (ISO 8601)               | No       | When the job was last modified.                              |
 | `last_run_at`    | string (ISO 8601)               | Yes      | When the job last ran, or `null` if never.                   |
 | `last_exit_code` | integer (i32)                   | Yes      | Exit code of the last run, or `null`.                        |
-| `next_run_at`    | string (ISO 8601)               | Yes      | Computed next scheduled run time. Included in responses but not accepted in request bodies. `null` for disabled jobs. |
+| `next_run_at`    | string (ISO 8601)               | Yes      | Computed next scheduled run time. Only populated in `GET /api/jobs` and `GET /api/jobs/{id}` responses (not in POST or PATCH responses). `null` for disabled jobs. |
 
 ### NewJob
 
@@ -808,7 +812,7 @@ A string enum representing the state of a job run.
 | `Running`   | The job is currently executing.                 |
 | `Completed` | The job finished with an exit code.             |
 | `Failed`    | The job failed to start or encountered an error.|
-| `Killed`    | The job was forcefully terminated (daemon shutdown or user-initiated kill). |
+| `Killed`    | The job was forcefully terminated (daemon shutdown, job deletion, or user-initiated kill). |
 
 ---
 
@@ -964,7 +968,7 @@ The following validation rules are enforced on job creation (`POST /api/jobs`) a
 ### Schedule (Cron Expression)
 
 - Parsed and validated at submission time.
-- Supports standard 5-field cron syntax and 6-field extended syntax (with seconds). See [Job Management](job-management.md#cron-expressions) for full syntax details.
+- Uses standard 5-field cron syntax (`minute hour day-of-month month day-of-week`). See [Job Management](job-management.md#cron-expressions) for full syntax details.
 - Invalid expressions return a `400` with error code `validation_error` and a message starting with `"Cron error: ..."`.
 
 ### Timezone

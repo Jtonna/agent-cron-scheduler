@@ -24,7 +24,7 @@ A job represents a scheduled command or script that ACS executes on a cron-based
 | `updated_at` | `DateTime<Utc>` | Timestamp of the last update to the job definition. |
 | `last_run_at` | `Option<DateTime<Utc>>` | Timestamp of the most recent execution start, or `None` if never run. |
 | `last_exit_code` | `Option<i32>` | Exit code from the most recent completed run, or `None` if never run. |
-| `next_run_at` | `Option<DateTime<Utc>>` | Computed field. The scheduler calculates this at runtime based on the cron schedule and current time. Serialized in API responses but skipped during deserialization (`#[serde(skip_deserializing)]`), so it appears in `jobs.json` but is recalculated on load. |
+| `next_run_at` | `Option<DateTime<Utc>>` | Computed field. The scheduler calculates this at runtime based on the cron schedule and current time. Skipped during deserialization (`#[serde(skip_deserializing)]`), so it is always `null` when read from `jobs.json`. Only populated in `GET /api/jobs` and `GET /api/jobs/{id}` responses. |
 
 ### NewJob (Creation Payload)
 
@@ -42,7 +42,7 @@ When creating a job, the following fields are accepted:
 
 ### JobUpdate (Partial Update Payload)
 
-All fields in `JobUpdate` are optional. Only the fields present in the request body are modified; omitted fields remain unchanged. The `last_run_at` and `last_exit_code` fields are internal-only and cannot be set through the API (they are skipped during JSON deserialization).
+All fields in `JobUpdate` are optional. Only the fields present in the request body are modified; omitted fields remain unchanged. The `last_run_at` and `last_exit_code` fields are internal-only and cannot be set through the API (they use `#[serde(skip)]`, which excludes them from both JSON serialization and deserialization of `JobUpdate`).
 
 ---
 
@@ -95,20 +95,13 @@ PowerShell detection on Windows is based on the `.ps1` file extension (case-inse
 
 ## Cron Expressions
 
-ACS uses the [`croner`](https://crates.io/crates/croner) crate for cron expression parsing and next-occurrence calculation. Both standard 5-field and extended 6-field formats are supported.
+ACS uses the [`croner`](https://crates.io/crates/croner) crate for cron expression parsing and next-occurrence calculation. Standard 5-field cron syntax is used.
 
-### 5-Field Format (Standard)
+### Format
 
 ```
 minute  hour  day-of-month  month  day-of-week
   *       *        *          *        *
-```
-
-### 6-Field Format (With Seconds)
-
-```
-second  minute  hour  day-of-month  month  day-of-week
-  *       *       *        *          *        *
 ```
 
 ### Common Schedule Examples
@@ -140,7 +133,7 @@ For example, with schedule `*/5 * * * *`:
 
 ## Timezone Support
 
-Jobs can be configured with an IANA timezone string (e.g., `"America/New_York"`, `"Europe/London"`, `"Asia/Tokyo"`). Timezone validation uses the `chrono_tz` crate.
+Jobs can be configured with an IANA timezone string (e.g., `"America/New_York"`, `"Europe/London"`, `"Asia/Tokyo"`). Timezone validation uses the `chrono-tz` crate.
 
 ### How Timezone Affects Scheduling
 
@@ -156,7 +149,7 @@ When no timezone is set (`None`), the cron expression is evaluated directly in U
 
 **Spring forward (clocks skip ahead):** If a scheduled time falls in the skipped gap (e.g., 2:30 AM during a spring-forward transition), the `croner` crate will either advance to the next valid time on that day or skip to the next day when that time exists again. Both behaviors are considered valid.
 
-**Fall back (clocks repeat):** If a scheduled time falls in the repeated hour (e.g., 1:30 AM during a fall-back transition), the first occurrence (before the clock change) is used.
+**Fall back (clocks repeat):** If a scheduled time falls in the repeated hour (e.g., 1:30 AM during a fall-back transition), either the first or second occurrence may be returned depending on the `croner` crate's behavior.
 
 ### Default
 
@@ -182,7 +175,7 @@ Creation --> Scheduling --> Execution --> Completion
    - Creates a `JobRun` record with `Running` status.
    - Broadcasts a `Started` event.
    - Optionally dumps the environment to the log (if `log_environment` is `true`).
-   - Writes a command header (`$ <command>`) to the log.
+   - Writes a command header to the log (`$ <command>` for ShellCommand, `$ [script] <path>` for ScriptFile).
    - Spawns the process with piped stdout/stderr.
    - Streams output to both the log store and the event broadcast channel.
    - Monitors for timeout and kill signals.
@@ -196,7 +189,7 @@ Creation --> Scheduling --> Execution --> Completion
 | `Running` | Execution is in progress. | Job spawned successfully. |
 | `Completed` | Process exited (any exit code). | Process returned an exit status, including non-zero codes. Non-zero exit is **not** treated as `Failed`. |
 | `Failed` | Infrastructure error prevented normal completion. | PTY spawn failure, process wait failure, task join error, or timeout. |
-| `Killed` | Job was forcefully terminated. | Job deleted while running (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. There is no dedicated kill endpoint. |
+| `Killed` | Job was forcefully terminated. | Job deleted while running (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. There is no dedicated kill endpoint. **Note:** Killed runs broadcast a `Failed` SSE event (with error `"Job was killed"`), not a separate `Killed` event type. |
 
 ### JobRun Record
 
@@ -210,7 +203,7 @@ Each execution creates a `JobRun` with the following fields:
 | `finished_at` | `Option<DateTime<Utc>>` | When execution ended. `None` while running. |
 | `status` | `RunStatus` | One of: `Running`, `Completed`, `Failed`, `Killed`. |
 | `exit_code` | `Option<i32>` | Process exit code. Present only for `Completed` status. |
-| `log_size_bytes` | `u64` | Total bytes written to the run log. |
+| `log_size_bytes` | `u64` | Total bytes of process output captured (excludes the command header and environment dump written by the executor). |
 | `error` | `Option<String>` | Error description for `Failed` or `Killed` runs. |
 
 ---
