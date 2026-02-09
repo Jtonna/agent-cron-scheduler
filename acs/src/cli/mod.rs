@@ -240,7 +240,6 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Some(Commands::Uninstall { purge }) => {
             daemon::cmd_uninstall(&cli.host, cli.port, *purge).await
         }
-        #[cfg(target_os = "windows")]
         Some(Commands::Add {
             name,
             schedule,
