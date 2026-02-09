@@ -318,7 +318,8 @@ pub fn load_config(config_path: Option<&Path>) -> Result<DaemonConfig> {
 ///
 /// Platform defaults:
 /// - Windows: `%LOCALAPPDATA%\agent-cron-scheduler` (per-user, no admin required)
-/// - macOS/Linux: `~/.local/share/agent-cron-scheduler` via `dirs::data_dir()`
+/// - macOS: `~/Library/Application Support/agent-cron-scheduler` via `dirs::data_dir()`
+/// - Linux: `~/.local/share/agent-cron-scheduler` via `dirs::data_dir()`
 pub fn resolve_data_dir(override_dir: Option<&Path>) -> PathBuf {
     if let Some(dir) = override_dir {
         return dir.to_path_buf();
