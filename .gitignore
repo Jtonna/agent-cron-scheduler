@@ -1,1 +1,6 @@
+# Rust build output
 /target
+/acs/target
+
+# Claude Code
+.claude/settings.local.json

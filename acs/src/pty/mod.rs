@@ -1,0 +1,358 @@
+// PTY module - Process spawning abstraction.
+// Provides NoPtySpawner (piped I/O) for production and MockPtySpawner for testing.
+
+use std::io;
+use std::process::ExitStatus;
+
+/// Trait for spawning PTY processes.
+pub trait PtySpawner: Send + Sync {
+    fn spawn(
+        &self,
+        cmd: portable_pty::CommandBuilder,
+        rows: u16,
+        cols: u16,
+    ) -> anyhow::Result<Box<dyn PtyProcess>>;
+}
+
+/// Trait for interacting with a spawned PTY process.
+pub trait PtyProcess: Send {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
+    fn kill(&mut self) -> io::Result<()>;
+    fn wait(&mut self) -> io::Result<ExitStatus>;
+}
+
+// This module provides NoPtySpawner as the production process spawner.
+// It uses piped I/O via std::process::Command, which reliably handles EOF
+// on all platforms. PTY emulation is intentionally not used.
+
+// --- NoPty implementation using std::process::Command ---
+
+/// A PTY spawner that uses plain std::process::Command with piped I/O
+/// instead of a real PTY. Useful for testing and environments where
+/// PTY is not available.
+pub struct NoPtySpawner;
+
+impl PtySpawner for NoPtySpawner {
+    fn spawn(
+        &self,
+        cmd: portable_pty::CommandBuilder,
+        _rows: u16,
+        _cols: u16,
+    ) -> anyhow::Result<Box<dyn PtyProcess>> {
+        use std::process::{Command, Stdio};
+
+        let args = cmd.get_argv();
+        if args.is_empty() {
+            return Err(anyhow::anyhow!("Empty command"));
+        }
+
+        let program = args[0].to_string_lossy().to_string();
+        let mut command = Command::new(&program);
+
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, cmd.exe /C needs the command string passed without
+            // Rust's automatic re-quoting, otherwise embedded quotes get mangled.
+            // Rust's Command::arg() uses MSVC C runtime escaping (backslash-escaping
+            // internal quotes), but cmd.exe does not recognize backslash as an escape
+            // character — it uses its own parsing rules. Using raw_arg bypasses
+            // Rust's automatic quoting and sends the string to CreateProcessW as-is.
+            use std::os::windows::process::CommandExt;
+            let raw_args: String = args[1..]
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            command.raw_arg(raw_args);
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            for arg in &args[1..] {
+                command.arg(arg);
+            }
+        }
+
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::null());
+
+        // Forward working directory and environment variables from CommandBuilder.
+        // Previously these were silently dropped, causing jobs with working_dir
+        // or env_vars to ignore those settings.
+        if let Some(cwd) = cmd.get_cwd() {
+            command.current_dir(cwd);
+        }
+        for (key, val) in cmd.iter_extra_env_as_str() {
+            command.env(key, val);
+        }
+
+        let child = command.spawn()?;
+
+        Ok(Box::new(NoPtyProcess { child }))
+    }
+}
+
+struct NoPtyProcess {
+    child: std::process::Child,
+}
+
+impl PtyProcess for NoPtyProcess {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if let Some(ref mut stdout) = self.child.stdout {
+            use std::io::Read;
+            stdout.read(buf)
+        } else {
+            Ok(0)
+        }
+    }
+
+    fn kill(&mut self) -> io::Result<()> {
+        self.child.kill()
+    }
+
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.child.wait()
+    }
+}
+
+// --- Mock implementations for testing ---
+
+use std::sync::{Arc, Mutex};
+
+/// Configuration for creating a MockPtyProcess.
+#[derive(Clone, Default)]
+pub struct MockPtyConfig {
+    /// Output data the mock process will produce
+    pub output: Vec<Vec<u8>>,
+    /// Exit code to return
+    pub exit_code: i32,
+    /// Whether spawn should fail with an error
+    pub spawn_error: Option<String>,
+    /// Delay between output chunks in milliseconds (for timeout testing)
+    pub chunk_delay_ms: u64,
+}
+
+/// Mock PTY spawner for testing.
+pub struct MockPtySpawner {
+    config: Arc<Mutex<MockPtyConfig>>,
+}
+
+impl MockPtySpawner {
+    pub fn new(config: MockPtyConfig) -> Self {
+        Self {
+            config: Arc::new(Mutex::new(config)),
+        }
+    }
+
+    /// Create a MockPtySpawner that produces the given output and exits with the given code.
+    pub fn with_output_and_exit(output: Vec<Vec<u8>>, exit_code: i32) -> Self {
+        Self::new(MockPtyConfig {
+            output,
+            exit_code,
+            spawn_error: None,
+            chunk_delay_ms: 0,
+        })
+    }
+
+    /// Create a MockPtySpawner with a delay between chunks (for timeout testing).
+    pub fn with_slow_output(output: Vec<Vec<u8>>, exit_code: i32, chunk_delay_ms: u64) -> Self {
+        Self::new(MockPtyConfig {
+            output,
+            exit_code,
+            spawn_error: None,
+            chunk_delay_ms,
+        })
+    }
+
+    /// Create a MockPtySpawner that fails to spawn with the given error.
+    pub fn with_spawn_error(error: &str) -> Self {
+        Self::new(MockPtyConfig {
+            spawn_error: Some(error.to_string()),
+            ..Default::default()
+        })
+    }
+}
+
+impl PtySpawner for MockPtySpawner {
+    fn spawn(
+        &self,
+        _cmd: portable_pty::CommandBuilder,
+        _rows: u16,
+        _cols: u16,
+    ) -> anyhow::Result<Box<dyn PtyProcess>> {
+        let config = self.config.lock().unwrap().clone();
+
+        if let Some(error) = config.spawn_error {
+            return Err(anyhow::anyhow!(error));
+        }
+
+        Ok(Box::new(MockPtyProcess {
+            output_chunks: config.output,
+            chunk_index: 0,
+            exit_code: config.exit_code,
+            chunk_delay_ms: config.chunk_delay_ms,
+        }))
+    }
+}
+
+/// Mock PTY process for testing.
+pub struct MockPtyProcess {
+    output_chunks: Vec<Vec<u8>>,
+    chunk_index: usize,
+    exit_code: i32,
+    chunk_delay_ms: u64,
+}
+
+impl PtyProcess for MockPtyProcess {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.chunk_delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(self.chunk_delay_ms));
+        }
+
+        if self.chunk_index >= self.output_chunks.len() {
+            // Simulate EOF
+            return Ok(0);
+        }
+
+        let chunk = &self.output_chunks[self.chunk_index];
+        let len = std::cmp::min(buf.len(), chunk.len());
+        buf[..len].copy_from_slice(&chunk[..len]);
+        self.chunk_index += 1;
+        Ok(len)
+    }
+
+    fn kill(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        Ok(exit_status_from_code(self.exit_code))
+    }
+}
+
+/// Helper to create an ExitStatus from a raw exit code.
+/// On Windows, uses a direct approach; on Unix, encodes the exit code.
+fn exit_status_from_code(code: i32) -> ExitStatus {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        ExitStatus::from_raw(code as u32)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        ExitStatus::from_raw(code << 8)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mock_pty_spawner_returns_configured_output_and_exit_code() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"hello\n".to_vec()], 0);
+        let cmd = portable_pty::CommandBuilder::new("echo");
+        let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
+
+        let mut buf = [0u8; 1024];
+        let n = process.read(&mut buf).expect("read");
+        assert_eq!(&buf[..n], b"hello\n");
+
+        // Next read should return EOF (0)
+        let n = process.read(&mut buf).expect("read");
+        assert_eq!(n, 0);
+
+        let status = process.wait().expect("wait");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn test_mock_pty_spawner_nonzero_exit() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"error output\n".to_vec()], 1);
+        let cmd = portable_pty::CommandBuilder::new("fail");
+        let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
+
+        let mut buf = [0u8; 1024];
+        let n = process.read(&mut buf).expect("read");
+        assert_eq!(&buf[..n], b"error output\n");
+
+        let status = process.wait().expect("wait");
+        assert!(!status.success());
+    }
+
+    #[test]
+    fn test_mock_pty_spawner_spawn_error() {
+        let spawner = MockPtySpawner::with_spawn_error("PTY not available");
+        let cmd = portable_pty::CommandBuilder::new("echo");
+        let result = spawner.spawn(cmd, 24, 80);
+        assert!(result.is_err());
+        let err = result.err().expect("should be an error");
+        assert!(err.to_string().contains("PTY not available"));
+    }
+
+    #[test]
+    fn test_mock_pty_process_multiple_chunks() {
+        let spawner = MockPtySpawner::with_output_and_exit(
+            vec![
+                b"chunk1\n".to_vec(),
+                b"chunk2\n".to_vec(),
+                b"chunk3\n".to_vec(),
+            ],
+            0,
+        );
+        let cmd = portable_pty::CommandBuilder::new("echo");
+        let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
+
+        let mut buf = [0u8; 1024];
+
+        let n = process.read(&mut buf).expect("read");
+        assert_eq!(&buf[..n], b"chunk1\n");
+
+        let n = process.read(&mut buf).expect("read");
+        assert_eq!(&buf[..n], b"chunk2\n");
+
+        let n = process.read(&mut buf).expect("read");
+        assert_eq!(&buf[..n], b"chunk3\n");
+
+        // EOF
+        let n = process.read(&mut buf).expect("read");
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_mock_pty_process_empty_output() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![], 0);
+        let cmd = portable_pty::CommandBuilder::new("true");
+        let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
+
+        let mut buf = [0u8; 1024];
+        let n = process.read(&mut buf).expect("read");
+        assert_eq!(n, 0);
+
+        let status = process.wait().expect("wait");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn test_mock_pty_process_kill() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![], 0);
+        let cmd = portable_pty::CommandBuilder::new("sleep");
+        let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
+        assert!(process.kill().is_ok());
+    }
+
+    #[test]
+    fn test_exit_status_from_code_zero() {
+        let status = exit_status_from_code(0);
+        assert!(status.success());
+    }
+
+    #[test]
+    fn test_exit_status_from_code_nonzero() {
+        let status = exit_status_from_code(1);
+        assert!(!status.success());
+    }
+}

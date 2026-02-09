@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Cron Scheduler - API Reference</title>
+  <script>
+    // Prevent SwaggerUI StandalonePreset from auto-enabling dark mode.
+    // Its DarkModeToggle component adds "dark-mode" to <html> on mount
+    // when the OS prefers dark color scheme. We remove it immediately
+    // so the standard light theme is always shown.
+    new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.target === document.documentElement &&
+            document.documentElement.classList.contains("dark-mode")) {
+          document.documentElement.classList.remove("dark-mode");
+        }
+      }
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  </script>
+  <link rel="stylesheet" href="swagger-ui.css">
+  <style>
+    html, body {
+      background: #fafafa;
+      color-scheme: light;
+    }
+  </style>
+</head>
+<body style="background: #fafafa;">
+  <div id="swagger-ui"></div>
+  <script src="swagger-ui-bundle.js"></script>
+  <script src="swagger-ui-standalone-preset.js"></script>
+  <script>
+    window.onload = () => {
+      SwaggerUIBundle({
+        url: "./openapi.yaml",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        presets: [
+          SwaggerUIBundle.presets.apis,
+          SwaggerUIStandalonePreset,
+        ],
+        plugins: [
+          SwaggerUIBundle.plugins.DownloadUrl,
+        ],
+        layout: "StandaloneLayout",
+      });
+    };
+  </script>
+</body>
+</html>
