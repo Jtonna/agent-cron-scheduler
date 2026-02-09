@@ -178,16 +178,7 @@ docs/                    # Documentation
 
 ## Documentation
 
-| Document | Covers |
-|----------|--------|
-| [Architecture](docs/architecture.md) | System overview, module structure, data flow, concurrency model, key design decisions. |
-| [Configuration](docs/configuration.md) | Config file format, field reference, resolution order, data directory locations, environment variables. |
-| [CLI Reference](docs/cli-reference.md) | All `acs` subcommands: flags, options, exit codes, usage examples. |
-| [API Reference](docs/api-reference.md) | REST API endpoints: routes, request/response formats, status codes, SSE events, data models. |
-| [Job Management](docs/job-management.md) | Job model, execution types, cron expressions, timezone support, job lifecycle, validation rules. |
-| [Service Registration](docs/service-registration.md) | Platform-specific service setup: Windows Task Scheduler, macOS launchd, Linux systemd. |
-| [Storage](docs/storage.md) | On-disk persistence: job store, log store, file formats, log rotation, daemon log management. |
-| [Troubleshooting](docs/troubleshooting.md) | Common problems and solutions: startup issues, job execution, logs, data corruption, CLI errors. |
+Full system documentation for developers and AI agents is available in the [docs/](docs/INDEX.md) directory.
 
 ## License
 
