@@ -693,8 +693,8 @@ pub async fn start_daemon(
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
-        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "info".into());
+        let env_filter =
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
 
         let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
 
@@ -1845,8 +1845,7 @@ mod tests {
         let tmp_dir = TempDir::new().expect("create temp dir");
         let log_path = tmp_dir.path().join("daemon.log");
 
-        let mut writer =
-            SizeManagedWriter::new(log_path.clone(), 1024).expect("create writer");
+        let mut writer = SizeManagedWriter::new(log_path.clone(), 1024).expect("create writer");
 
         let data = b"hello world\n";
         let n = writer.write(data).expect("write");
@@ -1865,12 +1864,11 @@ mod tests {
 
         // Use a small max_size so truncation triggers quickly.
         let max_size: u64 = 100;
-        let mut writer =
-            SizeManagedWriter::new(log_path.clone(), max_size).expect("create writer");
+        let mut writer = SizeManagedWriter::new(log_path.clone(), max_size).expect("create writer");
 
         // Write 10 lines of 12 bytes each = 120 bytes total, exceeding 100.
         for i in 0..10 {
-            write!(writer, "line {:05}\n", i).expect("write line");
+            writeln!(writer, "line {:05}", i).expect("write line");
         }
         writer.flush().expect("flush");
 
@@ -1903,8 +1901,7 @@ mod tests {
         let log_path = tmp_dir.path().join("daemon.log");
 
         let max_size: u64 = 40;
-        let mut writer =
-            SizeManagedWriter::new(log_path.clone(), max_size).expect("create writer");
+        let mut writer = SizeManagedWriter::new(log_path.clone(), max_size).expect("create writer");
 
         // Write lines of varying lengths.
         writer.write_all(b"short\n").expect("write");
@@ -1920,16 +1917,11 @@ mod tests {
             // by ensuring the content either starts at the first byte or after
             // a newline boundary.
             let lines: Vec<&str> = content.lines().collect();
-            assert!(
-                !lines.is_empty(),
-                "Should have at least one complete line"
-            );
+            assert!(!lines.is_empty(), "Should have at least one complete line");
             // Every line should be one of the known lines (no partial lines).
             for line in &lines {
                 assert!(
-                    *line == "short"
-                        || *line == "medium line"
-                        || *line == "another line here",
+                    *line == "short" || *line == "medium line" || *line == "another line here",
                     "Found unexpected partial line: '{}'",
                     line
                 );
@@ -1943,8 +1935,7 @@ mod tests {
         let log_path = tmp_dir.path().join("daemon.log");
 
         // Create an empty file, then call truncate_oldest_quarter directly.
-        let mut writer =
-            SizeManagedWriter::new(log_path.clone(), 100).expect("create writer");
+        let mut writer = SizeManagedWriter::new(log_path.clone(), 100).expect("create writer");
         writer.truncate_oldest_quarter().expect("truncate empty");
         assert_eq!(writer.bytes_written, 0);
     }
@@ -1973,8 +1964,7 @@ mod tests {
         // Pre-populate the file.
         std::fs::write(&log_path, "existing content\n").expect("write seed");
 
-        let writer =
-            SizeManagedWriter::new(log_path.clone(), 1024).expect("create writer");
+        let writer = SizeManagedWriter::new(log_path.clone(), 1024).expect("create writer");
         assert_eq!(
             writer.bytes_written, 17,
             "bytes_written should be seeded from the existing file size"
@@ -1988,12 +1978,11 @@ mod tests {
 
         // Very small max_size to trigger multiple truncations.
         let max_size: u64 = 50;
-        let mut writer =
-            SizeManagedWriter::new(log_path.clone(), max_size).expect("create writer");
+        let mut writer = SizeManagedWriter::new(log_path.clone(), max_size).expect("create writer");
 
         // Write enough data to trigger truncation multiple times.
         for i in 0..20 {
-            write!(writer, "iteration {:04}\n", i).expect("write");
+            writeln!(writer, "iteration {:04}", i).expect("write");
         }
         writer.flush().expect("flush");
 

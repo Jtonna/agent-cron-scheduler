@@ -53,7 +53,12 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/logs", get(routes::get_daemon_logs))
         .route("/api/service/status", get(routes::service_status))
         .with_state(state)
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
         .fallback(assets::serve_embedded)
 }
 
@@ -1354,8 +1359,10 @@ mod tests {
     async fn test_get_daemon_logs_no_file() {
         // Use a temp dir so we don't pick up a real daemon.log from the system
         let tmp_dir = tempfile::TempDir::new().unwrap();
-        let mut config = DaemonConfig::default();
-        config.data_dir = Some(tmp_dir.path().to_path_buf());
+        let config = DaemonConfig {
+            data_dir: Some(tmp_dir.path().to_path_buf()),
+            ..Default::default()
+        };
 
         let (event_tx, _) = broadcast::channel::<JobEvent>(4096);
         let state = Arc::new(AppState {

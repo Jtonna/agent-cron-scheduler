@@ -75,12 +75,7 @@ mod platform {
 
         let status = std::process::Command::new("schtasks")
             .args([
-                "/Create",
-                "/TN", TASK_NAME,
-                "/TR", &tr,
-                "/SC", "ONLOGON",
-                "/RL", "HIGHEST",
-                "/F",
+                "/Create", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON", "/RL", "HIGHEST", "/F",
             ])
             .status()
             .context("Failed to run schtasks")?;

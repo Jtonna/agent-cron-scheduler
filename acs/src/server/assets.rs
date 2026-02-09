@@ -81,10 +81,7 @@ mod tests {
             return;
         }
 
-        let req = Request::builder()
-            .uri("/")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
 
         let response = serve_embedded(req).await;
 
@@ -117,10 +114,7 @@ mod tests {
     #[tokio::test]
     async fn test_serve_unknown_asset_returns_404() {
         for asset in &["/nonexistent.js", "/missing.css", "/favicon.png"] {
-            let req = Request::builder()
-                .uri(*asset)
-                .body(Body::empty())
-                .unwrap();
+            let req = Request::builder().uri(*asset).body(Body::empty()).unwrap();
             let response = serve_embedded(req).await;
             assert_eq!(
                 response.status(),

@@ -121,8 +121,10 @@ async fn test_end_to_end_log_cleanup_works_with_real_store() {
     ) as Arc<dyn LogStore>;
 
     // Use a config with max_log_files_per_job = 2
-    let mut config = DaemonConfig::default();
-    config.max_log_files_per_job = 2;
+    let config = DaemonConfig {
+        max_log_files_per_job: 2,
+        ..Default::default()
+    };
     let config = Arc::new(config);
 
     let (event_tx, _event_rx) = broadcast::channel::<JobEvent>(4096);

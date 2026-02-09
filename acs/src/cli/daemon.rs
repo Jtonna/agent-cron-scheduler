@@ -84,8 +84,7 @@ pub async fn cmd_start(
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.stderr(log_file);
         cmd.stdout(std::process::Stdio::null());
-        cmd.spawn()
-            .context("Failed to spawn daemon process")?;
+        cmd.spawn().context("Failed to spawn daemon process")?;
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -117,11 +116,17 @@ pub async fn cmd_start(
         println!("Use 'acs stop' to stop the daemon.");
         Ok(())
     } else {
-        eprintln!("Warning: Daemon was spawned but is not responding on port {}.", port);
+        eprintln!(
+            "Warning: Daemon was spawned but is not responding on port {}.",
+            port
+        );
         #[cfg(target_os = "windows")]
         {
             let data_dir = crate::daemon::resolve_data_dir(data_dir.map(std::path::Path::new));
-            eprintln!("Check {} for errors.", data_dir.join("daemon.log").display());
+            eprintln!(
+                "Check {} for errors.",
+                data_dir.join("daemon.log").display()
+            );
         }
         Err(anyhow::anyhow!("Daemon failed to start"))
     }

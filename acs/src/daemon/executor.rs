@@ -206,7 +206,8 @@ impl Executor {
 
             // If log_environment is enabled, dump full environment before command
             if log_environment {
-                let mut env_map: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+                let mut env_map: std::collections::BTreeMap<String, String> =
+                    std::env::vars().collect();
                 // Merge job-specific env vars (these override inherited ones)
                 if let Some(ref job_envs) = job_env_vars {
                     for (k, v) in job_envs {
@@ -1019,8 +1020,10 @@ mod tests {
         broadcast::Receiver<JobEvent>,
         Arc<InMemoryLogStore>,
     ) {
-        let mut config = DaemonConfig::default();
-        config.default_timeout_secs = timeout_secs;
+        let config = DaemonConfig {
+            default_timeout_secs: timeout_secs,
+            ..Default::default()
+        };
         let config = Arc::new(config);
         let (event_tx, event_rx) = broadcast::channel::<JobEvent>(4096);
         let log_store = Arc::new(InMemoryLogStore::new());

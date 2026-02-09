@@ -323,9 +323,7 @@ mod tests {
         let updated = store.update_job(created.id, update).await.expect("update");
         assert_eq!(updated.name, "updated-job");
         assert_eq!(updated.schedule, "0 * * * *");
-        assert!(
-            updated.updated_at > created.updated_at || updated.updated_at == created.updated_at
-        );
+        assert!(updated.updated_at >= created.updated_at);
     }
 
     #[tokio::test]
