@@ -14,3 +14,4 @@ Documentation for the Agent Cron Scheduler (ACS) -- a cross-platform cron schedu
 | [Service Registration](service-registration.md) | Platform-specific service setup: Windows Task Scheduler, macOS launchd, Linux systemd. |
 | [Storage](storage.md) | On-disk persistence: JsonJobStore, FsLogStore, file formats, log rotation, daemon log management, storage traits. |
 | [Troubleshooting](troubleshooting.md) | Common problems and solutions: startup issues, job execution, logs, data corruption, CLI errors. |
+| [Beads → GitHub Sync](beads-sync.md) | How local beads issues sync to GitHub Issues and the Projects kanban board on merge to main. |

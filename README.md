@@ -176,6 +176,10 @@ docs/                    # Documentation
 
 ---
 
+## Issue Tracking
+
+ACS uses [beads](https://github.com/steveyegge/beads) for git-backed issue tracking. Issues live in `.beads/issues.jsonl` and are automatically synced to the [GitHub Projects kanban board](https://github.com/Jtonna/agent-cron-scheduler/projects) when merged to `main`. See [docs/beads-sync.md](docs/beads-sync.md) for details.
+
 ## Documentation
 
 Full system documentation for developers and AI agents is available in the [docs/](docs/INDEX.md) directory.
