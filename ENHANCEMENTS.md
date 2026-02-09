@@ -241,3 +241,45 @@ User (Telegram)
 ### Priority
 
 High. This is the prerequisite for using ACS as the execution backend for the Chat Router, which is needed for Telegram/Discord/web chat integration across both VantageFeed and RealestateWizard.
+
+---
+
+## ENH-002: Output Parsing
+
+### Status
+
+Not currently supported. Requires design and implementation.
+
+### Problem
+
+ACS streams raw stdout/stderr from spawned processes via SSE Output events. When the job command is `claude -p --output-format stream-json`, the output is newline-delimited JSON (NDJSON) containing structured events like `content_block_delta`, `message_stop`, etc. — not clean text.
+
+Every consumer of ACS output (the MTTD chat router, a web UI, monitoring tools) would need to implement its own parser for each output format. This duplicates work and pushes format-specific knowledge into every downstream system.
+
+### Proposed Enhancement
+
+Add an optional `outputParser` field to job definitions that tells ACS how to parse raw process output before broadcasting via SSE.
+
+```json
+{
+  "name": "realestate-chat",
+  "execution": { "type": "ShellCommand", "value": "claude -p" },
+  "outputParser": "claude-stream-json"
+}
+```
+
+When an `outputParser` is set, ACS processes raw output through the specified parser and emits clean text in Output events instead of raw bytes. When no parser is set, behavior is unchanged (raw output).
+
+### Built-in Parsers
+
+- `claude-stream-json` — Parses Claude CLI `--output-format stream-json` NDJSON. Extracts text content from `content_block_delta` events, ignores metadata events.
+- `json-result` — Parses Claude CLI `--output-format json`. Extracts the `result` field from the final JSON blob.
+- `raw` (default) — No parsing. Current behavior.
+
+### Why This Belongs in ACS
+
+ACS knows what command it ran and owns the output stream. Parsing at the source means all downstream consumers get clean text without needing format-specific knowledge. This is especially important as more consumers connect (chat router, web dashboards, log viewers, webhooks).
+
+### Priority
+
+Medium. The MTTD chat router can work without this by treating all output as raw text, but the user experience improves significantly when output is clean. Should be implemented after ENH-001.
