@@ -488,6 +488,7 @@ pub async fn graceful_shutdown(
                     exit_code: None,
                     log_size_bytes: run.log_size_bytes,
                     error: Some("Daemon shutting down".to_string()),
+                    trigger_params: run.trigger_params.clone(),
                 };
                 if let Err(e) = log_store.update_run(&killed_run).await {
                     tracing::error!("Failed to mark run {} as Killed: {}", run_id, e);
@@ -781,7 +782,8 @@ pub async fn start_daemon(
     let active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>> = Arc::new(RwLock::new(HashMap::new()));
 
     // Create dispatch channel (used by both scheduler and API trigger)
-    let (dispatch_tx, mut dispatch_rx) = tokio::sync::mpsc::channel::<crate::models::Job>(64);
+    let (dispatch_tx, mut dispatch_rx) =
+        tokio::sync::mpsc::channel::<crate::models::DispatchRequest>(64);
     let dispatch_tx_for_api = dispatch_tx.clone();
 
     // Create AppState
@@ -826,14 +828,21 @@ pub async fn start_daemon(
     // Dispatch loop: receives jobs from scheduler and spawns them via executor
     let dispatch_active_runs = Arc::clone(&active_runs);
     let dispatch_handle = tokio::spawn(async move {
-        while let Some(job) = dispatch_rx.recv().await {
-            match executor.spawn_job(&job).await {
+        while let Some(request) = dispatch_rx.recv().await {
+            match executor
+                .spawn_job(
+                    &request.job,
+                    request.run_id,
+                    request.trigger_params.as_ref(),
+                )
+                .await
+            {
                 Ok(handle) => {
                     let job_id = handle.job_id;
                     dispatch_active_runs.write().await.insert(job_id, handle);
                 }
                 Err(e) => {
-                    tracing::error!("Failed to spawn job {}: {}", job.name, e);
+                    tracing::error!("Failed to spawn job {}: {}", request.job.name, e);
                 }
             }
         }
@@ -1198,6 +1207,7 @@ mod tests {
             exit_code: None,
             log_size_bytes: 0,
             error: None,
+            trigger_params: None,
         };
         log_store.create_run(&running_run).await.unwrap();
 

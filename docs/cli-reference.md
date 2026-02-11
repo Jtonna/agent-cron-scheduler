@@ -237,8 +237,6 @@ acs uninstall --purge
 
 ### `acs add`
 
-> **Note:** This subcommand is parsed on all platforms, but its handler is gated behind `#[cfg(target_os = "windows")]`. On macOS and Linux, the command is accepted by the CLI parser but execution returns an error. Use the REST API (`POST /api/jobs`) or the web UI to create jobs on non-Windows platforms.
-
 Create a new scheduled job. Exactly one of `--cmd` or `--script` must be specified.
 
 ```
@@ -448,7 +446,7 @@ acs disable 550e8400-e29b-41d4-a716-446655440000
 
 ### `acs trigger`
 
-Manually trigger an immediate run of a job, regardless of its cron schedule.
+Manually trigger an immediate run of a job, regardless of its cron schedule. Optionally provide per-invocation parameters that override job defaults for a single run.
 
 ```
 acs trigger [OPTIONS] <JOB>
@@ -465,11 +463,30 @@ acs trigger [OPTIONS] <JOB>
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
 | `--follow` | | flag | `false` | Follow the job output in real time via SSE (Server-Sent Events) |
+| `--args` | | `String` | none | Extra arguments appended to the job's command string for this run only |
+| `--env` | `-e` | `String` | none | Per-trigger environment variable in `KEY=VALUE` format (repeatable) |
+| `--input` | | `String` | none | Data sent to the process's stdin, then EOF |
 
 #### Behavior
 
-- Without `--follow`: Triggers the job and returns immediately with a confirmation message.
+- Without `--follow`: Triggers the job and returns immediately with a confirmation message that includes the run ID.
 - With `--follow`: Opens an SSE connection (filtered by `job_id`) before triggering the job (to avoid race conditions with fast-completing jobs), then streams output to stdout until the job completes or fails. Note: the stream filters by `job_id`, not `run_id`, so if multiple runs of the same job are active, their output may interleave.
+
+**Trigger parameter behavior:**
+
+- **`--args`**: Appended to the job's base command. For a job with command `"backup.sh"`, `--args="--full --verbose"` results in the effective command `"backup.sh --full --verbose"`. This applies to both `ShellCommand` and `ScriptFile` execution types.
+- **`--env` / `-e`**: Per-trigger environment variables in `KEY=VALUE` format. Can be repeated for multiple variables. These override the job's configured `env_vars` for this single run (precedence: inherited env < job `env_vars` < trigger env).
+- **`--input`**: The provided string is written to the spawned process's stdin immediately after launch, then stdin is closed (EOF). Useful for commands that read from stdin.
+
+#### Output
+
+Without `--follow`, the command prints:
+
+```
+Job 'backup' triggered (run: 01941234-bbbb-7abc-def0-123456789abc).
+```
+
+The run ID can be used with `acs logs <job> --run <run_id>` to view the output of this specific run.
 
 #### Exit Codes
 
@@ -486,6 +503,18 @@ acs trigger backup
 
 # Trigger and watch output in real time
 acs trigger backup --follow
+
+# Trigger with extra arguments
+acs trigger backup --args="--full --verbose"
+
+# Trigger with per-run environment variables
+acs trigger deploy -e "ENV=staging" -e "DRY_RUN=true"
+
+# Trigger with stdin input
+acs trigger my-job --input "yes"
+
+# Combine all trigger parameters
+acs trigger backup --args="--full" -e "MODE=manual" --input "confirm" --follow
 ```
 
 ---
@@ -512,7 +541,7 @@ acs logs [OPTIONS] <JOB>
 |--------|-------|------|---------|-------------|
 | `--follow` | | flag | `false` | Follow live output via SSE (Ctrl+C to stop) |
 | `--run` | | `String` | none | Specific run ID to view log output for |
-| `--last` | | `usize` | `20` | Show last N runs in the run list. |
+| `--last` | | `usize` | `20` (if omitted) | Show last N runs in the run list. Default applied in handler, not visible in `--help`. |
 | `--tail` | | `usize` | none | Show last N lines of log output (only with `--run`) |
 | `--json` | | flag | `false` | Output as JSON |
 

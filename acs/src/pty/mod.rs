@@ -19,6 +19,12 @@ pub trait PtyProcess: Send {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
     fn kill(&mut self) -> io::Result<()>;
     fn wait(&mut self) -> io::Result<ExitStatus>;
+    /// Write data to the process's stdin. Default is no-op.
+    fn write_stdin(&mut self, _data: &[u8]) -> io::Result<()> {
+        Ok(())
+    }
+    /// Close the stdin handle, signaling EOF to the process. Default is no-op.
+    fn close_stdin(&mut self) {}
 }
 
 // This module provides NoPtySpawner as the production process spawner.
@@ -76,7 +82,7 @@ impl PtySpawner for NoPtySpawner {
         command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .stdin(Stdio::null());
+            .stdin(Stdio::piped());
 
         // Forward working directory and environment variables from CommandBuilder.
         // Previously these were silently dropped, causing jobs with working_dir
@@ -114,6 +120,19 @@ impl PtyProcess for NoPtyProcess {
 
     fn wait(&mut self) -> io::Result<ExitStatus> {
         self.child.wait()
+    }
+
+    fn write_stdin(&mut self, data: &[u8]) -> io::Result<()> {
+        if let Some(ref mut stdin) = self.child.stdin {
+            use std::io::Write;
+            stdin.write_all(data)?;
+            stdin.flush()?;
+        }
+        Ok(())
+    }
+
+    fn close_stdin(&mut self) {
+        self.child.stdin.take();
     }
 }
 

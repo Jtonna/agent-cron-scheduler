@@ -5,6 +5,9 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use tokio::sync::{mpsc, Notify};
 
+use uuid::Uuid;
+
+use crate::models::DispatchRequest;
 use crate::models::Job;
 use crate::storage::JobStore;
 
@@ -111,7 +114,7 @@ pub struct Scheduler {
     job_store: Arc<dyn JobStore>,
     clock: Arc<dyn Clock>,
     notify: Arc<Notify>,
-    dispatch_tx: mpsc::Sender<Job>,
+    dispatch_tx: mpsc::Sender<DispatchRequest>,
 }
 
 impl Scheduler {
@@ -120,7 +123,7 @@ impl Scheduler {
         job_store: Arc<dyn JobStore>,
         clock: Arc<dyn Clock>,
         notify: Arc<Notify>,
-        dispatch_tx: mpsc::Sender<Job>,
+        dispatch_tx: mpsc::Sender<DispatchRequest>,
     ) -> Self {
         Self {
             job_store,
@@ -170,7 +173,12 @@ impl Scheduler {
                     let now = self.clock.now();
                     for (job, next_time) in &next_runs {
                         if *next_time <= now {
-                            let _ = self.dispatch_tx.send(job.clone()).await;
+                            let request = DispatchRequest {
+                                job: job.clone(),
+                                run_id: Uuid::now_v7(),
+                                trigger_params: None,
+                            };
+                            let _ = self.dispatch_tx.send(request).await;
                         }
                     }
                 }
@@ -446,7 +454,7 @@ mod tests {
         let store = Arc::new(InMemoryJobStore::new());
         let notify = Arc::new(Notify::new());
         let clock = Arc::new(FakeClock::new(Utc::now()));
-        let (tx, mut rx) = mpsc::channel::<Job>(16);
+        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
         let scheduler = Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx);
 
@@ -492,7 +500,7 @@ mod tests {
         store.add_job(job.clone()).await;
 
         let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<Job>(16);
+        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
         let clock_clone = clock.clone();
         let scheduler = Scheduler::new(store.clone(), clock_clone, notify.clone(), tx);
@@ -518,7 +526,7 @@ mod tests {
         // Should have received the dispatched job
         let dispatched = rx.try_recv();
         assert!(dispatched.is_ok(), "Job should have been dispatched");
-        assert_eq!(dispatched.unwrap().name, "minutely-job");
+        assert_eq!(dispatched.unwrap().job.name, "minutely-job");
 
         handle.abort();
     }
@@ -539,7 +547,7 @@ mod tests {
         store.add_job(disabled_job).await;
 
         let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<Job>(16);
+        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
         let scheduler = Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx);
 
@@ -585,7 +593,7 @@ mod tests {
             .await;
 
         let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<Job>(16);
+        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
         let clock_clone = clock.clone();
         let scheduler = Scheduler::new(store.clone(), clock_clone, notify.clone(), tx);
@@ -606,8 +614,8 @@ mod tests {
 
         // Collect all dispatched jobs
         let mut dispatched = Vec::new();
-        while let Ok(job) = rx.try_recv() {
-            dispatched.push(job.name.clone());
+        while let Ok(request) = rx.try_recv() {
+            dispatched.push(request.job.name.clone());
         }
 
         assert_eq!(dispatched.len(), 3, "All 3 due jobs should be dispatched");
@@ -629,7 +637,7 @@ mod tests {
         // Start with no jobs — scheduler should sleep on notify
         let clock = Arc::new(FakeClock::new(Utc::now()));
         let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<Job>(16);
+        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
         let store_clone = store.clone();
         let notify_clone = notify.clone();
@@ -688,7 +696,7 @@ mod tests {
         store.add_job(good_job.clone()).await;
 
         let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<Job>(16);
+        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
         let scheduler = Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx);
 
@@ -707,8 +715,8 @@ mod tests {
 
         // Only the good job should be dispatched
         let mut dispatched = Vec::new();
-        while let Ok(job) = rx.try_recv() {
-            dispatched.push(job.name.clone());
+        while let Ok(request) = rx.try_recv() {
+            dispatched.push(request.job.name.clone());
         }
 
         assert!(
@@ -752,7 +760,7 @@ mod tests {
         store.add_job(tz_job).await;
 
         let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<Job>(16);
+        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
         let scheduler = Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx);
 
@@ -775,7 +783,7 @@ mod tests {
             dispatched.is_ok(),
             "Timezone-aware job should be dispatched"
         );
-        assert_eq!(dispatched.unwrap().name, "tz-job");
+        assert_eq!(dispatched.unwrap().job.name, "tz-job");
 
         handle.abort();
     }

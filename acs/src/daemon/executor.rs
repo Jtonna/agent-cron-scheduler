@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -6,6 +7,7 @@ use tracing;
 use uuid::Uuid;
 
 use crate::daemon::events::JobEvent;
+use crate::models::TriggerParams;
 use crate::models::{DaemonConfig, ExecutionType, Job, JobRun, RunStatus};
 use crate::pty::PtySpawner;
 use crate::storage::LogStore;
@@ -43,22 +45,36 @@ impl Executor {
     }
 
     /// Build a CommandBuilder from the job's execution type.
-    fn build_command(job: &Job) -> portable_pty::CommandBuilder {
+    /// If trigger_args is provided, it is appended to the command string.
+    /// If trigger_env is provided, those vars are applied after job env_vars (highest precedence).
+    fn build_command(
+        job: &Job,
+        trigger_args: Option<&str>,
+        trigger_env: Option<&HashMap<String, String>>,
+    ) -> portable_pty::CommandBuilder {
         let mut cmd = match &job.execution {
             ExecutionType::ShellCommand(command) => {
+                let effective_command = match trigger_args {
+                    Some(args) => format!("{} {}", command, args),
+                    None => command.clone(),
+                };
                 if cfg!(target_os = "windows") {
                     let mut cb = portable_pty::CommandBuilder::new("cmd.exe");
                     cb.arg("/C");
-                    cb.arg(command);
+                    cb.arg(&effective_command);
                     cb
                 } else {
                     let mut cb = portable_pty::CommandBuilder::new("/bin/sh");
                     cb.arg("-c");
-                    cb.arg(command);
+                    cb.arg(&effective_command);
                     cb
                 }
             }
             ExecutionType::ScriptFile(script) => {
+                let effective_script = match trigger_args {
+                    Some(args) => format!("{} {}", script, args),
+                    None => script.clone(),
+                };
                 if cfg!(target_os = "windows") {
                     // Detect file extension
                     let ext = std::path::Path::new(script)
@@ -70,20 +86,28 @@ impl Executor {
                     match ext.as_str() {
                         "ps1" => {
                             let mut cb = portable_pty::CommandBuilder::new("powershell.exe");
-                            cb.arg("-File");
-                            cb.arg(script);
+                            if trigger_args.is_some() {
+                                cb.arg("-Command");
+                            } else {
+                                cb.arg("-File");
+                            }
+                            cb.arg(&effective_script);
                             cb
                         }
                         _ => {
                             let mut cb = portable_pty::CommandBuilder::new("cmd.exe");
                             cb.arg("/C");
-                            cb.arg(script);
+                            cb.arg(&effective_script);
                             cb
                         }
                     }
                 } else {
                     let mut cb = portable_pty::CommandBuilder::new("/bin/sh");
-                    cb.arg(script);
+                    if trigger_args.is_some() {
+                        // With trigger args, use -c so the shell parses the concatenated string
+                        cb.arg("-c");
+                    }
+                    cb.arg(&effective_script);
                     cb
                 }
             }
@@ -94,9 +118,16 @@ impl Executor {
             cmd.cwd(dir);
         }
 
-        // Set environment variables if specified
+        // Set environment variables if specified (job-level)
         if let Some(ref env_vars) = job.env_vars {
             for (key, value) in env_vars {
+                cmd.env(key, value);
+            }
+        }
+
+        // Merge trigger-time env vars (highest precedence for this run)
+        if let Some(t_env) = trigger_env {
+            for (key, value) in t_env {
                 cmd.env(key, value);
             }
         }
@@ -105,8 +136,12 @@ impl Executor {
     }
 
     /// Spawn a job, returning a RunHandle for monitoring and cancellation.
-    pub async fn spawn_job(&self, job: &Job) -> anyhow::Result<RunHandle> {
-        let run_id = Uuid::now_v7();
+    pub async fn spawn_job(
+        &self,
+        job: &Job,
+        run_id: Uuid,
+        trigger_params: Option<&TriggerParams>,
+    ) -> anyhow::Result<RunHandle> {
         let job_id = job.id;
         let job_name = job.name.clone();
         let now = Utc::now();
@@ -121,6 +156,7 @@ impl Executor {
             exit_code: None,
             log_size_bytes: 0,
             error: None,
+            trigger_params: trigger_params.cloned(),
         };
 
         // Save the initial run to the log store
@@ -135,12 +171,19 @@ impl Executor {
         });
 
         // Build the command
-        let cmd = Self::build_command(job);
+        let cmd = Self::build_command(
+            job,
+            trigger_params.and_then(|p| p.args.as_deref()),
+            trigger_params.and_then(|p| p.env.as_ref()),
+        );
 
         // Clone things for the spawned task
         let execution = job.execution.clone();
         let log_environment = job.log_environment;
         let job_env_vars = job.env_vars.clone();
+        let trigger_input = trigger_params.and_then(|p| p.input.clone());
+        let trigger_args = trigger_params.and_then(|p| p.args.clone());
+        let trigger_params_owned = trigger_params.cloned();
         let event_tx = self.event_tx.clone();
         let log_store = Arc::clone(&self.log_store);
         let pty_spawner = Arc::clone(&self.pty_spawner);
@@ -191,6 +234,7 @@ impl Executor {
                         exit_code: None,
                         log_size_bytes: 0,
                         error: Some(error_msg),
+                        trigger_params: trigger_params_owned.clone(),
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on spawn failure: {}", e);
@@ -204,6 +248,16 @@ impl Executor {
                 }
             };
 
+            // Write trigger input to stdin if provided, then always close stdin
+            // to signal EOF. Without this, piped stdin would hang processes that
+            // read from stdin (e.g. claude CLI detecting a pipe).
+            if let Some(ref input_data) = trigger_input {
+                if let Err(e) = process.write_stdin(input_data.as_bytes()) {
+                    tracing::warn!("Failed to write trigger input to stdin: {}", e);
+                }
+            }
+            process.close_stdin();
+
             // If log_environment is enabled, dump full environment before command
             if log_environment {
                 let mut env_map: std::collections::BTreeMap<String, String> =
@@ -212,6 +266,14 @@ impl Executor {
                 if let Some(ref job_envs) = job_env_vars {
                     for (k, v) in job_envs {
                         env_map.insert(k.clone(), v.clone());
+                    }
+                }
+                // Merge trigger-level env vars (highest precedence)
+                if let Some(ref tp) = trigger_params_owned {
+                    if let Some(ref t_env) = tp.env {
+                        for (k, v) in t_env {
+                            env_map.insert(k.clone(), v.clone());
+                        }
                     }
                 }
                 let mut env_dump = String::from("=== Environment ===\n");
@@ -230,10 +292,16 @@ impl Executor {
                 });
             }
 
-            // Write command header to log
+            // Write command header to log (effective command with trigger args)
             let command_str = match &execution {
-                ExecutionType::ShellCommand(cmd) => cmd.clone(),
-                ExecutionType::ScriptFile(script) => format!("[script] {}", script),
+                ExecutionType::ShellCommand(cmd) => match &trigger_args {
+                    Some(args) => format!("{} {}", cmd, args),
+                    None => cmd.clone(),
+                },
+                ExecutionType::ScriptFile(script) => match &trigger_args {
+                    Some(args) => format!("[script] {} {}", script, args),
+                    None => format!("[script] {}", script),
+                },
             };
             let header = format!("$ {}\n", command_str);
             let _ = log_store
@@ -363,6 +431,7 @@ impl Executor {
                     exit_code: None,
                     log_size_bytes: total_bytes,
                     error: Some("execution timed out".to_string()),
+                    trigger_params: trigger_params_owned.clone(),
                 };
                 if let Err(e) = log_store.update_run(&timeout_run).await {
                     tracing::error!("Failed to update run on timeout: {}", e);
@@ -392,6 +461,7 @@ impl Executor {
                     exit_code: None,
                     log_size_bytes: total_bytes,
                     error: Some("Job was killed".to_string()),
+                    trigger_params: trigger_params_owned.clone(),
                 };
                 if let Err(e) = log_store.update_run(&killed_run).await {
                     tracing::error!("Failed to update run on kill: {}", e);
@@ -427,6 +497,7 @@ impl Executor {
                         exit_code: Some(exit_code),
                         log_size_bytes: total_bytes,
                         error: None,
+                        trigger_params: trigger_params_owned.clone(),
                     };
                     if let Err(e) = log_store.update_run(&completed_run).await {
                         tracing::error!("Failed to update run on completion: {}", e);
@@ -451,6 +522,7 @@ impl Executor {
                         exit_code: None,
                         log_size_bytes: total_bytes,
                         error: Some(error_msg.clone()),
+                        trigger_params: trigger_params_owned.clone(),
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on wait failure: {}", e);
@@ -475,6 +547,7 @@ impl Executor {
                         exit_code: None,
                         log_size_bytes: total_bytes,
                         error: Some(error_msg.clone()),
+                        trigger_params: trigger_params_owned,
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on join error: {}", e);
@@ -644,7 +717,10 @@ mod tests {
         let (executor, mut event_rx, _log_store) = setup_executor(spawner);
         let job = make_test_job();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
 
         // Wait for the task to complete
         handle.join_handle.await.expect("join");
@@ -681,7 +757,10 @@ mod tests {
         let (executor, mut event_rx, _log_store) = setup_executor(spawner);
         let job = make_test_job();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         handle.join_handle.await.expect("join");
 
         let mut events = Vec::new();
@@ -711,7 +790,10 @@ mod tests {
         let (executor, mut event_rx, _log_store) = setup_executor(spawner);
         let job = make_test_job();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         handle.join_handle.await.expect("join");
 
         let mut events = Vec::new();
@@ -740,7 +822,10 @@ mod tests {
         let (executor, mut event_rx, _log_store) = setup_executor(spawner);
         let job = make_test_job();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         handle.join_handle.await.expect("join");
 
         let mut events = Vec::new();
@@ -786,7 +871,10 @@ mod tests {
         let (executor, mut event_rx, _log_store) = setup_executor(spawner);
         let job = make_test_job();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         handle.join_handle.await.expect("join");
 
         let mut events = Vec::new();
@@ -814,7 +902,10 @@ mod tests {
         let (executor, _event_rx, log_store) = setup_executor(spawner);
         let job = make_test_job();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         let run_id = handle.run_id;
         let job_id = handle.job_id;
 
@@ -847,7 +938,10 @@ mod tests {
         let (executor, _event_rx, log_store) = setup_executor(spawner);
         let job = make_test_job();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         let run_id = handle.run_id;
 
         handle.join_handle.await.expect("join");
@@ -869,7 +963,10 @@ mod tests {
         let (executor, _event_rx, log_store) = setup_executor(spawner);
         let job = make_test_job();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         let run_id = handle.run_id;
 
         handle.join_handle.await.expect("join");
@@ -893,7 +990,10 @@ mod tests {
         let mut job = make_test_job();
         job.name = "my-special-job".to_string();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         let run_id = handle.run_id;
 
         handle.join_handle.await.expect("join");
@@ -921,7 +1021,10 @@ mod tests {
         let (executor, mut event_rx, _log_store) = setup_executor(spawner);
         let job = make_test_job();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         handle.join_handle.await.expect("join");
 
         let mut events = Vec::new();
@@ -965,7 +1068,7 @@ mod tests {
             next_run_at: None,
         };
 
-        let cmd = Executor::build_command(&job);
+        let cmd = Executor::build_command(&job, None, None);
         let args = cmd.get_argv();
 
         if cfg!(target_os = "windows") {
@@ -999,7 +1102,7 @@ mod tests {
             next_run_at: None,
         };
 
-        let cmd = Executor::build_command(&job);
+        let cmd = Executor::build_command(&job, None, None);
         let args = cmd.get_argv();
 
         if cfg!(target_os = "windows") {
@@ -1052,7 +1155,10 @@ mod tests {
         let mut job = make_test_job();
         job.timeout_secs = 0; // Use config default (1s)
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         let run_id = handle.run_id;
 
         handle.join_handle.await.expect("join");
@@ -1096,7 +1202,10 @@ mod tests {
         let mut job = make_test_job();
         job.timeout_secs = 1; // Override with 1s
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         handle.join_handle.await.expect("join");
 
         let mut events = Vec::new();
@@ -1118,7 +1227,10 @@ mod tests {
         let (executor, mut event_rx, _log_store) = setup_executor_with_timeout(spawner, 0);
 
         let job = make_test_job(); // timeout_secs = 0
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         handle.join_handle.await.expect("join");
 
         let mut events = Vec::new();
@@ -1143,7 +1255,10 @@ mod tests {
         let (executor, _event_rx, log_store) = setup_executor(spawner);
         let job = make_test_job();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         let job_id = handle.job_id;
         handle.join_handle.await.expect("join");
 
@@ -1171,7 +1286,10 @@ mod tests {
         let (executor, _event_rx, log_store) = setup_executor(spawner);
         let job = make_test_job();
 
-        let handle = executor.spawn_job(&job).await.expect("spawn_job");
+        let handle = executor
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn_job");
         let job_id = handle.job_id;
         handle.join_handle.await.expect("join");
 
@@ -1184,5 +1302,661 @@ mod tests {
             "cleanup should have been called after spawn failure"
         );
         assert_eq!(calls[0].0, job_id);
+    }
+
+    #[tokio::test]
+    async fn test_build_command_with_trigger_args_shell() {
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "args-test".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ShellCommand("echo hello".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let cmd = Executor::build_command(&job, Some("--extra flag"), None);
+        let args = cmd.get_argv();
+
+        assert_eq!(args[2].to_string_lossy(), "echo hello --extra flag");
+    }
+
+    #[tokio::test]
+    async fn test_build_command_with_trigger_args_script() {
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "script-args-test".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ScriptFile("deploy.sh".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let cmd = Executor::build_command(&job, Some("--env prod"), None);
+        let args = cmd.get_argv();
+
+        if cfg!(target_os = "windows") {
+            // cmd.exe /C "deploy.sh --env prod"
+            assert!(args[2].to_string_lossy().contains("deploy.sh --env prod"));
+        } else {
+            // /bin/sh -c "deploy.sh --env prod"
+            assert_eq!(args[1].to_string_lossy(), "-c");
+            assert_eq!(args[2].to_string_lossy(), "deploy.sh --env prod");
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_build_command_script_with_trigger_args_unix() {
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "unix-script-args".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ScriptFile("deploy.sh".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let cmd = Executor::build_command(&job, Some("--flag"), None);
+        let args = cmd.get_argv();
+
+        // Should produce ["/bin/sh", "-c", "deploy.sh --flag"]
+        assert_eq!(args.len(), 3, "Expected 3 args, got {:?}", args);
+        assert_eq!(args[0].to_string_lossy(), "/bin/sh");
+        assert_eq!(args[1].to_string_lossy(), "-c");
+        assert_eq!(args[2].to_string_lossy(), "deploy.sh --flag");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_build_command_script_without_trigger_args_unix() {
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "unix-script-no-args".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ScriptFile("deploy.sh".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let cmd = Executor::build_command(&job, None, None);
+        let args = cmd.get_argv();
+
+        // Should produce ["/bin/sh", "deploy.sh"] (unchanged behavior)
+        assert_eq!(args.len(), 2, "Expected 2 args, got {:?}", args);
+        assert_eq!(args[0].to_string_lossy(), "/bin/sh");
+        assert_eq!(args[1].to_string_lossy(), "deploy.sh");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn test_build_command_script_with_trigger_args_windows_ps1() {
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "win-ps1-args".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ScriptFile("deploy.ps1".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let cmd = Executor::build_command(&job, Some("--flag"), None);
+        let args = cmd.get_argv();
+
+        // Should produce ["powershell.exe", "-Command", "deploy.ps1 --flag"]
+        assert_eq!(args.len(), 3, "Expected 3 args, got {:?}", args);
+        assert_eq!(args[0].to_string_lossy(), "powershell.exe");
+        assert_eq!(args[1].to_string_lossy(), "-Command");
+        assert_eq!(args[2].to_string_lossy(), "deploy.ps1 --flag");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn test_build_command_script_with_trigger_args_windows_bat() {
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "win-bat-args".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ScriptFile("deploy.bat".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let cmd = Executor::build_command(&job, Some("--flag"), None);
+        let args = cmd.get_argv();
+
+        // Should produce ["cmd.exe", "/C", "deploy.bat --flag"]
+        assert_eq!(args.len(), 3, "Expected 3 args, got {:?}", args);
+        assert_eq!(args[0].to_string_lossy(), "cmd.exe");
+        assert_eq!(args[1].to_string_lossy(), "/C");
+        assert_eq!(args[2].to_string_lossy(), "deploy.bat --flag");
+    }
+
+    #[tokio::test]
+    async fn test_build_command_with_trigger_env() {
+        let mut trigger_env = HashMap::new();
+        trigger_env.insert("TRIGGER_VAR".to_string(), "trigger_value".to_string());
+
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "env-test".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ShellCommand("echo".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let cmd = Executor::build_command(&job, None, Some(&trigger_env));
+        // Verify the env was set by checking iter_extra_env_as_str
+        let env_pairs: Vec<(String, String)> = cmd
+            .iter_extra_env_as_str()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert!(
+            env_pairs
+                .iter()
+                .any(|(k, v)| k == "TRIGGER_VAR" && v == "trigger_value"),
+            "Trigger env should be set, got: {:?}",
+            env_pairs
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_command_trigger_env_overrides_job_env() {
+        let mut job_env = HashMap::new();
+        job_env.insert("SHARED".to_string(), "job_value".to_string());
+
+        let mut trigger_env = HashMap::new();
+        trigger_env.insert("SHARED".to_string(), "trigger_value".to_string());
+
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "override-test".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ShellCommand("echo".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: Some(job_env),
+            timeout_secs: 0,
+            log_environment: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let cmd = Executor::build_command(&job, None, Some(&trigger_env));
+        // The last value set for SHARED should be "trigger_value"
+        let env_pairs: Vec<(String, String)> = cmd
+            .iter_extra_env_as_str()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        // Find all SHARED entries - the last one should be trigger_value
+        let shared_values: Vec<&String> = env_pairs
+            .iter()
+            .filter(|(k, _)| k == "SHARED")
+            .map(|(_, v)| v)
+            .collect();
+        assert!(!shared_values.is_empty(), "Should have SHARED env var");
+        assert_eq!(
+            shared_values.last().unwrap().as_str(),
+            "trigger_value",
+            "Trigger env should override job env"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_spawn_job_uses_pregenerated_run_id() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"hello\n".to_vec()], 0);
+        let (executor, _event_rx, _log_store) = setup_executor(spawner);
+        let job = make_test_job();
+
+        let expected_run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, expected_run_id, None)
+            .await
+            .expect("spawn_job");
+
+        assert_eq!(
+            handle.run_id, expected_run_id,
+            "RunHandle should use the pre-generated run_id"
+        );
+        handle.join_handle.await.expect("join");
+    }
+
+    // --- Trigger params in log header and meta.json tests ---
+
+    #[tokio::test]
+    async fn test_log_header_includes_trigger_args_shell_command() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"output\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+        let job = make_test_job(); // execution = ShellCommand("echo hello")
+
+        let trigger_params = TriggerParams {
+            args: Some("--verbose --flag".to_string()),
+            env: None,
+            input: None,
+        };
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, Some(&trigger_params))
+            .await
+            .expect("spawn_job");
+        let job_id = handle.job_id;
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let log_content = log_store
+            .read_log(job_id, run_id, None)
+            .await
+            .expect("read_log");
+
+        // The first line should be the effective command with trigger args appended
+        let first_line = log_content
+            .lines()
+            .next()
+            .expect("should have at least one line");
+        assert!(
+            first_line.contains("echo hello --verbose --flag"),
+            "Log header should include trigger args. Got: {}",
+            first_line
+        );
+        assert!(
+            first_line.starts_with("$ "),
+            "Log header should start with '$ '. Got: {}",
+            first_line
+        );
+    }
+
+    #[tokio::test]
+    async fn test_log_header_without_trigger_args_shows_base_command() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"output\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+        let job = make_test_job(); // execution = ShellCommand("echo hello")
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        let job_id = handle.job_id;
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let log_content = log_store
+            .read_log(job_id, run_id, None)
+            .await
+            .expect("read_log");
+
+        let first_line = log_content
+            .lines()
+            .next()
+            .expect("should have at least one line");
+        assert_eq!(
+            first_line, "$ echo hello",
+            "Log header should show base command without trigger args. Got: {}",
+            first_line
+        );
+    }
+
+    #[tokio::test]
+    async fn test_log_header_includes_trigger_args_script_file() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"output\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let now = Utc::now();
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "script-job".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ScriptFile("deploy.sh".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            created_at: now,
+            updated_at: now,
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let trigger_params = TriggerParams {
+            args: Some("--env prod".to_string()),
+            env: None,
+            input: None,
+        };
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, Some(&trigger_params))
+            .await
+            .expect("spawn_job");
+        let job_id = handle.job_id;
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let log_content = log_store
+            .read_log(job_id, run_id, None)
+            .await
+            .expect("read_log");
+
+        let first_line = log_content
+            .lines()
+            .next()
+            .expect("should have at least one line");
+        assert!(
+            first_line.contains("[script] deploy.sh --env prod"),
+            "Log header should include trigger args for script file. Got: {}",
+            first_line
+        );
+    }
+
+    #[tokio::test]
+    async fn test_job_run_stores_trigger_params() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"output\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+        let job = make_test_job();
+
+        let mut trigger_env = HashMap::new();
+        trigger_env.insert("MY_VAR".to_string(), "my_value".to_string());
+
+        let trigger_params = TriggerParams {
+            args: Some("--flag".to_string()),
+            env: Some(trigger_env),
+            input: Some("stdin data".to_string()),
+        };
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, Some(&trigger_params))
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Check that the run stored in the log store has trigger_params
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert!(
+            run.trigger_params.is_some(),
+            "JobRun should have trigger_params stored"
+        );
+        let stored_params = run.trigger_params.as_ref().unwrap();
+        assert_eq!(stored_params.args.as_deref(), Some("--flag"));
+        assert_eq!(
+            stored_params.env.as_ref().unwrap().get("MY_VAR").unwrap(),
+            "my_value"
+        );
+        assert_eq!(stored_params.input.as_deref(), Some("stdin data"));
+    }
+
+    #[tokio::test]
+    async fn test_job_run_no_trigger_params_when_none_provided() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"output\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+        let job = make_test_job();
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert!(
+            run.trigger_params.is_none(),
+            "JobRun should not have trigger_params when none provided"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trigger_params_preserved_in_completed_run() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"output\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+        let job = make_test_job();
+
+        let trigger_params = TriggerParams {
+            args: Some("--test".to_string()),
+            env: None,
+            input: None,
+        };
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, Some(&trigger_params))
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // The final (updated) run should still have trigger_params
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(run.status, RunStatus::Completed);
+        assert!(
+            run.trigger_params.is_some(),
+            "Completed run should preserve trigger_params"
+        );
+        assert_eq!(
+            run.trigger_params.as_ref().unwrap().args.as_deref(),
+            Some("--test")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trigger_params_serialization_roundtrip() {
+        let mut env = HashMap::new();
+        env.insert("KEY".to_string(), "VALUE".to_string());
+
+        let run = JobRun {
+            run_id: Uuid::now_v7(),
+            job_id: Uuid::now_v7(),
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            status: RunStatus::Completed,
+            exit_code: Some(0),
+            log_size_bytes: 100,
+            error: None,
+            trigger_params: Some(TriggerParams {
+                args: Some("--flag".to_string()),
+                env: Some(env),
+                input: Some("data".to_string()),
+            }),
+        };
+
+        let json = serde_json::to_string_pretty(&run).expect("serialize");
+        let deserialized: JobRun = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(run, deserialized);
+        assert!(deserialized.trigger_params.is_some());
+        let tp = deserialized.trigger_params.unwrap();
+        assert_eq!(tp.args.as_deref(), Some("--flag"));
+        assert_eq!(tp.env.as_ref().unwrap().get("KEY").unwrap(), "VALUE");
+        assert_eq!(tp.input.as_deref(), Some("data"));
+    }
+
+    #[tokio::test]
+    async fn test_log_environment_includes_trigger_env_vars() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"output\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let now = Utc::now();
+        let mut job_env = HashMap::new();
+        job_env.insert("JOB_VAR".to_string(), "job_value".to_string());
+
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "log-env-test".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ShellCommand("echo hello".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: Some(job_env),
+            timeout_secs: 0,
+            log_environment: true,
+            created_at: now,
+            updated_at: now,
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let mut trigger_env = HashMap::new();
+        trigger_env.insert("TRIGGER_VAR".to_string(), "trigger_value".to_string());
+
+        let trigger_params = TriggerParams {
+            args: None,
+            env: Some(trigger_env),
+            input: None,
+        };
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, Some(&trigger_params))
+            .await
+            .expect("spawn_job");
+        let job_id = handle.job_id;
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let log_content = log_store
+            .read_log(job_id, run_id, None)
+            .await
+            .expect("read_log");
+
+        // The environment dump should contain both job env vars and trigger env vars
+        assert!(
+            log_content.contains("=== Environment ==="),
+            "Log should contain environment dump header. Got: {}",
+            log_content
+        );
+        assert!(
+            log_content.contains("JOB_VAR=job_value"),
+            "Log should contain job env var. Got: {}",
+            log_content
+        );
+        assert!(
+            log_content.contains("TRIGGER_VAR=trigger_value"),
+            "Log should contain trigger env var. Got: {}",
+            log_content
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trigger_params_none_not_in_json() {
+        let run = JobRun {
+            run_id: Uuid::now_v7(),
+            job_id: Uuid::now_v7(),
+            started_at: Utc::now(),
+            finished_at: None,
+            status: RunStatus::Running,
+            exit_code: None,
+            log_size_bytes: 0,
+            error: None,
+            trigger_params: None,
+        };
+
+        let json = serde_json::to_string(&run).expect("serialize");
+        assert!(
+            !json.contains("trigger_params"),
+            "JSON should not contain trigger_params when None (skip_serializing_if). Got: {}",
+            json
+        );
+
+        // Deserializing JSON without trigger_params should still work (serde default)
+        let deserialized: JobRun = serde_json::from_str(&json).expect("deserialize");
+        assert!(deserialized.trigger_params.is_none());
     }
 }

@@ -91,6 +91,15 @@ Executes a script file by path.
 
 PowerShell detection on Windows is based on the `.ps1` file extension (case-insensitive).
 
+### Trigger Arguments
+
+When a job is manually triggered with extra arguments (via `--args` on the CLI or the `args` field in the trigger API body), the arguments are concatenated to the base command string:
+
+- **ShellCommand**: `"{value} {args}"` is passed to the shell. For example, a ShellCommand `"backup.sh"` with trigger args `"--full --verbose"` results in `cmd.exe /C "backup.sh --full --verbose"` on Windows or `/bin/sh -c "backup.sh --full --verbose"` on Unix.
+- **ScriptFile**: On Unix, when trigger args are provided the executor switches to shell evaluation (`/bin/sh -c "script args"`) so the arguments are parsed correctly. On Windows, `cmd.exe /C` and `powershell.exe -Command` handle the concatenated string natively. A ScriptFile `"deploy.sh"` with trigger args `"--env staging"` results in the script being invoked as `deploy.sh --env staging`.
+
+This concatenation only affects the single triggered run; the job's stored `execution` value is not modified.
+
 ---
 
 ## Cron Expressions
@@ -171,12 +180,14 @@ Creation --> Scheduling --> Execution --> Completion
 
 2. **Scheduling**: The scheduler continuously loads all enabled jobs, computes their next run times, and sleeps until the earliest one is due. When the job list changes (create, update, delete, enable, disable), the scheduler is woken via a `Notify` signal to re-evaluate immediately.
 
-3. **Execution**: When a job's cron time arrives, the scheduler dispatches it to the executor. The executor:
-   - Creates a `JobRun` record with `Running` status.
+3. **Execution**: When a job's cron time arrives (or a manual trigger is received), the scheduler dispatches it to the executor via a `DispatchRequest` containing the job, a pre-generated `run_id`, and optional `TriggerParams`. The executor:
+   - Creates a `JobRun` record with `Running` status using the pre-generated `run_id`.
    - Broadcasts a `Started` event.
    - Optionally dumps the environment to the log (if `log_environment` is `true`).
-   - Writes a command header to the log (`$ <command>` for ShellCommand, `$ [script] <path>` for ScriptFile).
-   - Spawns the process with piped stdout/stderr.
+   - Builds the effective command: if trigger `args` are provided, they are appended to the base command (`"{command} {args}"`).
+   - Writes a command header to the log showing the effective command (`$ <command>` for ShellCommand, `$ [script] <path>` for ScriptFile).
+   - Spawns the process with piped stdout (stderr is piped but not currently captured — see known limitation below), merging trigger `env` vars if present.
+   - If trigger `input` is provided, writes it to the process's stdin, then closes stdin (EOF).
    - Streams output to both the log store and the event broadcast channel.
    - Monitors for timeout and kill signals.
 
@@ -189,7 +200,7 @@ Creation --> Scheduling --> Execution --> Completion
 | `Running` | Execution is in progress. | Job spawned successfully. |
 | `Completed` | Process exited (any exit code). | Process returned an exit status, including non-zero codes. Non-zero exit is **not** treated as `Failed`. |
 | `Failed` | Infrastructure error prevented normal completion. | PTY spawn failure, process wait failure, task join error, or timeout. |
-| `Killed` | Job was forcefully terminated. | Job deleted while running (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. There is no dedicated kill endpoint. **Note:** Killed runs broadcast a `Failed` SSE event (with error `"Job was killed"`), not a separate `Killed` event type. |
+| `Killed` | Job was forcefully terminated. | Job deleted while running (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. There is no dedicated kill endpoint. **Note:** Killed runs broadcast a `Failed` SSE event, not a separate `Killed` event type. The error message is `"Job was killed"` for explicit kills or `"Daemon shutting down"` during graceful shutdown. |
 
 ### JobRun Record
 
@@ -205,6 +216,7 @@ Each execution creates a `JobRun` with the following fields:
 | `exit_code` | `Option<i32>` | Process exit code. Present only for `Completed` status. |
 | `log_size_bytes` | `u64` | Total bytes of process output captured (excludes the command header and environment dump written by the executor). |
 | `error` | `Option<String>` | Error description for `Failed` or `Killed` runs. |
+| `trigger_params` | `Option<TriggerParams>` | Trigger-time parameter overrides used for this run. Omitted from serialized JSON when `None`. See [Trigger Arguments](#trigger-arguments). |
 
 ---
 
@@ -225,6 +237,22 @@ Jobs can define custom environment variables via the `env_vars` field. These are
 
 On the CLI, environment variables are passed with the `-e` / `--env` flag. See [CLI Reference](cli-reference.md#acs-add) for details.
 
+### Per-Trigger Environment Variables
+
+When manually triggering a job via the API (`POST /api/jobs/{id}/trigger`) or CLI (`acs trigger -e KEY=VALUE`), you can provide per-trigger environment variables that apply only to that single run. These are merged into the process environment with the highest precedence.
+
+### Environment Variable Precedence
+
+When a job is executed, environment variables are resolved in the following order (later sources override earlier ones for the same key):
+
+| Priority | Source | Description |
+|----------|--------|-------------|
+| 1 (lowest) | Inherited environment | System environment inherited by the daemon process. |
+| 2 | Job `env_vars` | Per-job environment variables configured in the job definition. |
+| 3 (highest) | Trigger `env` | Per-trigger environment variables passed at invocation time. Only present for manual triggers with explicit env overrides. |
+
+For example, if the inherited environment has `MODE=default`, the job defines `MODE=scheduled`, and a trigger provides `MODE=manual`, the effective value for that run is `MODE=manual`.
+
 ### log_environment Flag
 
 When `log_environment` is set to `true`, the executor dumps the complete effective environment to the run log before executing the command. The output is formatted as:
@@ -237,7 +265,7 @@ DATABASE_URL=postgres://localhost/mydb
 ===================
 ```
 
-This merges the inherited system environment with job-specific `env_vars` (job-specific variables override inherited ones with the same key). The entries are sorted alphabetically by key.
+This merges all environment variable sources (inherited, job-level, and trigger-level if applicable). The entries are sorted alphabetically by key.
 
 This flag is useful for debugging environment-sensitive issues.
 

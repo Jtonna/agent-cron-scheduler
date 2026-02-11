@@ -35,6 +35,7 @@ All request and response bodies use JSON (`Content-Type: application/json`) unle
   - [NewJob](#newjob)
   - [JobUpdate](#jobupdate)
   - [ExecutionType](#executiontype)
+  - [TriggerParams](#triggerparams)
   - [JobRun](#jobrun)
   - [RunStatus](#runstatus)
 - [SSE Event Types](#sse-event-types)
@@ -435,7 +436,7 @@ Disable a job so it stops being scheduled.
 
 ### POST /api/jobs/{id}/trigger
 
-Manually trigger an immediate execution of the job, regardless of its cron schedule.
+Manually trigger an immediate execution of the job, regardless of its cron schedule. Optionally accepts per-invocation parameters that override job defaults for a single run.
 
 **Path Parameters:**
 
@@ -443,13 +444,31 @@ Manually trigger an immediate execution of the job, regardless of its cron sched
 |-----------|--------|----------------------------------------|
 | `id`      | string | Job UUID or job name. |
 
-**Request:** No body.
+**Request Body:** Optional [TriggerParams](#triggerparams) JSON object. An empty body (or no `Content-Type` header) preserves backward compatibility and triggers the job with its default configuration.
+
+```json
+{
+  "args": "--verbose --dry-run",
+  "env": {
+    "MODE": "manual",
+    "DEBUG": "1"
+  },
+  "input": "data sent to stdin"
+}
+```
+
+| Field   | Type                      | Required | Default | Description                                                              |
+|---------|---------------------------|----------|---------|--------------------------------------------------------------------------|
+| `args`  | string                    | No       | `null`  | Extra arguments appended to the job's command string for this run only.  |
+| `env`   | object (string -> string) | No       | `null`  | Per-trigger environment variables. Override job-level `env_vars` for this run. |
+| `input` | string                    | No       | `null`  | Data written to the process's stdin after spawn, then EOF.               |
 
 **Response:**
 
 | Status | Description |
 |--------|-------------|
 | 202 Accepted | The job has been dispatched for execution. |
+| 400 Bad Request | Invalid JSON in request body. |
 | 404 Not Found | Job not found. |
 | 500 Internal Server Error | Failed to dispatch the job to the executor. |
 
@@ -457,11 +476,48 @@ Manually trigger an immediate execution of the job, regardless of its cron sched
 {
   "message": "Job triggered",
   "job_id": "01941234-5678-7abc-def0-123456789abc",
-  "job_name": "my-backup"
+  "job_name": "my-backup",
+  "run_id": "01941234-bbbb-7abc-def0-123456789abc"
 }
 ```
 
-Note: A `202 Accepted` response means the job was sent to the dispatch queue. Execution is asynchronous. The response does not include a `run_id`; to obtain it, subscribe to SSE events (filtered by `job_id`) and watch for the `Started` event.
+| Field      | Type          | Description                                    |
+|------------|---------------|------------------------------------------------|
+| `message`  | string        | Always `"Job triggered"`.                      |
+| `job_id`   | string (UUID) | The job that was triggered.                    |
+| `job_name` | string        | Human-readable job name.                       |
+| `run_id`   | string (UUID) | Pre-generated run identifier (UUIDv7). Can be used immediately to filter SSE events or poll for run status. |
+
+The `run_id` is generated before the job is dispatched, so it is available in the response without waiting for execution to begin.
+
+**Example request with trigger parameters:**
+
+```sh
+curl -X POST http://127.0.0.1:8377/api/jobs/my-backup/trigger \
+  -H "Content-Type: application/json" \
+  -d '{"args": "--full", "env": {"BACKUP_MODE": "full"}, "input": "yes"}'
+```
+
+**Example request without trigger parameters (backward compatible):**
+
+```sh
+curl -X POST http://127.0.0.1:8377/api/jobs/my-backup/trigger
+```
+
+**Example error response (400):**
+
+```json
+{
+  "error": "validation_error",
+  "message": "Invalid trigger body: expected value at line 1 column 1"
+}
+```
+
+**Trigger parameter behavior:**
+
+- **`args`**: Appended to the job's base command. For a `ShellCommand` with value `"backup.sh"` and trigger args `"--full"`, the effective command becomes `"backup.sh --full"`. The same concatenation applies to `ScriptFile` jobs.
+- **`env`**: Merged with the job's `env_vars`. Trigger environment variables take the highest precedence: inherited system env < job `env_vars` < trigger `env`.
+- **`input`**: Written to the spawned process's stdin immediately after launch, then stdin is closed (EOF). Useful for commands that read from stdin.
 
 **Edge case:** If the daemon's internal dispatch channel is not available (e.g., the scheduler/executor subsystem has not fully initialized), the endpoint still returns `202 Accepted` but the job will not actually execute. This is a transient condition that can occur during daemon startup.
 
@@ -582,7 +638,7 @@ Each SSE message has:
 **Connection behavior:**
 - The stream stays open indefinitely until the client disconnects.
 - If the client falls behind (broadcast channel lag), a comment `lagged: some events were missed` is sent.
-- Keepalive messages are sent as SSE comments (`:keepalive`) every 15 seconds.
+- Keepalive messages are sent as SSE comments (`: keepalive`) every 15 seconds.
 
 **Example SSE stream:**
 
@@ -726,7 +782,7 @@ The full job object returned by GET, POST, and PATCH endpoints.
 | `updated_at`     | string (ISO 8601)               | No       | When the job was last modified.                              |
 | `last_run_at`    | string (ISO 8601)               | Yes      | When the job last ran, or `null` if never.                   |
 | `last_exit_code` | integer (i32)                   | Yes      | Exit code of the last run, or `null`.                        |
-| `next_run_at`    | string (ISO 8601)               | Yes      | Computed next scheduled run time. Only populated in `GET /api/jobs` and `GET /api/jobs/{id}` responses (not in POST or PATCH responses). `null` for disabled jobs. |
+| `next_run_at`    | string (ISO 8601)               | Yes      | Computed next scheduled run time. `null` in POST and PATCH responses (computed at runtime only for GET endpoints). `null` for disabled jobs. |
 
 ### NewJob
 
@@ -788,6 +844,28 @@ Executes a script file.
 }
 ```
 
+### TriggerParams
+
+Optional request body for `POST /api/jobs/{id}/trigger`. All fields are optional. When the entire body is omitted or empty, the job runs with its default configuration.
+
+| Field   | Type                      | Required | Default | Description                                                              |
+|---------|---------------------------|----------|---------|--------------------------------------------------------------------------|
+| `args`  | string                    | No       | `null`  | Extra arguments appended to the job's command string. For a `ShellCommand` with value `"cmd"`, the effective command becomes `"cmd <args>"`. Same for `ScriptFile`. |
+| `env`   | object (string -> string) | No       | `null`  | Per-trigger environment variables. These override the job's `env_vars` for this single run (highest precedence: inherited env < job `env_vars` < trigger `env`). |
+| `input` | string                    | No       | `null`  | Data written to the process's stdin immediately after spawn. Stdin is then closed (EOF). |
+
+**Example:**
+
+```json
+{
+  "args": "--verbose --dry-run",
+  "env": {
+    "MODE": "manual"
+  },
+  "input": "confirm"
+}
+```
+
 ### JobRun
 
 Represents a single execution of a job.
@@ -802,6 +880,7 @@ Represents a single execution of a job.
 | `exit_code`      | integer (i32)     | Yes      | Process exit code, or `null` if not yet finished or if the process was killed. |
 | `log_size_bytes` | integer (u64)     | No       | Size of the log output in bytes.               |
 | `error`          | string            | Yes      | Error message if the run failed to start (e.g., PTY spawn failure), or `null`. |
+| `trigger_params` | [TriggerParams](#triggerparams) | Yes | Trigger-time parameter overrides used for this run. Absent from the JSON response when `null` (omitted via `skip_serializing_if`). Only present when the run was triggered with per-invocation parameters. |
 
 ### RunStatus
 

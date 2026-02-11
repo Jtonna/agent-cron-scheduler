@@ -334,8 +334,40 @@ pub async fn cmd_disable(host: &str, port: u16, job: &str) -> anyhow::Result<()>
 }
 
 /// acs trigger
-pub async fn cmd_trigger(host: &str, port: u16, job: &str, follow: bool) -> anyhow::Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub async fn cmd_trigger(
+    host: &str,
+    port: u16,
+    job: &str,
+    follow: bool,
+    args: Option<&str>,
+    env: &[String],
+    input: Option<&str>,
+) -> anyhow::Result<()> {
     let client = Client::new();
+
+    // Build optional trigger params body
+    let trigger_body = {
+        let mut map = serde_json::Map::new();
+        if let Some(a) = args {
+            map.insert("args".to_string(), serde_json::Value::String(a.to_string()));
+        }
+        if !env.is_empty() {
+            let parsed = parse_env_vars(env).map_err(|e| anyhow::anyhow!(e))?;
+            map.insert("env".to_string(), serde_json::to_value(parsed)?);
+        }
+        if let Some(i) = input {
+            map.insert(
+                "input".to_string(),
+                serde_json::Value::String(i.to_string()),
+            );
+        }
+        if map.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(map))
+        }
+    };
 
     if follow {
         // To avoid a race condition where fast jobs complete before the SSE
@@ -355,8 +387,11 @@ pub async fn cmd_trigger(host: &str, port: u16, job: &str, follow: bool) -> anyh
 
         // 3. Now trigger the job
         let trigger_url = format!("{}/api/jobs/{}/trigger", base_url(host, port), job);
-        let response = client
-            .post(&trigger_url)
+        let mut request = client.post(&trigger_url);
+        if let Some(ref b) = trigger_body {
+            request = request.json(b);
+        }
+        let response = request
             .send()
             .await
             .map_err(|e| handle_request_error(e, host, port))?;
@@ -374,15 +409,19 @@ pub async fn cmd_trigger(host: &str, port: u16, job: &str, follow: bool) -> anyh
         }
 
         let job_name = body["job_name"].as_str().unwrap_or(job);
-        println!("Job '{}' triggered.", job_name);
+        let run_id = body["run_id"].as_str().unwrap_or("unknown");
+        println!("Job '{}' triggered (run: {}).", job_name, run_id);
 
         // 4. Read SSE events from the already-connected stream
         follow_sse_stream(sse_response).await?;
     } else {
         let url = format!("{}/api/jobs/{}/trigger", base_url(host, port), job);
 
-        let response = client
-            .post(&url)
+        let mut request = client.post(&url);
+        if let Some(ref b) = trigger_body {
+            request = request.json(b);
+        }
+        let response = request
             .send()
             .await
             .map_err(|e| handle_request_error(e, host, port))?;
@@ -400,12 +439,12 @@ pub async fn cmd_trigger(host: &str, port: u16, job: &str, follow: bool) -> anyh
         }
 
         let job_name = body["job_name"].as_str().unwrap_or(job);
-        println!("Job '{}' triggered.", job_name);
+        let run_id = body["run_id"].as_str().unwrap_or("unknown");
+        println!("Job '{}' triggered (run: {}).", job_name, run_id);
     }
 
     Ok(())
 }
-
 /// Resolve a job name or UUID to a job ID string.
 async fn resolve_job_id(
     client: &Client,

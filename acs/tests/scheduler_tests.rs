@@ -66,7 +66,10 @@ async fn test_end_to_end_create_run_verify_logs() {
 
     // Create and run a job
     let job = make_job("e2e-test");
-    let handle = executor.spawn_job(&job).await.expect("spawn_job");
+    let handle = executor
+        .spawn_job(&job, Uuid::now_v7(), None)
+        .await
+        .expect("spawn_job");
     let run_id = handle.run_id;
     let job_id = handle.job_id;
 
@@ -152,7 +155,10 @@ async fn test_end_to_end_log_cleanup_works_with_real_store() {
             pty_spawner2,
         );
 
-        let handle = executor2.spawn_job(&job).await.expect("spawn");
+        let handle = executor2
+            .spawn_job(&job, Uuid::now_v7(), None)
+            .await
+            .expect("spawn");
         handle.join_handle.await.expect("join");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
@@ -190,7 +196,10 @@ async fn test_end_to_end_failed_run_records_error() {
     let executor = Executor::new(event_tx, Arc::clone(&log_store), config, pty_spawner);
 
     let job = make_job("fail-test");
-    let handle = executor.spawn_job(&job).await.expect("spawn");
+    let handle = executor
+        .spawn_job(&job, Uuid::now_v7(), None)
+        .await
+        .expect("spawn");
     let run_id = handle.run_id;
     let job_id = handle.job_id;
 

@@ -81,7 +81,7 @@ pub enum Commands {
         #[arg(short = 'c', long = "cmd", conflicts_with = "script")]
         cmd: Option<String>,
 
-        /// Script file to execute (relative to data_dir/scripts/)
+        /// Script file path to execute
         #[arg(long, conflicts_with = "cmd")]
         script: Option<String>,
 
@@ -151,6 +151,18 @@ pub enum Commands {
         /// Follow the job output (stream via SSE)
         #[arg(long)]
         follow: bool,
+
+        /// Additional arguments appended to the command for this run
+        #[arg(long)]
+        args: Option<String>,
+
+        /// Environment variable overrides (KEY=VALUE), can be repeated
+        #[arg(long = "env", short = 'e', value_name = "KEY=VALUE")]
+        env: Vec<String>,
+
+        /// String to pipe to the process's stdin
+        #[arg(long)]
+        input: Option<String>,
     },
 
     /// Restart the daemon
@@ -276,8 +288,23 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         }) => jobs::cmd_list(&cli.host, cli.port, *enabled, *disabled, *json).await,
         Some(Commands::Enable { job }) => jobs::cmd_enable(&cli.host, cli.port, job).await,
         Some(Commands::Disable { job }) => jobs::cmd_disable(&cli.host, cli.port, job).await,
-        Some(Commands::Trigger { job, follow }) => {
-            jobs::cmd_trigger(&cli.host, cli.port, job, *follow).await
+        Some(Commands::Trigger {
+            job,
+            follow,
+            args,
+            env,
+            input,
+        }) => {
+            jobs::cmd_trigger(
+                &cli.host,
+                cli.port,
+                job,
+                *follow,
+                args.as_deref(),
+                env,
+                input.as_deref(),
+            )
+            .await
         }
         Some(Commands::Logs {
             job,
@@ -598,7 +625,7 @@ mod tests {
             .expect("Should parse trigger --follow");
 
         match &cli.command {
-            Some(Commands::Trigger { job, follow }) => {
+            Some(Commands::Trigger { job, follow, .. }) => {
                 assert_eq!(job, "my-job");
                 assert!(follow);
             }

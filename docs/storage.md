@@ -10,7 +10,7 @@ the **data directory** (`{data_dir}`).
 
 ```
 {data_dir}/
-├── acs.pid              # Daemon process ID (exclusive lock file)
+├── acs.pid              # Daemon PID file (exclusive creation prevents duplicate instances)
 ├── acs.port             # TCP port the daemon is listening on
 ├── config.json          # Daemon config (fallback location, priority 4 of 5; see configuration.md)
 ├── daemon.log           # Daemon process log (size-managed, max 1 GB)
@@ -138,7 +138,7 @@ Inside that directory, each run produces two files:
 
 | File | Description |
 |---|---|
-| `{run_id}.log` | Raw process output (stdout + stderr), appended incrementally |
+| `{run_id}.log` | Raw process output (stdout), appended incrementally |
 | `{run_id}.meta.json` | Structured metadata (`JobRun` struct as pretty-printed JSON) |
 
 ### Metadata file format (`{run_id}.meta.json`)
@@ -152,12 +152,29 @@ Inside that directory, each run produces two files:
   "status": "Completed",
   "exit_code": 0,
   "log_size_bytes": 1024,
-  "error": null
+  "error": null,
+  "trigger_params": {
+    "args": "--full",
+    "env": { "MODE": "manual" },
+    "input": null
+  }
 }
 ```
 
 The `status` field is one of: `"Running"`, `"Completed"`, `"Failed"`, or
 `"Killed"`.
+
+The `trigger_params` field is present only when the run was triggered manually
+with per-invocation parameters via `POST /api/jobs/{id}/trigger` or
+`acs trigger --args/--env/--input`. It is omitted (not serialized) when `null`,
+preserving backward compatibility with older metadata files. When present, it
+contains:
+
+| Field   | Type                      | Description                                                      |
+|---------|---------------------------|------------------------------------------------------------------|
+| `args`  | string or null            | Extra arguments that were appended to the job's command string.  |
+| `env`   | object or null            | Per-trigger environment variables that were merged into the run. |
+| `input` | string or null            | Data that was written to the process's stdin.                    |
 
 ### Append-mode writing
 
@@ -277,6 +294,10 @@ struct SizeManagedWriter {
 If the file is empty, `bytes_written` is reset to zero and no I/O occurs.  If
 no newline is found after the 25% mark (degenerate single-line case), the
 entire content is kept.
+
+If the cut point falls at or beyond the end of the content (e.g., the file
+shrank externally), the file is truncated to zero via a truncate-then-reopen
+sequence — the temporary file is **not** used in this case.
 
 ### Startup behavior
 
