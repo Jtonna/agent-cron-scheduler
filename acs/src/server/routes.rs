@@ -11,7 +11,7 @@ use uuid::Uuid;
 use super::AppState;
 use crate::daemon::events::{JobChangeKind, JobEvent};
 use crate::models::job::{validate_job_update, validate_new_job};
-use crate::models::{Job, JobUpdate, NewJob};
+use crate::models::{DispatchRequest, Job, JobUpdate, NewJob, TriggerParams};
 
 // ---------------------------------------------------------------------------
 // Error response
@@ -477,15 +477,41 @@ pub async fn disable_job(
 pub async fn trigger_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    body: axum::body::Bytes,
 ) -> impl IntoResponse {
     let job = match resolve_job(&state, &id).await {
         Ok(j) => j,
         Err(resp) => return resp.into_response(),
     };
 
-    // Send the job to the executor via dispatch channel
+    // Parse optional trigger params from body
+    let trigger_params: Option<TriggerParams> = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(params) => Some(params),
+            Err(e) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "validation_error",
+                    &format!("Invalid trigger body: {}", e),
+                )
+                .into_response();
+            }
+        }
+    };
+
+    // Pre-generate run_id so we can return it in the response
+    let run_id = Uuid::now_v7();
+
+    // Send the dispatch request to the executor via dispatch channel
     if let Some(ref tx) = state.dispatch_tx {
-        if let Err(e) = tx.send(job.clone()).await {
+        let request = DispatchRequest {
+            job: job.clone(),
+            run_id,
+            trigger_params,
+        };
+        if let Err(e) = tx.send(request).await {
             tracing::warn!("Failed to trigger job '{}': {}", job.name, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -498,7 +524,7 @@ pub async fn trigger_job(
         }
     }
 
-    tracing::info!("Job '{}' triggered", job.name);
+    tracing::info!("Job '{}' triggered (run_id: {})", job.name, run_id);
 
     (
         StatusCode::ACCEPTED,
@@ -506,6 +532,7 @@ pub async fn trigger_job(
             "message": "Job triggered",
             "job_id": job.id,
             "job_name": job.name,
+            "run_id": run_id,
         })),
     )
         .into_response()

@@ -80,6 +80,7 @@ acs/src/
                               #   validate_new_job(), validate_job_update()
     run.rs                    # JobRun, RunStatus
     config.rs                 # DaemonConfig
+    dispatch.rs               # DispatchRequest, TriggerParams
   pty/
     mod.rs                    # PtySpawner trait, PtyProcess trait,
                               #   NoPtySpawner, MockPtySpawner
@@ -145,6 +146,8 @@ See [Storage](storage.md) for implementation details.
 - **`Job`**: Core job struct with identity, scheduling, execution config, and lifecycle metadata. See [Job Management](job-management.md) for the full field reference.
 - **`NewJob`**: Input struct for job creation. **`JobUpdate`**: Partial update struct with all optional fields.
 - **`ExecutionType`**: Tagged enum: `ShellCommand(String)` or `ScriptFile(String)`.
+- **`TriggerParams`**: Optional per-invocation overrides for manual triggers: `args` (extra command arguments), `env` (per-trigger environment variables), `input` (stdin data).
+- **`DispatchRequest`**: Wraps a `Job`, a pre-generated `run_id` (UUIDv7), and an optional `TriggerParams` for the dispatch channel.
 - **`JobRun`**: Run record. **`RunStatus`**: Enum with `Running`, `Completed`, `Failed`, `Killed`.
 - **`DaemonConfig`**: Configuration struct with serde defaults. See [Configuration](configuration.md) for the full field reference.
 
@@ -173,8 +176,9 @@ The `start_daemon()` function in `daemon::mod.rs` orchestrates startup:
 2.  Apply CLI overrides     -- host_override, port_override
 3.  resolve_data_dir()      -- Determine data directory
 4.  create_data_dirs()      -- Ensure data/, data/logs/, data/scripts/ exist
-5.  Set up tracing          -- Truncate daemon.log, then stderr + daemon.log
-                                via SizeManagedWriter (falls back to stderr-only on error)
+5.  Set up tracing          -- Truncate daemon.log to zero on startup, then open
+                                with SizeManagedWriter (appends, auto-drops oldest 25%
+                                when file exceeds 1 GB). Falls back to stderr-only on error.
 6.  PidFile::acquire()      -- Exclusive PID file (acs.pid)
 7.  JsonJobStore::new()     -- Load jobs.json into memory cache
 8.  FsLogStore::new()       -- Initialize logs directory
@@ -214,11 +218,13 @@ The `start_daemon()` function in `daemon::mod.rs` orchestrates startup:
      |                                        |
   5. Re-check clock, dispatch         Re-loop from step 1
      due jobs via dispatch_tx.send()
+     (as DispatchRequest with
+      pre-generated run_id)
      |
      v
-  Dispatch loop receives Job
+  Dispatch loop receives DispatchRequest
      |
-  executor.spawn_job(&job)
+  executor.spawn_job(&job, run_id, trigger_params)
      |
   RunHandle stored in active_runs
 ```
@@ -228,21 +234,29 @@ When the job list changes (create/update/delete via API), the route handler call
 ### 3.3 Job Execution Flow
 
 ```
-executor.spawn_job(&job)
+executor.spawn_job(&job, run_id, trigger_params)
     |
-    1. Generate run_id (UUIDv7)
+    1. Use pre-generated run_id (UUIDv7, from DispatchRequest)
     2. Create JobRun {status: Running} in log_store
     3. Broadcast JobEvent::Started
     4. build_command() -> CommandBuilder
+    |   - If trigger_params.args is set, append to command string:
+    |     "{base_command} {args}" for both ShellCommand and ScriptFile
     5. Create oneshot kill channel (kill_tx, kill_rx)
     |
     tokio::spawn(async move {
         |
         6. pty_spawner.spawn(cmd, rows, cols)
         |   (NoPtySpawner: std::process::Command with piped I/O)
+        |   - If trigger_params.env is set, merge into process env
+        |     (precedence: inherited < job.env_vars < trigger.env)
         |
         7. Optionally dump environment (if log_environment)
-        8. Write command header ("$ <cmd>\n") to log
+        8. Write command header ("$ <effective_cmd>\n") to log
+        |   (includes trigger args if present)
+        |
+        8a. If trigger_params.input is set:
+        |    Write input data to process stdin, then close stdin (EOF)
         |
         9. Create mpsc::channel(256) for log writer
         10. Spawn log writer task (async: recv bytes, append to log_store)
@@ -318,13 +332,14 @@ let (event_tx, _event_rx) = broadcast::channel::<JobEvent>(config.broadcast_capa
 ### 4.2 MPSC Channel -- Job Dispatch
 
 ```rust
-let (dispatch_tx, dispatch_rx) = tokio::sync::mpsc::channel::<Job>(64);
+let (dispatch_tx, dispatch_rx) = tokio::sync::mpsc::channel::<DispatchRequest>(64);
 ```
 
 - **Purpose**: Delivers due jobs from the Scheduler to the dispatch loop, which calls `Executor::spawn_job()`.
-- **Capacity**: 64 pending jobs.
-- **Producers**: `Scheduler::run()` sends due jobs; API trigger endpoint sends manually-triggered jobs via a cloned `dispatch_tx`.
-- **Consumer**: Single dispatch loop task that calls `executor.spawn_job()` and stores the resulting `RunHandle` in `active_runs`.
+- **Capacity**: 64 pending dispatch requests.
+- **Message type**: `DispatchRequest { job: Job, run_id: Uuid, trigger_params: Option<TriggerParams> }`. The `run_id` is pre-generated by the sender (UUIDv7) so that the trigger API can return it immediately. `trigger_params` carries optional per-invocation overrides (args, env, stdin input) for manual triggers.
+- **Producers**: `Scheduler::run()` sends due jobs (with `trigger_params: None`); API trigger endpoint sends manually-triggered jobs with an optional `TriggerParams` via a cloned `dispatch_tx`.
+- **Consumer**: Single dispatch loop task that calls `executor.spawn_job()` with the dispatch request and stores the resulting `RunHandle` in `active_runs`.
 
 ### 4.3 Notify -- Scheduler Wake
 
@@ -402,7 +417,7 @@ Single-instance enforcement uses `create_new(true)` (maps to `O_EXCL`/`CREATE_NE
 
 ### 5.3 Piped I/O over PTY
 
-The production `NoPtySpawner` uses `std::process::Command` with piped stdout/stderr rather than a real PTY. Piped I/O reliably delivers EOF on all platforms, avoiding platform-specific PTY issues. On Windows, `raw_arg()` bypasses Rust's MSVC quoting for `cmd.exe` compatibility.
+The production `NoPtySpawner` uses `std::process::Command` with piped stdout (stderr is piped but not currently captured) rather than a real PTY. Piped I/O reliably delivers EOF on all platforms, avoiding platform-specific PTY issues. On Windows, `NoPtySpawner::spawn()` uses `raw_arg()` to bypass Rust's MSVC quoting for `cmd.exe` compatibility.
 
 ### 5.4 Atomic File Persistence
 

@@ -12,8 +12,8 @@ info:
     name: MIT
 
 servers:
-  - url: http://localhost:3000
-    description: Local development daemon
+  - url: http://127.0.0.1:8377
+    description: Local development daemon (default host and port)
 
 tags:
   - name: Health
@@ -314,10 +314,28 @@ paths:
       summary: Manually trigger a job
       description: |
         Dispatches an immediate execution of the job regardless of its cron
-        schedule. Returns 202 Accepted if the job was dispatched.
+        schedule. Optionally accepts per-invocation parameters that override
+        job defaults for a single run. An empty body preserves backward
+        compatibility. Returns 202 Accepted if the job was dispatched, along
+        with a pre-generated `run_id`.
       tags: [Jobs]
       parameters:
         - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: false
+        description: |
+          Optional trigger parameters. All fields are optional. When the body
+          is omitted or empty, the job runs with its default configuration.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerParams"
+            example:
+              args: "--full --verbose"
+              env:
+                MODE: manual
+                DEBUG: "1"
+              input: "yes"
       responses:
         "202":
           description: Job triggered
@@ -329,6 +347,16 @@ paths:
                 message: Job triggered
                 job_id: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
                 job_name: backup-db
+                run_id: "0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
+        "400":
+          description: Invalid JSON in request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: validation_error
+                message: "Invalid trigger body: expected value at line 1 column 1"
         "404":
           description: Job not found
           content:
@@ -374,7 +402,7 @@ paths:
         - name: status
           in: query
           required: false
-          description: Filter by run status (Running, Completed, Failed, Killed).
+          description: Filter by run status (Running, Completed, Failed, Killed). Case-insensitive.
           schema:
             type: string
             enum: [Running, Completed, Failed, Killed]
@@ -471,7 +499,21 @@ paths:
         Events include `started`, `output`, `completed`, `failed`, and
         `job_changed`. Optionally filter by `job_id` and/or `run_id`.
 
-        The server sends a keepalive comment every 15 seconds.
+        Each SSE frame has an `event:` field (lowercase type name) and a `data:`
+        field containing a JSON object with `"event"` (PascalCase type name) and
+        `"data"` (the actual event payload) keys. For example:
+
+            event: started
+            data: {"event":"Started","data":{"job_id":"...","run_id":"...","job_name":"...","timestamp":"..."}}
+
+        This structure comes from the serde `#[serde(tag = "event", content = "data")]`
+        attribute on the `JobEvent` enum. API consumers should parse
+        `JSON.parse(event.data).data` to access event fields.
+
+        Invalid UUID values for `job_id` or `run_id` filters are silently ignored
+        (treated as no filter applied).
+
+        The server sends a keepalive comment (`: keepalive`) every 15 seconds.
       tags: [Events]
       parameters:
         - name: job_id
@@ -770,8 +812,9 @@ components:
           format: date-time
           nullable: true
           description: |
-            Computed next scheduled run time. Only present when the job is
-            enabled. This field is not persisted and is calculated on read.
+            Computed next scheduled run time. Always present in the JSON response;
+            set to a datetime when the job is enabled, null when disabled.
+            This field is not persisted and is calculated on read.
           example: "2024-01-17T02:00:00Z"
 
     # -----------------------------------------------------------------------
@@ -915,6 +958,12 @@ components:
           nullable: true
           description: Error message if the run failed to start or was killed.
           example: null
+        trigger_params:
+          $ref: "#/components/schemas/TriggerParams"
+          description: >
+            Optional trigger parameters used for this run.
+            Only present when the run was manually triggered with
+            per-invocation parameters. Omitted when null.
 
     # -----------------------------------------------------------------------
     # RunStatus enum
@@ -925,8 +974,8 @@ components:
       description: |
         Current status of a job run:
         - `Running` — the process is currently executing
-        - `Completed` — the process exited with code 0
-        - `Failed` — the process exited with a non-zero code or could not start
+        - `Completed` — the process exited with an exit code (including non-zero)
+        - `Failed` — an infrastructure error prevented normal completion (spawn failure, process wait failure, timeout, or task join error)
         - `Killed` — the process was manually killed or timed out
 
     # -----------------------------------------------------------------------
@@ -956,9 +1005,40 @@ components:
     # -----------------------------------------------------------------------
     # Trigger response
     # -----------------------------------------------------------------------
+    TriggerParams:
+      type: object
+      description: |
+        Optional per-invocation parameters for triggering a job. All fields
+        are optional. When omitted, the job runs with its default configuration.
+      properties:
+        args:
+          type: string
+          description: |
+            Extra arguments appended to the job's command string for this run.
+            For a ShellCommand with value "cmd", the effective command becomes
+            "cmd <args>". Same for ScriptFile.
+          example: "--full --verbose"
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Per-trigger environment variables. Override the job's env_vars for
+            this single run (highest precedence: inherited env < job env_vars
+            < trigger env).
+          example:
+            MODE: manual
+            DEBUG: "1"
+        input:
+          type: string
+          description: |
+            Data written to the process's stdin immediately after spawn, then
+            stdin is closed (EOF). Useful for commands that read from stdin.
+          example: "yes"
+
     TriggerResponse:
       type: object
-      required: [message, job_id, job_name]
+      required: [message, job_id, job_name, run_id]
       properties:
         message:
           type: string
@@ -970,6 +1050,14 @@ components:
         job_name:
           type: string
           example: backup-db
+        run_id:
+          type: string
+          format: uuid
+          description: |
+            Pre-generated run identifier (UUIDv7). Available immediately in
+            the response without waiting for execution to begin. Can be used
+            to filter SSE events or poll for run status.
+          example: "0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
 
     # -----------------------------------------------------------------------
     # SSE event schemas
@@ -981,7 +1069,7 @@ components:
       properties:
         event:
           type: string
-          enum: [Started]
+          enum: [started]
         data:
           type: object
           required: [job_id, run_id, job_name, timestamp]
@@ -1005,7 +1093,7 @@ components:
       properties:
         event:
           type: string
-          enum: [Output]
+          enum: [output]
         data:
           type: object
           required: [job_id, run_id, data, timestamp]
@@ -1030,7 +1118,7 @@ components:
       properties:
         event:
           type: string
-          enum: [Completed]
+          enum: [completed]
         data:
           type: object
           required: [job_id, run_id, exit_code, timestamp]
@@ -1055,7 +1143,7 @@ components:
       properties:
         event:
           type: string
-          enum: [Failed]
+          enum: [failed]
         data:
           type: object
           required: [job_id, run_id, error, timestamp]
@@ -1079,7 +1167,7 @@ components:
       properties:
         event:
           type: string
-          enum: [JobChanged]
+          enum: [job_changed]
         data:
           type: object
           required: [job_id, change, timestamp]

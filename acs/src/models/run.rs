@@ -20,6 +20,9 @@ pub struct JobRun {
     pub exit_code: Option<i32>,
     pub log_size_bytes: u64,
     pub error: Option<String>,
+    /// Trigger-time parameter overrides used for this run, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_params: Option<crate::models::TriggerParams>,
 }
 
 #[cfg(test)]
@@ -36,6 +39,7 @@ mod tests {
             exit_code: Some(0),
             log_size_bytes: 1024,
             error: None,
+            trigger_params: None,
         }
     }
 
@@ -94,6 +98,7 @@ mod tests {
             exit_code: None,
             log_size_bytes: 0,
             error: Some("PTY spawn failed".to_string()),
+            trigger_params: None,
         };
         let json = serde_json::to_string(&run).expect("serialize");
         let deserialized: JobRun = serde_json::from_str(&json).expect("deserialize");
@@ -112,6 +117,7 @@ mod tests {
             exit_code: None,
             log_size_bytes: 0,
             error: None,
+            trigger_params: None,
         };
         let json = serde_json::to_string(&run).expect("serialize");
         let deserialized: JobRun = serde_json::from_str(&json).expect("deserialize");

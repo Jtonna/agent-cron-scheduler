@@ -28,7 +28,7 @@ pub struct AppState {
     pub start_time: Instant,
     pub active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>>,
     pub shutdown_tx: Option<tokio::sync::watch::Sender<()>>,
-    pub dispatch_tx: Option<tokio::sync::mpsc::Sender<crate::models::Job>>,
+    pub dispatch_tx: Option<tokio::sync::mpsc::Sender<crate::models::DispatchRequest>>,
 }
 
 /// Create the Axum router with all routes.
@@ -1023,6 +1023,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json["message"], "Job triggered");
         assert_eq!(json["job_id"], job.id.to_string());
+        assert!(json["run_id"].is_string(), "Response should include run_id");
     }
 
     // =======================================================================
@@ -1060,6 +1061,7 @@ mod tests {
                 exit_code: Some(0),
                 log_size_bytes: 100,
                 error: None,
+                trigger_params: None,
             };
             log_store.create_run(&run).await.unwrap();
         }
@@ -1120,6 +1122,7 @@ mod tests {
             exit_code: Some(0),
             log_size_bytes: 0,
             error: None,
+            trigger_params: None,
         };
         log_store.create_run(&run).await.unwrap();
 

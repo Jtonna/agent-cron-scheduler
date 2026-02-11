@@ -230,6 +230,7 @@ mod tests {
             exit_code: None,
             log_size_bytes: 0,
             error: None,
+            trigger_params: None,
         }
     }
 
