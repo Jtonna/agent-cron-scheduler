@@ -1,7 +1,10 @@
 "use client";
 
 import React from "react";
-import { Column, Row, Text, Input, Button, IconButton } from "@once-ui-system/core";
+import { MinusIcon } from "@heroicons/react/24/outline";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 
 interface EnvVarsEditorProps {
   value: Record<string, string>;
@@ -39,44 +42,46 @@ export function EnvVarsEditor({ value, onChange }: EnvVarsEditorProps) {
   };
 
   return (
-    <Column gap="8" fillWidth>
-      <Text variant="label-default-s" onBackground="neutral-strong">
-        Environment Variables
-      </Text>
+    <div className="flex flex-col gap-2 w-full">
+      <Label>Environment Variables</Label>
+      {entries.length === 0 && (
+        <p className="text-sm text-muted-foreground py-2">No environment variables defined.</p>
+      )}
       {entries.map(([key, val], index) => (
-        <Row key={index} gap="8" vertical="center" fillWidth>
+        <div key={index} className="flex items-center gap-2 w-full">
           <Input
-            id={`env-key-${index}`}
             placeholder="KEY"
             value={key}
             onChange={(e) => updateKey(key, e.target.value)}
-            style={{ fontFamily: "var(--font-code)" }}
+            className="font-mono"
           />
-          <Text onBackground="neutral-weak">=</Text>
+          <span className="text-muted-foreground" aria-hidden="true">=</span>
           <Input
-            id={`env-val-${index}`}
             placeholder="value"
             value={val}
             onChange={(e) => updateValue(key, e.target.value)}
-            style={{ fontFamily: "var(--font-code)" }}
+            className="font-mono"
           />
-          <IconButton
-            icon="minus"
-            variant="tertiary"
-            size="s"
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9 shrink-0"
             onClick={() => removeEntry(key)}
-            tooltip="Remove"
-          />
-        </Row>
+            type="button"
+            aria-label={`Remove variable ${key}`}
+          >
+            <MinusIcon className="h-4 w-4" />
+          </Button>
+        </div>
       ))}
       <Button
         variant="secondary"
-        size="s"
+        size="sm"
         onClick={addEntry}
         type="button"
       >
         + Add Variable
       </Button>
-    </Column>
+    </div>
   );
 }

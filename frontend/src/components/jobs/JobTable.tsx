@@ -2,13 +2,34 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
-import { Row, Text, Icon, IconButton } from "@once-ui-system/core";
+import { PlayIcon, PencilIcon, TrashIcon } from "@heroicons/react/24/outline";
 import type { Job } from "@/lib/types";
-import { Badge, statusToBadgeVariant } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Toggle } from "@/components/ui/Toggle";
-import { Modal } from "@/components/ui/Modal";
-import { EmptyState } from "@/components/ui/EmptyState";
+import { JobStatusBadge } from "@/lib/job-status";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { formatDate } from "@/lib/format";
 
 type SortField = "name" | "last_run_at";
@@ -36,10 +57,12 @@ export function JobTable({
 
   if (jobs.length === 0) {
     return (
-      <EmptyState
-        message="No jobs found"
-        description="Create your first job to get started."
-      />
+      <div className="flex flex-col items-center justify-center py-12 gap-3">
+        <p className="text-sm text-muted-foreground">No jobs found</p>
+        <p className="text-xs text-muted-foreground">
+          Create your first job to get started.
+        </p>
+      </div>
     );
   }
 
@@ -65,7 +88,9 @@ export function JobTable({
   };
 
   const SortIndicator = ({ field }: { field: SortField }) => (
-    <span style={{ marginLeft: "4px", opacity: sortField === field ? 1 : 0.4 }}>
+    <span
+      className={`ml-1 ${sortField === field ? "opacity-100" : "opacity-40"}`}
+    >
       {sortField === field && sortDir === "desc" ? "\u25B2" : "\u25BC"}
     </span>
   );
@@ -94,92 +119,83 @@ export function JobTable({
     }
   };
 
-  function getJobStatusBadge(job: Job) {
-    if (!job.enabled) {
-      return <Badge variant="disabled">Disabled</Badge>;
-    }
-    if (job.last_exit_code === null && !job.last_run_at) {
-      return <Badge variant="default">Pending</Badge>;
-    }
-    if (job.last_exit_code === 0) {
-      return <Badge variant="success">OK</Badge>;
-    }
-    if (job.last_exit_code !== null) {
-      return <Badge variant="error">Failed</Badge>;
-    }
-    return <Badge variant="default">Unknown</Badge>;
-  }
-
   return (
     <>
-      <div
-        style={{
-          overflowX: "auto",
-          border: "1px solid var(--neutral-border-medium)",
-          borderRadius: "var(--radius-l)",
-        }}
-      >
-        <table className="data-table">
-          <thead>
-            <tr style={{ background: "var(--neutral-alpha-weak)" }}>
-              <th>Status</th>
-              <th
-                style={{ cursor: "pointer", userSelect: "none" }}
+      <div className="rounded-lg border">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/50">
+              <TableHead>Status</TableHead>
+              <TableHead
+                className="cursor-pointer select-none"
                 onClick={() => toggleSort("name")}
+                aria-sort={sortField === "name" ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
               >
                 Name <SortIndicator field="name" />
-              </th>
-              <th>Schedule</th>
-              <th>Type</th>
-              <th
-                style={{ cursor: "pointer", userSelect: "none" }}
+              </TableHead>
+              <TableHead>Schedule</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead
+                className="cursor-pointer select-none"
                 onClick={() => toggleSort("last_run_at")}
+                aria-sort={sortField === "last_run_at" ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
               >
                 Last Run <SortIndicator field="last_run_at" />
-              </th>
-              <th>Next Run</th>
-              <th style={{ textAlign: "right" }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+              </TableHead>
+              <TableHead>Next Run</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {sorted.map((job) => (
-              <tr key={job.id}>
-                <td>{getJobStatusBadge(job)}</td>
-                <td>
+              <TableRow key={job.id}>
+                <TableCell>
+                  <JobStatusBadge
+                    enabled={job.enabled}
+                    last_exit_code={job.last_exit_code}
+                    last_run_at={job.last_run_at}
+                  />
+                </TableCell>
+                <TableCell>
                   <Link
                     href={`/jobs/${job.id}`}
-                    style={{
-                      fontWeight: 500,
-                      color: "var(--neutral-on-background-strong)",
-                      textDecoration: "none",
-                    }}
+                    className="font-medium text-foreground hover:underline"
                   >
                     {job.name}
                   </Link>
-                </td>
-                <td style={{ fontFamily: "var(--font-code)", fontSize: "var(--font-size-body-xs)" }}>
+                </TableCell>
+                <TableCell className="font-mono text-xs">
                   {job.schedule}
-                </td>
-                <td>
+                </TableCell>
+                <TableCell>
                   {job.execution.type === "ShellCommand" ? "Shell" : "Script"}
-                </td>
-                <td>{formatDate(job.last_run_at)}</td>
-                <td>{job.enabled ? formatDate(job.next_run_at) : "--"}</td>
-                <td>
-                  <Row gap="4" horizontal="end" vertical="center">
-                    <IconButton
-                      icon="play"
-                      variant="tertiary"
-                      size="s"
-                      onClick={() =>
-                        handleAction(job.id, () => onTrigger(job.id))
-                      }
-                      disabled={actionLoading === job.id}
-                      tooltip="Trigger now"
-                    />
-                    <Toggle
+                </TableCell>
+                <TableCell>{formatDate(job.last_run_at)}</TableCell>
+                <TableCell>
+                  {job.enabled ? formatDate(job.next_run_at) : "--"}
+                </TableCell>
+                <TableCell>
+                  <div className="flex items-center justify-end gap-1">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() =>
+                            handleAction(job.id, () => onTrigger(job.id))
+                          }
+                          disabled={actionLoading === job.id}
+                        >
+                          <PlayIcon className="h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Trigger now</TooltipContent>
+                    </Tooltip>
+                    <Switch
                       checked={job.enabled}
-                      onChange={() =>
+                      aria-label={job.enabled ? `Disable ${job.name}` : `Enable ${job.name}`}
+                      onCheckedChange={() =>
                         handleAction(
                           job.id,
                           job.enabled
@@ -189,60 +205,69 @@ export function JobTable({
                       }
                       disabled={actionLoading === job.id}
                     />
-                    <Link href={`/jobs/${job.id}/edit`}>
-                      <IconButton
-                        icon="edit"
-                        variant="tertiary"
-                        size="s"
-                        tooltip="Edit"
-                      />
-                    </Link>
-                    <IconButton
-                      icon="delete"
-                      variant="tertiary"
-                      size="s"
-                      onClick={() => setDeleteTarget(job)}
-                      disabled={actionLoading === job.id}
-                      tooltip="Delete"
-                    />
-                  </Row>
-                </td>
-              </tr>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          asChild
+                        >
+                          <Link href={`/jobs/${job.id}/edit`}>
+                            <PencilIcon className="h-4 w-4" />
+                          </Link>
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Edit</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => setDeleteTarget(job)}
+                          disabled={actionLoading === job.id}
+                        >
+                          <TrashIcon className="h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Delete</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
 
-      {/* Delete Confirmation Modal */}
-      <Modal
+      {/* Delete Confirmation */}
+      <AlertDialog
         open={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
-        title="Delete Job"
-        actions={
-          <>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setDeleteTarget(null)}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              size="sm"
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Job</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete{" "}
+              <strong>{deleteTarget?.name}</strong>? This action cannot be
+              undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
               onClick={handleDelete}
               disabled={actionLoading !== null}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {actionLoading ? "Deleting..." : "Delete"}
-            </Button>
-          </>
-        }
-      >
-        <Text variant="body-default-s" onBackground="neutral-medium">
-          Are you sure you want to delete{" "}
-          <strong>{deleteTarget?.name}</strong>? This action cannot be undone.
-        </Text>
-      </Modal>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

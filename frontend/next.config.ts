@@ -1,7 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "export",
+  // Only enable static export for production builds.
+  // In dev mode, this must be off so dynamic routes work without being
+  // pre-listed in generateStaticParams().
+  ...(process.env.NODE_ENV === "production" ? { output: "export" } : {}),
   async rewrites() {
     return [
       {

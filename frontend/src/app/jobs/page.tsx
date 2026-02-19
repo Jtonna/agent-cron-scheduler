@@ -2,13 +2,12 @@
 
 import React, { useCallback } from "react";
 import Link from "next/link";
-import { Column, Row, Text } from "@once-ui-system/core";
+import { ArrowPathIcon, PlusCircleIcon } from "@heroicons/react/24/outline";
 import { useJobs } from "@/hooks/useJobs";
 import { JobTable } from "@/components/jobs/JobTable";
-import { Button } from "@/components/ui/Button";
-import { Spinner } from "@/components/ui/Spinner";
-import { useToast } from "@/components/ui/Toast";
+import { Button } from "@/components/ui/button";
 import { useSSEEvents } from "@/hooks/useSSE";
+import { toast } from "sonner";
 
 export default function AllJobsPage() {
   const {
@@ -21,7 +20,6 @@ export default function AllJobsPage() {
     disableJob,
     deleteJob,
   } = useJobs();
-  const { addToast } = useToast();
 
   useSSEEvents(
     useCallback(
@@ -41,11 +39,10 @@ export default function AllJobsPage() {
   const handleTrigger = async (id: string) => {
     try {
       await triggerJob(id);
-      addToast("Job triggered successfully", "success");
+      toast.success("Job triggered successfully");
     } catch (err) {
-      addToast(
-        `Failed to trigger job: ${err instanceof Error ? err.message : "Unknown error"}`,
-        "error"
+      toast.error(
+        `Failed to trigger job: ${err instanceof Error ? err.message : "Unknown error"}`
       );
     }
   };
@@ -53,11 +50,10 @@ export default function AllJobsPage() {
   const handleEnable = async (id: string) => {
     try {
       await enableJob(id);
-      addToast("Job enabled", "success");
+      toast.success("Job enabled");
     } catch (err) {
-      addToast(
-        `Failed to enable job: ${err instanceof Error ? err.message : "Unknown error"}`,
-        "error"
+      toast.error(
+        `Failed to enable job: ${err instanceof Error ? err.message : "Unknown error"}`
       );
     }
   };
@@ -65,11 +61,10 @@ export default function AllJobsPage() {
   const handleDisable = async (id: string) => {
     try {
       await disableJob(id);
-      addToast("Job disabled", "info");
+      toast.info("Job disabled");
     } catch (err) {
-      addToast(
-        `Failed to disable job: ${err instanceof Error ? err.message : "Unknown error"}`,
-        "error"
+      toast.error(
+        `Failed to disable job: ${err instanceof Error ? err.message : "Unknown error"}`
       );
     }
   };
@@ -77,43 +72,40 @@ export default function AllJobsPage() {
   const handleDelete = async (id: string) => {
     try {
       await deleteJob(id);
-      addToast("Job deleted", "success");
+      toast.success("Job deleted");
     } catch (err) {
-      addToast(
-        `Failed to delete job: ${err instanceof Error ? err.message : "Unknown error"}`,
-        "error"
+      toast.error(
+        `Failed to delete job: ${err instanceof Error ? err.message : "Unknown error"}`
       );
     }
   };
 
   return (
-    <Column gap="24" fillWidth>
-      <Row horizontal="between" vertical="center" fillWidth>
-        <Text variant="heading-strong-l">All Jobs</Text>
-        <Link href="/jobs/new">
-          <Button variant="primary">Create Job</Button>
-        </Link>
-      </Row>
+    <div className="flex flex-col gap-6 w-full">
+      <div className="flex items-center justify-between w-full">
+        <h1 className="text-2xl font-semibold tracking-tight">All Jobs</h1>
+        <Button asChild>
+          <Link href="/jobs/new">
+            <PlusCircleIcon className="h-4 w-4 mr-1.5" />
+            Create Job
+          </Link>
+        </Button>
+      </div>
 
       {loading && jobs.length === 0 && (
-        <Row horizontal="center" paddingY="48">
-          <Spinner size="lg" />
-        </Row>
+        <div className="flex items-center justify-center py-12">
+          <ArrowPathIcon className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
       )}
 
       {error && (
-        <Column
-          padding="16"
-          radius="l"
-          style={{
-            background: "var(--danger-alpha-weak)",
-            border: "1px solid var(--danger-border-medium)",
-          }}
-        >
-          <Text variant="body-default-s" onBackground="danger-strong">
-            {error}
-          </Text>
-        </Column>
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 flex items-center justify-between">
+          <p className="text-sm text-destructive">{error}</p>
+          <Button variant="outline" size="sm" onClick={() => refresh()}>
+            <ArrowPathIcon className="h-4 w-4 mr-1.5" />
+            Retry
+          </Button>
+        </div>
       )}
 
       {!loading && (
@@ -125,6 +117,6 @@ export default function AllJobsPage() {
           onDelete={handleDelete}
         />
       )}
-    </Column>
+    </div>
   );
 }

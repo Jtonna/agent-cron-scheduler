@@ -1,56 +1,55 @@
 "use client";
 
 import React from "react";
-import { Card as OnceCard, Column, Row, Text } from "@once-ui-system/core";
+import { Card, CardHeader, CardDescription, CardContent } from "@/components/ui/card";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
 
 interface HealthCardProps {
   label: string;
-  value: string;
+  value: React.ReactNode;
   icon?: React.ReactNode;
+  tooltip?: string;
 }
 
-export function HealthCard({ label, value, icon }: HealthCardProps) {
+export function HealthCard({ label, value, icon, tooltip }: HealthCardProps) {
+  const renderedValue = (
+    <span className="text-lg font-semibold truncate">{value}</span>
+  );
+
   return (
-    <OnceCard
-      fillWidth
-      padding="l"
-      radius="l"
-      border="neutral-alpha-medium"
-    >
-      <Row gap="12" vertical="start">
-        {icon && (
-          <Column
-            horizontal="center"
-            vertical="center"
-            radius="m"
-            padding="8"
-            style={{
-              background: "var(--neutral-alpha-weak)",
-              flexShrink: 0,
-              width: "36px",
-              height: "36px",
-              color: "var(--neutral-on-background-weak)",
-            }}
-          >
-            {icon}
-          </Column>
-        )}
-        <Column gap="4" style={{ minWidth: 0 }}>
-          <Text
-            variant="label-default-xs"
-            onBackground="neutral-weak"
-            style={{ textTransform: "uppercase", letterSpacing: "0.05em" }}
-          >
-            {label}
-          </Text>
-          <Text
-            variant="heading-strong-m"
-            style={{ overflow: "hidden", textOverflow: "ellipsis" }}
-          >
-            {value}
-          </Text>
-        </Column>
-      </Row>
-    </OnceCard>
+    <Card className="transition-shadow hover:shadow-md">
+      <CardHeader className="pb-2">
+        <CardDescription className="text-xs font-medium uppercase tracking-wider">
+          {label}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-center gap-3">
+          {icon && (
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+              {icon}
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            {tooltip ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {renderedValue}
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{tooltip}</p>
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              renderedValue
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

@@ -2,31 +2,64 @@
 
 import React, { useState, useCallback } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { Column, Row, Text, Grid } from "@once-ui-system/core";
+import { useParams, useRouter } from "next/navigation";
+import {
+  ArrowLeftIcon,
+  PencilIcon,
+  PlayIcon,
+  TrashIcon,
+  ArrowPathIcon,
+} from "@heroicons/react/24/outline";
 import { useJob } from "@/hooks/useJob";
 import { useRuns } from "@/hooks/useRuns";
-import { Badge, statusToBadgeVariant } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Card } from "@/components/ui/Card";
-import { Modal } from "@/components/ui/Modal";
-import { Spinner } from "@/components/ui/Spinner";
-import { EmptyState } from "@/components/ui/EmptyState";
-import { LogViewer } from "@/components/logs/LogViewer";
-import { useToast } from "@/components/ui/Toast";
+import {
+  Badge,
+  statusToBadgeVariant,
+} from "@/components/ui/badge";
+import { JobStatusBadge } from "@/lib/job-status";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useSSEEvents } from "@/hooks/useSSE";
 import { api } from "@/lib/api";
 import { formatDate, formatBytes } from "@/lib/format";
+import { toast } from "sonner";
 
 export function JobDetailContent() {
   const params = useParams();
+  const router = useRouter();
   const id = params.id as string;
-  const { job, loading: jobLoading, error: jobError, refresh: refreshJob } = useJob(id);
-  const { runs, total, loading: runsLoading, refresh: refreshRuns } = useRuns(id);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const {
+    job,
+    loading: jobLoading,
+    error: jobError,
+    refresh: refreshJob,
+  } = useJob(id);
+  const {
+    runs,
+    total,
+    loading: runsLoading,
+    refresh: refreshRuns,
+  } = useRuns(id);
   const [showDelete, setShowDelete] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  const { addToast } = useToast();
 
   useSSEEvents(
     useCallback(
@@ -49,13 +82,14 @@ export function JobDetailContent() {
     setActionLoading(true);
     try {
       const result = await api.triggerJob(id);
-      addToast("Job triggered", "success");
-      setSelectedRunId(result.run_id);
+      toast.success("Job triggered");
       refreshRuns();
+      if (result?.run_id) {
+        router.push(`/jobs/${id}/runs/${result.run_id}`);
+      }
     } catch (err) {
-      addToast(
-        `Failed to trigger: ${err instanceof Error ? err.message : "Unknown error"}`,
-        "error"
+      toast.error(
+        `Failed to trigger: ${err instanceof Error ? err.message : "Unknown error"}`
       );
     } finally {
       setActionLoading(false);
@@ -66,12 +100,11 @@ export function JobDetailContent() {
     setActionLoading(true);
     try {
       await api.deleteJob(id);
-      addToast("Job deleted", "success");
-      window.location.href = "/jobs";
+      toast.success("Job deleted");
+      router.push("/jobs");
     } catch (err) {
-      addToast(
-        `Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`,
-        "error"
+      toast.error(
+        `Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`
       );
     } finally {
       setActionLoading(false);
@@ -81,232 +114,228 @@ export function JobDetailContent() {
 
   if (jobLoading) {
     return (
-      <Row horizontal="center" paddingY="48">
-        <Spinner size="lg" />
-      </Row>
+      <div className="flex items-center justify-center py-12">
+        <ArrowPathIcon className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
     );
   }
 
   if (jobError || !job) {
     return (
-      <Column
-        padding="16"
-        radius="l"
-        style={{
-          background: "var(--danger-alpha-weak)",
-          border: "1px solid var(--danger-border-medium)",
-        }}
-      >
-        <Text variant="body-default-s" onBackground="danger-strong">
+      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+        <p className="text-sm text-destructive">
           {jobError || "Job not found"}
-        </Text>
-      </Column>
+        </p>
+      </div>
     );
   }
 
-  function getJobStatusBadge() {
-    if (!job) return null;
-    if (!job.enabled) return <Badge variant="disabled">Disabled</Badge>;
-    if (job.last_exit_code === null && !job.last_run_at) return <Badge variant="default">Pending</Badge>;
-    if (job.last_exit_code === 0) return <Badge variant="success">OK</Badge>;
-    if (job.last_exit_code !== null) return <Badge variant="error">Failed (exit {job.last_exit_code})</Badge>;
-    return <Badge variant="default">Unknown</Badge>;
-  }
-
   return (
-    <Column gap="24" fillWidth>
-      {/* Header */}
-      <Row horizontal="between" vertical="start" fillWidth wrap>
-        <Column gap="4">
-          <Row gap="12" vertical="center">
-            <Text variant="heading-strong-l">{job.name}</Text>
-            {getJobStatusBadge()}
-          </Row>
-          <Text
-            variant="body-default-s"
-            onBackground="neutral-weak"
-            style={{ fontFamily: "var(--font-code)" }}
-          >
-            {job.schedule}
-          </Text>
-        </Column>
-        <Row gap="8">
-          <Link href={`/jobs/${id}/edit`}>
-            <Button variant="secondary" size="sm">
+    <div className="flex flex-col gap-6 w-full">
+      {/* Back navigation */}
+      <Button variant="ghost" size="sm" asChild>
+        <Link href="/jobs">
+          <ArrowLeftIcon className="h-4 w-4 mr-1.5" />
+          Back to Jobs
+        </Link>
+      </Button>
+
+      {/* Header: name + status + actions */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight">{job.name}</h1>
+          <JobStatusBadge
+            enabled={job.enabled}
+            last_exit_code={job.last_exit_code}
+            last_run_at={job.last_run_at}
+          />
+        </div>
+        <div className="flex gap-2">
+          <Button variant="secondary" size="sm" asChild>
+            <Link href={`/jobs/${id}/edit`}>
+              <PencilIcon className="h-4 w-4 mr-1.5" />
               Edit
-            </Button>
-          </Link>
+            </Link>
+          </Button>
           <Button
-            variant="primary"
             size="sm"
             onClick={handleTrigger}
             disabled={actionLoading}
           >
+            {actionLoading ? (
+              <ArrowPathIcon className="h-4 w-4 mr-1.5 animate-spin" />
+            ) : (
+              <PlayIcon className="h-4 w-4 mr-1.5" />
+            )}
             Trigger
           </Button>
           <Button
-            variant="danger"
+            variant="destructive"
             size="sm"
             onClick={() => setShowDelete(true)}
           >
+            <TrashIcon className="h-4 w-4 mr-1.5" />
             Delete
           </Button>
-        </Row>
-      </Row>
+        </div>
+      </div>
 
-      {/* Job Config */}
-      <Card title="Configuration">
-        <Grid columns="2" gap="16" fillWidth>
-          <Column gap="2">
-            <Text variant="label-default-xs" onBackground="neutral-weak">Type</Text>
-            <Text variant="body-default-s">
-              {job.execution.type === "ShellCommand" ? "Shell Command" : "Script File"}
-            </Text>
-          </Column>
-          <Column gap="2">
-            <Text variant="label-default-xs" onBackground="neutral-weak">Enabled</Text>
-            <Text variant="body-default-s">{job.enabled ? "Yes" : "No"}</Text>
-          </Column>
-          <Column gap="2" style={{ gridColumn: "1 / -1" }}>
-            <Text variant="label-default-xs" onBackground="neutral-weak">Command</Text>
-            <code
-              style={{
-                fontFamily: "var(--font-code)",
-                fontSize: "var(--font-size-body-xs)",
-                background: "var(--neutral-alpha-weak)",
-                padding: "4px 8px",
-                borderRadius: "var(--radius-s)",
-              }}
-            >
-              {job.execution.value}
-            </code>
-          </Column>
-          {job.timezone && (
-            <Column gap="2">
-              <Text variant="label-default-xs" onBackground="neutral-weak">Timezone</Text>
-              <Text variant="body-default-s">{job.timezone}</Text>
-            </Column>
-          )}
-          {job.working_dir && (
-            <Column gap="2">
-              <Text variant="label-default-xs" onBackground="neutral-weak">Working Dir</Text>
-              <Text
-                variant="body-default-xs"
-                style={{ fontFamily: "var(--font-code)" }}
-              >
-                {job.working_dir}
-              </Text>
-            </Column>
-          )}
-          <Column gap="2">
-            <Text variant="label-default-xs" onBackground="neutral-weak">Timeout</Text>
-            <Text variant="body-default-s">{job.timeout_secs}s</Text>
-          </Column>
-          <Column gap="2">
-            <Text variant="label-default-xs" onBackground="neutral-weak">Log Environment</Text>
-            <Text variant="body-default-s">{job.log_environment ? "Yes" : "No"}</Text>
-          </Column>
-          {job.env_vars && Object.keys(job.env_vars).length > 0 && (
-            <Column gap="4" style={{ gridColumn: "1 / -1" }}>
-              <Text variant="label-default-xs" onBackground="neutral-weak">Environment Variables</Text>
-              <Column
-                padding="8"
-                radius="s"
-                gap="2"
-                style={{
-                  background: "var(--neutral-alpha-weak)",
-                  fontFamily: "var(--font-code)",
-                  fontSize: "var(--font-size-body-xs)",
-                }}
-              >
-                {Object.entries(job.env_vars).map(([k, v]) => (
-                  <Row key={k}>
-                    <Text style={{ color: "var(--brand-on-background-strong)", fontFamily: "inherit", fontSize: "inherit" }}>
-                      {k}
-                    </Text>
-                    <Text style={{ fontFamily: "inherit", fontSize: "inherit" }}>=</Text>
-                    <Text style={{ fontFamily: "inherit", fontSize: "inherit" }}>{v}</Text>
-                  </Row>
-                ))}
-              </Column>
-            </Column>
-          )}
-        </Grid>
+      {/* Compact Configuration Summary */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            Configuration
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Schedule
+              </span>
+              <span className="font-mono text-sm">{job.schedule}</span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Type
+              </span>
+              <span className="text-sm">
+                {job.execution.type === "ShellCommand"
+                  ? "Shell Command"
+                  : "Script File"}
+              </span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Enabled
+              </span>
+              <Badge variant={job.enabled ? "success" : "disabled"}>
+                {job.enabled ? "Enabled" : "Disabled"}
+              </Badge>
+            </div>
+            <div className="flex flex-col gap-0.5 col-span-2 sm:col-span-3">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Command
+              </span>
+              <code className="font-mono text-sm bg-muted px-2 py-1 rounded truncate">
+                {job.execution.value}
+              </code>
+            </div>
+            {job.timezone && (
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Timezone
+                </span>
+                <span className="text-sm">{job.timezone}</span>
+              </div>
+            )}
+            {job.next_run_at && (
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Next Run
+                </span>
+                <span className="text-sm">{formatDate(job.next_run_at)}</span>
+              </div>
+            )}
+          </div>
+        </CardContent>
       </Card>
 
-      {/* Run History */}
-      <Card title={`Run History (${total})`}>
+      {/* Run History — main focus */}
+      <div className="flex flex-col gap-3">
+        <h2 className="text-lg font-medium">
+          Run History{" "}
+          <span className="text-sm text-muted-foreground font-normal">
+            ({total})
+          </span>
+        </h2>
         {runsLoading && runs.length === 0 ? (
-          <Row horizontal="center" paddingY="24">
-            <Spinner />
-          </Row>
+          <div className="flex items-center justify-center py-6">
+            <ArrowPathIcon className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
         ) : runs.length === 0 ? (
-          <EmptyState message="No runs yet" description="Trigger the job or wait for it to run on schedule." />
+          <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-lg border border-dashed">
+            <p className="text-sm text-muted-foreground">No runs yet</p>
+            <p className="text-xs text-muted-foreground">
+              Trigger the job or wait for it to run on schedule.
+            </p>
+          </div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Status</th>
-                  <th>Started</th>
-                  <th>Finished</th>
-                  <th>Exit</th>
-                  <th>Log Size</th>
-                </tr>
-              </thead>
-              <tbody>
+          <div className="rounded-lg border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Started</TableHead>
+                  <TableHead>Finished</TableHead>
+                  <TableHead>Exit Code</TableHead>
+                  <TableHead>Log Size</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {runs.map((run) => (
-                  <tr
+                  <TableRow
                     key={run.run_id}
-                    onClick={() => setSelectedRunId(run.run_id)}
-                    className={selectedRunId === run.run_id ? "selected" : ""}
-                    style={{ cursor: "pointer" }}
+                    onClick={() =>
+                      router.push(`/jobs/${id}/runs/${run.run_id}`)
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        router.push(`/jobs/${id}/runs/${run.run_id}`);
+                      }
+                    }}
+                    className="cursor-pointer hover:bg-muted/50"
+                    role="link"
+                    tabIndex={0}
                   >
-                    <td>
-                      <Badge variant={statusToBadgeVariant(run.status)}>
-                        {run.status}
+                    <TableCell>
+                      <Badge variant={statusToBadgeVariant(run.status, run.exit_code)}>
+                        {run.status}{run.status === "Completed" && run.exit_code !== null && run.exit_code !== 0 ? ` (${run.exit_code})` : ""}
                       </Badge>
-                    </td>
-                    <td>{formatDate(run.started_at)}</td>
-                    <td>{formatDate(run.finished_at)}</td>
-                    <td style={{ fontFamily: "var(--font-code)" }}>
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {formatDate(run.started_at)}
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {formatDate(run.finished_at)}
+                    </TableCell>
+                    <TableCell className="font-mono text-sm">
                       {run.exit_code ?? "--"}
-                    </td>
-                    <td>{formatBytes(run.log_size_bytes)}</td>
-                  </tr>
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {formatBytes(run.log_size_bytes)}
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         )}
-      </Card>
+      </div>
 
-      {/* Log Viewer */}
-      <Card title="Run Log">
-        <LogViewer runId={selectedRunId} jobId={id} />
-      </Card>
-
-      {/* Delete Modal */}
-      <Modal
-        open={showDelete}
-        onClose={() => setShowDelete(false)}
-        title="Delete Job"
-        actions={
-          <>
-            <Button variant="secondary" size="sm" onClick={() => setShowDelete(false)}>
-              Cancel
-            </Button>
-            <Button variant="danger" size="sm" onClick={handleDelete} disabled={actionLoading}>
+      {/* Delete Confirmation */}
+      <AlertDialog open={showDelete} onOpenChange={setShowDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Job</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete <strong>{job.name}</strong>? This
+              will remove the job and all its run history.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              disabled={actionLoading}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
               {actionLoading ? "Deleting..." : "Delete"}
-            </Button>
-          </>
-        }
-      >
-        <Text variant="body-default-s" onBackground="neutral-medium">
-          Are you sure you want to delete <strong>{job.name}</strong>? This will
-          remove the job and all its run history.
-        </Text>
-      </Modal>
-    </Column>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
   );
 }

@@ -1,31 +1,88 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Column,
-  Text,
-  Line,
-  ToggleButton,
-} from "@once-ui-system/core";
-import { SidebarSection } from "./SidebarSection";
-import { RecentJobsWidget } from "./RecentJobsWidget";
-import { Modal } from "@/components/ui/Modal";
-import { Button } from "@/components/ui/Button";
+  HomeIcon,
+  DocumentTextIcon,
+  PlusCircleIcon,
+  ListBulletIcon,
+  ArrowPathIcon,
+  PowerIcon,
+  SunIcon,
+  MoonIcon,
+  CommandLineIcon,
+  ChevronRightIcon,
+  ClockIcon,
+  Cog6ToothIcon,
+} from "@heroicons/react/24/outline";
+import {
+  CheckCircleIcon as CheckCircleSolid,
+  XCircleIcon as XCircleSolid,
+} from "@heroicons/react/20/solid";
+import { useTheme } from "next-themes";
+import {
+  Sidebar as SidebarRoot,
+  SidebarHeader,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupLabel,
+  SidebarGroupContent,
+  SidebarMenu,
+  SidebarMenuItem,
+  SidebarMenuButton,
+  SidebarMenuBadge,
+  SidebarMenuSub,
+  SidebarMenuSubItem,
+  SidebarMenuSubButton,
+} from "@/components/ui/sidebar";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { toast } from "sonner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { api } from "@/lib/api";
 import type { Job } from "@/lib/types";
 import { useSSEEvents } from "@/hooks/useSSE";
 
+interface NavItem {
+  label: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  path: string;
+}
+
+interface NavSection {
+  group: string;
+  items: NavItem[];
+}
+
 export function Sidebar() {
   const pathname = usePathname();
+  const { theme, setTheme } = useTheme();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [showRestart, setShowRestart] = useState(false);
   const [showShutdown, setShowShutdown] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-
-  const navigate = (path: string) => {
-    window.location.href = path;
-  };
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -62,8 +119,9 @@ export function Sidebar() {
     try {
       await api.restart();
       setShowRestart(false);
+      toast.success("Server is restarting...");
     } catch {
-      // Server might be restarting
+      toast.error("Failed to restart server");
     } finally {
       setActionLoading(false);
     }
@@ -75,156 +133,245 @@ export function Sidebar() {
       await api.shutdown();
       setShowShutdown(false);
     } catch {
-      // Server is shutting down
+      toast.error("Failed to shut down server");
     } finally {
       setActionLoading(false);
     }
   };
 
+  const navItems: NavSection[] = [
+    {
+      group: "System",
+      items: [
+        { label: "Dashboard", icon: HomeIcon, path: "/" },
+        { label: "Logs", icon: DocumentTextIcon, path: "/logs" },
+      ],
+    },
+    {
+      group: "Jobs",
+      items: [
+        { label: "Create New Job", icon: PlusCircleIcon, path: "/jobs/new" },
+        { label: "All Jobs", icon: ListBulletIcon, path: "/jobs" },
+      ],
+    },
+  ];
+
+  const recentJobs = jobs
+    .filter((j) => j.last_run_at)
+    .sort(
+      (a, b) =>
+        new Date(b.last_run_at!).getTime() -
+        new Date(a.last_run_at!).getTime()
+    )
+    .slice(0, 7);
+
   return (
-    <Column
-      as="aside"
-      background="surface"
-      style={{
-        width: "256px",
-        minHeight: "100vh",
-        flexShrink: 0,
-        borderRight: "1px solid var(--neutral-border-medium)",
-      }}
-    >
-      {/* Header */}
-      <Column paddingX="20" paddingY="20">
-        <Text variant="heading-strong-l">ACS</Text>
-        <Text variant="body-default-xs" onBackground="neutral-weak" marginTop="4">
-          Agent Cron Scheduler
-        </Text>
-      </Column>
+    <SidebarRoot collapsible="offcanvas">
+      {/* Header - App branding */}
+      <SidebarHeader>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton size="lg" className="pointer-events-none">
+              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                <CommandLineIcon className="size-4" />
+              </div>
+              <div className="grid flex-1 text-left text-sm leading-tight">
+                <span className="truncate font-semibold">ACS</span>
+                <span className="truncate text-xs text-muted-foreground">
+                  Agent Cron Scheduler
+                </span>
+              </div>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarHeader>
 
-      <Line />
+      {/* Navigation with Collapsible Groups */}
+      <SidebarContent>
+        {navItems.map((section) => (
+          <Collapsible
+            key={section.group}
+            defaultOpen
+            className="group/collapsible"
+          >
+            <SidebarGroup>
+              <SidebarGroupLabel asChild>
+                <CollapsibleTrigger>
+                  {section.group}
+                  <ChevronRightIcon className="ml-auto size-4 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+                </CollapsibleTrigger>
+              </SidebarGroupLabel>
+              <CollapsibleContent>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {section.items.map((item) => (
+                      <SidebarMenuItem key={item.path}>
+                        <SidebarMenuButton
+                          asChild
+                          isActive={pathname === item.path}
+                          tooltip={item.label}
+                        >
+                          <Link href={item.path}>
+                            <item.icon className="size-4" />
+                            <span>{item.label}</span>
+                          </Link>
+                        </SidebarMenuButton>
+                        {item.path === "/jobs" && jobs.length > 0 && (
+                          <SidebarMenuBadge>{jobs.length}</SidebarMenuBadge>
+                        )}
+                      </SidebarMenuItem>
+                    ))}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </SidebarGroup>
+          </Collapsible>
+        ))}
 
-      {/* Navigation */}
-      <Column as="nav" fillWidth style={{ flex: 1, overflowY: "auto" }} padding="8" gap="8">
-        <SidebarSection title="System">
-          <ToggleButton
-            fillWidth
-            horizontal="start"
-            prefixIcon="home"
-            label="Dashboard"
-            selected={pathname === "/"}
-            onClick={() => navigate("/")}
-          />
-          <ToggleButton
-            fillWidth
-            horizontal="start"
-            prefixIcon="fileText"
-            label="Logs"
-            selected={pathname === "/logs"}
-            onClick={() => navigate("/logs")}
-          />
-        </SidebarSection>
+        {/* Recent Jobs as Collapsible Sub-Menu */}
+        <SidebarGroup>
+          <SidebarGroupLabel>Recent</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <Collapsible defaultOpen className="group/collapsible">
+                <SidebarMenuItem>
+                  <CollapsibleTrigger asChild>
+                    <SidebarMenuButton>
+                      <ClockIcon className="size-4" />
+                      <span>Recent Runs</span>
+                      <ChevronRightIcon className="ml-auto size-4 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+                    </SidebarMenuButton>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <SidebarMenuSub>
+                      {recentJobs.length === 0 ? (
+                        <SidebarMenuSubItem>
+                          <SidebarMenuSubButton className="pointer-events-none text-sidebar-foreground/50">
+                            <span className="text-xs">No recent runs</span>
+                          </SidebarMenuSubButton>
+                        </SidebarMenuSubItem>
+                      ) : (
+                        recentJobs.map((job) => (
+                          <SidebarMenuSubItem key={job.id}>
+                            <SidebarMenuSubButton
+                              asChild
+                              isActive={pathname === `/jobs/${job.id}`}
+                            >
+                              <Link href={`/jobs/${job.id}`}>
+                                {job.last_exit_code === null ? (
+                                  <ArrowPathIcon className="size-4 text-muted-foreground shrink-0" />
+                                ) : job.last_exit_code === 0 ? (
+                                  <CheckCircleSolid className="size-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                ) : (
+                                  <XCircleSolid className="size-4 text-red-600 dark:text-red-400 shrink-0" />
+                                )}
+                                <span>{job.name}</span>
+                              </Link>
+                            </SidebarMenuSubButton>
+                          </SidebarMenuSubItem>
+                        ))
+                      )}
+                    </SidebarMenuSub>
+                  </CollapsibleContent>
+                </SidebarMenuItem>
+              </Collapsible>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
 
-        <SidebarSection title="Jobs">
-          <ToggleButton
-            fillWidth
-            horizontal="start"
-            prefixIcon="plusCircle"
-            label="Create New Job"
-            selected={pathname === "/jobs/new"}
-            onClick={() => navigate("/jobs/new")}
-          />
-          <ToggleButton
-            fillWidth
-            horizontal="start"
-            prefixIcon="listChecks"
-            label="All Jobs"
-            selected={pathname === "/jobs"}
-            onClick={() => navigate("/jobs")}
-          />
-        </SidebarSection>
-
-        <SidebarSection title="Recent Jobs">
-          <RecentJobsWidget jobs={jobs} />
-        </SidebarSection>
-      </Column>
-
-      {/* Footer actions */}
-      <Line />
-      <Column padding="8" gap="4">
-        <ToggleButton
-          fillWidth
-          horizontal="start"
-          prefixIcon="refresh"
-          label="Restart"
-          onClick={() => setShowRestart(true)}
-        />
-        <ToggleButton
-          fillWidth
-          horizontal="start"
-          prefixIcon="power"
-          label="Shutdown"
-          onClick={() => setShowShutdown(true)}
-        />
-      </Column>
+      {/* Footer */}
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton tooltip="Settings">
+                  <Cog6ToothIcon className="size-4" />
+                  <span>Settings</span>
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                side="top"
+                align="start"
+                className="w-[--radix-popper-anchor-width]"
+              >
+                <DropdownMenuItem
+                  onClick={() =>
+                    setTheme(theme === "dark" ? "light" : "dark")
+                  }
+                >
+                  {theme === "dark" ? (
+                    <SunIcon className="size-4" />
+                  ) : (
+                    <MoonIcon className="size-4" />
+                  )}
+                  <span>
+                    {theme === "dark" ? "Light Mode" : "Dark Mode"}
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setShowRestart(true)}>
+                  <ArrowPathIcon className="size-4" />
+                  <span>Restart Server</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setShowShutdown(true)}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <PowerIcon className="size-4" />
+                  <span>Shutdown Server</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
 
       {/* Restart Confirmation */}
-      <Modal
-        open={showRestart}
-        onClose={() => setShowRestart(false)}
-        title="Restart Server"
-        actions={
-          <>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setShowRestart(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
+      <AlertDialog open={showRestart} onOpenChange={setShowRestart}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restart Server</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to restart the server? Active jobs will
+              continue running.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
               onClick={handleRestart}
               disabled={actionLoading}
             >
               {actionLoading ? "Restarting..." : "Restart"}
-            </Button>
-          </>
-        }
-      >
-        <Text variant="body-default-s" onBackground="neutral-medium">
-          Are you sure you want to restart the server? Active jobs will continue running.
-        </Text>
-      </Modal>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Shutdown Confirmation */}
-      <Modal
-        open={showShutdown}
-        onClose={() => setShowShutdown(false)}
-        title="Shutdown Server"
-        actions={
-          <>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setShowShutdown(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              size="sm"
+      <AlertDialog open={showShutdown} onOpenChange={setShowShutdown}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Shutdown Server</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to shut down the server? This will stop all
+              scheduled jobs.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
               onClick={handleShutdown}
               disabled={actionLoading}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {actionLoading ? "Shutting down..." : "Shutdown"}
-            </Button>
-          </>
-        }
-      >
-        <Text variant="body-default-s" onBackground="neutral-medium">
-          Are you sure you want to shut down the server? This will stop all scheduled jobs.
-        </Text>
-      </Modal>
-    </Column>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </SidebarRoot>
   );
 }
