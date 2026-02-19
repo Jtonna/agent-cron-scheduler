@@ -2,12 +2,11 @@
 
 import React from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Column, Row, Text } from "@once-ui-system/core";
+import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { useJob } from "@/hooks/useJob";
 import { JobForm } from "@/components/jobs/JobForm";
-import { Spinner } from "@/components/ui/Spinner";
 import { api } from "@/lib/api";
-import { useToast } from "@/components/ui/Toast";
+import { toast } from "sonner";
 import type { NewJob } from "@/lib/types";
 
 export function EditJobContent() {
@@ -15,17 +14,15 @@ export function EditJobContent() {
   const id = params.id as string;
   const router = useRouter();
   const { job, loading, error } = useJob(id);
-  const { addToast } = useToast();
 
   const handleSubmit = async (data: NewJob) => {
     try {
       await api.updateJob(id, data);
-      addToast("Job updated successfully", "success");
+      toast.success("Job updated successfully");
       router.push(`/jobs/${id}`);
     } catch (err) {
-      addToast(
-        `Failed to update job: ${err instanceof Error ? err.message : "Unknown error"}`,
-        "error"
+      toast.error(
+        `Failed to update job: ${err instanceof Error ? err.message : "Unknown error"}`
       );
       throw err;
     }
@@ -33,37 +30,30 @@ export function EditJobContent() {
 
   if (loading) {
     return (
-      <Row horizontal="center" paddingY="48">
-        <Spinner size="lg" />
-      </Row>
+      <div className="flex items-center justify-center py-12">
+        <ArrowPathIcon className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
     );
   }
 
   if (error || !job) {
     return (
-      <Column
-        padding="16"
-        radius="l"
-        style={{
-          background: "var(--danger-alpha-weak)",
-          border: "1px solid var(--danger-border-medium)",
-        }}
-      >
-        <Text variant="body-default-s" onBackground="danger-strong">
+      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+        <p className="text-sm text-destructive">
           {error || "Job not found"}
-        </Text>
-      </Column>
+        </p>
+      </div>
     );
   }
 
   return (
-    <Column fillWidth>
+    <div className="w-full">
       <JobForm
         job={job}
         title={`Edit Job: ${job.name}`}
         onSubmit={handleSubmit}
         submitLabel="Update Job"
       />
-    </Column>
+    </div>
   );
 }

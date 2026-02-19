@@ -1,25 +1,17 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo } from "react";
-import {
-  Column,
-  Row,
-  Text,
-  Input,
-  Icon,
-  IconButton,
-  Switch,
-  SegmentedControl,
-  Spinner,
-} from "@once-ui-system/core";
+import React, { useState, useEffect } from "react";
+import { ArrowPathIcon } from "@heroicons/react/24/outline";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { LogViewer } from "@/components/LogViewer";
 import { useSystemLogs } from "@/hooks/useSystemLogs";
 
 export default function SystemLogsPage() {
-  const [tail, setTail] = useState(200);
+  const [tail, setTail] = useState("200");
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [search, setSearch] = useState("");
-  const { logs, loading, error, refresh } = useSystemLogs(tail);
-  const preRef = useRef<HTMLPreElement>(null);
+  const { logs, loading, error, refresh } = useSystemLogs(Number(tail));
 
   // Auto-refresh polling
   useEffect(() => {
@@ -28,98 +20,51 @@ export default function SystemLogsPage() {
     return () => clearInterval(timer);
   }, [autoRefresh, refresh]);
 
-  // Auto-scroll on new content
-  useEffect(() => {
-    if (preRef.current) {
-      preRef.current.scrollTop = preRef.current.scrollHeight;
-    }
-  }, [logs]);
-
-  const filteredLogs = useMemo(() => {
-    if (!logs) return "";
-    if (!search.trim()) return logs;
-    const query = search.toLowerCase();
-    return logs
-      .split("\n")
-      .filter((line) => line.toLowerCase().includes(query))
-      .join("\n");
-  }, [logs, search]);
-
   return (
-    <Column gap="20" fillWidth>
-      <Text variant="heading-strong-l">System Logs</Text>
+    <div className="flex flex-col gap-5 w-full">
+      <h1 className="text-2xl font-semibold tracking-tight">System Logs</h1>
 
       {/* Controls */}
-      <Row gap="12" vertical="center" fillWidth wrap>
-        <Input
-          id="log-search"
-          height="s"
-          placeholder="Filter logs..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          hasPrefix={
-            <Icon marginLeft="4" name="search" size="xs" onBackground="neutral-weak" />
-          }
-          hasSuffix={
-            search.length > 0 ? (
-              <IconButton
-                variant="ghost"
-                icon="close"
-                size="s"
-                onClick={() => setSearch("")}
-                aria-label="Clear search"
-              />
-            ) : null
-          }
-          style={{ flex: 1, minWidth: "200px" }}
-        />
-        <SegmentedControl
-          fillWidth={false}
-          defaultSelected="200"
-          buttons={[
-            { value: "100", label: "100" },
-            { value: "200", label: "200" },
-            { value: "500", label: "500" },
-            { value: "1000", label: "1K" },
-          ]}
-          onToggle={(value) => setTail(Number(value))}
-        />
-        <Switch
-          id="auto-refresh"
-          label="Auto-refresh"
-          isChecked={autoRefresh}
-          onToggle={() => setAutoRefresh(!autoRefresh)}
-        />
-      </Row>
+      <div className="flex flex-wrap items-center gap-3 w-full">
+        <Tabs value={tail} onValueChange={setTail}>
+          <TabsList>
+            <TabsTrigger value="100">100</TabsTrigger>
+            <TabsTrigger value="200">200</TabsTrigger>
+            <TabsTrigger value="500">500</TabsTrigger>
+            <TabsTrigger value="1000">1K</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <div className="flex items-center gap-2">
+          <Switch
+            id="auto-refresh"
+            checked={autoRefresh}
+            onCheckedChange={setAutoRefresh}
+          />
+          <Label htmlFor="auto-refresh">Auto-refresh</Label>
+        </div>
+      </div>
 
       {/* Error state */}
       {error && (
-        <Column
-          padding="16"
-          radius="l"
-          background="danger-weak"
-          border="danger-medium"
-        >
-          <Text variant="body-default-s" onBackground="danger-strong">
-            {error}
-          </Text>
-        </Column>
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+          <p className="text-sm text-destructive">{error}</p>
+        </div>
       )}
 
       {/* Log viewer */}
       {loading && !logs ? (
-        <Row horizontal="center" paddingY="48">
-          <Spinner size="l" />
-        </Row>
+        <div className="flex items-center justify-center py-12">
+          <ArrowPathIcon className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
       ) : (
-        <pre
-          ref={preRef}
-          className="log-pre"
-          style={{ maxHeight: "calc(100vh - 260px)", minHeight: "300px" }}
-        >
-          {filteredLogs || "No logs available."}
-        </pre>
+        <LogViewer
+          content={logs || ""}
+          loading={false}
+          error={null}
+          live={autoRefresh}
+          maxHeight="calc(100vh - 260px)"
+        />
       )}
-    </Column>
+    </div>
   );
 }

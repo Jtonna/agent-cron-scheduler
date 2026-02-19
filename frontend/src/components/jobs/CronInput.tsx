@@ -1,8 +1,10 @@
 "use client";
 
 import React, { useRef, useState, useEffect } from "react";
-import { Column, Row, Text } from "@once-ui-system/core";
 import { parseCronFields, fieldsToExpression, cronToHuman, validateCron } from "@/lib/cron";
+import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 interface CronInputProps {
   value: string;
@@ -29,7 +31,7 @@ const FIELD_KEYS: (keyof ReturnType<typeof parseCronFields>)[] = [
 export function CronInput({ value, onChange, error }: CronInputProps) {
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
-  // Local editing state — decoupled from the expression so fields can be empty mid-edit
+  // Local editing state -- decoupled from the expression so fields can be empty mid-edit
   const [localFields, setLocalFields] = useState<string[]>(() => {
     const f = parseCronFields(value);
     return FIELD_KEYS.map((k) => f[k]);
@@ -97,19 +99,15 @@ export function CronInput({ value, onChange, error }: CronInputProps) {
   const humanDescription = cronToHuman(value);
 
   return (
-    <Column gap="16" fillWidth>
+    <div className="flex flex-col gap-4 w-full">
       {/* Field boxes */}
-      <Row gap="8" fillWidth horizontal="center" vertical="end">
+      <div className="flex gap-2 w-full items-end justify-center">
         {localFields.map((fieldVal, i) => (
-          <Column key={i} gap="4" horizontal="center" style={{ flex: 1 }}>
-            <Text
-              variant="label-default-xs"
-              onBackground="neutral-weak"
-              style={{ textAlign: "center" }}
-            >
+          <div key={i} className="flex-1 flex flex-col gap-1 items-center">
+            <span className="text-xs text-muted-foreground text-center">
               {FIELD_LABELS[i]}
-            </Text>
-            <input
+            </span>
+            <Input
               ref={(el) => { inputRefs.current[i] = el; }}
               type="text"
               value={fieldVal}
@@ -118,90 +116,61 @@ export function CronInput({ value, onChange, error }: CronInputProps) {
               onBlur={() => handleBlur(i)}
               onKeyDown={(e) => handleKeyDown(i, e)}
               placeholder="*"
-              style={{
-                width: "100%",
-                textAlign: "center",
-                fontFamily: "var(--font-code)",
-                fontSize: "var(--font-size-heading-s)",
-                fontWeight: 600,
-                padding: "12px 8px",
-                border: `1px solid var(${isValid ? "--neutral-border-medium" : "--danger-border-medium"})`,
-                borderRadius: "var(--radius-m)",
-                background: "var(--surface)",
-                color: "var(--neutral-on-background-strong)",
-                outline: "none",
-              }}
+              aria-label={FIELD_LABELS[i]}
+              className={cn(
+                "text-center font-mono text-lg font-semibold px-2 py-3",
+                !isValid && "border-destructive focus-visible:ring-destructive"
+              )}
             />
-            <Text
-              variant="body-default-xs"
-              onBackground="neutral-weak"
-              style={{ textAlign: "center" }}
-            >
+            <span className="text-xs text-muted-foreground text-center">
               {FIELD_HINTS[i]}
-            </Text>
-          </Column>
+            </span>
+          </div>
         ))}
-      </Row>
+      </div>
 
       {/* Human-readable description */}
-      <Row
-        paddingX="16" paddingY="12" radius="m" gap="8"
-        fillWidth vertical="center"
-        style={{
-          background: isValid
-            ? "var(--success-alpha-weak)"
-            : "var(--danger-alpha-weak)",
-          border: `1px solid var(${isValid ? "--success-border-medium" : "--danger-border-medium"})`,
-        }}
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-md px-4 py-3 w-full",
+          isValid
+            ? "bg-emerald-500/10 border border-emerald-500/30"
+            : "bg-destructive/10 border border-destructive/30"
+        )}
       >
-        <Text
-          variant="body-default-s"
-          style={{
-            color: isValid
-              ? "var(--success-on-background-strong)"
-              : "var(--danger-on-background-strong)",
-          }}
+        <span
+          className={cn(
+            "text-sm",
+            isValid ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"
+          )}
         >
           {humanDescription}
-        </Text>
-      </Row>
+        </span>
+      </div>
 
       {/* Quick examples */}
-      <Column gap="8" fillWidth>
-        <Text variant="label-default-xs" onBackground="neutral-weak">
-          Quick Apply
-        </Text>
-        <Row gap="8" wrap>
+      <div className="flex flex-col gap-2 w-full">
+        <span className="text-xs text-muted-foreground">Quick Apply</span>
+        <div className="flex flex-wrap gap-2">
           {EXAMPLES.map((ex) => (
-            <button
+            <Button
               key={ex.expr}
               type="button"
+              variant="outline"
+              size="sm"
+              className="font-mono text-xs"
               onClick={() => {
                 const f = parseCronFields(ex.expr);
                 const updated = FIELD_KEYS.map((k) => f[k]);
                 setLocalFields(updated);
                 pushToParent(updated);
               }}
-              style={{
-                padding: "4px 10px",
-                borderRadius: "var(--radius-s)",
-                border: "1px solid var(--neutral-border-medium)",
-                background: "var(--surface)",
-                color: "var(--neutral-on-background-medium)",
-                fontFamily: "var(--font-code)",
-                fontSize: "var(--font-size-body-xs)",
-                cursor: "pointer",
-              }}
             >
-              <span style={{ color: "var(--neutral-on-background-strong)" }}>
-                {ex.expr}
-              </span>
-              {" — "}
-              {ex.desc}
-            </button>
+              {ex.expr} — {ex.desc}
+            </Button>
           ))}
-        </Row>
-      </Column>
-    </Column>
+        </div>
+      </div>
+    </div>
   );
 }

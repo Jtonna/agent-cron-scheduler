@@ -1,24 +1,28 @@
 "use client";
 
 import React from "react";
+import { useRouter } from "next/navigation";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import {
-  Column,
-  Row,
-  Text,
-  Heading,
-  Input,
-  Textarea,
   Select,
-  Switch,
-  Button,
-  SegmentedControl,
-  Line,
-} from "@once-ui-system/core";
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { CronInput } from "./CronInput";
 import { EnvVarsEditor } from "./EnvVarsEditor";
 import { COMMON_TIMEZONES } from "@/lib/cron";
+import { cn } from "@/lib/utils";
 
-/* ── Job Details fields (no card wrapper) ── */
+/* -- Job Details fields (no card wrapper) -- */
 export function JobDetailsFields({
   name, setName, execType, setExecType, execValue, setExecValue, errors,
 }: {
@@ -29,56 +33,63 @@ export function JobDetailsFields({
 }) {
   return (
     <>
-      <Input
-        id="job-name"
-        label="Job Name"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="my-backup-job"
-        error={!!errors.name}
-        errorMessage={errors.name}
-      />
-      <Column gap="8">
-        <Text variant="label-default-s" onBackground="neutral-weak">
-          Execution Type
-        </Text>
-        <SegmentedControl
-          fillWidth
-          selected={execType}
-          buttons={[
-            { value: "ShellCommand", label: "Shell Command" },
-            { value: "ScriptFile", label: "Script File" },
-          ]}
-          onToggle={(value) => setExecType(value as "ShellCommand" | "ScriptFile")}
-        />
-      </Column>
-      {execType === "ShellCommand" ? (
-        <Textarea
-          id="command"
-          label="Command"
-          value={execValue}
-          onChange={(e) => setExecValue(e.target.value)}
-          placeholder="echo 'Hello World'"
-          lines={4}
-          error={!!errors.execValue}
-          errorMessage={errors.execValue}
-        />
-      ) : (
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="job-name">Job Name</Label>
         <Input
-          id="script-path"
-          label="Script Path"
-          value={execValue}
-          onChange={(e) => setExecValue(e.target.value)}
-          placeholder="/path/to/script.sh"
-          error={!!errors.execValue}
-          errorMessage={errors.execValue}
+          id="job-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="my-backup-job"
+          className={cn(errors.name && "border-destructive")}
         />
+        {errors.name && (
+          <p className="text-xs text-destructive">{errors.name}</p>
+        )}
+      </div>
+      <div className="flex flex-col gap-2">
+        <Label>Execution Type</Label>
+        <Tabs value={execType} onValueChange={(v) => setExecType(v as "ShellCommand" | "ScriptFile")}>
+          <TabsList className="w-full">
+            <TabsTrigger value="ShellCommand" className="flex-1">Shell Command</TabsTrigger>
+            <TabsTrigger value="ScriptFile" className="flex-1">Script File</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+      {execType === "ShellCommand" ? (
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="command">Command</Label>
+          <Textarea
+            id="command"
+            value={execValue}
+            onChange={(e) => setExecValue(e.target.value)}
+            placeholder="echo 'Hello World'"
+            rows={4}
+            className={cn("font-mono", errors.execValue && "border-destructive")}
+          />
+          {errors.execValue && (
+            <p className="text-xs text-destructive">{errors.execValue}</p>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="script-path">Script Path</Label>
+          <Input
+            id="script-path"
+            value={execValue}
+            onChange={(e) => setExecValue(e.target.value)}
+            placeholder="/path/to/script.sh"
+            className={cn(errors.execValue && "border-destructive")}
+          />
+          {errors.execValue && (
+            <p className="text-xs text-destructive">{errors.execValue}</p>
+          )}
+        </div>
       )}
     </>
   );
 }
 
-/* ── Schedule fields (no card wrapper) ── */
+/* -- Schedule fields (no card wrapper) -- */
 export function ScheduleFields({
   schedule, setSchedule, timezone, setTimezone, errors,
 }: {
@@ -88,23 +99,31 @@ export function ScheduleFields({
 }) {
   return (
     <>
-      <Select
-        id="timezone"
-        label="Timezone"
-        value={timezone}
-        options={[
-          { label: "System default", value: "" },
-          ...COMMON_TIMEZONES.map((tz) => ({ label: tz, value: tz })),
-        ]}
-        onSelect={(value) => setTimezone(value)}
-        searchable
-      />
+      <div className="flex flex-col gap-2">
+        <Label>Timezone</Label>
+        <Select
+          value={timezone || "__system_default__"}
+          onValueChange={(v) => setTimezone(v === "__system_default__" ? "" : v)}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="System default" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__system_default__">System default</SelectItem>
+            {COMMON_TIMEZONES.map((tz) => (
+              <SelectItem key={tz} value={tz}>
+                {tz}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
       <CronInput value={schedule} onChange={setSchedule} error={errors.schedule} />
     </>
   );
 }
 
-/* ── Runtime / Advanced fields (no card wrapper) ── */
+/* -- Runtime / Advanced fields (no card wrapper) -- */
 export function RuntimeFields({
   workingDir, setWorkingDir, timeoutSecs, setTimeoutSecs, errors,
 }: {
@@ -114,29 +133,37 @@ export function RuntimeFields({
 }) {
   return (
     <>
-      <Input
-        id="working-dir"
-        label="Working Directory"
-        value={workingDir}
-        onChange={(e) => setWorkingDir(e.target.value)}
-        placeholder="/home/user/project"
-        description="Leave empty to use the daemon's working directory"
-      />
-      <Input
-        id="timeout"
-        label="Timeout (seconds)"
-        type="number"
-        min={1}
-        value={timeoutSecs}
-        onChange={(e) => setTimeoutSecs(parseInt(e.target.value, 10) || 3600)}
-        error={!!errors.timeout}
-        errorMessage={errors.timeout}
-      />
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="working-dir">Working Directory</Label>
+        <Input
+          id="working-dir"
+          value={workingDir}
+          onChange={(e) => setWorkingDir(e.target.value)}
+          placeholder="/home/user/project"
+        />
+        <p className="text-xs text-muted-foreground">
+          Leave empty to use the daemon&apos;s working directory
+        </p>
+      </div>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="timeout">Timeout (seconds)</Label>
+        <Input
+          id="timeout"
+          type="number"
+          min={1}
+          value={timeoutSecs}
+          onChange={(e) => setTimeoutSecs(parseInt(e.target.value, 10) || 3600)}
+          className={cn(errors.timeout && "border-destructive")}
+        />
+        {errors.timeout && (
+          <p className="text-xs text-destructive">{errors.timeout}</p>
+        )}
+      </div>
     </>
   );
 }
 
-/* ── Environment Variables fields (no card wrapper) ── */
+/* -- Environment Variables fields (no card wrapper) -- */
 export function EnvVarsFields({
   envVars, setEnvVars, logEnvironment, setLogEnvironment,
 }: {
@@ -147,85 +174,82 @@ export function EnvVarsFields({
   return (
     <>
       <EnvVarsEditor value={envVars} onChange={setEnvVars} />
-      <Line />
-      <Column gap="8">
-        <Switch
-          id="log-environment"
-          label="Log environment variables on run"
-          isChecked={logEnvironment}
-          onToggle={() => setLogEnvironment(!logEnvironment)}
-        />
-        <Row
-          paddingX="12" paddingY="8" radius="s" gap="8"
-          vertical="center"
-          style={{
-            background: "var(--warning-alpha-weak)",
-            border: "1px solid var(--warning-border-medium)",
-          }}
-        >
-          <Text variant="label-default-xs" style={{ color: "var(--warning-on-background-strong)" }}>
-            Warning:
-          </Text>
-          <Text variant="body-default-xs" style={{ color: "var(--warning-on-background-medium)" }}>
+      <Separator />
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <Switch
+            id="log-environment"
+            checked={logEnvironment}
+            onCheckedChange={(checked) => setLogEnvironment(checked)}
+          />
+          <Label htmlFor="log-environment">Log environment variables on run</Label>
+        </div>
+        <div className="flex items-center gap-2 rounded-md bg-accent/50 border border-accent px-3 py-2">
+          <span className="text-xs font-semibold text-accent-foreground">Warning:</span>
+          <span className="text-xs text-muted-foreground">
             Not safe for production. Use only for temporary debugging.
-          </Text>
-        </Row>
-      </Column>
+          </span>
+        </div>
+      </div>
     </>
   );
 }
 
-/* ── Reusable card wrapper ── */
+/* -- Reusable card wrapper -- */
 export function SectionCard({
   title, subtitle, children,
 }: {
   title: string; subtitle: string; children: React.ReactNode;
 }) {
   return (
-    <Column
-      fillWidth padding="24" radius="l"
-      border="neutral-alpha-medium" background="surface" gap="20"
-    >
-      <Column gap="4">
-        <Heading variant="heading-strong-s">{title}</Heading>
-        <Text variant="body-default-xs" onBackground="neutral-weak">{subtitle}</Text>
-      </Column>
-      <Line />
-      {children}
-    </Column>
+    <Card className="flex-1 w-full">
+      <CardHeader>
+        <CardTitle className="text-base">{title}</CardTitle>
+        <CardDescription>{subtitle}</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-5">
+        {children}
+      </CardContent>
+    </Card>
   );
 }
 
-/* ── Top bar (shared) ── */
+/* -- Top bar (shared) -- */
 export function FormTopBar({
   title, enabled, setEnabled, submitLabel, submitting,
 }: {
   title: string; enabled: boolean; setEnabled: (v: boolean) => void;
   submitLabel: string; submitting: boolean;
 }) {
+  const router = useRouter();
+
   return (
     <>
-      <Row fillWidth horizontal="between" vertical="center" gap="16">
-        <Heading variant="heading-strong-l">{title}</Heading>
-        <Row gap="12" vertical="center">
-          <Switch
-            id="enabled"
-            label={enabled ? "Enabled" : "Disabled"}
-            isChecked={enabled}
-            onToggle={() => setEnabled(!enabled)}
-          />
-          <Button type="submit" variant="primary" size="s" disabled={submitting}>
+      <div className="flex items-center justify-between gap-4 w-full">
+        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Switch
+              id="enabled"
+              checked={enabled}
+              onCheckedChange={(checked) => setEnabled(checked)}
+            />
+            <Label htmlFor="enabled">{enabled ? "Enabled" : "Disabled"}</Label>
+          </div>
+          <Button type="submit" size="sm" disabled={submitting}>
             {submitting ? "Saving..." : submitLabel}
           </Button>
           <Button
-            type="button" variant="secondary" size="s"
-            onClick={() => window.history.back()}
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => router.back()}
           >
             Cancel
           </Button>
-        </Row>
-      </Row>
-      <Line />
+        </div>
+      </div>
+      <Separator />
     </>
   );
 }

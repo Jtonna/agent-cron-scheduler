@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { Column, Row, Text } from "@once-ui-system/core";
+import { ArrowPathIcon } from "@heroicons/react/24/outline";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { useRunLog } from "@/hooks/useRunLog";
 import { useSSEEvents } from "@/hooks/useSSE";
-import { Spinner } from "@/components/ui/Spinner";
 
 interface LogViewerProps {
   runId: string | null;
@@ -14,7 +14,7 @@ interface LogViewerProps {
 export function LogViewer({ runId, jobId }: LogViewerProps) {
   const { log, loading, error, refresh } = useRunLog(runId);
   const [streamedContent, setStreamedContent] = useState<string>("");
-  const preRef = useRef<HTMLPreElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   // Reset streamed content when runId changes
   useEffect(() => {
@@ -56,48 +56,45 @@ export function LogViewer({ runId, jobId }: LogViewerProps) {
 
   // Auto-scroll to bottom
   useEffect(() => {
-    if (preRef.current) {
-      preRef.current.scrollTop = preRef.current.scrollHeight;
-    }
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [log, streamedContent]);
 
   if (!runId) {
     return (
-      <Column horizontal="center" paddingY="32">
-        <Text variant="body-default-s" onBackground="neutral-weak">
+      <div className="flex items-center justify-center py-8">
+        <p className="text-sm text-muted-foreground">
           Select a run to view its log output.
-        </Text>
-      </Column>
+        </p>
+      </div>
     );
   }
 
   if (loading) {
     return (
-      <Row horizontal="center" paddingY="32">
-        <Spinner size="md" />
-      </Row>
+      <div className="flex items-center justify-center py-8">
+        <ArrowPathIcon className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
     );
   }
 
   if (error) {
     return (
-      <Column horizontal="center" paddingY="32">
-        <Text variant="body-default-s" onBackground="danger-strong">
+      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+        <p className="text-sm text-destructive">
           Error loading log: {error}
-        </Text>
-      </Column>
+        </p>
+      </div>
     );
   }
 
   const displayContent = log + streamedContent;
 
   return (
-    <pre
-      ref={preRef}
-      className="log-pre"
-      style={{ maxHeight: "384px" }}
-    >
-      {displayContent || "No output."}
-    </pre>
+    <ScrollArea className="h-96 rounded-md border">
+      <pre className="font-mono text-[13px] leading-relaxed bg-muted text-foreground p-4 whitespace-pre-wrap break-words">
+        {displayContent || "No output."}
+        <div ref={bottomRef} />
+      </pre>
+    </ScrollArea>
   );
 }

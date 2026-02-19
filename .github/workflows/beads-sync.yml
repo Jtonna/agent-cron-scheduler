@@ -19,13 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      contents: read
+      contents: write
       repository-projects: write
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Sync beads to GitHub Issues
         env:
@@ -35,3 +36,16 @@ jobs:
         run: |
           chmod +x .github/scripts/beads-sync.sh
           .github/scripts/beads-sync.sh
+
+      - name: Commit github-map.json
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          if git diff --quiet .beads/github-map.json 2>/dev/null; then
+            echo "No changes to github-map.json"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add .beads/github-map.json
+            git commit -m "chore: update beads github-map.json [skip ci]"
+            git push
+          fi

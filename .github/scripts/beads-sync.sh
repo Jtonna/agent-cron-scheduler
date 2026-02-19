@@ -263,34 +263,60 @@ while IFS= read -r line; do
     update_project_item_status "$gh_number" "$column"
     UPDATED=$((UPDATED + 1))
   else
-    # Create new issue
-    echo "Creating: $beads_id → [$beads_id] $title"
+    # Before creating, check if issue already exists by searching title (dedup safety net)
+    existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --search "[$beads_id]" --state all --json number --jq '.[0].number // empty' 2>/dev/null || true)
+    if [[ -n "$existing" ]]; then
+      echo "Found existing GitHub issue #$existing for $beads_id (map was stale), updating map"
+      set_gh_issue_number "$beads_id" "$existing"
+      gh_number="$existing"
 
-    if [[ "$DRY_RUN" == "true" ]]; then
-      echo "  [DRY RUN] Would create new GitHub issue"
-      CREATED=$((CREATED + 1))
-    else
-      # Create the issue
-      new_url=$(gh issue create \
-        --repo "$GITHUB_REPOSITORY" \
-        --title "[$beads_id] $title" \
-        --body "$body" \
-        --label "$labels" 2>/dev/null || echo "")
+      # Update the existing issue
+      if [[ "$DRY_RUN" == "false" ]]; then
+        gh issue edit "$gh_number" \
+          --repo "$GITHUB_REPOSITORY" \
+          --title "[$beads_id] $title" \
+          --body "$body" \
+          --add-label "$labels" 2>/dev/null || echo "  WARNING: Failed to update issue #$gh_number"
 
-      if [[ -n "$new_url" ]]; then
-        new_number=$(echo "$new_url" | grep -oP '\d+$')
-        set_gh_issue_number "$beads_id" "$new_number"
-        echo "  Created GitHub issue #$new_number"
-
-        # Close if beads status is closed
         if [[ "$status" == "closed" || "$status" == "completed" ]]; then
-          gh issue close "$new_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          gh issue close "$gh_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+        else
+          gh issue reopen "$gh_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
         fi
+      fi
 
-        update_project_item_status "$new_number" "$column"
+      update_project_item_status "$gh_number" "$column"
+      UPDATED=$((UPDATED + 1))
+    else
+      # Create new issue
+      echo "Creating: $beads_id → [$beads_id] $title"
+
+      if [[ "$DRY_RUN" == "true" ]]; then
+        echo "  [DRY RUN] Would create new GitHub issue"
         CREATED=$((CREATED + 1))
       else
-        echo "  ERROR: Failed to create GitHub issue for $beads_id"
+        # Create the issue
+        new_url=$(gh issue create \
+          --repo "$GITHUB_REPOSITORY" \
+          --title "[$beads_id] $title" \
+          --body "$body" \
+          --label "$labels" 2>/dev/null || echo "")
+
+        if [[ -n "$new_url" ]]; then
+          new_number=$(echo "$new_url" | grep -oP '\d+$')
+          set_gh_issue_number "$beads_id" "$new_number"
+          echo "  Created GitHub issue #$new_number"
+
+          # Close if beads status is closed
+          if [[ "$status" == "closed" || "$status" == "completed" ]]; then
+            gh issue close "$new_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          fi
+
+          update_project_item_status "$new_number" "$column"
+          CREATED=$((CREATED + 1))
+        else
+          echo "  ERROR: Failed to create GitHub issue for $beads_id"
+        fi
       fi
     fi
   fi
