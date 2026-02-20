@@ -7,7 +7,10 @@ import type {
   ServiceStatus,
 } from "./types";
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
+const BASE_URL =
+  (typeof window !== "undefined" && (window as any).acs?.getDaemonUrl?.()) ??
+  process.env.NEXT_PUBLIC_API_URL ??
+  "";
 
 export class ApiError extends Error {
   status: number;
