@@ -123,14 +123,14 @@ cargo run -- stop
 
 ### Frontend Development
 
-The interactive Next.js dashboard in `frontend/` runs independently from the Rust binary (it is not embedded).
+The interactive Next.js dashboard in `electron/packages/frontend/` runs independently from the Rust binary (it is not embedded).
 
 ```sh
 # Terminal 1: start the backend
 cd acs && cargo run -- start --foreground
 
 # Terminal 2: start the frontend dev server
-cd frontend && npm run dev
+cd electron/packages/frontend && npm run dev
 # Open http://localhost:3000
 ```
 
@@ -170,7 +170,9 @@ acs/                     # Rust project root
     pty/                 # Process spawning abstraction
   web/                   # Static reference page (embedded via rust-embed)
   tests/                 # Integration tests (api, cli, scheduler)
-frontend/                # Next.js interactive dashboard (independent)
+electron/                # Electron app and frontend
+  packages/
+    frontend/            # Next.js interactive dashboard (independent)
 docs/                    # Documentation
 ```
 
