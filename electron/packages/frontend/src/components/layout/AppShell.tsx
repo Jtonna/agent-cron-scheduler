@@ -2,6 +2,7 @@
 
 import { SSEProvider } from "@/hooks/useSSE";
 import { Toaster } from "sonner";
+import { ConnectionBanner } from "@/components/ConnectionBanner";
 import { Sidebar } from "./Sidebar";
 import {
   SidebarProvider,
@@ -15,6 +16,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <SidebarProvider>
         <Sidebar />
         <SidebarInset className="overflow-y-auto">
+          <ConnectionBanner />
           <header className="flex items-center gap-2 p-4 md:hidden">
             <SidebarTrigger />
             <span className="text-lg font-semibold">ACS</span>
