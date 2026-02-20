@@ -2,5 +2,12 @@
 /target
 /acs/target
 
+# Electron / Node
+node_modules/
+/dist
+
+# Electron app build artifacts (copied frontend)
+electron/packages/app/out/
+
 # Claude Code
 .claude/settings.local.json
