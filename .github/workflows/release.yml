@@ -1,0 +1,107 @@
+name: Build & Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+          - os: ubuntu-latest
+            platform: linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            acs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('acs/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build ACS binary
+        run: cargo build --release
+        working-directory: acs
+
+      - name: Install Electron dependencies
+        run: npm ci
+        working-directory: electron
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: electron/packages/frontend
+
+      - name: Copy frontend to Electron app
+        shell: bash
+        run: |
+          mkdir -p electron/packages/app/out
+          cp -r electron/packages/frontend/out/* electron/packages/app/out/
+
+      - name: Build & package
+        run: npm run dist:${{ matrix.platform }}
+        working-directory: electron/packages/app
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: acs-${{ matrix.platform }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.AppImage
+          if-no-files-found: warn
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          body: |
+            ## Downloads
+
+            | Platform | Installer |
+            |----------|-----------|
+            | Windows | `AgentCronScheduler-${{ github.ref_name }}-windows.exe` |
+            | macOS | `AgentCronScheduler-${{ github.ref_name }}-mac.dmg` |
+            | Linux | `AgentCronScheduler-${{ github.ref_name }}-linux.AppImage` |
+
+            ### Installation
+            **Windows** — Run the `.exe` installer. SmartScreen warning expected (unsigned).
+            **macOS** — Drag to Applications, right-click and "Open" to bypass Gatekeeper.
+            **Linux** — `chmod +x *.AppImage && ./AgentCronScheduler-*.AppImage`
