@@ -1,32 +1,22 @@
-"use client";
+import * as React from "react"
 
-import React from "react";
-import { Textarea as OnceTextarea } from "@once-ui-system/core";
+import { cn } from "@/lib/utils"
 
-interface TextareaProps
-  extends Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'size'> {
-  label?: string;
-  error?: string;
-}
-
-export function Textarea({
-  label,
-  error,
-  className = "",
-  id,
-  ...props
-}: TextareaProps) {
-  const textareaId = id || label?.toLowerCase().replace(/\s+/g, "-");
-
+const Textarea = React.forwardRef<
+  HTMLTextAreaElement,
+  React.ComponentProps<"textarea">
+>(({ className, ...props }, ref) => {
   return (
-    <OnceTextarea
-      id={textareaId || ""}
-      label={label}
-      error={error ? true : false}
-      errorMessage={error}
-      className={className}
-      lines={4}
-      {...(props as Record<string, unknown>)}
+    <textarea
+      className={cn(
+        "flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-base shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm",
+        className
+      )}
+      ref={ref}
+      {...props}
     />
-  );
-}
+  )
+})
+Textarea.displayName = "Textarea"
+
+export { Textarea }
