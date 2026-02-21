@@ -6,12 +6,17 @@
         "packages/*"
     ],
     "scripts": {
-        "dev": "npm run dev --workspace=packages/frontend",
+        "dev": "concurrently \"npm run dev --workspace=packages/frontend\" \"wait-on http://localhost:3000 && npm run dev --workspace=packages/app\"",
+        "dev:frontend": "npm run dev --workspace=packages/frontend",
         "dev:electron": "npm run dev --workspace=packages/app",
         "dist:win": "npm run build --workspace=packages/frontend && npm run copy-frontend && npm run dist:win --workspace=packages/app",
         "dist:mac": "npm run build --workspace=packages/frontend && npm run copy-frontend && npm run dist:mac --workspace=packages/app",
         "dist:linux": "npm run build --workspace=packages/frontend && npm run copy-frontend && npm run dist:linux --workspace=packages/app",
         "copy-frontend": "node -e \"const fs=require('fs');const path=require('path');function copyDir(s,d){fs.mkdirSync(d,{recursive:true});for(const e of fs.readdirSync(s,{withFileTypes:true})){const sp=path.join(s,e.name),dp=path.join(d,e.name);e.isDirectory()?copyDir(sp,dp):fs.copyFileSync(sp,dp)}}copyDir('packages/frontend/out','packages/app/out')\""
+    },
+    "devDependencies": {
+        "concurrently": "^9.0.0",
+        "wait-on": "^8.0.0"
     },
     "overrides": {
         "minimatch": ">=10.2.1"
