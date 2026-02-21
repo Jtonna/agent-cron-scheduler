@@ -4,7 +4,9 @@ const nextConfig: NextConfig = {
   // Only enable static export for production builds.
   // In dev mode, this must be off so dynamic routes work without being
   // pre-listed in generateStaticParams().
-  ...(process.env.NODE_ENV === "production" ? { output: "export" } : {}),
+  ...(process.env.NODE_ENV === "production"
+    ? { output: "export", assetPrefix: "./" }
+    : {}),
 
   // Rewrites proxy API calls to the ACS daemon during local dev.
   // Must be excluded in production because Next.js does not allow rewrites

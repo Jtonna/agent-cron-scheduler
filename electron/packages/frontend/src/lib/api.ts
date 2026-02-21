@@ -7,10 +7,13 @@ import type {
   ServiceStatus,
 } from "./types";
 
-const BASE_URL =
-  (typeof window !== "undefined" && (window as any).acs?.getDaemonUrl?.()) ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  "";
+function getBaseUrl(): string {
+  return (
+    (typeof window !== "undefined" && (window as any).acs?.getDaemonUrl?.()) ??
+    process.env.NEXT_PUBLIC_API_URL ??
+    ""
+  );
+}
 
 export class ApiError extends Error {
   status: number;
@@ -28,7 +31,7 @@ async function request<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const url = `${BASE_URL}${path}`;
+  const url = `${getBaseUrl()}${path}`;
   const res = await fetch(url, {
     ...options,
     headers: {
@@ -61,7 +64,7 @@ async function requestText(
   path: string,
   options: RequestInit = {}
 ): Promise<string> {
-  const url = `${BASE_URL}${path}`;
+  const url = `${getBaseUrl()}${path}`;
   const res = await fetch(url, options);
 
   if (!res.ok) {
