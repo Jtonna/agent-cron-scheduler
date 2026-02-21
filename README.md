@@ -1,6 +1,6 @@
 # Agent Cron Scheduler (ACS)
 
-A cross-platform cron scheduler daemon with a CLI and REST API. Manages scheduled jobs using standard 5-field cron expressions, captures output via piped I/O, and streams it in real time via Server-Sent Events (SSE).
+A cross-platform cron scheduler daemon with a CLI and REST API. Manages scheduled jobs using standard 5-field cron expressions, spawns processes through a pluggable `PtySpawner` trait (production uses `NoPtySpawner` with piped stdio via `std::process::Command`; the `portable-pty` crate provides the `CommandBuilder` interface), and streams output in real time via Server-Sent Events (SSE).
 
 Supports Windows, macOS, and Linux.
 
@@ -97,7 +97,7 @@ cargo install --path .
 
 The binary is at `acs/target/debug/acs` (or `acs/target/release/acs`).
 
-`cargo build` does not build the frontend. The `web/` directory contains a static reference page embedded into the binary via `rust-embed`. The `build.rs` script verifies that `web/` exists but does not run npm or any frontend build step.
+`cargo build` does not build the frontend. The `web/` directory contains Swagger UI API documentation (an `openapi.yaml` spec plus Swagger JS/CSS assets) embedded into the binary via `rust-embed`. The `build.rs` script verifies that `web/` exists but does not run npm or any frontend build step.
 
 ### Running in Development
 
@@ -131,7 +131,7 @@ cd acs && cargo run -- start --foreground
 
 # Terminal 2: start the frontend dev server
 cd electron/packages/frontend && npm run dev
-# Open http://localhost:3000
+# Open http://localhost:3000 (Next.js default port; may vary if 3000 is in use)
 ```
 
 The dev server proxies `/api/*` and `/health` to `http://127.0.0.1:8377` via rewrites in `next.config.ts`. The backend includes CORS middleware so direct cross-origin requests also work.
@@ -162,13 +162,17 @@ cargo fmt -- --check
 acs/                     # Rust project root
   src/
     main.rs              # Entry point, CLI dispatch
-    models/              # Job, JobRun, DaemonConfig structs
+    lib.rs               # Re-exports all public modules
+    errors.rs            # Custom error types (AcsError)
+    models/              # Job, JobRun, DaemonConfig, DispatchRequest, TriggerParams structs
+      dispatch.rs        # Dispatch request and trigger parameter models
+      run.rs             # Run models
     storage/             # JobStore + LogStore traits and implementations
     daemon/              # Daemon bootstrap, scheduler, executor, events, service registration
     server/              # Axum router, REST routes, SSE handler, health endpoint
     cli/                 # Clap CLI definition, subcommand handlers
     pty/                 # Process spawning abstraction
-  web/                   # Static reference page (embedded via rust-embed)
+  web/                   # Swagger UI API documentation (embedded via rust-embed)
   tests/                 # Integration tests (api, cli, scheduler)
 electron/                # Electron app and frontend
   packages/

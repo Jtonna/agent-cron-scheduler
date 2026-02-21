@@ -18,7 +18,7 @@ the **data directory** (`{data_dir}`).
 ├── scripts/             # Reserved directory (created on startup; not currently used for ScriptFile path resolution)
 └── logs/
     └── {job_id}/        # One directory per job, named by UUID
-        ├── {run_id}.log          # Raw process output for a single run
+        ├── {run_id}.log          # Combined process output for a single run
         └── {run_id}.meta.json    # Structured metadata for a single run
 ```
 
@@ -138,7 +138,7 @@ Inside that directory, each run produces two files:
 
 | File | Description |
 |---|---|
-| `{run_id}.log` | Raw process output (stdout), appended incrementally |
+| `{run_id}.log` | Combined process output (stdout + stderr merged via PTY), appended incrementally. The executor prepends a `$ command` header line, and optionally an `=== Environment ===` block when `log_environment` is enabled on the job. |
 | `{run_id}.meta.json` | Structured metadata (`JobRun` struct as pretty-printed JSON) |
 
 ### Metadata file format (`{run_id}.meta.json`)

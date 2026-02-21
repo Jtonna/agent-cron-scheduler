@@ -58,7 +58,7 @@ acs/src/
     mod.rs                    # PidFile, PortFile, load_config(), start_daemon(),
                               #   graceful_shutdown(), SizeManagedWriter,
                               #   resolve_data_dir(), create_data_dirs(),
-                              #   cleanup_orphaned_logs()
+                              #   cleanup_orphaned_logs(), is_process_alive()
     scheduler.rs              # Scheduler, Clock trait, SystemClock, FakeClock,
                               #   compute_next_run()
     executor.rs               # Executor, RunHandle
@@ -128,8 +128,8 @@ See [CLI Reference](cli-reference.md) for the full command documentation.
 #### `server` -- HTTP Server
 
 - **`AppState`**: Central shared state struct holding `job_store`, `log_store`, `event_tx`, `scheduler_notify`, `config`, `start_time`, `active_runs`, `shutdown_tx`, and `dispatch_tx`.
-- **`create_router()`**: Builds the Axum `Router` with all API routes, CORS middleware (permissive), and a fallback to embedded static assets.
-- Routes cover job CRUD, run/log retrieval, SSE streaming, health, shutdown, restart, and daemon logs. See [API Reference](api-reference.md) for the full endpoint specification.
+- **`create_router()`**: Builds the Axum `Router` with all API routes, CORS middleware (permissive), and a fallback to embedded static assets. Routes include: job CRUD (`/api/jobs`, `/api/jobs/{id}`), enable/disable (`/api/jobs/{id}/enable`, `/api/jobs/{id}/disable`), trigger (`/api/jobs/{id}/trigger`), runs (`/api/jobs/{id}/runs`), run logs (`/api/runs/{run_id}/log`), SSE (`/api/events`), health (`/health`), shutdown (`/api/shutdown`), restart (`/api/restart`), daemon logs (`/api/logs`), and service status (`/api/service/status`).
+- See [API Reference](api-reference.md) for the full endpoint specification.
 - Error responses use consistent `{ "error": "...", "message": "..." }` JSON format.
 
 #### `storage` -- Persistence Layer
@@ -153,8 +153,8 @@ See [Storage](storage.md) for implementation details.
 
 #### `pty` -- Process Spawning Abstraction
 
-- **`PtySpawner` trait**: `fn spawn(&self, cmd: CommandBuilder, rows: u16, cols: u16) -> Result<Box<dyn PtyProcess>>`.
-- **`PtyProcess` trait**: `fn read()`, `fn kill()`, `fn wait()` for managing spawned processes.
+- **`PtySpawner` trait**: `fn spawn(&self, cmd: CommandBuilder, rows: u16, cols: u16) -> anyhow::Result<Box<dyn PtyProcess>>`.
+- **`PtyProcess` trait**: `fn read()`, `fn kill()`, `fn wait()`, `fn write_stdin()`, `fn close_stdin()` for managing spawned processes. The `write_stdin()` and `close_stdin()` methods have default no-op implementations and are used to support `TriggerParams.input` (stdin piping).
 - **`NoPtySpawner`**: Production implementation using `std::process::Command` with piped stdout/stderr.
 - **`MockPtySpawner`**: Test double with configurable output and exit codes.
 
@@ -176,8 +176,9 @@ The `start_daemon()` function in `daemon::mod.rs` orchestrates startup:
 2.  Apply CLI overrides     -- host_override, port_override
 3.  resolve_data_dir()      -- Determine data directory
 4.  create_data_dirs()      -- Ensure data/, data/logs/, data/scripts/ exist
-5.  Set up tracing          -- Truncate daemon.log to zero on startup, then open
-                                with SizeManagedWriter (appends, auto-drops oldest 25%
+5.  Set up tracing          -- Truncate daemon.log to zero on startup (via
+                                std::fs::File::create), then separately open with
+                                SizeManagedWriter (appends, auto-drops oldest 25%
                                 when file exceeds 1 GB). Falls back to stderr-only on error.
 6.  PidFile::acquire()      -- Exclusive PID file (acs.pid)
 7.  JsonJobStore::new()     -- Load jobs.json into memory cache
@@ -383,7 +384,7 @@ active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>>  // in AppState
 ```
 
 - **`JsonJobStore::cache`**: Tokio `RwLock<Vec<Job>>`. Read lock for `list_jobs`, `get_job`, `find_by_name`. Write lock for `create_job`, `update_job`, `delete_job` (each followed by `persist()` to disk).
-- **`active_runs`**: Tokio `RwLock<HashMap<Uuid, RunHandle>>`. Write lock when inserting new handles (dispatch loop) or draining during shutdown. Read lock potentially for status queries.
+- **`active_runs`**: Tokio `RwLock<HashMap<Uuid, RunHandle>>`, keyed by `job_id` (not `run_id`). This means only one active run per job is tracked at a time. Write lock when inserting new handles (dispatch loop) or draining during shutdown. Read lock potentially for status queries.
 
 ### 4.7 Arc Sharing
 
@@ -417,7 +418,7 @@ Single-instance enforcement uses `create_new(true)` (maps to `O_EXCL`/`CREATE_NE
 
 ### 5.3 Piped I/O over PTY
 
-The production `NoPtySpawner` uses `std::process::Command` with piped stdout (stderr is piped but not currently captured) rather than a real PTY. Piped I/O reliably delivers EOF on all platforms, avoiding platform-specific PTY issues. On Windows, `NoPtySpawner::spawn()` uses `raw_arg()` to bypass Rust's MSVC quoting for `cmd.exe` compatibility.
+The production `NoPtySpawner` uses `std::process::Command` with piped stdout, stderr, and stdin rather than a real PTY. Stderr is piped but only stdout is read by the `PtyProcess::read()` implementation; stderr output is not currently captured or forwarded. Piped I/O reliably delivers EOF on all platforms, avoiding platform-specific PTY issues. On Windows, `NoPtySpawner::spawn()` uses `raw_arg()` to bypass Rust's MSVC quoting for `cmd.exe` compatibility.
 
 ### 5.4 Atomic File Persistence
 

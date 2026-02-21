@@ -12,6 +12,30 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## Project Structure
+
+This is a monorepo with three main components:
+
+- **`acs/`** -- Rust backend (cron scheduling daemon). The binary is `acs`. Run `cargo build`, `cargo test`, and `cargo clippy` from within the `acs/` directory.
+- **`acs/frontend/`** -- Next.js 16 frontend (static export via `output: "export"`). Built with `npm run build` and embedded into the Rust binary via `rust-embed`.
+- **`electron/`** -- Electron wrapper that packages the app as a desktop installer. Build with `npm run build` from the `electron/` directory.
+- **`docs/`** -- Project documentation. See `docs/INDEX.md` for an overview.
+
+### Key Commands
+
+```bash
+# Rust backend (run from acs/)
+cargo build              # Build the daemon
+cargo test               # Run all tests (~285 total)
+cargo clippy             # Lint
+
+# Frontend (run from acs/frontend/)
+npm run build            # Static export to acs/frontend/out/
+
+# Electron (run from electron/)
+npm run build            # Build the Electron installer
+```
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

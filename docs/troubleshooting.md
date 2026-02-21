@@ -279,7 +279,9 @@ acs start --foreground -v
 
 Alternatively, when running WITHOUT `-v`, you can use `RUST_LOG` for fine-grained control over log filtering (e.g., `RUST_LOG=acs=debug,tower_http=warn acs start --foreground`). Note: the `-v` flag initializes its own tracing subscriber, so `RUST_LOG` is ignored when `-v` is present. Use one or the other, not both.
 
-This produces verbose log lines to both stderr and `daemon.log`, including:
+When `-v` is used, `main.rs` initializes the global tracing subscriber (stderr-only, debug level) before `start_daemon` runs. This causes `start_daemon`'s own subscriber initialization (which includes the `daemon.log` file layer) to silently fail via `try_init()`, because a global subscriber is already set. As a result, `-v` produces verbose log lines to **stderr only** (not to `daemon.log`). Without `-v`, `start_daemon` successfully initializes its subscriber with both stderr and file layers, and `RUST_LOG` controls the log level for both outputs.
+
+Verbose output includes:
 - Config resolution steps
 - PID file acquisition
 - Scheduler tick calculations
@@ -377,7 +379,7 @@ This returns a JSON object with daemon status, version, uptime, job counts, and 
 
 ### "Daemon failed to start"
 
-**Cause:** The background daemon process was spawned but did not respond to health checks within 3 seconds.
+**Cause:** The background daemon process was spawned but did not respond to health checks after 6 retries at 500ms intervals.
 
 **Solution:**
 1. Check the daemon log for startup errors:

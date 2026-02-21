@@ -24,7 +24,7 @@ A job represents a scheduled command or script that ACS executes on a cron-based
 | `updated_at` | `DateTime<Utc>` | Timestamp of the last update to the job definition. |
 | `last_run_at` | `Option<DateTime<Utc>>` | Timestamp of the most recent execution start, or `None` if never run. |
 | `last_exit_code` | `Option<i32>` | Exit code from the most recent completed run, or `None` if never run. |
-| `next_run_at` | `Option<DateTime<Utc>>` | Computed field. The scheduler calculates this at runtime based on the cron schedule and current time. Skipped during deserialization (`#[serde(skip_deserializing)]`), so it is always `null` when read from `jobs.json`. Only populated in `GET /api/jobs` and `GET /api/jobs/{id}` responses. |
+| `next_run_at` | `Option<DateTime<Utc>>` | Computed field. The scheduler calculates this at runtime based on the cron schedule and current time. Skipped during deserialization (`#[serde(skip_deserializing, default)]`), so it is always `null` when read from `jobs.json`. Only populated in `GET /api/jobs` and `GET /api/jobs/{id}` responses. |
 
 ### NewJob (Creation Payload)
 
@@ -186,7 +186,7 @@ Creation --> Scheduling --> Execution --> Completion
    - Optionally dumps the environment to the log (if `log_environment` is `true`).
    - Builds the effective command: if trigger `args` are provided, they are appended to the base command (`"{command} {args}"`).
    - Writes a command header to the log showing the effective command (`$ <command>` for ShellCommand, `$ [script] <path>` for ScriptFile).
-   - Spawns the process with piped stdout (stderr is piped but not currently captured — see known limitation below), merging trigger `env` vars if present.
+   - Spawns the process via `NoPtySpawner`, which uses `std::process::Command` with `Stdio::piped()` for stdout, stderr, and stdin. Only stdout is read by `NoPtyProcess::read()`; stderr is piped but never captured. Trigger `env` vars are merged if present.
    - If trigger `input` is provided, writes it to the process's stdin, then closes stdin (EOF).
    - Streams output to both the log store and the event broadcast channel.
    - Monitors for timeout and kill signals.
@@ -199,7 +199,7 @@ Creation --> Scheduling --> Execution --> Completion
 |---|---|---|
 | `Running` | Execution is in progress. | Job spawned successfully. |
 | `Completed` | Process exited (any exit code). | Process returned an exit status, including non-zero codes. Non-zero exit is **not** treated as `Failed`. |
-| `Failed` | Infrastructure error prevented normal completion. | PTY spawn failure, process wait failure, task join error, or timeout. |
+| `Failed` | Infrastructure error prevented normal completion. | Process spawn failure, process wait failure, task join error, or timeout. |
 | `Killed` | Job was forcefully terminated. | Job deleted while running (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. There is no dedicated kill endpoint. **Note:** Killed runs broadcast a `Failed` SSE event, not a separate `Killed` event type. The error message is `"Job was killed"` for explicit kills or `"Daemon shutting down"` during graceful shutdown. |
 
 ### JobRun Record

@@ -119,7 +119,13 @@ When `acs start` is invoked, the daemon's listening port is resolved with the fo
 2. `port` value in the loaded config file
 3. Built-in default (`8377`)
 
-For the bind host, the global `--host` flag overrides the config value only when it differs from the default (`127.0.0.1`).
+The daemon's bind host is resolved with the following precedence (highest to lowest):
+
+1. Global `--host` flag, **only when the value differs from the default** (`127.0.0.1`)
+2. `host` value in the loaded config file
+3. Built-in default (`127.0.0.1`)
+
+> **Edge case:** Because the global `--host` flag uses `127.0.0.1` as its clap default, there is no way to distinguish between the user explicitly passing `--host 127.0.0.1` and not passing the flag at all. If your config file sets `host: "0.0.0.0"` and you run `acs --host 127.0.0.1 start`, the config value (`0.0.0.0`) wins silently -- the CLI flag is ignored because its value matches the default. To force `127.0.0.1` when the config sets a different host, remove or change the `host` field in the config file instead of relying on the CLI flag. (See `acs/src/cli/daemon.rs` lines 147-151.)
 
 For the full list of CLI options, see [CLI Reference](cli-reference.md).
 
