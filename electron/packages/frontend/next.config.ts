@@ -5,7 +5,7 @@ const nextConfig: NextConfig = {
   // In dev mode, this must be off so dynamic routes work without being
   // pre-listed in generateStaticParams().
   ...(process.env.NODE_ENV === "production"
-    ? { output: "export", assetPrefix: "./" }
+    ? { output: "export" }
     : {}),
 
   // Rewrites proxy API calls to the ACS daemon during local dev.

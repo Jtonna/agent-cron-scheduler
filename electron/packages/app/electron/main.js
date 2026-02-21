@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, net } = require('electron');
+const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -48,6 +48,77 @@ function isDaemonRunning() {
   });
 }
 
+function startStaticServer(outDir) {
+  return new Promise((resolve) => {
+    const mimeTypes = {
+      '.html': 'text/html',
+      '.js': 'text/javascript',
+      '.css': 'text/css',
+      '.json': 'application/json',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.svg': 'image/svg+xml',
+      '.ico': 'image/x-icon',
+      '.woff': 'font/woff',
+      '.woff2': 'font/woff2',
+      '.ttf': 'font/ttf',
+      '.txt': 'text/plain',
+    };
+
+    const server = http.createServer((req, res) => {
+      let pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+      if (pathname.startsWith('/')) pathname = pathname.substring(1);
+
+      let filePath = path.join(outDir, pathname);
+      const ext = path.extname(filePath);
+
+      // If has extension, serve directly
+      if (ext && fs.existsSync(filePath)) {
+        const contentType = mimeTypes[ext] || 'application/octet-stream';
+        const content = fs.readFileSync(filePath);
+        res.writeHead(200, { 'Content-Type': contentType });
+        res.end(content);
+        return;
+      }
+
+      // SPA fallback for routes without extensions
+      // Try {path}.html
+      if (fs.existsSync(filePath + '.html')) {
+        const content = fs.readFileSync(filePath + '.html');
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(content);
+        return;
+      }
+      // Try {path}/index.html
+      if (fs.existsSync(path.join(filePath, 'index.html'))) {
+        const content = fs.readFileSync(path.join(filePath, 'index.html'));
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(content);
+        return;
+      }
+      // Fallback to index.html (SPA)
+      const indexPath = path.join(outDir, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        const content = fs.readFileSync(indexPath);
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(content);
+        return;
+      }
+
+      res.writeHead(404);
+      res.end('Not Found');
+    });
+
+    // Listen on random available port
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      console.log(`Static server running on http://127.0.0.1:${port}`);
+      resolve(port);
+    });
+  });
+}
+
 async function startDaemon() {
   const running = await isDaemonRunning();
   if (running) {
@@ -71,7 +142,7 @@ async function startDaemon() {
   console.log('ACS daemon process launched.');
 }
 
-function createWindow() {
+function createWindow(url) {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -89,56 +160,30 @@ function createWindow() {
   });
 
   win.setMenuBarVisibility(false);
-
-  if (isDev) {
-    win.loadURL('http://localhost:3000');
-  } else {
-    win.loadURL('app://localhost/index.html');
-  }
+  win.loadURL(url);
 }
 
 app.whenReady().then(async () => {
   ensureDataDir();
   await startDaemon();
 
-  // Register custom app:// protocol for SPA fallback routing.
-  // Without this, file:// protocol breaks client-side navigation
-  // (e.g. /logs resolves to file:///C:/logs instead of the SPA).
-  protocol.handle('app', (request) => {
-    const url = new URL(request.url);
-    let pathname = decodeURIComponent(url.pathname);
-    // Remove leading slash for path.join
-    if (pathname.startsWith('/')) pathname = pathname.substring(1);
-
+  // Determine frontend URL
+  let frontendUrl;
+  if (isDev) {
+    frontendUrl = 'http://localhost:3000';
+  } else {
+    // Serve static files via local HTTP server instead of a custom protocol.
+    // Custom protocols like app:// break Next.js router internals because
+    // Chromium doesn't treat them as valid URL origins for the URL constructor.
     const outDir = path.join(__dirname, '..', 'out');
-    let filePath = path.join(outDir, pathname);
+    const staticPort = await startStaticServer(outDir);
+    frontendUrl = `http://127.0.0.1:${staticPort}`;
+  }
 
-    // If the path has a file extension, serve it directly
-    if (path.extname(filePath)) {
-      if (fs.existsSync(filePath)) {
-        return net.fetch('file://' + filePath);
-      }
-      // File not found — return 404
-      return new Response('Not Found', { status: 404 });
-    }
-
-    // No extension — try route resolution (SPA fallback)
-    // 1. Try {path}.html
-    if (fs.existsSync(filePath + '.html')) {
-      return net.fetch('file://' + filePath + '.html');
-    }
-    // 2. Try {path}/index.html
-    if (fs.existsSync(path.join(filePath, 'index.html'))) {
-      return net.fetch('file://' + path.join(filePath, 'index.html'));
-    }
-    // 3. SPA fallback — serve index.html for client-side routing
-    return net.fetch('file://' + path.join(outDir, 'index.html'));
-  });
-
-  createWindow();
+  createWindow(frontendUrl);
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(frontendUrl);
   });
 });
 
