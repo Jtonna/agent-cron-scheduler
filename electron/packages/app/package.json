@@ -12,10 +12,7 @@
     },
     "devDependencies": {
         "electron": "^40.6.0",
-        "electron-builder": "^26.8.1"
+        "electron-builder": "^26.0.0"
     },
-    "dependencies": {
-        "eslint": "10.0.1",
-        "eslint-config-next": "0.2.4"
-    }
+    "dependencies": {}
 }
