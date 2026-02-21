@@ -93,7 +93,7 @@ function createWindow() {
   if (isDev) {
     win.loadURL('http://localhost:3000');
   } else {
-    win.loadURL('app://./index.html');
+    win.loadURL('app://localhost/index.html');
   }
 }
 
