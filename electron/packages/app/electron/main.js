@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, protocol, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -93,13 +93,48 @@ function createWindow() {
   if (isDev) {
     win.loadURL('http://localhost:3000');
   } else {
-    win.loadFile(path.join(__dirname, '..', 'out', 'index.html'));
+    win.loadURL('app://./index.html');
   }
 }
 
 app.whenReady().then(async () => {
   ensureDataDir();
   await startDaemon();
+
+  // Register custom app:// protocol for SPA fallback routing.
+  // Without this, file:// protocol breaks client-side navigation
+  // (e.g. /logs resolves to file:///C:/logs instead of the SPA).
+  protocol.handle('app', (request) => {
+    const url = new URL(request.url);
+    let pathname = decodeURIComponent(url.pathname);
+    // Remove leading slash for path.join
+    if (pathname.startsWith('/')) pathname = pathname.substring(1);
+
+    const outDir = path.join(__dirname, '..', 'out');
+    let filePath = path.join(outDir, pathname);
+
+    // If the path has a file extension, serve it directly
+    if (path.extname(filePath)) {
+      if (fs.existsSync(filePath)) {
+        return net.fetch('file://' + filePath);
+      }
+      // File not found — return 404
+      return new Response('Not Found', { status: 404 });
+    }
+
+    // No extension — try route resolution (SPA fallback)
+    // 1. Try {path}.html
+    if (fs.existsSync(filePath + '.html')) {
+      return net.fetch('file://' + filePath + '.html');
+    }
+    // 2. Try {path}/index.html
+    if (fs.existsSync(path.join(filePath, 'index.html'))) {
+      return net.fetch('file://' + path.join(filePath, 'index.html'));
+    }
+    // 3. SPA fallback — serve index.html for client-side routing
+    return net.fetch('file://' + path.join(outDir, 'index.html'));
+  });
+
   createWindow();
 
   app.on('activate', () => {
