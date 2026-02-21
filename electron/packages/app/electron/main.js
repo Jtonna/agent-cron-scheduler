@@ -1,10 +1,12 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const http = require('http');
 
 const isDev = !app.isPackaged;
+
+let tray = null;
 
 function getAcsBinaryPath() {
   const ext = process.platform === 'win32' ? '.exe' : '';
@@ -188,6 +190,53 @@ async function startDaemon() {
   console.log('ACS daemon process launched.');
 }
 
+function getTrayIconPath() {
+  // Try favicon from built frontend (production)
+  const outIcon = path.join(__dirname, '..', 'out', 'favicon.ico');
+  if (fs.existsSync(outIcon)) return outIcon;
+
+  // Try from frontend source (dev mode)
+  const srcIcon = path.join(__dirname, '..', '..', 'frontend', 'src', 'app', 'favicon.ico');
+  if (fs.existsSync(srcIcon)) return srcIcon;
+
+  // No icon found
+  return null;
+}
+
+function createTray(win) {
+  const iconPath = getTrayIconPath();
+  if (!iconPath) {
+    console.log('No tray icon found; skipping tray creation.');
+    return;
+  }
+
+  tray = new Tray(iconPath);
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Open ACS',
+      click: () => { win.show(); win.focus(); }
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        app.isQuitting = true;
+        app.quit();
+      }
+    }
+  ]);
+
+  tray.setToolTip('Agent Cron Scheduler');
+  tray.setContextMenu(contextMenu);
+
+  // Double-click tray icon to restore window
+  tray.on('double-click', () => {
+    win.show();
+    win.focus();
+  });
+}
+
 function createWindow(url) {
   const win = new BrowserWindow({
     width: 1200,
@@ -206,7 +255,17 @@ function createWindow(url) {
   });
 
   win.setMenuBarVisibility(false);
+
+  // Minimize to tray instead of closing
+  win.on('close', (event) => {
+    if (!app.isQuitting) {
+      event.preventDefault();
+      win.hide();
+    }
+  });
+
   win.loadURL(url);
+  return win;
 }
 
 app.whenReady().then(async () => {
@@ -226,13 +285,25 @@ app.whenReady().then(async () => {
     frontendUrl = `http://127.0.0.1:${staticPort}`;
   }
 
-  createWindow(frontendUrl);
+  const win = createWindow(frontendUrl);
+  createTray(win);
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow(frontendUrl);
+    const allWindows = BrowserWindow.getAllWindows();
+    if (allWindows.length === 0) {
+      const newWin = createWindow(frontendUrl);
+      createTray(newWin);
+    } else {
+      allWindows[0].show();
+      allWindows[0].focus();
+    }
   });
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  // Don't quit — app lives in system tray
+});
+
+app.on('before-quit', () => {
+  app.isQuitting = true;
 });
