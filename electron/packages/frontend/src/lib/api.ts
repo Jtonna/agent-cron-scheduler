@@ -7,7 +7,7 @@ import type {
   ServiceStatus,
 } from "./types";
 
-function getBaseUrl(): string {
+export function getBaseUrl(): string {
   return (
     (typeof window !== "undefined" && (window as any).acs?.getDaemonUrl?.()) ??
     process.env.NEXT_PUBLIC_API_URL ??

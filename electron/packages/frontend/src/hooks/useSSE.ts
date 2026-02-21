@@ -8,6 +8,7 @@ import React, {
   useState,
   useCallback,
 } from "react";
+import { getBaseUrl } from "@/lib/api";
 
 interface SSEEvent {
   type: string;
@@ -23,8 +24,6 @@ interface SSEContextValue {
 
 const SSEContext = createContext<SSEContextValue | null>(null);
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
-
 export function SSEProvider({ children }: { children: React.ReactNode }) {
   const subscribersRef = useRef<Set<SSECallback>>(new Set());
   const [connected, setConnected] = useState(false);
@@ -34,7 +33,8 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
     let reconnectTimer: ReturnType<typeof setTimeout>;
 
     function connect() {
-      const es = new EventSource(`${BASE_URL}/api/events`);
+      const url = `${getBaseUrl()}/api/events`;
+      const es = new EventSource(url);
       eventSourceRef.current = es;
 
       es.onopen = () => {
