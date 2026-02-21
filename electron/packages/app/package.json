@@ -1,0 +1,20 @@
+{
+    "name": "@acs/app",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Agent Cron Scheduler desktop application",
+    "author": "Jtonna",
+    "main": "electron/main.js",
+    "scripts": {
+        "dev": "electron .",
+        "dist": "electron-builder --publish never",
+        "dist:win": "electron-builder --win --publish never",
+        "dist:mac": "electron-builder --mac --publish never",
+        "dist:linux": "electron-builder --linux --publish never"
+    },
+    "devDependencies": {
+        "electron": "33.4.11",
+        "electron-builder": "^26.0.0"
+    },
+    "dependencies": {}
+}

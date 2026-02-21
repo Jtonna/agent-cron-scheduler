@@ -44,7 +44,7 @@ A successful exit code means the task exists; a non-zero exit code means it does
 
 ### Start
 
-> **Note:** On Windows, `acs start` in background mode does **not** use `schtasks /Run`. Instead, it spawns `acs start --foreground` directly as a hidden process via `Command::new()`. The `schtasks /Run` function exists in the codebase but is not called during normal operation.
+> **Note:** On Windows, `acs start` in background mode does **not** use `schtasks /Run`. Instead, it spawns `acs start --foreground` directly as a hidden process via `Command::new()`. The `start_service()` function (which wraps `schtasks /Run`) is compiled on Windows but is unreachable: `cmd_start` calls `start_service()` only inside a `#[cfg(not(target_os = "windows"))]` block (`daemon.rs`), so no CLI code path invokes it on Windows.
 
 ### Stop (Service Fallback)
 
@@ -141,6 +141,8 @@ launchctl stop com.acs.scheduler
 
 ### Uninstall (Unregister)
 
+If the plist file does not exist on disk, `uninstall_service()` returns `Ok(())` immediately without performing any action. Otherwise:
+
 1. Unload the plist:
 
 ```
@@ -227,6 +229,8 @@ systemctl --user stop acs.service
 ```
 
 ### Uninstall (Unregister)
+
+If the unit file does not exist on disk, `uninstall_service()` returns `Ok(())` immediately without performing any action. Otherwise:
 
 1. Stop and disable the service:
 

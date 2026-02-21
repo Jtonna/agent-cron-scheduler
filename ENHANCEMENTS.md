@@ -4,49 +4,23 @@
 
 ### Status
 
-Not currently supported. Requires implementation.
+Implemented. Available since the dispatch channel refactor.
 
-### Problem
+### Overview
 
-The trigger endpoint (`POST /api/jobs/{id}/trigger`) accepts no request body. The shell command, environment variables, and working directory are all fixed at job creation time. This means every trigger of a job runs the exact same command with the exact same configuration.
+The trigger endpoint (`POST /api/jobs/{id}/trigger`) accepts an optional JSON request body with per-trigger parameter overrides. This allows callers to pass dynamic arguments, environment variables, and stdin input at trigger time without modifying the job definition. The response includes a pre-generated `run_id` so callers can immediately subscribe to SSE for that specific run.
 
-This prevents ACS from being used as a **real-time chat backend** where an external service (web UI, Telegram bot, Discord bot, etc.) needs to pass a user's message into an agent job at trigger time.
+### Trigger Parameters
 
-### Current Behavior
-
-```
-POST /api/jobs/{id}/trigger
-# No body accepted
-# Returns 202 immediately
-# Runs the exact command defined at job creation
-```
-
-The job's command is baked in:
-
-```json
-{
-  "name": "realestate-agent",
-  "schedule": "disabled",
-  "execution": {
-    "type": "ShellCommand",
-    "value": "claude -p \"fixed prompt here\" --session-id abc123 --output-format stream-json"
-  }
-}
-```
-
-There is no way to change `"fixed prompt here"` per trigger.
-
-### Proposed Enhancement
-
-Add an optional request body to the trigger endpoint that supports:
+The trigger endpoint accepts an optional JSON body with three fields:
 
 1. **`args`** — additional arguments appended to the shell command
 2. **`env`** — environment variables merged into the job's existing env_vars for this run only
 3. **`input`** — string piped to the process's stdin instead of appended to the command
 
-These are per-trigger overrides. They do not modify the job definition.
+These are per-trigger overrides. They do not modify the job definition. Internally, they are deserialized into the `TriggerParams` struct (`acs/src/models/dispatch.rs`).
 
-### Proposed API
+### API
 
 ```
 POST /api/jobs/{id}/trigger
@@ -64,9 +38,9 @@ Content-Type: application/json
 
 All fields are optional. An empty body or no body at all preserves current behavior (backwards compatible).
 
-### Proposed Response
+### Response
 
-The trigger response should include the `run_id` so the caller can immediately subscribe to SSE for that specific run:
+The trigger response includes a pre-generated `run_id` (v7 UUID) so the caller can immediately subscribe to SSE for that specific run:
 
 ```json
 {
@@ -77,13 +51,11 @@ The trigger response should include the `run_id` so the caller can immediately s
 }
 ```
 
-The current response does not include `run_id`, which forces callers to guess which run belongs to their trigger when multiple triggers happen concurrently.
-
-### Implementation Notes
+### Implementation Details
 
 #### `args` behavior
 
-The `args` string is appended to the existing command before shell execution:
+The `args` string is appended to the existing command before shell execution. Implemented in `build_command()` in `acs/src/daemon/executor.rs`:
 
 ```
 # Job definition:
@@ -99,7 +71,7 @@ cmd.exe /C "claude -p --resume UUID -p \"user message\""    # Windows
 
 #### `env` behavior
 
-Trigger-time env vars are merged on top of the job's `env_vars` (if any), which are merged on top of the inherited environment. Trigger env vars take highest precedence for this run only. The job definition is not modified.
+Trigger-time env vars are merged on top of the job's `env_vars` (if any), which are merged on top of the inherited environment. Trigger env vars take highest precedence for this run only. The job definition is not modified. Implemented in `build_command()` in `acs/src/daemon/executor.rs`:
 
 ```
 Inherited env  <  job.env_vars  <  trigger.env
@@ -107,38 +79,37 @@ Inherited env  <  job.env_vars  <  trigger.env
 
 #### `input` behavior
 
-If `input` is provided, it is written to the spawned process's stdin after launch. This is an alternative to `args` for cases where the payload is large or contains characters that are difficult to shell-escape.
+If `input` is provided, it is written to the spawned process's stdin after launch, and then stdin is closed to signal EOF. This is an alternative to `args` for cases where the payload is large or contains characters that are difficult to shell-escape. Implemented in the executor's spawn loop in `acs/src/daemon/executor.rs`.
 
-#### `run_id` in response
+#### `run_id` pre-generation
 
-The executor currently generates the `run_id` inside `spawn_job()` after the trigger endpoint has already returned 202. To include `run_id` in the response, either:
+The trigger handler pre-generates a v7 UUID via `Uuid::now_v7()` and passes it through the dispatch channel to the executor. This allows the response to include `run_id` immediately without waiting for the executor. Implemented in `trigger_job()` in `acs/src/server/routes.rs`.
 
-- **Option A:** Pre-generate the `run_id` in the trigger handler and pass it to the executor via the dispatch channel (cleanest).
-- **Option B:** Make the trigger handler wait for the executor to acknowledge the job and return the `run_id` (adds latency but guarantees accuracy).
+#### Dispatch channel
 
-Option A is recommended.
-
-#### Dispatch channel change
-
-The dispatch channel currently sends `Job` structs. This would need to change to a wrapper:
+The dispatch channel sends `DispatchRequest` structs (defined in `acs/src/models/dispatch.rs`) which wrap the job, pre-generated run ID, and optional trigger parameters:
 
 ```rust
 struct DispatchRequest {
     job: Job,
-    run_id: Uuid,           // pre-generated
-    args: Option<String>,
-    env: Option<HashMap<String, String>>,
-    input: Option<String>,
+    run_id: Uuid,                              // pre-generated v7 UUID
+    trigger_params: Option<TriggerParams>,      // args, env, input
 }
 ```
 
-#### Command builder change
+The scheduler also uses `DispatchRequest` for cron-triggered runs, passing `trigger_params: None` (see `acs/src/daemon/scheduler.rs`).
 
-`build_command()` in `executor.rs` currently only receives a `&Job`. It would need to accept the optional `args` and `env` from the `DispatchRequest`:
+#### Command builder
+
+`build_command()` in `acs/src/daemon/executor.rs` accepts the optional `args` and `env` extracted from `TriggerParams`:
 
 ```rust
-fn build_command(job: &Job, trigger_args: Option<&str>, trigger_env: Option<&HashMap<String, String>>) -> CommandBuilder
+fn build_command(job: &Job, trigger_args: Option<&str>, trigger_env: Option<&HashMap<String, String>>) -> portable_pty::CommandBuilder
 ```
+
+#### Trigger params persistence
+
+Trigger parameters are persisted in the `JobRun` record (via the `trigger_params` field on `JobRun` in `acs/src/models/run.rs`), so the exact parameters used for each run are available in run history.
 
 ### Usage: Chat Router Integration
 

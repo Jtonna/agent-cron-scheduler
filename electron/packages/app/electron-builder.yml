@@ -1,0 +1,43 @@
+appId: com.acs.scheduler
+productName: AgentCronScheduler
+npmRebuild: false
+publish: null
+
+directories:
+  output: ../../../dist
+
+files:
+  - electron/**/*
+  - out/**/*
+  - package.json
+
+extraResources:
+  - from: ../../../acs/target/release
+    to: acs-binary
+    filter:
+      - "acs"
+      - "acs.exe"
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: ${productName}-${version}-windows.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: false
+  perMachine: false
+
+mac:
+  target:
+    - target: dmg
+      arch: [x64]
+  artifactName: ${productName}-${version}-mac.${ext}
+  category: public.app-category.utilities
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  artifactName: ${productName}-${version}-linux.${ext}
