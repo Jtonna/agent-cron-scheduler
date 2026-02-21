@@ -1,7 +1,8 @@
 "use client";
 
 import React from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
+import { useRouteParams } from "@/hooks/useRouteParams";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { useJob } from "@/hooks/useJob";
 import { JobForm } from "@/components/jobs/JobForm";
@@ -10,8 +11,7 @@ import { toast } from "sonner";
 import type { NewJob } from "@/lib/types";
 
 export function EditJobContent() {
-  const params = useParams();
-  const id = params.id as string;
+  const { id } = useRouteParams<{ id: string }>("/jobs/[id]/edit");
   const router = useRouter();
   const { job, loading, error } = useJob(id);
 

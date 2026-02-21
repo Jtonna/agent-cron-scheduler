@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useRouteParams } from "@/hooks/useRouteParams";
 import {
   ArrowLeftIcon,
   ArrowPathIcon,
@@ -18,9 +18,7 @@ import { api } from "@/lib/api";
 import type { JobRun } from "@/lib/types";
 
 export function RunLogContent() {
-  const params = useParams();
-  const jobId = params.id as string;
-  const runId = params.runId as string;
+  const { id: jobId, runId } = useRouteParams<{ id: string; runId: string }>("/jobs/[id]/runs/[runId]");
 
   const [run, setRun] = useState<JobRun | null>(null);
   const [runLoading, setRunLoading] = useState(true);

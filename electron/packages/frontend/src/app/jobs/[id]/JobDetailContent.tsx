@@ -2,7 +2,8 @@
 
 import React, { useState, useCallback } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
+import { useRouteParams } from "@/hooks/useRouteParams";
 import {
   ArrowLeftIcon,
   PencilIcon,
@@ -43,9 +44,8 @@ import { formatDate, formatBytes } from "@/lib/format";
 import { toast } from "sonner";
 
 export function JobDetailContent() {
-  const params = useParams();
+  const { id } = useRouteParams<{ id: string }>("/jobs/[id]");
   const router = useRouter();
-  const id = params.id as string;
   const {
     job,
     loading: jobLoading,
