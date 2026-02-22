@@ -309,12 +309,8 @@ update_project_item_status() {
 collect_issues() {
   local outfile="$1"
 
-  if [[ -f "$ISSUES_JSONL" ]]; then
-    # Legacy format: single JSONL file
-    echo "Reading issues from issues.jsonl..."
-    cp "$ISSUES_JSONL" "$outfile"
-  elif [[ -d "$ISSUES_DIR" ]]; then
-    # Newer format: one JSON file per issue under .beads/issues/
+  if [[ -d "$ISSUES_DIR" ]] && ls "$ISSUES_DIR"/*.json >/dev/null 2>&1; then
+    # Preferred: one JSON file per issue under .beads/issues/
     echo "Reading issues from .beads/issues/ directory..."
     > "$outfile"
     for issue_file in "$ISSUES_DIR"/*.json; do
@@ -322,8 +318,12 @@ collect_issues() {
       # Each file is a single JSON object — output as one line
       jq -c '.' "$issue_file" >> "$outfile"
     done
+  elif [[ -f "$ISSUES_JSONL" ]] && [[ -s "$ISSUES_JSONL" ]]; then
+    # Fallback: legacy single JSONL file (only if non-empty)
+    echo "Reading issues from issues.jsonl..."
+    cp "$ISSUES_JSONL" "$outfile"
   else
-    echo "No beads issues found (checked issues.jsonl and .beads/issues/)"
+    echo "No beads issues found (checked .beads/issues/ and issues.jsonl)"
     exit 0
   fi
 }
