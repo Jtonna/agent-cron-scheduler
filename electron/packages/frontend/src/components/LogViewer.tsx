@@ -7,8 +7,10 @@ import {
   ArrowDownIcon,
   ArrowsPointingOutIcon,
   ChevronRightIcon,
+  PaintBrushIcon,
 } from "@heroicons/react/24/outline";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
+import { ansiToHtml, stripAnsi } from "@/lib/ansi";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -173,8 +175,18 @@ export const LogViewer = React.memo(function LogViewer({
   const [showAllLines, setShowAllLines] = useState(false);
   const [wordWrap, setWordWrap] = useState(true);
   const [userScrolled, setUserScrolled] = useState(false);
+  const [ansiColors, setAnsiColors] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("log-ansi-colors") !== "false";
+    }
+    return true;
+  });
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    localStorage.setItem("log-ansi-colors", String(ansiColors));
+  }, [ansiColors]);
 
   // Track which JSON lines are expanded
   const [expandedJsonLines, setExpandedJsonLines] = useState<Set<number>>(
@@ -214,7 +226,7 @@ export const LogViewer = React.memo(function LogViewer({
     if (!query) return new Set<number>();
     const set = new Set<number>();
     for (const line of allLines) {
-      if (line.text.toLowerCase().includes(query)) {
+      if (stripAnsi(line.text).toLowerCase().includes(query)) {
         set.add(line.number);
       }
     }
@@ -342,6 +354,26 @@ export const LogViewer = React.memo(function LogViewer({
           </Tooltip>
         </TooltipProvider>
 
+        {/* ANSI color toggle */}
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={ansiColors ? "secondary" : "outline"}
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setAnsiColors((v) => !v)}
+                aria-label="Toggle ANSI colors"
+              >
+                <PaintBrushIcon className="h-3.5 w-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {ansiColors ? "Disable ANSI colors" : "Enable ANSI colors"}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+
         {/* Live badge */}
         {live && (
           <Badge variant="running" className="animate-pulse text-xs h-5">
@@ -423,6 +455,17 @@ export const LogViewer = React.memo(function LogViewer({
                       </div>
                     )}
                   </div>
+                ) : ansiColors && !query ? (
+                  <span
+                    className={`px-3 py-0.5 min-w-0 ${
+                      wordWrap
+                        ? "whitespace-pre-wrap break-words"
+                        : "whitespace-pre"
+                    }`}
+                    dangerouslySetInnerHTML={{
+                      __html: ansiToHtml(line.text) || "\u00A0",
+                    }}
+                  />
                 ) : (
                   <span
                     className={`px-3 py-0.5 min-w-0 ${
@@ -431,9 +474,12 @@ export const LogViewer = React.memo(function LogViewer({
                         : "whitespace-pre"
                     }`}
                   >
-                    {query && isMatch
-                      ? highlightMatches(line.text, search.trim())
-                      : line.text || "\u00A0"}
+                    {(() => {
+                      const displayText = stripAnsi(line.text);
+                      return query && isMatch
+                        ? highlightMatches(displayText, search.trim())
+                        : displayText || "\u00A0";
+                    })()}
                   </span>
                 )}
               </div>
