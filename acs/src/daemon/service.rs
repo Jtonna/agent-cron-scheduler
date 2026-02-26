@@ -266,11 +266,9 @@ mod platform {
             }
         }
 
-        let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-        let shell_configs = vec![
-            home.join(".zshrc"),
-            home.join(".bash_profile"),
-        ];
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let shell_configs = vec![home.join(".zshrc"), home.join(".bash_profile")];
 
         let marker = "# Added by AgentCronScheduler";
         let path_line = format!("export PATH=\"$PATH:{}\" {}", exe_dir_str, marker);
@@ -287,7 +285,9 @@ mod platform {
 
             for line in reader.lines() {
                 if let Ok(l) = line {
-                    if (l.contains(marker) && l.contains(exe_dir_str)) || (l.contains("PATH=") && l.contains(exe_dir_str)) {
+                    if (l.contains(marker) && l.contains(exe_dir_str))
+                        || (l.contains("PATH=") && l.contains(exe_dir_str))
+                    {
                         already_present = true;
                         break;
                     }
@@ -444,7 +444,8 @@ mod platform {
             }
         }
 
-        let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
         let shell_configs = vec![
             home.join(".bashrc"),
             home.join(".zshrc"),
@@ -466,7 +467,9 @@ mod platform {
 
             for line in reader.lines() {
                 if let Ok(l) = line {
-                    if (l.contains(marker) && l.contains(exe_dir_str)) || (l.contains("PATH=") && l.contains(exe_dir_str)) {
+                    if (l.contains(marker) && l.contains(exe_dir_str))
+                        || (l.contains("PATH=") && l.contains(exe_dir_str))
+                    {
                         already_present = true;
                         break;
                     }
@@ -761,10 +764,7 @@ mod tests {
 
         /// Core logic extracted to mirror ensure_path_entry without touching
         /// HKCU\Environment or broadcasting WM_SETTINGCHANGE.
-        fn ensure_path_in_key(
-            env: &RegKey,
-            dir: &str,
-        ) -> anyhow::Result<bool> {
+        fn ensure_path_in_key(env: &RegKey, dir: &str) -> anyhow::Result<bool> {
             let current_path: String = env.get_value("Path").unwrap_or_default();
 
             let already_present = current_path
@@ -816,7 +816,10 @@ mod tests {
                 "C:\\Windows;C:\\Windows\\System32",
                 "C:\\MyApp\\bin",
             );
-            assert!(result.expect("should succeed"), "should have added the directory");
+            assert!(
+                result.expect("should succeed"),
+                "should have added the directory"
+            );
             assert!(
                 path.contains("C:\\MyApp\\bin"),
                 "PATH should contain the new directory, got: {}",
@@ -826,11 +829,8 @@ mod tests {
 
         #[test]
         fn test_path_entry_idempotent() {
-            let (result, path) = run_path_test(
-                "idempotent",
-                "C:\\Windows;C:\\MyApp\\bin",
-                "C:\\MyApp\\bin",
-            );
+            let (result, path) =
+                run_path_test("idempotent", "C:\\Windows;C:\\MyApp\\bin", "C:\\MyApp\\bin");
             assert!(
                 !result.expect("should succeed"),
                 "should not modify PATH when dir already present"
@@ -856,11 +856,7 @@ mod tests {
 
         #[test]
         fn test_path_entry_empty_path() {
-            let (result, path) = run_path_test(
-                "empty_path",
-                "",
-                "C:\\MyApp\\bin",
-            );
+            let (result, path) = run_path_test("empty_path", "", "C:\\MyApp\\bin");
             assert!(result.expect("should succeed"), "should add to empty PATH");
             assert_eq!(
                 path, "C:\\MyApp\\bin",
@@ -871,9 +867,8 @@ mod tests {
         #[test]
         fn test_ensure_path_entry_no_parent() {
             // A path with no parent should not panic
-            let result = super::super::platform::ensure_path_entry(
-                std::path::Path::new("justfilename"),
-            );
+            let result =
+                super::super::platform::ensure_path_entry(std::path::Path::new("justfilename"));
             let _ = result;
         }
     }
