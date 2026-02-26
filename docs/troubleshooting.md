@@ -16,7 +16,7 @@ Many troubleshooting steps reference files in the ACS data directory. See [Confi
 
 **How ACS Detects Stale PIDs:**
 - On **Unix**: ACS calls `kill(pid, 0)` (signal 0), which checks whether the process exists without actually sending a signal.
-- On **Windows**: ACS calls `OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION` to check if the process handle is valid.
+- On **Windows**: ACS calls `OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION`, then verifies the process is truly alive via `GetExitCodeProcess`. This two-step check is necessary because `OpenProcess` can succeed on a dead process if another process (e.g., the Electron parent app or Windows Task Scheduler) still holds a handle to it, keeping the kernel object alive. If `GetExitCodeProcess` returns an exit code other than `STILL_ACTIVE` (259), the process is considered dead.
 
 If the recorded PID is still alive, ACS waits up to 10 seconds (20 retries at 500ms intervals) for it to exit before giving up. This handles graceful restart scenarios where the old process is shutting down.
 
