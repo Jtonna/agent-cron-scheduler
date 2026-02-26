@@ -182,6 +182,10 @@ docs/                    # Documentation
 
 ---
 
+## AI-Assisted Development
+
+This project uses [starterpack](https://github.com/Jtonna/starterpack) to augment AI agent workflows for writing code, documentation, testing, and lifecycle management including GitHub issue tracking via [beads](https://github.com/steveyegge/beads).
+
 ## Documentation
 
 Full system documentation for developers and AI agents is available in the [docs/](docs/INDEX.md) directory.
