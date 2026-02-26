@@ -1,18 +1,18 @@
 //! CLI integration tests using assert_cmd.
 //!
-//! These tests invoke the actual `acs` binary and verify its output.
+//! These tests invoke the actual `agentcronsystem` binary and verify its output.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 
 #[allow(deprecated)]
-fn acs_cmd() -> Command {
-    Command::cargo_bin("acs").expect("binary should exist")
+fn agentcronsystem_cmd() -> Command {
+    Command::cargo_bin("agentcronsystem").expect("binary should exist")
 }
 
 #[test]
 fn test_version_flag() {
-    acs_cmd()
+    agentcronsystem_cmd()
         .arg("--version")
         .assert()
         .success()
@@ -21,7 +21,7 @@ fn test_version_flag() {
 
 #[test]
 fn test_help_flag() {
-    acs_cmd()
+    agentcronsystem_cmd()
         .arg("--help")
         .assert()
         .success()
@@ -40,7 +40,7 @@ fn test_help_flag() {
 
 #[test]
 fn test_add_help_shows_options() {
-    acs_cmd()
+    agentcronsystem_cmd()
         .args(["add", "--help"])
         .assert()
         .success()
@@ -54,7 +54,7 @@ fn test_add_help_shows_options() {
 
 #[test]
 fn test_start_help() {
-    acs_cmd()
+    agentcronsystem_cmd()
         .args(["start", "--help"])
         .assert()
         .success()
@@ -64,7 +64,7 @@ fn test_start_help() {
 
 #[test]
 fn test_logs_help() {
-    acs_cmd()
+    agentcronsystem_cmd()
         .args(["logs", "--help"])
         .assert()
         .success()
@@ -76,7 +76,7 @@ fn test_logs_help() {
 #[test]
 fn test_no_subcommand_shows_help() {
     // When no subcommand is provided, should print help
-    acs_cmd()
+    agentcronsystem_cmd()
         .assert()
         .success()
         .stdout(predicate::str::contains("Agent Cron Scheduler"));

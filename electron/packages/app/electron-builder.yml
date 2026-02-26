@@ -1,4 +1,4 @@
-appId: com.acs.scheduler
+appId: com.agentcronsystem.scheduler
 productName: AgentCronScheduler
 npmRebuild: false
 publish: null
@@ -13,10 +13,10 @@ files:
 
 extraResources:
   - from: ../../../acs/target/release
-    to: acs-binary
+    to: agentcronsystem-binary
     filter:
-      - "acs"
-      - "acs.exe"
+      - "agentcronsystem"
+      - "agentcronsystem.exe"
 
 win:
   target:

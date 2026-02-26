@@ -8,7 +8,7 @@ use std::collections::HashMap;
 /// Agent Cron Scheduler - A cross-platform cron scheduler daemon
 #[derive(Parser, Debug)]
 #[command(
-    name = "acs",
+    name = "agentcronsystem",
     version,
     about = "Agent Cron Scheduler - A cross-platform cron scheduler daemon"
 )]
@@ -222,7 +222,7 @@ pub fn parse_env_vars(env_args: &[String]) -> Result<HashMap<String, String>, St
 /// Format a connection error message for when the daemon is not reachable.
 pub fn connection_error_message(host: &str, port: u16) -> String {
     format!(
-        "Could not connect to daemon at {}:{}. Is it running? (try: acs start)",
+        "Could not connect to daemon at {}:{}. Is it running? (try: agentcronsystem start)",
         host, port
     )
 }
@@ -349,7 +349,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_cli_version_flag() {
-        let result = Cli::try_parse_from(["acs", "--version"]);
+        let result = Cli::try_parse_from(["agentcronsystem", "--version"]);
         // --version causes clap to exit with an error containing the version
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn test_cli_add_parses_correctly() {
         let cli = Cli::try_parse_from([
-            "acs",
+            "agentcronsystem",
             "add",
             "-n",
             "test",
@@ -487,7 +487,7 @@ mod tests {
         let msg = connection_error_message("127.0.0.1", 8377);
         assert_eq!(
             msg,
-            "Could not connect to daemon at 127.0.0.1:8377. Is it running? (try: acs start)"
+            "Could not connect to daemon at 127.0.0.1:8377. Is it running? (try: agentcronsystem start)"
         );
     }
 
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn test_cli_add_with_script() {
         let cli = Cli::try_parse_from([
-            "acs",
+            "agentcronsystem",
             "add",
             "-n",
             "script-job",
@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn test_cli_add_with_env_vars() {
         let cli = Cli::try_parse_from([
-            "acs",
+            "agentcronsystem",
             "add",
             "-n",
             "env-job",
@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn test_cli_add_with_disabled() {
         let cli = Cli::try_parse_from([
-            "acs",
+            "agentcronsystem",
             "add",
             "-n",
             "disabled-job",
@@ -639,7 +639,7 @@ mod tests {
     #[test]
     fn test_cli_start_all_flags() {
         let cli = Cli::try_parse_from([
-            "acs",
+            "agentcronsystem",
             "start",
             "--foreground",
             "--config",
@@ -790,7 +790,7 @@ mod tests {
     #[test]
     fn test_cli_add_cmd_and_script_conflict() {
         let result = Cli::try_parse_from([
-            "acs",
+            "agentcronsystem",
             "add",
             "-n",
             "test",
@@ -810,7 +810,7 @@ mod tests {
     #[test]
     fn test_cli_logs_with_run_id() {
         let cli = Cli::try_parse_from([
-            "acs",
+            "agentcronsystem",
             "logs",
             "my-job",
             "--run",
@@ -859,7 +859,7 @@ mod tests {
     #[test]
     fn test_cli_add_with_timezone_and_working_dir() {
         let cli = Cli::try_parse_from([
-            "acs",
+            "agentcronsystem",
             "add",
             "-n",
             "tz-job",

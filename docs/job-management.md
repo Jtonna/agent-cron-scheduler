@@ -176,7 +176,7 @@ Creation --> Scheduling --> Execution --> Completion
 
 ### Stage Details
 
-1. **Creation**: A job is created via the CLI (`acs add`) or the REST API (`POST /api/jobs`). It is validated and persisted. The job defaults to `enabled: true`.
+1. **Creation**: A job is created via the CLI (`agentcronsystem add`) or the REST API (`POST /api/jobs`). It is validated and persisted. The job defaults to `enabled: true`.
 
 2. **Scheduling**: The scheduler continuously loads all enabled jobs, computes their next run times, and sleeps until the earliest one is due. When the job list changes (create, update, delete, enable, disable), the scheduler is woken via a `Notify` signal to re-evaluate immediately.
 
@@ -239,7 +239,7 @@ On the CLI, environment variables are passed with the `-e` / `--env` flag. See [
 
 ### Per-Trigger Environment Variables
 
-When manually triggering a job via the API (`POST /api/jobs/{id}/trigger`) or CLI (`acs trigger -e KEY=VALUE`), you can provide per-trigger environment variables that apply only to that single run. These are merged into the process environment with the highest precedence.
+When manually triggering a job via the API (`POST /api/jobs/{id}/trigger`) or CLI (`agentcronsystem trigger -e KEY=VALUE`), you can provide per-trigger environment variables that apply only to that single run. These are merged into the process environment with the highest precedence.
 
 ### Environment Variable Precedence
 

@@ -55,7 +55,7 @@ When the daemon starts, it searches for a configuration file in the following or
 
 | Priority | Source | Path |
 |---|---|---|
-| 1 | `--config` CLI flag | Exact path provided via `acs start --config <path>`. If specified but the file does not exist, the daemon exits with an error. |
+| 1 | `--config` CLI flag | Exact path provided via `agentcronsystem start --config <path>`. If specified but the file does not exist, the daemon exits with an error. |
 | 2 | `ACS_CONFIG_DIR` environment variable | `$ACS_CONFIG_DIR/config.json` |
 | 3 | Platform config directory | `<platform_config_dir>/agent-cron-scheduler/config.json` (see platform paths below) |
 | 4 | Data directory | `<data_dir>/config.json` |
@@ -83,7 +83,7 @@ The data directory stores jobs, run logs, scripts, the PID file, the port file, 
 
 | Priority | Source | Description |
 |---|---|---|
-| 1 | `--data-dir` CLI flag | Explicit path passed to `acs start --data-dir <path>`. |
+| 1 | `--data-dir` CLI flag | Explicit path passed to `agentcronsystem start --data-dir <path>`. |
 | 2 | `data_dir` field in config | The `data_dir` field in the loaded config file. |
 | 3 | `ACS_DATA_DIR` environment variable | Override via environment variable. |
 | 4 | Platform default | OS-specific default directory (see below). |
@@ -104,18 +104,18 @@ On startup, the daemon ensures the data directory and its subdirectories (`logs/
 |---|---|
 | `ACS_DATA_DIR` | Override the data directory location. Takes effect when no `--data-dir` CLI flag and no `data_dir` config field is set. |
 | `ACS_CONFIG_DIR` | Directory to search for `config.json`. Checked at priority 2 in the config resolution order, after the `--config` CLI flag but before platform and data directory fallbacks. |
-| `RUST_LOG` | Controls the tracing/logging filter level for the **daemon process only** (not CLI client commands). Follows the `tracing_subscriber::EnvFilter` syntax. Examples: `info`, `debug`, `acs=debug,tower=warn`. Defaults to `info` if not set. **Important:** The `-v` flag initializes its own tracing subscriber before the daemon starts, so `RUST_LOG` is silently ignored when `-v` is present. Use one or the other, not both. |
+| `RUST_LOG` | Controls the tracing/logging filter level for the **daemon process only** (not CLI client commands). Follows the `tracing_subscriber::EnvFilter` syntax. Examples: `info`, `debug`, `agentcronsystem=debug,tower=warn`. Defaults to `info` if not set. **Important:** The `-v` flag initializes its own tracing subscriber before the daemon starts, so `RUST_LOG` is silently ignored when `-v` is present. Use one or the other, not both. |
 | `LOCALAPPDATA` | (Windows only) Used to determine the default data directory. This variable is set automatically by Windows and should not normally need to be changed. |
 
 ## CLI Override Precedence
 
 **Important:** There are two `--port` flags with different purposes:
 - **Global `--port`** (e.g., `acs --port 9000 status`): Tells the CLI client which port to connect to when communicating with an already-running daemon. This does **not** affect which port the daemon listens on.
-- **`acs start --port` (`-p`)** (e.g., `acs start -p 9000`): Sets the port the daemon binds to when starting.
+- **`agentcronsystem start --port` (`-p`)** (e.g., `agentcronsystem start -p 9000`): Sets the port the daemon binds to when starting.
 
-When `acs start` is invoked, the daemon's listening port is resolved with the following precedence (highest to lowest):
+When `agentcronsystem start` is invoked, the daemon's listening port is resolved with the following precedence (highest to lowest):
 
-1. `acs start --port` (`-p`) subcommand flag
+1. `agentcronsystem start --port` (`-p`) subcommand flag
 2. `port` value in the loaded config file
 3. Built-in default (`8377`)
 
@@ -125,7 +125,7 @@ The daemon's bind host is resolved with the following precedence (highest to low
 2. `host` value in the loaded config file
 3. Built-in default (`127.0.0.1`)
 
-> **Edge case:** Because the global `--host` flag uses `127.0.0.1` as its clap default, there is no way to distinguish between the user explicitly passing `--host 127.0.0.1` and not passing the flag at all. If your config file sets `host: "0.0.0.0"` and you run `acs --host 127.0.0.1 start`, the config value (`0.0.0.0`) wins silently -- the CLI flag is ignored because its value matches the default. To force `127.0.0.1` when the config sets a different host, remove or change the `host` field in the config file instead of relying on the CLI flag. (See `acs/src/cli/daemon.rs` lines 147-151.)
+> **Edge case:** Because the global `--host` flag uses `127.0.0.1` as its clap default, there is no way to distinguish between the user explicitly passing `--host 127.0.0.1` and not passing the flag at all. If your config file sets `host: "0.0.0.0"` and you run `agentcronsystem --host 127.0.0.1 start`, the config value (`0.0.0.0`) wins silently -- the CLI flag is ignored because its value matches the default. To force `127.0.0.1` when the config sets a different host, remove or change the `host` field in the config file instead of relying on the CLI flag. (See `acs/src/cli/daemon.rs` lines 147-151.)
 
 For the full list of CLI options, see [CLI Reference](cli-reference.md).
 
@@ -134,7 +134,7 @@ For the full list of CLI options, see [CLI Reference](cli-reference.md).
 ### Start with all defaults
 
 ```bash
-acs start
+agentcronsystem start
 ```
 
 The daemon binds to `127.0.0.1:8377` and stores data in the platform default directory.
@@ -142,19 +142,19 @@ The daemon binds to `127.0.0.1:8377` and stores data in the platform default dir
 ### Start with a custom config file
 
 ```bash
-acs start --config /etc/acs/config.json
+agentcronsystem start --config /etc/acs/config.json
 ```
 
 ### Start with a custom data directory and port
 
 ```bash
-acs start --data-dir /var/lib/acs --port 9000
+agentcronsystem start --data-dir /var/lib/acs --port 9000
 ```
 
 ### Start in foreground mode for debugging
 
 ```bash
-RUST_LOG=debug acs start --foreground
+RUST_LOG=debug agentcronsystem start --foreground
 ```
 
 ### Use environment variables for configuration
@@ -162,7 +162,7 @@ RUST_LOG=debug acs start --foreground
 ```bash
 export ACS_DATA_DIR=/opt/acs/data
 export ACS_CONFIG_DIR=/opt/acs/etc
-acs start
+agentcronsystem start
 ```
 
 The daemon loads config from `/opt/acs/etc/config.json` and stores data under `/opt/acs/data/`.

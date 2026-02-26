@@ -218,7 +218,7 @@ impl PortFile {
     /// directory.
     pub fn write(port: u16) -> Result<Self> {
         let data_dir = resolve_data_dir(None);
-        let path = data_dir.join("acs.port");
+        let path = data_dir.join("agentcronsystem.port");
         Self::write_to(path, port)
     }
 
@@ -242,7 +242,7 @@ impl PortFile {
     /// Read the port number from the port file in the given data directory,
     /// returning `None` if the file does not exist or contains invalid data.
     pub fn read(data_dir: &Path) -> Option<u16> {
-        let path = data_dir.join("acs.port");
+        let path = data_dir.join("agentcronsystem.port");
         Self::read_from(&path)
     }
 
@@ -774,7 +774,7 @@ pub async fn start_daemon(
     }
 
     // Acquire PID file
-    let pid_file_path = data_dir.join("acs.pid");
+    let pid_file_path = data_dir.join("agentcronsystem.pid");
     let pid_file = PidFile::new(pid_file_path);
     pid_file.acquire()?;
 
@@ -932,7 +932,7 @@ pub async fn start_daemon(
 
     // Write the port file now that we know the actual bound port
     let actual_port = listener.local_addr()?.port();
-    let port_file_path = data_dir.join("acs.port");
+    let port_file_path = data_dir.join("agentcronsystem.port");
     let port_file = PortFile::write_to(port_file_path, actual_port)?;
 
     tracing::info!("Daemon started. Listening on http://{}", bind_addr);
@@ -1530,7 +1530,7 @@ mod tests {
     #[test]
     fn test_portfile_write_creates_file() {
         let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("acs.port");
+        let port_path = tmp_dir.path().join("agentcronsystem.port");
 
         let port_file = PortFile::write_to(port_path.clone(), 8377).expect("write port file");
 
@@ -1545,7 +1545,7 @@ mod tests {
     #[test]
     fn test_portfile_read_returns_port() {
         let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("acs.port");
+        let port_path = tmp_dir.path().join("agentcronsystem.port");
 
         std::fs::write(&port_path, "9999").expect("write port");
 
@@ -1565,7 +1565,7 @@ mod tests {
     #[test]
     fn test_portfile_read_returns_none_for_invalid_content() {
         let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("acs.port");
+        let port_path = tmp_dir.path().join("agentcronsystem.port");
 
         std::fs::write(&port_path, "not-a-number").expect("write invalid");
 
@@ -1576,7 +1576,7 @@ mod tests {
     #[test]
     fn test_portfile_read_with_data_dir() {
         let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("acs.port");
+        let port_path = tmp_dir.path().join("agentcronsystem.port");
 
         std::fs::write(&port_path, "4567").expect("write port");
 
@@ -1587,7 +1587,7 @@ mod tests {
     #[test]
     fn test_portfile_remove_deletes_file() {
         let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("acs.port");
+        let port_path = tmp_dir.path().join("agentcronsystem.port");
 
         let port_file = PortFile::write_to(port_path.clone(), 8080).expect("write");
 
@@ -1604,7 +1604,7 @@ mod tests {
     #[test]
     fn test_portfile_remove_is_idempotent() {
         let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("acs.port");
+        let port_path = tmp_dir.path().join("agentcronsystem.port");
 
         let port_file = PortFile::write_to(port_path.clone(), 8080).expect("write");
 
@@ -1617,7 +1617,7 @@ mod tests {
     #[test]
     fn test_portfile_write_overwrites_existing() {
         let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("acs.port");
+        let port_path = tmp_dir.path().join("agentcronsystem.port");
 
         let _pf1 = PortFile::write_to(port_path.clone(), 8000).expect("write first");
         let content = std::fs::read_to_string(&port_path).expect("read");
@@ -1633,7 +1633,7 @@ mod tests {
     #[test]
     fn test_portfile_path_accessor() {
         let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("acs.port");
+        let port_path = tmp_dir.path().join("agentcronsystem.port");
 
         let port_file = PortFile::new(port_path.clone());
         assert_eq!(port_file.path(), port_path.as_path());
@@ -1642,7 +1642,7 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_removes_port_file() {
         let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("acs.port");
+        let port_path = tmp_dir.path().join("agentcronsystem.port");
 
         let port_file = PortFile::write_to(port_path.clone(), 8377).expect("write");
 
@@ -1664,7 +1664,7 @@ mod tests {
     async fn test_shutdown_removes_both_pid_and_port_files() {
         let tmp_dir = TempDir::new().expect("create temp dir");
         let pid_path = tmp_dir.path().join("test.pid");
-        let port_path = tmp_dir.path().join("acs.port");
+        let port_path = tmp_dir.path().join("agentcronsystem.port");
 
         let pid_file = PidFile::new(pid_path.clone());
         pid_file.acquire().expect("acquire PID file");

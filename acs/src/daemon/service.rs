@@ -1,8 +1,8 @@
 // Platform service registration for daemon persistence.
 //
 // - Windows: Task Scheduler (runs as current user, inherits user environment)
-// - macOS:   launchd plist to ~/Library/LaunchAgents/com.acs.scheduler.plist
-// - Linux:   systemd user unit to ~/.config/systemd/user/acs.service
+// - macOS:   launchd plist to ~/Library/LaunchAgents/com.agentcronsystem.scheduler.plist
+// - Linux:   systemd user unit to ~/.config/systemd/user/agentcronsystem.service
 
 use std::path::Path;
 
@@ -33,9 +33,9 @@ pub fn service_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "AgentCronScheduler"
     } else if cfg!(target_os = "macos") {
-        "com.acs.scheduler"
+        "com.agentcronsystem.scheduler"
     } else {
-        "acs"
+        "agentcronsystem"
     }
 }
 
@@ -81,6 +81,9 @@ mod platform {
             .context("Failed to run schtasks")?;
 
         if status.success() {
+            if let Err(e) = ensure_path_entry(exe_path) {
+                tracing::warn!("Could not add binary to PATH: {}", e);
+            }
             Ok(())
         } else {
             anyhow::bail!("schtasks /Create failed (exit code {:?})", status.code())
@@ -143,6 +146,86 @@ mod platform {
             anyhow::bail!("schtasks /End failed (exit code {:?})", status.code())
         }
     }
+
+    /// Ensure the binary's directory is in the user's PATH (HKCU\Environment).
+    pub fn ensure_path_entry(exe_path: &Path) -> anyhow::Result<()> {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        let dir = exe_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine binary directory"))?
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Binary path is not valid UTF-8"))?;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let env = hkcu.open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)?;
+
+        let current_path: String = env.get_value("Path").unwrap_or_default();
+
+        // Case-insensitive check if already in PATH
+        let already_present = current_path
+            .split(';')
+            .any(|entry| entry.eq_ignore_ascii_case(dir));
+
+        if already_present {
+            tracing::info!("Binary directory already in PATH: {}", dir);
+            return Ok(());
+        }
+
+        let new_path = if current_path.is_empty() {
+            dir.to_string()
+        } else {
+            format!("{};{}", current_path, dir)
+        };
+
+        env.set_value("Path", &new_path)?;
+
+        // Broadcast WM_SETTINGCHANGE so new shells pick up the change
+        broadcast_environment_change();
+
+        tracing::info!("Added binary directory to PATH: {}", dir);
+        Ok(())
+    }
+
+    fn broadcast_environment_change() {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+
+        #[link(name = "user32")]
+        extern "system" {
+            fn SendMessageTimeoutW(
+                hwnd: isize,
+                msg: u32,
+                wparam: usize,
+                lparam: isize,
+                flags: u32,
+                timeout: u32,
+                result: *mut usize,
+            ) -> isize;
+        }
+
+        const HWND_BROADCAST: isize = 0xFFFF;
+        const WM_SETTINGCHANGE: u32 = 0x001A;
+        const SMTO_ABORTIFHUNG: u32 = 0x0002;
+
+        let environment: Vec<u16> = OsStr::new("Environment")
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+
+        unsafe {
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                environment.as_ptr() as isize,
+                SMTO_ABORTIFHUNG,
+                5000,
+                std::ptr::null_mut(),
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -157,11 +240,71 @@ mod platform {
         let home = dirs::home_dir().expect("Could not determine home directory");
         home.join("Library")
             .join("LaunchAgents")
-            .join("com.acs.scheduler.plist")
+            .join("com.agentcronsystem.scheduler.plist")
     }
 
     pub fn is_service_registered() -> bool {
         plist_path().exists()
+    }
+
+    /// Ensure the executable's directory is in the user's PATH by modifying shell config files.
+    fn ensure_path_entry(exe_path: &Path) -> anyhow::Result<()> {
+        use std::io::{BufRead, BufReader};
+
+        let exe_dir = exe_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Executable has no parent directory"))?;
+        let exe_dir_str = exe_dir
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid directory path"))?;
+
+        // Check if already in current PATH
+        if let Ok(current_path) = std::env::var("PATH") {
+            if current_path.split(':').any(|p| p == exe_dir_str) {
+                tracing::debug!("Directory {} already in PATH", exe_dir_str);
+                return Ok(());
+            }
+        }
+
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let shell_configs = vec![home.join(".zshrc"), home.join(".bash_profile")];
+
+        let marker = "# Added by AgentCronScheduler";
+        let path_line = format!("export PATH=\"$PATH:{}\" {}", exe_dir_str, marker);
+
+        for config_file in shell_configs {
+            if !config_file.exists() {
+                continue;
+            }
+
+            // Check if already present
+            let file = std::fs::File::open(&config_file)?;
+            let reader = BufReader::new(file);
+            let mut already_present = false;
+
+            for l in reader.lines().map_while(Result::ok) {
+                if (l.contains(marker) && l.contains(exe_dir_str))
+                    || (l.contains("PATH=") && l.contains(exe_dir_str))
+                {
+                    already_present = true;
+                    break;
+                }
+            }
+
+            if !already_present {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&config_file)?;
+                writeln!(file, "\n{}", path_line)?;
+                tracing::info!("Added PATH entry to {}", config_file.display());
+            } else {
+                tracing::debug!("PATH entry already exists in {}", config_file.display());
+            }
+        }
+
+        Ok(())
     }
 
     pub fn install_service(exe_path: &Path) -> anyhow::Result<()> {
@@ -178,7 +321,7 @@ mod platform {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.acs.scheduler</string>
+    <string>com.agentcronsystem.scheduler</string>
     <key>ProgramArguments</key>
     <array>
         <string>{exe}</string>
@@ -201,6 +344,11 @@ mod platform {
             .arg("load")
             .arg(plist_path())
             .status();
+
+        // Best-effort PATH modification
+        if let Err(e) = ensure_path_entry(exe_path) {
+            tracing::warn!("Failed to add PATH entry: {}", e);
+        }
 
         Ok(())
     }
@@ -230,7 +378,7 @@ mod platform {
     pub fn start_service() -> anyhow::Result<()> {
         let status = std::process::Command::new("launchctl")
             .arg("start")
-            .arg("com.acs.scheduler")
+            .arg("com.agentcronsystem.scheduler")
             .status()?;
 
         if status.success() {
@@ -244,7 +392,7 @@ mod platform {
     pub fn stop_service() -> anyhow::Result<()> {
         let status = std::process::Command::new("launchctl")
             .arg("stop")
-            .arg("com.acs.scheduler")
+            .arg("com.agentcronsystem.scheduler")
             .status()?;
 
         if status.success() {
@@ -268,11 +416,75 @@ mod platform {
         home.join(".config")
             .join("systemd")
             .join("user")
-            .join("acs.service")
+            .join("agentcronsystem.service")
     }
 
     pub fn is_service_registered() -> bool {
         unit_path().exists()
+    }
+
+    /// Ensure the executable's directory is in the user's PATH by modifying shell config files.
+    fn ensure_path_entry(exe_path: &Path) -> anyhow::Result<()> {
+        use std::io::{BufRead, BufReader};
+
+        let exe_dir = exe_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Executable has no parent directory"))?;
+        let exe_dir_str = exe_dir
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid directory path"))?;
+
+        // Check if already in current PATH
+        if let Ok(current_path) = std::env::var("PATH") {
+            if current_path.split(':').any(|p| p == exe_dir_str) {
+                tracing::debug!("Directory {} already in PATH", exe_dir_str);
+                return Ok(());
+            }
+        }
+
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let shell_configs = vec![
+            home.join(".bashrc"),
+            home.join(".zshrc"),
+            home.join(".profile"),
+        ];
+
+        let marker = "# Added by AgentCronScheduler";
+        let path_line = format!("export PATH=\"$PATH:{}\" {}", exe_dir_str, marker);
+
+        for config_file in shell_configs {
+            if !config_file.exists() {
+                continue;
+            }
+
+            // Check if already present
+            let file = std::fs::File::open(&config_file)?;
+            let reader = BufReader::new(file);
+            let mut already_present = false;
+
+            for l in reader.lines().map_while(Result::ok) {
+                if (l.contains(marker) && l.contains(exe_dir_str))
+                    || (l.contains("PATH=") && l.contains(exe_dir_str))
+                {
+                    already_present = true;
+                    break;
+                }
+            }
+
+            if !already_present {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&config_file)?;
+                writeln!(file, "\n{}", path_line)?;
+                tracing::info!("Added PATH entry to {}", config_file.display());
+            } else {
+                tracing::debug!("PATH entry already exists in {}", config_file.display());
+            }
+        }
+
+        Ok(())
     }
 
     pub fn install_service(exe_path: &Path) -> anyhow::Result<()> {
@@ -309,12 +521,17 @@ WantedBy=default.target
         let _ = std::process::Command::new("systemctl")
             .arg("--user")
             .arg("enable")
-            .arg("acs.service")
+            .arg("agentcronsystem.service")
             .status();
         // Enable linger for persistence
         let _ = std::process::Command::new("loginctl")
             .arg("enable-linger")
             .status();
+
+        // Best-effort PATH modification
+        if let Err(e) = ensure_path_entry(exe_path) {
+            tracing::warn!("Failed to add PATH entry: {}", e);
+        }
 
         Ok(())
     }
@@ -325,12 +542,12 @@ WantedBy=default.target
             let _ = std::process::Command::new("systemctl")
                 .arg("--user")
                 .arg("stop")
-                .arg("acs.service")
+                .arg("agentcronsystem.service")
                 .status();
             let _ = std::process::Command::new("systemctl")
                 .arg("--user")
                 .arg("disable")
-                .arg("acs.service")
+                .arg("agentcronsystem.service")
                 .status();
             std::fs::remove_file(&path)?;
             let _ = std::process::Command::new("systemctl")
@@ -354,7 +571,7 @@ WantedBy=default.target
         let status = std::process::Command::new("systemctl")
             .arg("--user")
             .arg("start")
-            .arg("acs.service")
+            .arg("agentcronsystem.service")
             .status()?;
 
         if status.success() {
@@ -372,7 +589,7 @@ WantedBy=default.target
         let status = std::process::Command::new("systemctl")
             .arg("--user")
             .arg("stop")
-            .arg("acs.service")
+            .arg("agentcronsystem.service")
             .status()?;
 
         if status.success() {
@@ -531,6 +748,124 @@ mod tests {
                 result.is_err(),
                 "uninstall_service should fail when service is not registered"
             );
+        }
+    }
+
+    /// Tests for the PATH detection logic used by ensure_path_entry on Windows.
+    /// These use unique temporary registry keys to avoid modifying the real user PATH.
+    #[cfg(target_os = "windows")]
+    mod path_entry_tests {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        /// Core logic extracted to mirror ensure_path_entry without touching
+        /// HKCU\Environment or broadcasting WM_SETTINGCHANGE.
+        fn ensure_path_in_key(env: &RegKey, dir: &str) -> anyhow::Result<bool> {
+            let current_path: String = env.get_value("Path").unwrap_or_default();
+
+            let already_present = current_path
+                .split(';')
+                .any(|entry| entry.eq_ignore_ascii_case(dir));
+
+            if already_present {
+                return Ok(false); // no change
+            }
+
+            let new_path = if current_path.is_empty() {
+                dir.to_string()
+            } else {
+                format!("{};{}", current_path, dir)
+            };
+
+            env.set_value("Path", &new_path)?;
+            Ok(true) // changed
+        }
+
+        /// Helper: create a uniquely-named temp registry key, set Path, run
+        /// the closure, read back the result, then clean up. Returns the final
+        /// Path value so assertions can happen after cleanup.
+        fn run_path_test(
+            test_name: &str,
+            initial_path: &str,
+            dir: &str,
+        ) -> (anyhow::Result<bool>, String) {
+            let subkey = format!("Software\\AcsTest_{}", test_name);
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let (key, _) = hkcu.create_subkey(&subkey).expect("create test subkey");
+            key.set_value("Path", &initial_path)
+                .expect("set initial Path");
+
+            let result = ensure_path_in_key(&key, dir);
+            let final_path: String = key.get_value("Path").unwrap_or_default();
+
+            // Clean up
+            drop(key);
+            hkcu.delete_subkey_all(&subkey).ok();
+
+            (result, final_path)
+        }
+
+        #[test]
+        fn test_path_entry_adds_missing_dir() {
+            let (result, path) = run_path_test(
+                "adds_missing",
+                "C:\\Windows;C:\\Windows\\System32",
+                "C:\\MyApp\\bin",
+            );
+            assert!(
+                result.expect("should succeed"),
+                "should have added the directory"
+            );
+            assert!(
+                path.contains("C:\\MyApp\\bin"),
+                "PATH should contain the new directory, got: {}",
+                path
+            );
+        }
+
+        #[test]
+        fn test_path_entry_idempotent() {
+            let (result, path) =
+                run_path_test("idempotent", "C:\\Windows;C:\\MyApp\\bin", "C:\\MyApp\\bin");
+            assert!(
+                !result.expect("should succeed"),
+                "should not modify PATH when dir already present"
+            );
+            assert_eq!(
+                path, "C:\\Windows;C:\\MyApp\\bin",
+                "PATH should be unchanged"
+            );
+        }
+
+        #[test]
+        fn test_path_entry_case_insensitive() {
+            let (result, _) = run_path_test(
+                "case_insensitive",
+                "C:\\Windows;c:\\myapp\\bin",
+                "C:\\MyApp\\bin",
+            );
+            assert!(
+                !result.expect("should succeed"),
+                "should detect existing entry case-insensitively"
+            );
+        }
+
+        #[test]
+        fn test_path_entry_empty_path() {
+            let (result, path) = run_path_test("empty_path", "", "C:\\MyApp\\bin");
+            assert!(result.expect("should succeed"), "should add to empty PATH");
+            assert_eq!(
+                path, "C:\\MyApp\\bin",
+                "PATH should be just the new directory (no leading semicolon)"
+            );
+        }
+
+        #[test]
+        fn test_ensure_path_entry_no_parent() {
+            // A path with no parent should not panic
+            let result =
+                super::super::platform::ensure_path_entry(std::path::Path::new("justfilename"));
+            let _ = result;
         }
     }
 }

@@ -16,7 +16,7 @@ fn handle_request_error(err: reqwest::Error, host: &str, port: u16) -> anyhow::E
     }
 }
 
-/// acs start
+/// agentcronsystem start
 pub async fn cmd_start(
     host: &str,
     port: u16,
@@ -112,8 +112,8 @@ pub async fn cmd_start(
 
     if started {
         println!("Daemon started in background.");
-        println!("Use 'acs status' to check daemon status.");
-        println!("Use 'acs stop' to stop the daemon.");
+        println!("Use 'agentcronsystem status' to check daemon status.");
+        println!("Use 'agentcronsystem stop' to stop the daemon.");
         Ok(())
     } else {
         eprintln!(
@@ -160,7 +160,7 @@ async fn run_daemon_foreground(
     .await
 }
 
-/// acs stop
+/// agentcronsystem stop
 pub async fn cmd_stop(host: &str, port: u16, force: bool) -> anyhow::Result<()> {
     if force {
         // Force kill: read PID file and kill the process
@@ -212,7 +212,7 @@ pub async fn cmd_stop(host: &str, port: u16, force: bool) -> anyhow::Result<()> 
 /// Force kill the daemon by reading the PID file and terminating the process.
 fn force_kill_daemon() -> anyhow::Result<()> {
     let data_dir = crate::daemon::resolve_data_dir(None);
-    let pid_file_path = data_dir.join("acs.pid");
+    let pid_file_path = data_dir.join("agentcronsystem.pid");
 
     if !pid_file_path.exists() {
         println!("No PID file found. Daemon may not be running.");
@@ -272,7 +272,7 @@ fn force_kill_daemon() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// acs status
+/// agentcronsystem status
 pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<()> {
     let client = Client::new();
     let url = format!("{}/health", base_url(host, port));
@@ -331,7 +331,7 @@ pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<
     Ok(())
 }
 
-/// acs uninstall
+/// agentcronsystem uninstall
 pub async fn cmd_uninstall(host: &str, port: u16, purge: bool) -> anyhow::Result<()> {
     // Stop the daemon — try API first (graceful), fall back to task end
     let client = Client::new();
@@ -394,7 +394,7 @@ pub async fn cmd_uninstall(host: &str, port: u16, purge: bool) -> anyhow::Result
     Ok(())
 }
 
-/// acs restart
+/// agentcronsystem restart
 pub async fn cmd_restart(host: &str, port: u16) -> anyhow::Result<()> {
     let client = Client::new();
     let url = format!("{}/api/restart", base_url(host, port));
@@ -558,7 +558,7 @@ mod tests {
         use tempfile::TempDir;
 
         let tmp_dir = TempDir::new().expect("create temp dir");
-        let pid_path = tmp_dir.path().join("acs.pid");
+        let pid_path = tmp_dir.path().join("agentcronsystem.pid");
 
         // PID file doesn't exist
         assert!(!pid_path.exists());

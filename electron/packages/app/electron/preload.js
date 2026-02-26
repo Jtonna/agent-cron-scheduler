@@ -11,7 +11,7 @@ function getArg(name) {
 }
 
 const dataDir = getArg('data-dir');
-const acsBinaryPath = getArg('acs-binary');
+const acsBinaryPath = getArg('agentcronsystem-binary');
 
 function getDaemonPort() {
   if (!dataDir) return null;
