@@ -414,7 +414,7 @@ Storage interfaces are async traits (`JobStore`, `LogStore`) behind `Arc<dyn ...
 
 ### 5.2 PID File Locking
 
-Single-instance enforcement uses `create_new(true)` (maps to `O_EXCL`/`CREATE_NEW`) for atomic filesystem locking. Stale PID files are detected by checking process liveness (`kill(pid, 0)` on Unix, `OpenProcess` on Windows). Restart overlap is tolerated via 10-second retry loop.
+Single-instance enforcement uses `create_new(true)` (maps to `O_EXCL`/`CREATE_NEW`) for atomic filesystem locking. Stale PID files are detected by checking process liveness (`kill(pid, 0)` on Unix, `OpenProcess` + `GetExitCodeProcess` on Windows). The Windows check uses `GetExitCodeProcess` to handle zombie-handle scenarios where `OpenProcess` succeeds on a dead process because another process still holds a handle. Restart overlap is tolerated via 10-second retry loop.
 
 ### 5.3 Piped I/O over PTY
 

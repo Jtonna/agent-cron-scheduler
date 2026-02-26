@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 #
-# beads-sync.sh — One-way sync from .beads/issues.jsonl to GitHub Issues + Project
+# beads-sync.sh — One-way sync from beads issues to GitHub Issues + Project
 #
-# Reads beads issues, creates/updates GitHub Issues, and manages Project board columns.
-# Tracks mapping between beads IDs and GitHub issue numbers in .beads/github-map.json.
+# Supports both storage formats:
+#   - .beads/issues.jsonl   (legacy single-file format)
+#   - .beads/issues/        (newer directory-based format, one JSON file per issue)
+#
+# Syncs: title, description, status, labels, project board, comments, close_reason
+# Tracks mappings in .beads/github-map.json and .beads/comment-map.json
 #
 # Required env vars:
 #   GH_TOKEN          — GitHub token with repo + project scopes
 #   GITHUB_REPOSITORY — owner/repo (set automatically in GitHub Actions)
-#   PROJECT_NUMBER    — GitHub Project number to sync to
+#   PROJECT_NUMBER    — GitHub Project number to sync to (optional)
 #
 # Usage:
 #   ./beads-sync.sh                    # sync all issues
@@ -19,7 +23,9 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 BEADS_DIR="$REPO_ROOT/.beads"
 ISSUES_JSONL="$BEADS_DIR/issues.jsonl"
+ISSUES_DIR="$BEADS_DIR/issues"
 GITHUB_MAP="$BEADS_DIR/github-map.json"
+COMMENT_MAP="$BEADS_DIR/comment-map.json"
 DRY_RUN=false
 
 # Beads status -> GitHub Project column mapping
@@ -50,17 +56,16 @@ if [[ -z "${PROJECT_NUMBER:-}" ]]; then
   echo "WARNING: PROJECT_NUMBER not set — will sync GitHub Issues only (no Project board)"
 fi
 
-if [[ ! -f "$ISSUES_JSONL" ]]; then
-  echo "No beads issues found at $ISSUES_JSONL"
-  exit 0
-fi
-
 OWNER="${GITHUB_REPOSITORY%%/*}"
 REPO="${GITHUB_REPOSITORY##*/}"
 
-# Initialize github-map.json if it doesn't exist
+# Initialize map files if they don't exist
 if [[ ! -f "$GITHUB_MAP" ]]; then
   echo "{}" > "$GITHUB_MAP"
+fi
+
+if [[ ! -f "$COMMENT_MAP" ]]; then
+  echo "{}" > "$COMMENT_MAP"
 fi
 
 # ── Helper functions ─────────────────────────────────────────────────────
@@ -77,6 +82,24 @@ set_gh_issue_number() {
   tmp=$(mktemp)
   jq --arg id "$beads_id" --arg num "$gh_number" '.[$id] = ($num | tonumber)' "$GITHUB_MAP" > "$tmp"
   mv "$tmp" "$GITHUB_MAP"
+}
+
+# Get list of already-synced comment keys for a beads issue
+# Key format: "beads_id:comment_id" or "beads_id:close_reason"
+is_comment_synced() {
+  local key="$1"
+  local result
+  result=$(jq -r --arg k "$key" '.[$k] // empty' "$COMMENT_MAP")
+  [[ -n "$result" ]]
+}
+
+mark_comment_synced() {
+  local key="$1"
+  local gh_comment_url="$2"
+  local tmp
+  tmp=$(mktemp)
+  jq --arg k "$key" --arg v "$gh_comment_url" '.[$k] = $v' "$COMMENT_MAP" > "$tmp"
+  mv "$tmp" "$COMMENT_MAP"
 }
 
 map_status_to_column() {
@@ -106,6 +129,99 @@ build_labels() {
   esac
 
   echo "$labels"
+}
+
+# ── Comment sync ─────────────────────────────────────────────────────────
+
+sync_comments() {
+  local beads_id="$1"
+  local gh_number="$2"
+  local issue_json="$3"
+
+  # Sync close_reason as a comment if present and not already synced
+  local close_reason
+  close_reason=$(echo "$issue_json" | jq -r '.close_reason // empty')
+  if [[ -n "$close_reason" ]]; then
+    local cr_key="${beads_id}:close_reason"
+    if ! is_comment_synced "$cr_key"; then
+      local cr_body="**Close reason:** ${close_reason}
+
+---
+*Synced from beads \`${beads_id}\`*"
+      echo "  Posting close_reason as comment..."
+      if [[ "$DRY_RUN" == "true" ]]; then
+        echo "  [DRY RUN] Would post close_reason comment"
+      else
+        local cr_url
+        cr_url=$(gh issue comment "$gh_number" \
+          --repo "$GITHUB_REPOSITORY" \
+          --body "$cr_body" 2>/dev/null || echo "")
+        if [[ -n "$cr_url" ]]; then
+          mark_comment_synced "$cr_key" "$cr_url"
+          echo "  Posted close_reason comment"
+        else
+          echo "  WARNING: Failed to post close_reason comment"
+        fi
+      fi
+    fi
+  fi
+
+  # Sync each comment in the comments array
+  local comment_count
+  comment_count=$(echo "$issue_json" | jq '.comments // [] | length')
+
+  if [[ "$comment_count" -eq 0 ]]; then
+    return
+  fi
+
+  local i
+  for ((i = 0; i < comment_count; i++)); do
+    local comment_id
+    comment_id=$(echo "$issue_json" | jq -r ".comments[$i].id")
+    local comment_key="${beads_id}:comment:${comment_id}"
+
+    if is_comment_synced "$comment_key"; then
+      continue
+    fi
+
+    local author
+    author=$(echo "$issue_json" | jq -r ".comments[$i].author // \"unknown\"")
+    local text
+    text=$(echo "$issue_json" | jq -r ".comments[$i].text // \"\"")
+    local created_at
+    created_at=$(echo "$issue_json" | jq -r ".comments[$i].created_at // \"\"")
+
+    if [[ -z "$text" ]]; then
+      continue
+    fi
+
+    local comment_body="**${author}** commented"
+    if [[ -n "$created_at" ]]; then
+      comment_body="${comment_body} on ${created_at}"
+    fi
+    comment_body="${comment_body}:
+
+${text}
+
+---
+*Synced from beads \`${beads_id}\` comment #${comment_id}*"
+
+    echo "  Posting comment #${comment_id}..."
+    if [[ "$DRY_RUN" == "true" ]]; then
+      echo "  [DRY RUN] Would post comment #${comment_id}"
+    else
+      local c_url
+      c_url=$(gh issue comment "$gh_number" \
+        --repo "$GITHUB_REPOSITORY" \
+        --body "$comment_body" 2>/dev/null || echo "")
+      if [[ -n "$c_url" ]]; then
+        mark_comment_synced "$comment_key" "$c_url"
+        echo "  Posted comment #${comment_id}"
+      else
+        echo "  WARNING: Failed to post comment #${comment_id}"
+      fi
+    fi
+  done
 }
 
 # ── Project board helpers ────────────────────────────────────────────────
@@ -187,6 +303,31 @@ update_project_item_status() {
   fi
 }
 
+# ── Issue reader (supports both formats) ─────────────────────────────────
+
+# Collects all issues as JSON lines into a temp file, regardless of storage format
+collect_issues() {
+  local outfile="$1"
+
+  if [[ -d "$ISSUES_DIR" ]] && ls "$ISSUES_DIR"/*.json >/dev/null 2>&1; then
+    # Preferred: one JSON file per issue under .beads/issues/
+    echo "Reading issues from .beads/issues/ directory..."
+    > "$outfile"
+    for issue_file in "$ISSUES_DIR"/*.json; do
+      [[ -f "$issue_file" ]] || continue
+      # Each file is a single JSON object — output as one line
+      jq -c '.' "$issue_file" >> "$outfile"
+    done
+  elif [[ -f "$ISSUES_JSONL" ]] && [[ -s "$ISSUES_JSONL" ]]; then
+    # Fallback: legacy single JSONL file (only if non-empty)
+    echo "Reading issues from issues.jsonl..."
+    cp "$ISSUES_JSONL" "$outfile"
+  else
+    echo "No beads issues found (checked .beads/issues/ and issues.jsonl)"
+    exit 0
+  fi
+}
+
 # ── Main sync loop ───────────────────────────────────────────────────────
 
 echo "=== Beads → GitHub Sync ==="
@@ -204,9 +345,15 @@ if [[ "$DRY_RUN" == "false" ]]; then
   done
 fi
 
+# Collect issues from whichever format is available
+ISSUES_TMP=$(mktemp)
+trap 'rm -f "$ISSUES_TMP"' EXIT
+collect_issues "$ISSUES_TMP"
+
 CREATED=0
 UPDATED=0
 SKIPPED=0
+COMMENTS_SYNCED=0
 
 while IFS= read -r line; do
   # Skip empty lines
@@ -260,6 +407,9 @@ while IFS= read -r line; do
       fi
     fi
 
+    # Sync comments
+    sync_comments "$beads_id" "$gh_number" "$line"
+
     update_project_item_status "$gh_number" "$column"
     UPDATED=$((UPDATED + 1))
   else
@@ -284,6 +434,9 @@ while IFS= read -r line; do
           gh issue reopen "$gh_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
         fi
       fi
+
+      # Sync comments
+      sync_comments "$beads_id" "$gh_number" "$line"
 
       update_project_item_status "$gh_number" "$column"
       UPDATED=$((UPDATED + 1))
@@ -312,6 +465,9 @@ while IFS= read -r line; do
             gh issue close "$new_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           fi
 
+          # Sync comments
+          sync_comments "$beads_id" "$new_number" "$line"
+
           update_project_item_status "$new_number" "$column"
           CREATED=$((CREATED + 1))
         else
@@ -321,7 +477,7 @@ while IFS= read -r line; do
     fi
   fi
 
-done < "$ISSUES_JSONL"
+done < "$ISSUES_TMP"
 
 echo ""
 echo "=== Sync Complete ==="

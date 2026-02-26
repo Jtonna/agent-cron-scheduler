@@ -141,7 +141,18 @@ impl PidFile {
 ///
 /// - Unix: uses kill(pid, 0) — signal 0 checks existence without sending a
 ///   signal.
-/// - Windows: uses OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION.
+/// - Windows: uses OpenProcess + GetExitCodeProcess. OpenProcess alone is not
+///   sufficient because it can succeed on a dead process if another process
+///   (e.g., the Electron parent or Windows Task Scheduler) still holds a
+///   handle to it, keeping the kernel object alive. We additionally check
+///   GetExitCodeProcess — if the exit code is not STILL_ACTIVE (259), the
+///   process is dead despite the handle being valid.
+///
+///   NOTE: We observed this zombie-handle scenario once in production (PID
+///   33772 reported alive across 20 retries while `taskkill` said "not found").
+///   A reboot cleared the state and we were unable to reproduce it by
+///   repeating the same steps (launch via Electron, task-kill acs.exe, close
+///   Electron, re-run acs start). This fix is applied defensively.
 pub fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -153,15 +164,24 @@ pub fn is_process_alive(pid: u32) -> bool {
     {
         // PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        // STILL_ACTIVE is the exit code for a process that hasn't exited yet.
+        const STILL_ACTIVE: u32 = 259;
 
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if handle.is_null() {
-                false
-            } else {
-                CloseHandle(handle);
-                true
+                return false;
             }
+
+            // Defensive check: even if OpenProcess succeeds, verify the
+            // process hasn't already exited (zombie handle scenario).
+            let mut exit_code: u32 = 0;
+            let result = GetExitCodeProcess(handle, &mut exit_code);
+            CloseHandle(handle);
+
+            // If GetExitCodeProcess fails, assume alive (conservative).
+            // If it succeeds, the process is only alive if exit_code == STILL_ACTIVE.
+            result != 0 && exit_code == STILL_ACTIVE
         }
     }
 }
@@ -173,6 +193,7 @@ extern "system" {
         bInheritHandle: i32,
         dwProcessId: u32,
     ) -> *mut std::ffi::c_void;
+    fn GetExitCodeProcess(hProcess: *mut std::ffi::c_void, lpExitCode: *mut u32) -> i32;
     fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
 }
 
