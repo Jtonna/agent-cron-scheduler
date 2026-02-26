@@ -243,6 +243,7 @@ impl PortFile {
     /// Read the port number from the port file in the given data directory,
     /// returning `None` if the file does not exist or contains invalid data.
     pub fn read(data_dir: &Path) -> Option<u16> {
+        // Data file kept as "acs.port" for backward compatibility with pre-rename installations
         let path = data_dir.join("acs.port");
         Self::read_from(&path)
     }
@@ -934,6 +935,7 @@ pub async fn start_daemon(
 
     // Write the port file now that we know the actual bound port
     let actual_port = listener.local_addr()?.port();
+    // Data file kept as "acs.port" for backward compatibility with pre-rename installations
     let port_file_path = data_dir.join("acs.port");
     let port_file = PortFile::write_to(port_file_path, actual_port)?;
 
