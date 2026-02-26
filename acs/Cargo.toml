@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [[bin]]
-name = "acs"
+name = "agentcronsystem"
 path = "src/main.rs"
 
 [dependencies]
