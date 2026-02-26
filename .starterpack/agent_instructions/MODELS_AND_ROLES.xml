@@ -1,0 +1,103 @@
+<models-and-roles>
+
+  <purpose>
+    Defines how the orchestrator composes teams: model tiers, agent roles, dispatch rules,
+    and team constraints. The orchestrator reads this at session start alongside
+    the manifests.
+  </purpose>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       PREREQUISITES
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <prerequisites>
+    Agent Teams must be enabled in Claude Code settings:
+    { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
+    The install script provisions this automatically in .claude/settings.local.json.
+  </prerequisites>
+
+  <constraints>
+    <rule>Sub-agents cannot spawn other sub-agents</rule>
+    <rule>Only the team lead (orchestrator) can spawn teammates</rule>
+    <rule>Teammates cannot spawn their own teams or sub-agents</rule>
+    <rule>The IMPLEMENTATION phase is the ONLY lifecycle that uses Agent Teams</rule>
+    <rule>All other phases (planning, docs, PR) use standard sub-agents via the Task tool</rule>
+  </constraints>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       MODEL TIERS
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <tiers>
+    <tier name="reasoning" model="opus">Planning, review, debugging, escalation, team coordination.</tier>
+    <tier name="worker" model="sonnet">Standard implementation tasks.</tier>
+    <tier name="light" model="haiku">Simple/mechanical implementation — renames, moves, boilerplate.</tier>
+  </tiers>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       ROLES
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <roles>
+    <role name="orchestrator" tier="reasoning">
+      Never writes code or runs commands. Human interface and lifecycle coordinator.
+      During IMPLEMENTATION, acts as Agent Team lead.
+    </role>
+    <role name="explorer" tier="reasoning">
+      Explores codebase and docs to build context for planning. Read-only.
+    </role>
+    <role name="planner" tier="reasoning">
+      Drafts implementation plans. Assigns complexity ratings (light/standard/complex) per sub-task.
+    </role>
+    <role name="plan-reviewer" tier="reasoning">
+      Reviews plans, raises questions to human via orchestrator.
+    </role>
+    <role name="implementer" tier="worker">
+      Writes code. Escalates to reasoning tier on failure.
+    </role>
+    <role name="light-implementer" tier="light">
+      Boilerplate, renames, simple edits. Escalates to worker then reasoning on failure.
+    </role>
+    <role name="doc-scout" tier="reasoning">
+      Reviews changes against existing docs. Triages: no changes, trivial, or full audit. Read-only.
+    </role>
+    <role name="doc-auditor" tier="reasoning">
+      Deep per-file documentation audit. Produces findings with severity ratings. Read-only.
+    </role>
+    <role name="doc-writer" tier="worker">
+      Applies approved documentation updates. Only modifies doc files.
+    </role>
+    <role name="pr-drafter" tier="reasoning">
+      Compiles commits and diffs to draft PR. Read-only.
+    </role>
+    <role name="submitter" tier="light">
+      Git and GitHub operations: push, create PR, close tickets. No code changes.
+    </role>
+  </roles>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       DISPATCH OVERRIDE
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <dispatch-override>
+    The planner assigns complexity ratings during PLANNING. The orchestrator uses
+    these to select model tier at dispatch:
+
+    <complexity rating="light" dispatches-at="light">Haiku. Boilerplate, renames, simple edits.</complexity>
+    <complexity rating="standard" dispatches-at="worker">Sonnet. Normal implementation.</complexity>
+    <complexity rating="complex" dispatches-at="reasoning">Opus. Known-complex sub-tasks.</complexity>
+
+    The escalation path still applies regardless of starting tier.
+  </dispatch-override>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       CUSTOMIZATION
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <overrides>
+    To change model assignments for a specific project, edit the roles section above.
+    Budget-conscious: set implementer to light with escalation to worker then reasoning.
+    Max quality: set everything to reasoning.
+  </overrides>
+
+</models-and-roles>

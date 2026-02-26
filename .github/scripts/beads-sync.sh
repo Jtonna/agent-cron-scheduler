@@ -28,6 +28,14 @@ GITHUB_MAP="$BEADS_DIR/github-map.json"
 COMMENT_MAP="$BEADS_DIR/comment-map.json"
 DRY_RUN=false
 
+# Branch awareness — defer issue closure on non-default branches
+BEADS_BRANCH="${BEADS_BRANCH:-main}"
+BEADS_DEFAULT_BRANCH="${BEADS_DEFAULT_BRANCH:-main}"
+IS_DEFAULT_BRANCH=false
+if [[ "$BEADS_BRANCH" == "$BEADS_DEFAULT_BRANCH" ]]; then
+  IS_DEFAULT_BRANCH=true
+fi
+
 # Beads status -> GitHub Project column mapping
 declare -A STATUS_MAP=(
   ["open"]="Todo"
@@ -129,6 +137,42 @@ build_labels() {
   esac
 
   echo "$labels"
+}
+
+# Handle close/reopen with branch awareness
+handle_close_reopen() {
+  local gh_number="$1"
+  local status="$2"
+  local beads_id="$3"
+
+  if [[ "$status" == "closed" || "$status" == "completed" ]]; then
+    if [[ "$IS_DEFAULT_BRANCH" == "true" ]]; then
+      # On default branch: actually close and clean up pending-close label
+      gh issue close "$gh_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+      gh issue edit "$gh_number" --repo "$GITHUB_REPOSITORY" --remove-label "pending-close" 2>/dev/null || true
+    else
+      # On feature branch: mark as pending-close, don't actually close
+      gh issue edit "$gh_number" --repo "$GITHUB_REPOSITORY" --add-label "pending-close" 2>/dev/null || true
+      local pc_key="${beads_id}:pending_close:${BEADS_BRANCH}"
+      if ! is_comment_synced "$pc_key"; then
+        local pc_body="Marked as closed on branch \`${BEADS_BRANCH}\` — will close when merged to \`${BEADS_DEFAULT_BRANCH}\`.
+
+---
+*Synced from beads \`${beads_id}\`*"
+        local pc_url
+        pc_url=$(gh issue comment "$gh_number" \
+          --repo "$GITHUB_REPOSITORY" \
+          --body "$pc_body" 2>/dev/null || echo "")
+        if [[ -n "$pc_url" ]]; then
+          mark_comment_synced "$pc_key" "$pc_url"
+        fi
+      fi
+    fi
+  else
+    # Not closed — reopen if needed and clean up pending-close
+    gh issue reopen "$gh_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+    gh issue edit "$gh_number" --repo "$GITHUB_REPOSITORY" --remove-label "pending-close" 2>/dev/null || true
+  fi
 }
 
 # ── Comment sync ─────────────────────────────────────────────────────────
@@ -333,6 +377,7 @@ collect_issues() {
 echo "=== Beads → GitHub Sync ==="
 echo "Repository: $GITHUB_REPOSITORY"
 echo "Dry run: $DRY_RUN"
+echo "Branch: $BEADS_BRANCH (default branch: $IS_DEFAULT_BRANCH)"
 echo ""
 
 # Setup project board if configured
@@ -340,7 +385,7 @@ setup_project_fields
 
 # Ensure labels exist
 if [[ "$DRY_RUN" == "false" ]]; then
-  for label in task epic "priority:critical" "priority:high" "priority:medium" "priority:low"; do
+  for label in task epic "priority:critical" "priority:high" "priority:medium" "priority:low" "pending-close"; do
     gh label create "$label" --repo "$GITHUB_REPOSITORY" --force 2>/dev/null || true
   done
 fi
@@ -399,12 +444,8 @@ while IFS= read -r line; do
         --body "$body" \
         --add-label "$labels" 2>/dev/null || echo "  WARNING: Failed to update issue #$gh_number"
 
-      # Close/reopen based on status
-      if [[ "$status" == "closed" || "$status" == "completed" ]]; then
-        gh issue close "$gh_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
-      else
-        gh issue reopen "$gh_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
-      fi
+      # Close/reopen based on status (branch-aware)
+      handle_close_reopen "$gh_number" "$status" "$beads_id"
     fi
 
     # Sync comments
@@ -428,11 +469,7 @@ while IFS= read -r line; do
           --body "$body" \
           --add-label "$labels" 2>/dev/null || echo "  WARNING: Failed to update issue #$gh_number"
 
-        if [[ "$status" == "closed" || "$status" == "completed" ]]; then
-          gh issue close "$gh_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
-        else
-          gh issue reopen "$gh_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
-        fi
+        handle_close_reopen "$gh_number" "$status" "$beads_id"
       fi
 
       # Sync comments
@@ -460,10 +497,8 @@ while IFS= read -r line; do
           set_gh_issue_number "$beads_id" "$new_number"
           echo "  Created GitHub issue #$new_number"
 
-          # Close if beads status is closed
-          if [[ "$status" == "closed" || "$status" == "completed" ]]; then
-            gh issue close "$new_number" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
-          fi
+          # Close/reopen based on status (branch-aware)
+          handle_close_reopen "$new_number" "$status" "$beads_id"
 
           # Sync comments
           sync_comments "$beads_id" "$new_number" "$line"

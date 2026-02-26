@@ -1,0 +1,134 @@
+<behavior name="create-behavior">
+
+  <summary>
+    Rules, constraints, and XML skeleton template for writing behavior files.
+    Covers self-containment, naming, structural complexity, rule formatting,
+    and how to register new behaviors in the manifest.
+  </summary>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       WHAT A BEHAVIOR IS
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <definition>
+    A behavior defines HOW to do something. It is a self-contained instruction set
+    that an agent can follow without loading any other file. Behaviors are independently
+    loadable, have zero external dependencies, and never reference other behaviors or
+    lifecycles.
+  </definition>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       AUTHORING RULES
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="authoring-rules">
+
+    <rule name="SELF_CONTAINED">
+      A behavior must contain everything the agent needs. Do not reference other
+      behavior files, lifecycle files, or external documents. If information from
+      another source is needed, embed it directly.
+    </rule>
+
+    <rule name="NO_CROSS_REFERENCES">
+      A behavior CANNOT reference, imply, or suggest the use of another behavior
+      or a lifecycle. No uses-behavior, see-lifecycle, load-file, or prose that
+      names or implies another behavior or lifecycle phase. A behavior is a
+      terminal node — completely independent.
+    </rule>
+
+    <rule name="NO_ROLE_ASSIGNMENT">
+      A behavior does not declare who uses it. No applies-to element.
+      Role assignment is the lifecycle's job — the lifecycle decides which
+      behaviors to load for which agents.
+    </rule>
+
+    <rule name="SUMMARY_IS_REQUIRED">
+      Every behavior must have a summary element immediately after the opening tag.
+      Keep it short and concise — a high-level overview of what the behavior covers.
+      Used verbatim in the manifest entry.
+    </rule>
+
+    <rule name="NAMING">
+      File name: kebab-case. Must match the name attribute exactly.
+      Example: behavior name="git-with-beads" → file git-with-beads.xml
+    </rule>
+
+    <rule name="STRUCTURE_COMPLEXITY">
+      Simple (one topic, few rules): flat elements directly under the behavior root.
+      Medium (two or three topics): named section elements.
+      Complex (many topics): comment dividers (═══ style) plus named sections.
+    </rule>
+
+    <rule name="CUSTOM_ELEMENTS">
+      The structural skeleton of a behavior uses fixed element names: behavior (root),
+      summary, definition, section, rule, and template. These are the only elements
+      permitted at the top level (direct children of the behavior root).
+      Within sections and rules, custom child elements are allowed freely for semantic
+      richness — examples: example, chain, tier, when, flow, type. No element definitions
+      are required; custom elements must be self-evident from context.
+    </rule>
+
+    <rule name="RULE_ATTRIBUTES">
+      Rules carry either an order attribute (for sequenced rules that must be followed
+      in order) or a name attribute (for named rules referenced by identifier).
+      Never use both on the same rule element.
+    </rule>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       TEMPLATE
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <template>
+    In this template, [ represents < and ] represents >.
+    Replace all square brackets accordingly when writing the actual file.
+
+    [behavior name="kebab-name"]
+
+      [summary]
+        Short, concise overview of what this behavior covers.
+      [/summary]
+
+      [section name="section-name"]
+        [rule name="RULE_NAME"]
+          Complete instruction an agent can follow without additional context.
+        [/rule]
+      [/section]
+
+    [/behavior]
+
+    Notes:
+    - For simple behaviors, omit section wrappers and place rules/content directly.
+    - For behaviors with templates, use a template element containing the literal content.
+    - For complex behaviors, add comment dividers (═══ style) before major sections.
+    - Custom child elements (e.g., example, chain, flow) are allowed inside section and rule elements.
+  </template>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       MANIFEST REGISTRATION
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="manifest-registration">
+
+    <rule name="REGISTER_BEHAVIORS">
+      After creating a new behavior file, add an entry to BEHAVIORS_MANIFEST.xml
+      inside the behaviors-manifest root element. The entry format is:
+
+        behavior name="{name}" file="behaviors/{name}.xml"
+          Short, concise overview of what the behavior covers.
+        /behavior
+
+      Place the entry after the last existing behavior entry.
+    </rule>
+
+    <rule name="MODIFY_EXISTING">
+      When modifying an existing behavior, update the manifest entry's prose
+      description only if the summary or scope changed materially. If the change
+      is internal (rule wording, template update) and the summary still accurately
+      describes the file, no manifest update is needed.
+    </rule>
+
+  </section>
+
+</behavior>

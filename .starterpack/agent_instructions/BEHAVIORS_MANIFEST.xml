@@ -1,0 +1,61 @@
+<behaviors-manifest>
+
+  <purpose>
+    Index of all available behaviors. The orchestrator reads this at session start to know
+    what behaviors exist. Load individual behavior files on demand when composing agent
+    instructions — do not read all behavior files upfront.
+  </purpose>
+
+  <behavior name="git-with-beads" file="behaviors/git-with-beads.xml">
+    Branching strategies (trunk-based, feature branching), branch naming conventions,
+    commit message format, push discipline, and beads issue-type integration.
+  </behavior>
+
+  <behavior name="escalation" file="behaviors/escalation.xml">
+    Failure protocol for all agent types. Retry rules, structured failure reports,
+    model-tier escalation chains (light → worker → reasoning → human).
+  </behavior>
+
+  <behavior name="scope-enforcement" file="behaviors/scope-enforcement.xml">
+    File scope limits and out-of-scope discovery reporting. Prevents scope creep
+    at both orchestrator and agent level. Agents only modify assigned files.
+  </behavior>
+
+  <behavior name="sub-task-tracking" file="behaviors/sub-task-tracking.xml">
+    Post and update sub-task progress as structured comments on beads tickets.
+    Timeline of progress preserved as sequential comments.
+  </behavior>
+
+  <behavior name="documentation-structure" file="behaviors/documentation-structure.xml">
+    Documentation model for single-project and monorepo layouts. Defines where docs
+    live (README → INDEX → ARCHITECTURE → service docs) and organizing principles.
+  </behavior>
+
+  <behavior name="pr-template" file="behaviors/pr-template.xml">
+    Pull request body template: summary, changes table, AI suggested testing plan,
+    ticket link. Used by the PR drafter to compose the PR description.
+  </behavior>
+
+  <behavior name="human-gate" file="behaviors/human-gate.xml">
+    Defines what a human gate is, the approval protocol (approve/reject/abort),
+    and lifecycle-specific gate contexts defining what to present at each gate.
+  </behavior>
+
+  <behavior name="response-format" file="behaviors/response-format.xml">
+    Standard response format for all agents. Every message prefixed with
+    LIFECYCLE: {name} // {message} so humans can track active phases.
+  </behavior>
+
+  <behavior name="create-behavior" file="behaviors/create-behavior.xml">
+    Rules, constraints, and XML skeleton template for writing behavior files.
+    Covers self-containment, naming, structural complexity, rule formatting,
+    and how to register new behaviors in the manifest.
+  </behavior>
+
+  <behavior name="create-lifecycle" file="behaviors/create-lifecycle.xml">
+    Rules, constraints, and XML skeleton template for writing lifecycle files.
+    Covers behavior referencing, phase structure, actor specificity, flow diagrams,
+    naming conventions, and how to register new lifecycles in the manifest.
+  </behavior>
+
+</behaviors-manifest>

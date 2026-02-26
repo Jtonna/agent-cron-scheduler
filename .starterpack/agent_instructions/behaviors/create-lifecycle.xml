@@ -1,0 +1,148 @@
+<behavior name="create-lifecycle">
+
+  <summary>
+    Rules, constraints, and XML skeleton template for writing lifecycle files.
+    Covers behavior referencing, phase structure, actor specificity, flow diagrams,
+    naming conventions, and how to register new lifecycles in the manifest.
+  </summary>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       WHAT A LIFECYCLE IS
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <definition>
+    A lifecycle defines WHEN to do things. It combines behaviors by referencing them
+    by name and defines a sequence of phases with actors, actions, and transitions.
+    Lifecycles never embed behavior content — they declare which behaviors are needed
+    and the orchestrator loads them separately.
+  </definition>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       AUTHORING RULES
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="authoring-rules">
+
+    <rule name="USES_BEHAVIOR_ONLY">
+      Lifecycles reference behaviors by name only via self-closing uses-behavior tags.
+      They do not embed behavior content. The orchestrator loads the referenced behavior
+      file separately when composing agent instructions.
+    </rule>
+
+    <rule name="PHASE_STRUCTURE">
+      Every phase must have: name attribute, order attribute, actor element (who runs
+      this phase and at what tier), and actions element containing imperative action
+      elements. Transitions use on-success, on-failure, and on-rejection elements.
+      on-rejection is required for every phase that acts as a human approval gate.
+    </rule>
+
+    <rule name="ACTOR_SPECIFICITY">
+      The actor element must name the specific role and tier.
+      Write "Orchestrator launches an Explorer agent (reasoning tier)" — not "an agent".
+      Write "Orchestrator (reasoning tier)" — not just "Orchestrator".
+    </rule>
+
+    <rule name="ASCII_FLOW_REQUIRED">
+      Every lifecycle loop must open with an HTML comment containing an ASCII flow
+      diagram showing phase sequence and loop-back paths.
+    </rule>
+
+    <rule name="ON_DEMAND_LIFECYCLES">
+      Lifecycles that are invoked outside the standard sequence must be registered
+      in LIFECYCLE_MANIFEST.xml with an on-demand="true" attribute on the phase
+      element. They do not appear in the sequence element of the manifest.
+    </rule>
+
+    <rule name="SUMMARY_IS_REQUIRED">
+      Every lifecycle must have a summary element immediately after the opening tag.
+      Keep it short and concise — a high-level overview of what the lifecycle does.
+      Used verbatim in the manifest entry.
+    </rule>
+
+    <rule name="NAMING">
+      File name: kebab-case. Lifecycle name attribute: UPPER_CASE with underscores.
+      Examples:
+        file planning.xml → lifecycle name="PLANNING"
+        file authoring-behaviors-and-lifecycles.xml → lifecycle name="AUTHORING_BEHAVIORS_AND_LIFECYCLES"
+    </rule>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       TEMPLATE
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <template>
+    In this template, [ represents < and ] represents >.
+    Replace all square brackets accordingly when writing the actual file.
+
+    [lifecycle name="UPPER_CASE_NAME"]
+
+      [summary]
+        Short, concise overview of what this lifecycle does.
+      [/summary]
+
+      [uses-behavior name="behavior-name" /]
+      [uses-behavior name="another-behavior" /]
+
+      [loop]
+        [!-- ASCII flow diagram here --]
+
+        [phase name="PHASE_NAME" order="1"]
+          [actor]Who runs this (role and tier)[/actor]
+          [actions]
+            [action]Imperative instruction.[/action]
+          [/actions]
+          [on-success]Next phase.[/on-success]
+          [on-failure]Failure handling.[/on-failure]
+        [/phase]
+
+        [phase name="HANDOFF" order="N"]
+          Description of what comes next or terminal state.
+        [/phase]
+
+      [/loop]
+
+    [/lifecycle]
+
+    Notes:
+    - on-success and on-failure are optional on non-gate phases if the flow is linear.
+    - HANDOFF is always the last phase and describes what follows.
+    - The ASCII diagram must reflect the actual phase sequence including rejection paths.
+  </template>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       MANIFEST REGISTRATION
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="manifest-registration">
+
+    <rule name="REGISTER_LIFECYCLES">
+      After creating a new lifecycle file, add an entry to LIFECYCLE_MANIFEST.xml
+      inside the lifecycle-manifest root element. The entry format is:
+
+      For standard lifecycles (part of the standard sequence):
+        phase name="{NAME}" file="lifecycle/{name}.xml"
+          Short, concise overview of what the lifecycle does.
+          Behaviors: behavior-one, behavior-two
+        /phase
+        Also update the sequence element to include the new phase name.
+
+      For on-demand lifecycles (invoked outside the standard sequence):
+        phase name="{NAME}" file="lifecycle/{name}.xml" on-demand="true"
+          Short, concise overview of what the lifecycle does.
+          Behaviors: behavior-one, behavior-two
+        /phase
+        Do NOT add to the sequence element.
+    </rule>
+
+    <rule name="MODIFY_EXISTING">
+      When modifying an existing lifecycle, update the manifest entry's prose
+      description only if the summary or scope changed materially. If the change
+      is internal (phase wording, action update) and the summary still accurately
+      describes the file, no manifest update is needed.
+    </rule>
+
+  </section>
+
+</behavior>

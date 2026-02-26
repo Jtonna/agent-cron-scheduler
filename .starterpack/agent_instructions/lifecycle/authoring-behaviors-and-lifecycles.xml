@@ -1,0 +1,200 @@
+<lifecycle name="AUTHORING_BEHAVIORS_AND_LIFECYCLES">
+
+  <summary>
+    On-demand lifecycle for creating new behaviors and lifecycles. Guides the agent
+    through drafting each file type, then runs two review passes — one for rule
+    violations, one for contradictions and redundancies. Runs independently of the
+    standard ENTRY → PR sequence.
+  </summary>
+
+  <uses-behavior name="create-behavior" />
+  <uses-behavior name="create-lifecycle" />
+
+  <loop>
+    <!--
+      INTAKE → DRAFT_BEHAVIOR → DRAFT_LIFECYCLE → RULE_REVIEW → RULE_REVIEW_GATE
+                                                                       │
+                                                          rejected → fix violations
+                                                                       │
+                                                                    approved
+                                                                       ↓
+                                                    CONTRADICTION_REVIEW → CONTRADICTION_REVIEW_GATE
+                                                                                  │
+                                                                     rejected → fix issues
+                                                                                  │
+                                                                               approved
+                                                                                  ↓
+                                                                             REGISTER → HANDOFF
+    -->
+
+    <phase name="INTAKE" order="1">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>Understand the human's request: what behavior and lifecycle are being created.</action>
+        <action>
+          Read BEHAVIORS_MANIFEST.xml and LIFECYCLE_MANIFEST.xml to confirm no existing
+          file already covers the same purpose. Flag any overlap to the human.
+        </action>
+        <action>
+          Read 1-2 existing behavior files and 1-2 existing lifecycle files as structural
+          references so the drafter understands the conventions in practice.
+        </action>
+        <action>
+          Produce an intake summary:
+          - What the behavior will define (the "how")
+          - What the lifecycle will orchestrate (the "when" / workflow)
+          - Reference files consulted
+        </action>
+      </actions>
+      <on-success>Proceed to DRAFT_BEHAVIOR.</on-success>
+    </phase>
+
+    <phase name="DRAFT_BEHAVIOR" order="2">
+      <actor>Orchestrator launches a Drafter agent (reasoning tier)</actor>
+      <actions>
+        <action>Receive the intake summary and the create-behavior rules and template.</action>
+        <action>
+          Draft the behavior file following every rule in the create-behavior
+          authoring-rules section. Check each rule for compliance before finalizing.
+        </action>
+        <action>Produce the complete behavior XML file, ready to write to disk.</action>
+      </actions>
+      <on-success>Proceed to DRAFT_LIFECYCLE.</on-success>
+      <on-failure>Report what could not be resolved. Do not proceed.</on-failure>
+    </phase>
+
+    <phase name="DRAFT_LIFECYCLE" order="3">
+      <actor>Orchestrator launches a Drafter agent (reasoning tier)</actor>
+      <actions>
+        <action>Receive the intake summary, the drafted behavior, and the create-lifecycle rules and template.</action>
+        <action>
+          Draft the lifecycle file following every rule in the create-lifecycle
+          authoring-rules section. Check each rule for compliance before finalizing.
+        </action>
+        <action>
+          Draft manifest entries for both files:
+          - BEHAVIORS_MANIFEST.xml entry for the new behavior
+          - LIFECYCLE_MANIFEST.xml entry for the new lifecycle
+        </action>
+        <action>Produce the complete lifecycle XML file and both manifest entries.</action>
+      </actions>
+      <on-success>Proceed to RULE_REVIEW.</on-success>
+      <on-failure>Report what could not be resolved. Do not proceed.</on-failure>
+    </phase>
+
+    <phase name="RULE_REVIEW" order="4">
+      <actor>Orchestrator launches a Reviewer agent (reasoning tier)</actor>
+      <actions>
+        <action>
+          Review the drafted behavior file against every rule in the create-behavior
+          authoring-rules section. For each rule, check compliance and report any violations.
+        </action>
+        <action>
+          Review the drafted lifecycle file against every rule in the create-lifecycle
+          authoring-rules section. For each rule, check compliance and report any violations.
+        </action>
+        <action>
+          Produce a structured violations report:
+          - For each violation: the file, the rule violated, the offending content, and a suggested fix.
+          - If no violations found, state "PASS — no rule violations detected."
+        </action>
+      </actions>
+      <on-success>Present violations report to human at RULE_REVIEW_GATE.</on-success>
+    </phase>
+
+    <phase name="RULE_REVIEW_GATE" order="5">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>
+          Present to the human:
+          - The full behavior file content
+          - The full lifecycle file content
+          - The rule violations report (or PASS confirmation)
+          - The drafted manifest entries
+        </action>
+        <action>State: "BLOCKED — waiting for your approval to proceed."</action>
+        <action>Wait for human response.</action>
+      </actions>
+      <on-success>Proceed to CONTRADICTION_REVIEW.</on-success>
+      <on-rejection>
+        Apply human feedback and any violation fixes → loop back to DRAFT_BEHAVIOR or
+        DRAFT_LIFECYCLE as appropriate, then re-run RULE_REVIEW.
+      </on-rejection>
+    </phase>
+
+    <phase name="CONTRADICTION_REVIEW" order="6">
+      <actor>Orchestrator launches a Reviewer agent (reasoning tier)</actor>
+      <actions>
+        <action>
+          Review both files for contradicting statements:
+          - Does the behavior say one thing and the lifecycle imply something different?
+          - Do any rules within the same file contradict each other?
+          - Are there ambiguous instructions that could be interpreted in conflicting ways?
+        </action>
+        <action>
+          Review both files for redundancies:
+          - Is the same concept explained multiple times in different words?
+          - Are there rules that overlap in scope (one rule is a subset of another)?
+          - Is any instruction repeated across sections unnecessarily?
+        </action>
+        <action>
+          Review both files for unclear or vague language:
+          - Are there instructions that an agent could not follow without guessing?
+          - Are there terms used without definition?
+        </action>
+        <action>
+          Produce a structured findings report:
+          - CONTRADICTIONS: each contradiction with the two conflicting statements and a suggested resolution
+          - REDUNDANCIES: each redundancy with the repeated content and which instance to keep
+          - CLARIFICATIONS: each unclear item with what needs to be made specific
+          - If no issues found, state "PASS — no contradictions, redundancies, or clarity issues detected."
+        </action>
+      </actions>
+      <on-success>Present findings report to human at CONTRADICTION_REVIEW_GATE.</on-success>
+    </phase>
+
+    <phase name="CONTRADICTION_REVIEW_GATE" order="7">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>
+          Present to the human:
+          - The contradiction/redundancy/clarity findings report (or PASS confirmation)
+          - The current state of both files (with any fixes from RULE_REVIEW_GATE applied)
+        </action>
+        <action>State: "BLOCKED — waiting for your approval to proceed."</action>
+        <action>Wait for human response.</action>
+      </actions>
+      <on-success>Proceed to REGISTER.</on-success>
+      <on-rejection>
+        Apply human feedback → revise the affected file(s) → re-run CONTRADICTION_REVIEW.
+      </on-rejection>
+    </phase>
+
+    <phase name="REGISTER" order="8">
+      <actor>Orchestrator launches a Doc Writer agent (worker tier)</actor>
+      <actions>
+        <action>Write the approved behavior file to .starterpack/agent_instructions/behaviors/{name}.xml</action>
+        <action>Write the approved lifecycle file to .starterpack/agent_instructions/lifecycle/{name}.xml</action>
+        <action>Add the approved behavior manifest entry to BEHAVIORS_MANIFEST.xml.</action>
+        <action>Add the approved lifecycle manifest entry to LIFECYCLE_MANIFEST.xml.</action>
+        <action>Verify all four files were written correctly before reporting success.</action>
+      </actions>
+      <on-success>Proceed to HANDOFF.</on-success>
+      <on-failure>Report the write failure. Do not proceed until files are verified.</on-failure>
+    </phase>
+
+    <phase name="HANDOFF" order="9">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>
+          Report to the human:
+          - The behavior file path and one-line summary
+          - The lifecycle file path and one-line summary
+          - Which manifests were updated
+        </action>
+      </actions>
+    </phase>
+
+  </loop>
+
+</lifecycle>

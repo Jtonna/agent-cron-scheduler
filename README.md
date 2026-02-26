@@ -182,9 +182,9 @@ docs/                    # Documentation
 
 ---
 
-## Issue Tracking
+## AI-Assisted Development
 
-ACS uses [beads](https://github.com/steveyegge/beads) for git-backed issue tracking. Issues live in `.beads/issues.jsonl` and are automatically synced to the [GitHub Projects kanban board](https://github.com/Jtonna/agent-cron-scheduler/projects) when merged to `main`. See [docs/beads-sync.md](docs/beads-sync.md) for details.
+This project uses [starterpack](https://github.com/Jtonna/starterpack) to augment AI agent workflows for writing code, documentation, testing, and lifecycle management including GitHub issue tracking via [beads](https://github.com/steveyegge/beads).
 
 ## Documentation
 

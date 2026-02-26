@@ -1,0 +1,120 @@
+<lifecycle name="IMPLEMENTATION">
+
+  <summary>
+    Executes the approved plan. The orchestrator acts as Agent Team lead, spawning
+    implementation teammates and coordinating their work. Uses Agent Teams (experimental).
+  </summary>
+
+  <uses-behavior name="git-with-beads" />
+  <uses-behavior name="escalation" />
+  <uses-behavior name="scope-enforcement" />
+  <uses-behavior name="sub-task-tracking" />
+  <uses-behavior name="human-gate" context="IMPLEMENTATION/IMPLEMENTATION_REVIEW" />
+  <uses-behavior name="response-format" lifecycle="IMPLEMENTATION" />
+
+  <loop>
+    <!--
+      LAUNCH → DISPATCH → MONITOR → EVALUATE → HUMAN_GATE → PUSH → HANDOFF
+                  ▲           │                     │
+                  │  failure   │                     │ rejection
+                  └─ ESCALATE ─┘                     └──────────────┘
+                       │                             (loop back to DISPATCH)
+                       │ stuck → human
+    -->
+
+    <phase name="LAUNCH" order="1">
+      <actor>Orchestrator (reasoning tier, acting as Agent Team lead)</actor>
+      <actions>
+        <action>Read the approved plan, ticket ID, ticket issue_type, and base branch</action>
+        <action>
+          Ensure the ticket's branch exists: create branch {PREFIX}/{ticket-id}
+          off the base branch if not already checked out, or verify it is checked
+          out if it already exists.
+        </action>
+        <action>Create the Agent Team for this implementation cycle</action>
+      </actions>
+      <on-success>Proceed to DISPATCH</on-success>
+    </phase>
+
+    <phase name="DISPATCH" order="2">
+      <actor>Orchestrator (reasoning tier, Team Lead)</actor>
+      <actions>
+        <action>Read the plan's sub-task list and dependency ordering</action>
+        <action>
+          For each sub-task, determine the model tier using the planner's complexity rating
+          (see MODELS_AND_ROLES.xml dispatch-override):
+          - light → haiku
+          - standard → sonnet
+          - complex → opus
+        </action>
+        <action>Spawn independent sub-tasks as teammates in parallel</action>
+        <action>Spawn dependent sub-tasks sequentially after their dependencies complete</action>
+        <action>
+          Each teammate receives:
+          - The sub-task description, files to modify, acceptance criteria
+          - The branch to commit to
+          - The ticket ID for commit messages
+          - The relevant behavior files for their role
+        </action>
+      </actions>
+      <on-success>Proceed to MONITOR</on-success>
+    </phase>
+
+    <phase name="MONITOR" order="3">
+      <actor>Orchestrator (reasoning tier, Team Lead)</actor>
+      <actions>
+        <action>Receive messages from teammates as they complete or encounter issues</action>
+        <action>Track: success/failure, files modified, commits made</action>
+        <action>For failed teammates, collect the structured failure report (escalation behavior)</action>
+      </actions>
+      <on-success>Proceed to EVALUATE</on-success>
+    </phase>
+
+    <phase name="EVALUATE" order="4">
+      <actor>Orchestrator (reasoning tier, Team Lead)</actor>
+      <!-- All evaluation logic is conditional on success or failure; no unconditional actions. -->
+      <actions>
+        <action>Assess the outcome of every teammate: determine whether each sub-task completed successfully or produced a failure report</action>
+        <action>Classify any failures as TECHNICAL (logic bug, command error, test failure, syntax issue) or REQUIREMENTS (impossible plan, unclear spec, wrong direction)</action>
+      </actions>
+      <on-success>All teammates succeeded → proceed to HUMAN_GATE</on-success>
+      <on-failure>
+        Classify the failure as TECHNICAL or REQUIREMENTS.
+        TECHNICAL (logic bug, command error, test failure, syntax issue): spawn an
+        Opus teammate with the failure context. If resolved, loop to DISPATCH for
+        remaining work. If Opus also fails, present to human.
+        REQUIREMENTS (impossible plan, unclear spec, wrong direction): present to
+        the human for clarification.
+      </on-failure>
+    </phase>
+
+    <phase name="HUMAN_GATE" order="5">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>Present implementation results for approval (see human-gate behavior, context: IMPLEMENTATION_REVIEW)</action>
+      </actions>
+      <on-success>Proceed to PUSH</on-success>
+      <on-rejection>Pass feedback to teammates or spawn new teammates → loop to DISPATCH</on-rejection>
+    </phase>
+
+    <phase name="PUSH" order="6">
+      <actor>Orchestrator launches a push agent (light tier)</actor>
+      <actions>
+        <action>Push the branch to remote: git push -u origin {branch-name}</action>
+        <action>Confirm the push succeeded before transitioning</action>
+      </actions>
+      <note>
+        This is the only push during implementation. Teammates never push directly.
+        The push happens after human approval so unapproved work never reaches the remote.
+      </note>
+      <on-success>Proceed to HANDOFF</on-success>
+    </phase>
+
+    <phase name="HANDOFF" order="7">
+      <actor>Orchestrator (reasoning tier, Team Lead)</actor>
+      <on-success>Lifecycle complete. Proceed to DOCS.</on-success>
+    </phase>
+
+  </loop>
+
+</lifecycle>

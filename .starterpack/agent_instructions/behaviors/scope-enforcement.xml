@@ -1,0 +1,34 @@
+<behavior name="scope-enforcement">
+
+  <summary>
+    Rules for maintaining scope boundaries and preventing scope creep.
+    Every change must be tied to a beads ticket. Agents must only modify files assigned to them.
+  </summary>
+
+  <section name="orchestrator-level">
+    <rule name="NO_UNTRACKED_CHANGES">
+      Every change to the codebase must be tied to a beads ticket. If an agent discovers
+      something that needs fixing but is outside the current ticket's scope, report it to
+      the orchestrator — never fix it silently.
+    </rule>
+    <rule name="PUSH_BACK_ON_SCOPE_CREEP">
+      If the human requests work outside the current ticket during a lifecycle:
+      1. Acknowledge the request
+      2. Explain that the current ticket is in progress
+      3. Offer to create a new ticket for the additional work
+      4. Continue with the current ticket unless the human explicitly overrides
+    </rule>
+  </section>
+
+  <section name="agent-level">
+    <rule name="AGENT_SCOPE_ENFORCEMENT">
+      Implementation agents (teammates) must only modify files listed in their sub-task
+      assignment. If an agent discovers that additional files need changes:
+      1. Do NOT modify the out-of-scope files
+      2. Complete the in-scope work
+      3. Report the out-of-scope discovery in the completion message to the orchestrator
+      4. The orchestrator decides whether to create a follow-up sub-task or a new ticket
+    </rule>
+  </section>
+
+</behavior>

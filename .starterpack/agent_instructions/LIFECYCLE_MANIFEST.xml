@@ -1,0 +1,64 @@
+<lifecycle-manifest>
+
+  <purpose>
+    Index of all lifecycle phases. The orchestrator reads this at session start to know
+    the execution sequence. Load individual lifecycle files when entering each phase.
+  </purpose>
+
+  <sequence>ENTRY → PLANNING → IMPLEMENTATION → DOCS → PR</sequence>
+
+  <global-behaviors>
+    These behaviors are used by ALL lifecycle phases:
+    - human-gate: Defines the approval protocol at every HUMAN_GATE
+    - response-format: Every response prefixed with LIFECYCLE: {name} // {message}
+  </global-behaviors>
+
+  <rules>
+    <rule>Never skip a phase</rule>
+    <rule>Never combine phases</rule>
+    <rule>Auto-approving gates does not permit skipping phases — every phase must execute even when gates are pre-approved (see human-gate autonomous-mode)</rule>
+    <rule>Every HUMAN_GATE is a hard block — do not proceed until the human approves</rule>
+    <rule>If any phase fails and cannot be resolved via escalation, stop and ask the human</rule>
+    <rule>Every child ticket runs the full lifecycle: PLANNING → IMPLEMENTATION → DOCS → PR</rule>
+    <rule>When using a feature branch, a final PR merges the feature branch to main after all children complete</rule>
+  </rules>
+
+  <phase name="ENTRY" file="lifecycle/entry.xml">
+    Routes incoming work. Three entry points: existing ticket, spec file, or ad-hoc request.
+    Creates tickets if needed. Selects base branch (main or feature branch). Creates initial branch and pushes beads metadata.
+    Behaviors: git-with-beads, scope-enforcement, human-gate, response-format
+  </phase>
+
+  <phase name="PLANNING" file="lifecycle/planning.xml">
+    Explores codebase and docs. Drafts implementation plan with sub-tasks and complexity ratings.
+    Automated plan review. Human approval gate before any code is written.
+    Behaviors: sub-task-tracking, human-gate, response-format
+  </phase>
+
+  <phase name="IMPLEMENTATION" file="lifecycle/implementation.xml">
+    Ensures ticket branch exists. Spawns implementation teammates via Agent Teams. Monitors progress.
+    Escalates failures (technical → Opus, requirements → human). Human approval gate.
+    Pushes to remote after approval.
+    Behaviors: git-with-beads, escalation, scope-enforcement, sub-task-tracking, human-gate, response-format
+  </phase>
+
+  <phase name="DOCS" file="lifecycle/docs.xml">
+    Scouts documentation for staleness. Audits affected files if needed.
+    Human picks which updates to apply. Doc writers apply approved changes.
+    Behaviors: documentation-structure, human-gate, response-format
+  </phase>
+
+  <phase name="PR" file="lifecycle/pr.xml">
+    Closes ticket, pushes, and creates pull request for human review.
+    Handles next-child loop and final feature-branch PR.
+    Behaviors: pr-template, response-format
+  </phase>
+
+  <phase name="AUTHORING_BEHAVIORS_AND_LIFECYCLES" file="lifecycle/authoring-behaviors-and-lifecycles.xml" on-demand="true">
+    On-demand lifecycle for creating new behaviors and lifecycles. Drafts each file
+    with strict rules, then reviews for rule violations, then reviews for contradictions
+    and redundancies.
+    Behaviors: create-behavior, create-lifecycle
+  </phase>
+
+</lifecycle-manifest>

@@ -1,0 +1,67 @@
+<behavior name="human-gate">
+
+  <summary>
+    Defines what a human gate is and how to present information for human approval.
+  </summary>
+
+  <definition>
+    A HUMAN_GATE is a hard block. The orchestrator MUST stop and wait
+    for explicit human approval before proceeding. No assumptions. No skipping.
+    The human's decision is final — approve, reject with feedback, or abort.
+  </definition>
+
+  <section name="protocol">
+    <rule order="1">Present the gate summary to the human.</rule>
+    <rule order="2">Clearly state: "BLOCKED — waiting for your approval to proceed."</rule>
+    <rule order="3">Wait for human response. Do not take any action until they respond.</rule>
+    <rule order="4">
+      On APPROVE: proceed with the work that was pending approval.
+      On REJECT: pass feedback to the relevant agents and loop back to revise.
+      On ABORT: stop entirely, report status, and preserve all work done so far.
+    </rule>
+  </section>
+
+  <section name="autonomous-mode">
+    <summary>
+      When the human requests autonomous operation (e.g., "approve everything",
+      "run without me", "bypass gates"), the orchestrator enters autonomous mode.
+      Autonomous mode auto-approves HUMAN_GATE decisions — it does NOT skip
+      lifecycle phases. Every phase still executes fully.
+    </summary>
+
+    <activation>
+      <rule order="1">
+        When the human signals autonomous intent, the orchestrator MUST clarify
+        scope BEFORE proceeding. Present the following questions:
+      </rule>
+      <rule order="2">
+        Scope — which tickets to complete autonomously:
+        - Single ticket (current ticket only)
+        - All remaining tickets in the epic
+        - Custom selection
+      </rule>
+      <rule order="3">
+        PR handling — what to do when a PR is created:
+        - Create PR only (human merges later)
+        - Create and merge each PR automatically
+      </rule>
+      <rule order="4">
+        Docs phase — how to handle documentation:
+        - Run docs phase normally (scout, audit if needed, auto-approve changes)
+        - Skip docs phase entirely
+      </rule>
+      <rule order="5">
+        Only proceed once the human confirms the scope. Do not assume defaults.
+      </rule>
+    </activation>
+
+    <rules>
+      <rule>Auto-approve ONLY affects gate decisions — phases still execute fully</rule>
+      <rule>The SCOUT phase in DOCS must still run to produce a triage outcome, even if the gate is auto-approved</rule>
+      <rule>If a phase fails, exit autonomous mode and escalate to the human</rule>
+      <rule>Log every auto-approved gate in the status output so the human can review later</rule>
+      <rule>The human can revoke autonomous mode at any time by sending a message</rule>
+    </rules>
+  </section>
+
+</behavior>

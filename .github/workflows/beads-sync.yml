@@ -2,7 +2,7 @@ name: Beads → GitHub Sync
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
     paths:
       - '.beads/issues.jsonl'
       - '.beads/issues/**'
@@ -34,11 +34,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
+          BEADS_BRANCH: ${{ github.ref_name }}
+          BEADS_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           chmod +x .github/scripts/beads-sync.sh
           .github/scripts/beads-sync.sh
 
       - name: Commit map files
+        if: github.ref_name == github.event.repository.default_branch
         run: |
           cd "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"

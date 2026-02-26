@@ -1,0 +1,89 @@
+<lifecycle name="DOCS">
+
+  <summary>
+    Ensures documentation stays consistent with implementation changes.
+    Runs after every implementation cycle. May skip if no doc updates are needed.
+  </summary>
+
+  <uses-behavior name="documentation-structure" />
+  <uses-behavior name="human-gate" context="DOCS/DOC_REVIEW" />
+  <uses-behavior name="response-format" lifecycle="DOCS" />
+
+  <loop>
+    <!--
+      SCOUT → (no changes needed) ──────────────────────────────→ HANDOFF
+            → (trivial change)    ──→ HUMAN_GATE → APPLY ───────→ HANDOFF
+            → (changes needed)    ──→ AUDIT → HUMAN_GATE → APPLY → HANDOFF
+                                                    │
+                                                    │ rejected → AUDIT
+                                                    └──────────┘
+    -->
+
+    <phase name="SCOUT" order="1">
+      <actor>Orchestrator launches a Doc Scout agent (reasoning tier)</actor>
+      <actions>
+        <action>Review the git diff of changes made during implementation</action>
+        <action>Compare against existing documentation files</action>
+        <action>
+          Triage into one of three outcomes:
+          - NO_CHANGES_NEEDED: docs are already consistent → skip to HANDOFF
+          - TRIVIAL_CHANGE: minor wording fix, typo → skip AUDIT, go to HUMAN_GATE with the fix
+          - CHANGES_NEEDED: significant doc updates required → proceed to AUDIT
+        </action>
+      </actions>
+      <on-success>
+        Route based on triage outcome:
+        NO_CHANGES_NEEDED → HANDOFF;
+        TRIVIAL_CHANGE → HUMAN_GATE;
+        CHANGES_NEEDED → AUDIT
+      </on-success>
+      <on-failure>Stop and report to the orchestrator — cannot proceed without a triage outcome</on-failure>
+    </phase>
+
+    <phase name="AUDIT" order="2">
+      <actor>Orchestrator launches Doc Auditor agents (reasoning tier, one per affected file)</actor>
+      <actions>
+        <action>Each auditor reviews one documentation file against the implementation changes</action>
+        <action>
+          Produce structured findings:
+          - What needs to change
+          - Severity (must-fix, should-fix, nice-to-have)
+          - Suggested fix
+        </action>
+      </actions>
+      <on-success>Proceed to HUMAN_GATE</on-success>
+      <on-failure>Stop and report findings to the orchestrator</on-failure>
+    </phase>
+
+    <phase name="HUMAN_GATE" order="3">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>Present doc findings for approval (see human-gate behavior, context: DOC_REVIEW)</action>
+      </actions>
+      <on-success>Proceed to APPLY</on-success>
+      <on-rejection>Feed corrections back to Doc Auditors → loop to AUDIT</on-rejection>
+      <on-failure>Report the failure to the human. Do not proceed.</on-failure>
+    </phase>
+
+    <phase name="APPLY" order="4">
+      <actor>Orchestrator launches Doc Writer agents (worker tier, one per approved file)</actor>
+      <actions>
+        <action>Apply the human-approved documentation updates</action>
+        <action>Commit changes with the ticket ID prefix</action>
+      </actions>
+      <on-success>Proceed to HANDOFF</on-success>
+      <on-failure>Stop and report to the orchestrator</on-failure>
+    </phase>
+
+    <phase name="HANDOFF" order="5">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>Proceed to PR.</action>
+      </actions>
+      <on-success>Lifecycle complete. Proceed to PR.</on-success>
+      <on-failure>Report the failure to the human. Do not proceed.</on-failure>
+    </phase>
+
+  </loop>
+
+</lifecycle>
