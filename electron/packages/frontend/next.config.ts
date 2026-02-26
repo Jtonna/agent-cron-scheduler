@@ -1,32 +1,25 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Only enable static export for production builds.
-  // In dev mode, this must be off so dynamic routes work without being
-  // pre-listed in generateStaticParams().
-  ...(process.env.NODE_ENV === "production"
-    ? { output: "export" }
-    : {}),
+  // Use standalone mode for a self-contained Node.js server.
+  // This works in both dev and production, eliminating the need for
+  // generateStaticParams placeholders.
+  output: "standalone",
 
-  // Rewrites proxy API calls to the ACS daemon during local dev.
-  // Must be excluded in production because Next.js does not allow rewrites
-  // alongside output: "export".
-  ...(process.env.NODE_ENV !== "production"
-    ? {
-        async rewrites() {
-          return [
-            {
-              source: "/api/:path*",
-              destination: "http://127.0.0.1:8377/api/:path*",
-            },
-            {
-              source: "/health",
-              destination: "http://127.0.0.1:8377/health",
-            },
-          ];
-        },
-      }
-    : {}),
+  // Rewrites proxy API calls to the ACS daemon.
+  // Unlike static export, standalone mode supports rewrites in all environments.
+  async rewrites() {
+    return [
+      {
+        source: "/api/:path*",
+        destination: "http://127.0.0.1:8377/api/:path*",
+      },
+      {
+        source: "/health",
+        destination: "http://127.0.0.1:8377/health",
+      },
+    ];
+  },
 };
 
 export default nextConfig;
