@@ -5,10 +5,10 @@ Complete reference for the Agent Cron Scheduler command-line interface.
 ## Synopsis
 
 ```
-acs [OPTIONS] <COMMAND>
+agentcronsystem [OPTIONS] <COMMAND>
 ```
 
-ACS is a cross-platform cron scheduler daemon. Most commands communicate with the daemon over HTTP. The exception is `acs start`, which either runs the daemon directly (foreground mode) or spawns it as a background process. If no subcommand is provided, the help text is printed.
+ACS is a cross-platform cron scheduler daemon. Most commands communicate with the daemon over HTTP. The exception is `agentcronsystem start`, which either runs the daemon directly (foreground mode) or spawns it as a background process. If no subcommand is provided, the help text is printed.
 
 ## Global Options
 
@@ -26,25 +26,25 @@ These options are available on every subcommand. They can appear before or after
 
 ```sh
 # Connect to a daemon on a different host
-acs --host 192.168.1.100 --port 9999 status
+agentcronsystem --host 192.168.1.100 --port 9999 status
 
 # Global options can also appear after the subcommand
-acs status --host 10.0.0.1 --port 1234
+agentcronsystem status --host 10.0.0.1 --port 1234
 
 # Enable verbose output
-acs -v status
+agentcronsystem -v status
 ```
 
 ---
 
 ## Daemon Commands
 
-### `acs start`
+### `agentcronsystem start`
 
 Start the ACS daemon. By default the daemon is spawned as a background process and a system service is registered for auto-start at logon. If the daemon is already running, the command prints a message and exits successfully.
 
 ```
-acs start [OPTIONS]
+agentcronsystem start [OPTIONS]
 ```
 
 #### Options
@@ -58,7 +58,7 @@ acs start [OPTIONS]
 
 #### Behavior
 
-- **Background mode** (default): Registers a system service for auto-start and spawns the daemon, then polls `/health` for up to 3 seconds to confirm the daemon is responsive. The background process is started with `acs start --foreground` only — `--config`, `--port`, and `--data-dir` are **not forwarded**. Use config files or environment variables to pass configuration to the background daemon (see [Configuration](configuration.md)).
+- **Background mode** (default): Registers a system service for auto-start and spawns the daemon, then polls `/health` for up to 3 seconds to confirm the daemon is responsive. The background process is started with `agentcronsystem start --foreground` only — `--config`, `--port`, and `--data-dir` are **not forwarded**. Use config files or environment variables to pass configuration to the background daemon (see [Configuration](configuration.md)).
 - **Foreground mode** (`-f`): Runs the daemon directly in the current process, blocking until terminated. CLI flags `--config`, `--port`, and `--data-dir` are applied in this mode.
 
 See [Service Registration](service-registration.md) for platform-specific details on how the daemon is started and managed.
@@ -74,26 +74,26 @@ See [Service Registration](service-registration.md) for platform-specific detail
 
 ```sh
 # Start the daemon in the background
-acs start
+agentcronsystem start
 
 # Start in foreground mode with a custom config
-acs start -f -c /etc/acs/config.json
+agentcronsystem start -f -c /etc/acs/config.json
 
 # Start on a custom port with a specific data directory
-acs start -p 9000 --data-dir /var/acs
+agentcronsystem start -p 9000 --data-dir /var/acs
 
 # Combine short flags
-acs start -f -c /etc/acs.json -p 8080
+agentcronsystem start -f -c /etc/acs.json -p 8080
 ```
 
 ---
 
-### `acs stop`
+### `agentcronsystem stop`
 
 Stop the running ACS daemon. By default, sends a graceful shutdown request via the HTTP API (`POST /api/shutdown`). If the API is unreachable and a system service is registered, the service is stopped instead.
 
 ```
-acs stop [OPTIONS]
+agentcronsystem stop [OPTIONS]
 ```
 
 #### Options
@@ -118,20 +118,20 @@ acs stop [OPTIONS]
 
 ```sh
 # Graceful shutdown
-acs stop
+agentcronsystem stop
 
 # Force kill the daemon
-acs stop --force
+agentcronsystem stop --force
 ```
 
 ---
 
-### `acs status`
+### `agentcronsystem status`
 
 Show the current status of the ACS daemon by querying the `/health` endpoint.
 
 ```
-acs status
+agentcronsystem status
 ```
 
 #### Options
@@ -159,23 +159,23 @@ This command has no subcommand-specific options. Use the global `--verbose` (`-v
 
 ```sh
 # Basic status check
-acs status
+agentcronsystem status
 
 # Verbose status with raw JSON
-acs -v status
+agentcronsystem -v status
 
 # Check status of a remote daemon
-acs --host 192.168.1.50 status
+agentcronsystem --host 192.168.1.50 status
 ```
 
 ---
 
-### `acs restart`
+### `agentcronsystem restart`
 
 Restart the daemon by sending a `POST /api/restart` request. After the restart is initiated, the CLI polls `/health` for up to 10 seconds waiting for the new process to respond.
 
 ```
-acs restart
+agentcronsystem restart
 ```
 
 #### Options
@@ -192,17 +192,17 @@ This command has no subcommand-specific options.
 #### Examples
 
 ```sh
-acs restart
+agentcronsystem restart
 ```
 
 ---
 
-### `acs uninstall`
+### `agentcronsystem uninstall`
 
 Uninstall the ACS service. This stops the daemon (gracefully via API, falling back to ending the system task), removes the system service registration, and optionally purges all data.
 
 ```
-acs uninstall [OPTIONS]
+agentcronsystem uninstall [OPTIONS]
 ```
 
 #### Options
@@ -225,22 +225,22 @@ Stops the daemon, removes the system service registration, and optionally purges
 
 ```sh
 # Uninstall service registration only
-acs uninstall
+agentcronsystem uninstall
 
 # Uninstall and delete all data
-acs uninstall --purge
+agentcronsystem uninstall --purge
 ```
 
 ---
 
 ## Job Commands
 
-### `acs add`
+### `agentcronsystem add`
 
 Create a new scheduled job. Exactly one of `--cmd` or `--script` must be specified.
 
 ```
-acs add [OPTIONS] --name <NAME> --schedule <SCHEDULE>
+agentcronsystem add [OPTIONS] --name <NAME> --schedule <SCHEDULE>
 ```
 
 #### Options
@@ -270,32 +270,32 @@ The schedule uses standard 5-field cron syntax. See [Job Management](job-managem
 
 ```sh
 # Add a job that runs every minute
-acs add -n heartbeat -s "* * * * *" -c "echo alive"
+agentcronsystem add -n heartbeat -s "* * * * *" -c "echo alive"
 
 # Add a daily backup job at 2:30 AM Eastern
-acs add -n backup -s "30 2 * * *" -c "/usr/local/bin/backup.sh" --timezone America/New_York
+agentcronsystem add -n backup -s "30 2 * * *" -c "/usr/local/bin/backup.sh" --timezone America/New_York
 
 # Add a job with environment variables
-acs add -n deploy -s "0 4 * * 1" -c "deploy.sh" -e "ENV=production" -e "VERBOSE=true"
+agentcronsystem add -n deploy -s "0 4 * * 1" -c "deploy.sh" -e "ENV=production" -e "VERBOSE=true"
 
 # Add a script-based job
-acs add -n cleanup -s "0 * * * *" --script cleanup.sh
+agentcronsystem add -n cleanup -s "0 * * * *" --script cleanup.sh
 
 # Add a job in disabled state with a working directory
-acs add -n build -s "*/15 * * * *" -c "make build" --working-dir /home/user/project --disabled
+agentcronsystem add -n build -s "*/15 * * * *" -c "make build" --working-dir /home/user/project --disabled
 
 # Add a job with environment logging enabled
-acs add -n audit -s "0 0 * * *" -c "run-audit.sh" --log-env
+agentcronsystem add -n audit -s "0 0 * * *" -c "run-audit.sh" --log-env
 ```
 
 ---
 
-### `acs remove`
+### `agentcronsystem remove`
 
 Remove a scheduled job by name or UUID. Prompts for confirmation unless `--yes` is provided.
 
 ```
-acs remove [OPTIONS] <JOB>
+agentcronsystem remove [OPTIONS] <JOB>
 ```
 
 #### Arguments
@@ -321,23 +321,23 @@ acs remove [OPTIONS] <JOB>
 
 ```sh
 # Remove a job (interactive confirmation)
-acs remove heartbeat
+agentcronsystem remove heartbeat
 
 # Remove without confirmation
-acs remove heartbeat --yes
+agentcronsystem remove heartbeat --yes
 
 # Remove by UUID
-acs remove 550e8400-e29b-41d4-a716-446655440000 --yes
+agentcronsystem remove 550e8400-e29b-41d4-a716-446655440000 --yes
 ```
 
 ---
 
-### `acs list`
+### `agentcronsystem list`
 
 List all scheduled jobs. By default shows all jobs in a table format.
 
 ```
-acs list [OPTIONS]
+agentcronsystem list [OPTIONS]
 ```
 
 #### Options
@@ -370,26 +370,26 @@ acs list [OPTIONS]
 
 ```sh
 # List all jobs
-acs list
+agentcronsystem list
 
 # List only enabled jobs
-acs list --enabled
+agentcronsystem list --enabled
 
 # List only disabled jobs
-acs list --disabled
+agentcronsystem list --disabled
 
 # Output as JSON for scripting
-acs list --json
+agentcronsystem list --json
 ```
 
 ---
 
-### `acs enable`
+### `agentcronsystem enable`
 
 Enable a disabled scheduled job so it resumes running on its cron schedule.
 
 ```
-acs enable <JOB>
+agentcronsystem enable <JOB>
 ```
 
 #### Arguments
@@ -408,18 +408,18 @@ acs enable <JOB>
 #### Examples
 
 ```sh
-acs enable backup
-acs enable 550e8400-e29b-41d4-a716-446655440000
+agentcronsystem enable backup
+agentcronsystem enable 550e8400-e29b-41d4-a716-446655440000
 ```
 
 ---
 
-### `acs disable`
+### `agentcronsystem disable`
 
 Disable a scheduled job so it stops running on its cron schedule. The job is not deleted and can be re-enabled later.
 
 ```
-acs disable <JOB>
+agentcronsystem disable <JOB>
 ```
 
 #### Arguments
@@ -438,18 +438,18 @@ acs disable <JOB>
 #### Examples
 
 ```sh
-acs disable backup
-acs disable 550e8400-e29b-41d4-a716-446655440000
+agentcronsystem disable backup
+agentcronsystem disable 550e8400-e29b-41d4-a716-446655440000
 ```
 
 ---
 
-### `acs trigger`
+### `agentcronsystem trigger`
 
 Manually trigger an immediate run of a job, regardless of its cron schedule. Optionally provide per-invocation parameters that override job defaults for a single run.
 
 ```
-acs trigger [OPTIONS] <JOB>
+agentcronsystem trigger [OPTIONS] <JOB>
 ```
 
 #### Arguments
@@ -486,7 +486,7 @@ Without `--follow`, the command prints:
 Job 'backup' triggered (run: 01941234-bbbb-7abc-def0-123456789abc).
 ```
 
-The run ID can be used with `acs logs <job> --run <run_id>` to view the output of this specific run.
+The run ID can be used with `agentcronsystem logs <job> --run <run_id>` to view the output of this specific run.
 
 #### Exit Codes
 
@@ -499,34 +499,34 @@ The run ID can be used with `acs logs <job> --run <run_id>` to view the output o
 
 ```sh
 # Trigger a job
-acs trigger backup
+agentcronsystem trigger backup
 
 # Trigger and watch output in real time
-acs trigger backup --follow
+agentcronsystem trigger backup --follow
 
 # Trigger with extra arguments
-acs trigger backup --args="--full --verbose"
+agentcronsystem trigger backup --args="--full --verbose"
 
 # Trigger with per-run environment variables
-acs trigger deploy -e "ENV=staging" -e "DRY_RUN=true"
+agentcronsystem trigger deploy -e "ENV=staging" -e "DRY_RUN=true"
 
 # Trigger with stdin input
-acs trigger my-job --input "yes"
+agentcronsystem trigger my-job --input "yes"
 
 # Combine all trigger parameters
-acs trigger backup --args="--full" -e "MODE=manual" --input "confirm" --follow
+agentcronsystem trigger backup --args="--full" -e "MODE=manual" --input "confirm" --follow
 ```
 
 ---
 
 ## Log Commands
 
-### `acs logs`
+### `agentcronsystem logs`
 
 View run history and log output for a specific job.
 
 ```
-acs logs [OPTIONS] <JOB>
+agentcronsystem logs [OPTIONS] <JOB>
 ```
 
 #### Arguments
@@ -572,25 +572,25 @@ acs logs [OPTIONS] <JOB>
 
 ```sh
 # List recent runs for a job (default: last 20)
-acs logs backup
+agentcronsystem logs backup
 
 # List the last 5 runs
-acs logs backup --last 5
+agentcronsystem logs backup --last 5
 
 # View log output for a specific run
-acs logs backup --run 550e8400-e29b-41d4-a716-446655440000
+agentcronsystem logs backup --run 550e8400-e29b-41d4-a716-446655440000
 
 # View only the last 100 lines of a run's log
-acs logs backup --run 550e8400-e29b-41d4-a716-446655440000 --tail 100
+agentcronsystem logs backup --run 550e8400-e29b-41d4-a716-446655440000 --tail 100
 
 # Follow live output for a job
-acs logs backup --follow
+agentcronsystem logs backup --follow
 
 # Output run list as JSON
-acs logs backup --json
+agentcronsystem logs backup --json
 
 # Output a specific run's log as JSON
-acs logs backup --run 550e8400-e29b-41d4-a716-446655440000 --json
+agentcronsystem logs backup --run 550e8400-e29b-41d4-a716-446655440000 --json
 ```
 
 ---
@@ -600,11 +600,11 @@ acs logs backup --run 550e8400-e29b-41d4-a716-446655440000 --json
 When the daemon is not reachable, all commands that communicate with it display the following error message:
 
 ```
-Could not connect to daemon at <host>:<port>. Is it running? (try: acs start)
+Could not connect to daemon at <host>:<port>. Is it running? (try: agentcronsystem start)
 ```
 
-Use `acs start` to start the daemon, or check that the `--host` and `--port` values match the running daemon's configuration.
+Use `agentcronsystem start` to start the daemon, or check that the `--host` and `--port` values match the running daemon's configuration.
 
 ## Default Daemon Address
 
-The default daemon address is `http://127.0.0.1:8377`. Override this with the global `--host` and `--port` options, or use the `--port` (`-p`) flag on `acs start` to launch the daemon on a different port.
+The default daemon address is `http://127.0.0.1:8377`. Override this with the global `--host` and `--port` options, or use the `--port` (`-p`) flag on `agentcronsystem start` to launch the daemon on a different port.

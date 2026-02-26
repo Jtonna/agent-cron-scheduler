@@ -22,32 +22,32 @@ Download the latest binary for your platform from the [Releases](https://github.
 After installing, verify with:
 
 ```sh
-acs --version
+agentcronsystem --version
 ```
 
 ## Quick Start
 
 ```sh
 # Start the daemon (registers as a system service, runs in background)
-acs start
+agentcronsystem start
 
 # Add a job that runs every minute
-acs add -n "hello" -s "* * * * *" -c "echo hello world"
+agentcronsystem add -n "hello" -s "* * * * *" -c "echo hello world"
 
 # Trigger it immediately and follow the output
-acs trigger hello --follow
+agentcronsystem trigger hello --follow
 
 # List all jobs
-acs list
+agentcronsystem list
 
 # Check daemon status
-acs status
+agentcronsystem status
 
 # View recent runs for a job
-acs logs hello
+agentcronsystem logs hello
 
 # Stop the daemon
-acs stop
+agentcronsystem stop
 ```
 
 The daemon starts an HTTP server on `127.0.0.1:8377`. Once running, you can also interact via the REST API:

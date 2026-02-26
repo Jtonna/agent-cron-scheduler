@@ -22,18 +22,18 @@ If the recorded PID is still alive, ACS waits up to 10 seconds (20 retries at 50
 
 **Solution:**
 1. Verify the old process is truly not running:
-   - Windows: `tasklist | findstr acs`
-   - Unix: `ps aux | grep acs`
+   - Windows: `tasklist | findstr agentcronsystem`
+   - Unix: `ps aux | grep agentcronsystem`
 2. Manually delete the PID file:
    - Windows: `del "%LOCALAPPDATA%\agent-cron-scheduler\acs.pid"`
    - macOS: `rm ~/Library/Application\ Support/agent-cron-scheduler/acs.pid`
    - Linux: `rm ~/.local/share/agent-cron-scheduler/acs.pid`
-3. Restart the daemon: `acs start`
+3. Restart the daemon: `agentcronsystem start`
 
 Alternatively, use force stop which handles PID file cleanup automatically:
 ```
-acs stop --force
-acs start
+agentcronsystem stop --force
+agentcronsystem start
 ```
 
 ### Port Already in Use
@@ -46,9 +46,9 @@ acs start
 1. Check what is using the port:
    - Windows: `netstat -ano | findstr :8377`
    - Unix: `lsof -i :8377` or `ss -tlnp | grep 8377`
-2. If another ACS instance is running, stop it: `acs stop`
+2. If another ACS instance is running, stop it: `agentcronsystem stop`
 3. If a different process is using the port, change the ACS port:
-   - Via CLI flag: `acs start --port 9000`
+   - Via CLI flag: `agentcronsystem start --port 9000`
    - Via config file: Set `"port": 9000` in `config.json`
    - Via the `acs.port` file: Check `{data_dir}/acs.port` to see the current port
 
@@ -73,7 +73,7 @@ ACS registers itself as a user-level service for auto-start at login. See [Servi
 
 ### Windows (Task Scheduler)
 
-**Symptom:** `Warning: Could not register auto-start` when running `acs start`.
+**Symptom:** `Warning: Could not register auto-start` when running `agentcronsystem start`.
 
 **Possible causes:**
 - Insufficient permissions. Try running your terminal as Administrator.
@@ -113,11 +113,11 @@ ACS registers itself as a user-level service for auto-start at login. See [Servi
 **Symptom:** A job exists but never executes.
 
 **Checklist:**
-1. **Is the job enabled?** Check with `acs list` or the web UI. Disabled jobs are skipped by the scheduler.
+1. **Is the job enabled?** Check with `agentcronsystem list` or the web UI. Disabled jobs are skipped by the scheduler.
 2. **Is the cron expression correct?** Verify the schedule field. ACS uses standard 5-field cron syntax (`minute hour day-of-month month day-of-week`). An invalid expression results in a `Cron error`.
 3. **Is the timezone correct?** If a job has a `timezone` field set, the scheduler uses that timezone for next-run calculations. An incorrect timezone string may cause unexpected scheduling.
-4. **Is the daemon running?** Confirm with `acs status`. Jobs only execute while the daemon is active.
-5. **Was the job recently created or updated?** The scheduler recalculates next-run times when notified of changes. Check the `next_run_at` field in `acs list --json` or the API response (`GET /api/jobs`).
+4. **Is the daemon running?** Confirm with `agentcronsystem status`. Jobs only execute while the daemon is active.
+5. **Was the job recently created or updated?** The scheduler recalculates next-run times when notified of changes. Check the `next_run_at` field in `agentcronsystem list --json` or the API response (`GET /api/jobs`).
 
 ### Job Times Out
 
@@ -154,7 +154,7 @@ Timeout resolution follows a per-job then daemon-default fallback. See [Job Mana
 **Solution:**
 1. Test the command manually in a terminal to verify it works.
 2. For script files, verify the path is absolute or relative to the working directory.
-3. Check the job's run log for the specific error message: `acs logs <job-name>`
+3. Check the job's run log for the specific error message: `agentcronsystem logs <job-name>`
 
 ### Wrong Working Directory
 
@@ -192,12 +192,12 @@ Timeout resolution follows a per-job then daemon-default fallback. See [Job Mana
 
 ### Log Files Missing
 
-**Symptom:** `acs logs <job-name>` returns empty or you cannot find log files on disk.
+**Symptom:** `agentcronsystem logs <job-name>` returns empty or you cannot find log files on disk.
 
 **Cause:** Logs are stored at `{data_dir}/logs/{job_id}/`. If the job has never run, no logs exist.
 
 **Solution:**
-1. Verify the job has run at least once: `acs list` shows `last_run_at`.
+1. Verify the job has run at least once: `agentcronsystem list` shows `last_run_at`.
 2. Check the logs directory directly:
    - Windows: `%LOCALAPPDATA%\agent-cron-scheduler\logs\`
    - macOS: `~/Library/Application Support/agent-cron-scheduler/logs/`
@@ -213,7 +213,7 @@ Timeout resolution follows a per-job then daemon-default fallback. See [Job Mana
 - On daemon startup, `daemon.log` is truncated (each daemon session starts with a fresh log).
 
 **Solution:**
-- Restart the daemon (`acs restart`) to truncate `daemon.log` -- each daemon session starts with a fresh log.
+- Restart the daemon (`agentcronsystem restart`) to truncate `daemon.log` -- each daemon session starts with a fresh log.
 - Do **not** delete `daemon.log` while the daemon is running. The daemon holds the file descriptor open; on Unix, deleting the file creates an invisible unlinked inode that continues consuming disk space. On Windows, the delete will likely fail because the file is locked.
 - If the automatic size-managed truncation fails for any reason (e.g., file permissions), ACS logs a warning to stderr but continues operating.
 
@@ -225,7 +225,7 @@ Timeout resolution follows a per-job then daemon-default fallback. See [Job Mana
 
 **Solution:**
 - ACS cleans up orphaned log directories automatically on every daemon startup. It compares UUID-named subdirectories in `logs/` against known job IDs and removes any that no longer match.
-- To trigger this cleanup, restart the daemon: `acs restart`
+- To trigger this cleanup, restart the daemon: `agentcronsystem restart`
 - Non-UUID directories inside `logs/` are left untouched.
 
 ---
@@ -243,12 +243,12 @@ When ACS detects that `jobs.json` contains invalid JSON, it:
 3. Starts with an empty job list.
 
 **Recovery from backup:**
-1. Stop the daemon: `acs stop`
+1. Stop the daemon: `agentcronsystem stop`
 2. Navigate to the data directory.
 3. Examine the backup: open `jobs.json.bak` in a text editor.
 4. If the backup looks recoverable (e.g., minor corruption), fix the JSON and save it as `jobs.json`.
 5. If the backup is beyond repair, you will need to recreate your jobs.
-6. Restart the daemon: `acs start`
+6. Restart the daemon: `agentcronsystem start`
 
 **Prevention:**
 - ACS uses atomic writes (write to `.tmp` file, then rename) to prevent partial-write corruption during normal operation. Corruption is typically caused by hardware issues, disk-full conditions, or forceful termination at the exact moment of a write.
@@ -263,7 +263,7 @@ ACS creates the data directory and its subdirectories (`logs/`, `scripts/`) on s
 **Solution:**
 - If creation fails, check filesystem permissions on the parent directory.
 - On Windows, ensure `%LOCALAPPDATA%` is set (it is required and ACS will panic if missing).
-- You can specify a custom data directory: `acs start --data-dir /path/to/custom/dir`
+- You can specify a custom data directory: `agentcronsystem start --data-dir /path/to/custom/dir`
 
 ---
 
@@ -274,10 +274,10 @@ ACS creates the data directory and its subdirectories (`logs/`, `scripts/`) on s
 Run the daemon in the foreground with debug logging to see detailed output:
 
 ```
-acs start --foreground -v
+agentcronsystem start --foreground -v
 ```
 
-Alternatively, when running WITHOUT `-v`, you can use `RUST_LOG` for fine-grained control over log filtering (e.g., `RUST_LOG=acs=debug,tower_http=warn acs start --foreground`). Note: the `-v` flag initializes its own tracing subscriber, so `RUST_LOG` is ignored when `-v` is present. Use one or the other, not both.
+Alternatively, when running WITHOUT `-v`, you can use `RUST_LOG` for fine-grained control over log filtering (e.g., `RUST_LOG=agentcronsystem=debug,tower_http=warn acs start --foreground`). Note: the `-v` flag initializes its own tracing subscriber, so `RUST_LOG` is ignored when `-v` is present. Use one or the other, not both.
 
 When `-v` is used, `main.rs` initializes the global tracing subscriber (stderr-only, debug level) before `start_daemon` runs. This causes `start_daemon`'s own subscriber initialization (which includes the `daemon.log` file layer) to silently fail via `try_init()`, because a global subscriber is already set. As a result, `-v` produces verbose log lines to **stderr only** (not to `daemon.log`). Without `-v`, `start_daemon` successfully initializes its subscriber with both stderr and file layers, and `RUST_LOG` controls the log level for both outputs.
 
@@ -291,7 +291,7 @@ Verbose output includes:
 ### Check Daemon Health
 
 ```
-acs status
+agentcronsystem status
 ```
 
 This contacts the daemon's `/health` endpoint and displays:
@@ -312,7 +312,7 @@ Note: `-v` also enables debug-level tracing, so the raw JSON may be interspersed
 ### View Job Logs
 
 ```
-acs logs <job-name>
+agentcronsystem logs <job-name>
 ```
 
 This retrieves the output from the job's most recent run. For a richer log viewing experience with full run history, use the REST API (`GET /api/jobs/{id}/runs`) or the [API Reference](api-reference.md).
@@ -338,12 +338,12 @@ This returns a JSON object with daemon status, version, uptime, job counts, and 
 
 ## 7. Common CLI Errors
 
-### "Could not connect to daemon at 127.0.0.1:8377. Is it running? (try: acs start)"
+### "Could not connect to daemon at 127.0.0.1:8377. Is it running? (try: agentcronsystem start)"
 
 **Cause:** The daemon is not running, or it is running on a different host/port.
 
 **Solution:**
-1. Start the daemon: `acs start`
+1. Start the daemon: `agentcronsystem start`
 2. If you configured a non-default port, pass it to CLI commands: `acs --port 9000 status`
 3. Check the `acs.port` file in the data directory to see the actual port.
 
@@ -358,7 +358,7 @@ This returns a JSON object with daemon status, version, uptime, job counts, and 
 **Cause:** The specified job ID or name does not match any existing job.
 
 **Solution:**
-1. List available jobs: `acs list`
+1. List available jobs: `agentcronsystem list`
 2. Use the exact job name or UUID as shown in the listing.
 3. Job names are case-sensitive.
 
@@ -386,12 +386,12 @@ This returns a JSON object with daemon status, version, uptime, job counts, and 
    - Windows: `%LOCALAPPDATA%\agent-cron-scheduler\daemon.log`
    - macOS: `~/Library/Application Support/agent-cron-scheduler/daemon.log`
    - Linux: `~/.local/share/agent-cron-scheduler/daemon.log`
-2. Try running in the foreground for immediate error output: `acs start --foreground`
+2. Try running in the foreground for immediate error output: `agentcronsystem start --foreground`
 3. Common root causes: port conflict, permission issues, corrupted config file.
 
 ### "Daemon failed to come back up after restart"
 
-**Cause:** The `acs restart` command stopped the old daemon but the new daemon process did not respond to health checks within 10 seconds (20 retries at 500ms intervals).
+**Cause:** The `agentcronsystem restart` command stopped the old daemon but the new daemon process did not respond to health checks within 10 seconds (20 retries at 500ms intervals).
 
 **Solution:**
 1. Check the daemon log for startup errors (see [Daemon Log Location](#daemon-log-location) above).
@@ -400,7 +400,7 @@ This returns a JSON object with daemon status, version, uptime, job counts, and 
    acs stop
    acs start
    ```
-3. If that also fails, try running in the foreground to see the error: `acs start --foreground`
+3. If that also fails, try running in the foreground to see the error: `agentcronsystem start --foreground`
 4. Common root causes: port conflict (old process still releasing the port), permission issues, corrupted config file.
 
 ### "Request failed: ..."
