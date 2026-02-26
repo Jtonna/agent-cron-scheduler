@@ -85,7 +85,7 @@ export default function AllJobsPage() {
       <div className="flex items-center justify-between w-full">
         <h1 className="text-2xl font-semibold tracking-tight">All Jobs</h1>
         <Button asChild>
-          <Link href="/jobs/new">
+          <Link href="/jobs/create">
             <PlusCircleIcon className="h-4 w-4 mr-1.5" />
             Create Job
           </Link>

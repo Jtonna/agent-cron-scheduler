@@ -150,7 +150,7 @@ export function Sidebar() {
     {
       group: "Jobs",
       items: [
-        { label: "Create New Job", icon: PlusCircleIcon, path: "/jobs/new" },
+        { label: "Create New Job", icon: PlusCircleIcon, path: "/jobs/create" },
         { label: "All Jobs", icon: ListBulletIcon, path: "/jobs" },
       ],
     },
