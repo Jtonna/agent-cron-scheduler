@@ -751,4 +751,130 @@ mod tests {
             );
         }
     }
+
+    /// Tests for the PATH detection logic used by ensure_path_entry on Windows.
+    /// These use unique temporary registry keys to avoid modifying the real user PATH.
+    #[cfg(target_os = "windows")]
+    mod path_entry_tests {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        /// Core logic extracted to mirror ensure_path_entry without touching
+        /// HKCU\Environment or broadcasting WM_SETTINGCHANGE.
+        fn ensure_path_in_key(
+            env: &RegKey,
+            dir: &str,
+        ) -> anyhow::Result<bool> {
+            let current_path: String = env.get_value("Path").unwrap_or_default();
+
+            let already_present = current_path
+                .split(';')
+                .any(|entry| entry.eq_ignore_ascii_case(dir));
+
+            if already_present {
+                return Ok(false); // no change
+            }
+
+            let new_path = if current_path.is_empty() {
+                dir.to_string()
+            } else {
+                format!("{};{}", current_path, dir)
+            };
+
+            env.set_value("Path", &new_path)?;
+            Ok(true) // changed
+        }
+
+        /// Helper: create a uniquely-named temp registry key, set Path, run
+        /// the closure, read back the result, then clean up. Returns the final
+        /// Path value so assertions can happen after cleanup.
+        fn run_path_test(
+            test_name: &str,
+            initial_path: &str,
+            dir: &str,
+        ) -> (anyhow::Result<bool>, String) {
+            let subkey = format!("Software\\AcsTest_{}", test_name);
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let (key, _) = hkcu.create_subkey(&subkey).expect("create test subkey");
+            key.set_value("Path", &initial_path)
+                .expect("set initial Path");
+
+            let result = ensure_path_in_key(&key, dir);
+            let final_path: String = key.get_value("Path").unwrap_or_default();
+
+            // Clean up
+            drop(key);
+            hkcu.delete_subkey_all(&subkey).ok();
+
+            (result, final_path)
+        }
+
+        #[test]
+        fn test_path_entry_adds_missing_dir() {
+            let (result, path) = run_path_test(
+                "adds_missing",
+                "C:\\Windows;C:\\Windows\\System32",
+                "C:\\MyApp\\bin",
+            );
+            assert!(result.expect("should succeed"), "should have added the directory");
+            assert!(
+                path.contains("C:\\MyApp\\bin"),
+                "PATH should contain the new directory, got: {}",
+                path
+            );
+        }
+
+        #[test]
+        fn test_path_entry_idempotent() {
+            let (result, path) = run_path_test(
+                "idempotent",
+                "C:\\Windows;C:\\MyApp\\bin",
+                "C:\\MyApp\\bin",
+            );
+            assert!(
+                !result.expect("should succeed"),
+                "should not modify PATH when dir already present"
+            );
+            assert_eq!(
+                path, "C:\\Windows;C:\\MyApp\\bin",
+                "PATH should be unchanged"
+            );
+        }
+
+        #[test]
+        fn test_path_entry_case_insensitive() {
+            let (result, _) = run_path_test(
+                "case_insensitive",
+                "C:\\Windows;c:\\myapp\\bin",
+                "C:\\MyApp\\bin",
+            );
+            assert!(
+                !result.expect("should succeed"),
+                "should detect existing entry case-insensitively"
+            );
+        }
+
+        #[test]
+        fn test_path_entry_empty_path() {
+            let (result, path) = run_path_test(
+                "empty_path",
+                "",
+                "C:\\MyApp\\bin",
+            );
+            assert!(result.expect("should succeed"), "should add to empty PATH");
+            assert_eq!(
+                path, "C:\\MyApp\\bin",
+                "PATH should be just the new directory (no leading semicolon)"
+            );
+        }
+
+        #[test]
+        fn test_ensure_path_entry_no_parent() {
+            // A path with no parent should not panic
+            let result = super::super::platform::ensure_path_entry(
+                std::path::Path::new("justfilename"),
+            );
+            let _ = result;
+        }
+    }
 }
