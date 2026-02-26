@@ -8,12 +8,12 @@ const isDev = !app.isPackaged;
 
 let tray = null;
 
-function getAcsBinaryPath() {
+function getBinaryPath() {
   const ext = process.platform === 'win32' ? '.exe' : '';
   if (isDev) {
-    return path.join(__dirname, '..', '..', '..', '..', 'acs', 'target', 'release', `acs${ext}`);
+    return path.join(__dirname, '..', '..', '..', '..', 'acs', 'target', 'release', `agentcronsystem${ext}`);
   }
-  return path.join(process.resourcesPath, 'acs-binary', `acs${ext}`);
+  return path.join(process.resourcesPath, 'agentcronsystem-binary', `agentcronsystem${ext}`);
 }
 
 function getDataDir() {
@@ -174,7 +174,7 @@ async function startDaemon() {
     return;
   }
 
-  const binaryPath = getAcsBinaryPath();
+  const binaryPath = getBinaryPath();
   if (!fs.existsSync(binaryPath)) {
     console.log('ACS binary not found; skipping daemon start');
     return;
@@ -249,7 +249,7 @@ function createWindow(url) {
       sandbox: false,
       additionalArguments: [
         `--data-dir=${getDataDir()}`,
-        `--acs-binary=${getAcsBinaryPath()}`,
+        `--agentcronsystem-binary=${getBinaryPath()}`,
       ],
     },
   });

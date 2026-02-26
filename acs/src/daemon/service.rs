@@ -1,8 +1,8 @@
 // Platform service registration for daemon persistence.
 //
 // - Windows: Task Scheduler (runs as current user, inherits user environment)
-// - macOS:   launchd plist to ~/Library/LaunchAgents/com.acs.scheduler.plist
-// - Linux:   systemd user unit to ~/.config/systemd/user/acs.service
+// - macOS:   launchd plist to ~/Library/LaunchAgents/com.agentcronsystem.scheduler.plist
+// - Linux:   systemd user unit to ~/.config/systemd/user/agentcronsystem.service
 
 use std::path::Path;
 
@@ -33,9 +33,9 @@ pub fn service_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "AgentCronScheduler"
     } else if cfg!(target_os = "macos") {
-        "com.acs.scheduler"
+        "com.agentcronsystem.scheduler"
     } else {
-        "acs"
+        "agentcronsystem"
     }
 }
 
@@ -157,7 +157,7 @@ mod platform {
         let home = dirs::home_dir().expect("Could not determine home directory");
         home.join("Library")
             .join("LaunchAgents")
-            .join("com.acs.scheduler.plist")
+            .join("com.agentcronsystem.scheduler.plist")
     }
 
     pub fn is_service_registered() -> bool {
@@ -178,7 +178,7 @@ mod platform {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.acs.scheduler</string>
+    <string>com.agentcronsystem.scheduler</string>
     <key>ProgramArguments</key>
     <array>
         <string>{exe}</string>
@@ -230,7 +230,7 @@ mod platform {
     pub fn start_service() -> anyhow::Result<()> {
         let status = std::process::Command::new("launchctl")
             .arg("start")
-            .arg("com.acs.scheduler")
+            .arg("com.agentcronsystem.scheduler")
             .status()?;
 
         if status.success() {
@@ -244,7 +244,7 @@ mod platform {
     pub fn stop_service() -> anyhow::Result<()> {
         let status = std::process::Command::new("launchctl")
             .arg("stop")
-            .arg("com.acs.scheduler")
+            .arg("com.agentcronsystem.scheduler")
             .status()?;
 
         if status.success() {
@@ -268,7 +268,7 @@ mod platform {
         home.join(".config")
             .join("systemd")
             .join("user")
-            .join("acs.service")
+            .join("agentcronsystem.service")
     }
 
     pub fn is_service_registered() -> bool {
@@ -309,7 +309,7 @@ WantedBy=default.target
         let _ = std::process::Command::new("systemctl")
             .arg("--user")
             .arg("enable")
-            .arg("acs.service")
+            .arg("agentcronsystem.service")
             .status();
         // Enable linger for persistence
         let _ = std::process::Command::new("loginctl")
@@ -325,12 +325,12 @@ WantedBy=default.target
             let _ = std::process::Command::new("systemctl")
                 .arg("--user")
                 .arg("stop")
-                .arg("acs.service")
+                .arg("agentcronsystem.service")
                 .status();
             let _ = std::process::Command::new("systemctl")
                 .arg("--user")
                 .arg("disable")
-                .arg("acs.service")
+                .arg("agentcronsystem.service")
                 .status();
             std::fs::remove_file(&path)?;
             let _ = std::process::Command::new("systemctl")
@@ -354,7 +354,7 @@ WantedBy=default.target
         let status = std::process::Command::new("systemctl")
             .arg("--user")
             .arg("start")
-            .arg("acs.service")
+            .arg("agentcronsystem.service")
             .status()?;
 
         if status.success() {
@@ -372,7 +372,7 @@ WantedBy=default.target
         let status = std::process::Command::new("systemctl")
             .arg("--user")
             .arg("stop")
-            .arg("acs.service")
+            .arg("agentcronsystem.service")
             .status()?;
 
         if status.success() {
