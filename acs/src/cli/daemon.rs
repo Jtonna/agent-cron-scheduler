@@ -212,7 +212,7 @@ pub async fn cmd_stop(host: &str, port: u16, force: bool) -> anyhow::Result<()> 
 /// Force kill the daemon by reading the PID file and terminating the process.
 fn force_kill_daemon() -> anyhow::Result<()> {
     let data_dir = crate::daemon::resolve_data_dir(None);
-    let pid_file_path = data_dir.join("acs.pid");
+    let pid_file_path = data_dir.join("agentcronsystem.pid");
 
     if !pid_file_path.exists() {
         println!("No PID file found. Daemon may not be running.");
@@ -558,7 +558,7 @@ mod tests {
         use tempfile::TempDir;
 
         let tmp_dir = TempDir::new().expect("create temp dir");
-        let pid_path = tmp_dir.path().join("acs.pid");
+        let pid_path = tmp_dir.path().join("agentcronsystem.pid");
 
         // PID file doesn't exist
         assert!(!pid_path.exists());
