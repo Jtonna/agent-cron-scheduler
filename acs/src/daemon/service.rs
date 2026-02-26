@@ -164,6 +164,68 @@ mod platform {
         plist_path().exists()
     }
 
+    /// Ensure the executable's directory is in the user's PATH by modifying shell config files.
+    fn ensure_path_entry(exe_path: &Path) -> anyhow::Result<()> {
+        use std::io::{BufRead, BufReader};
+
+        let exe_dir = exe_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Executable has no parent directory"))?;
+        let exe_dir_str = exe_dir
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid directory path"))?;
+
+        // Check if already in current PATH
+        if let Ok(current_path) = std::env::var("PATH") {
+            if current_path.split(':').any(|p| p == exe_dir_str) {
+                log::debug!("Directory {} already in PATH", exe_dir_str);
+                return Ok(());
+            }
+        }
+
+        let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let shell_configs = vec![
+            home.join(".zshrc"),
+            home.join(".bash_profile"),
+        ];
+
+        let marker = "# Added by AgentCronScheduler";
+        let path_line = format!("export PATH=\"$PATH:{}\" {}", exe_dir_str, marker);
+
+        for config_file in shell_configs {
+            if !config_file.exists() {
+                continue;
+            }
+
+            // Check if already present
+            let file = std::fs::File::open(&config_file)?;
+            let reader = BufReader::new(file);
+            let mut already_present = false;
+
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    if (l.contains(marker) && l.contains(exe_dir_str)) || (l.contains("PATH=") && l.contains(exe_dir_str)) {
+                        already_present = true;
+                        break;
+                    }
+                }
+            }
+
+            if !already_present {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&config_file)?;
+                writeln!(file, "\n{}", path_line)?;
+                log::info!("Added PATH entry to {}", config_file.display());
+            } else {
+                log::debug!("PATH entry already exists in {}", config_file.display());
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn install_service(exe_path: &Path) -> anyhow::Result<()> {
         let plist_dir = plist_path().parent().unwrap().to_path_buf();
         std::fs::create_dir_all(&plist_dir)?;
@@ -201,6 +263,11 @@ mod platform {
             .arg("load")
             .arg(plist_path())
             .status();
+
+        // Best-effort PATH modification
+        if let Err(e) = ensure_path_entry(exe_path) {
+            log::warn!("Failed to add PATH entry: {}", e);
+        }
 
         Ok(())
     }
@@ -275,6 +342,69 @@ mod platform {
         unit_path().exists()
     }
 
+    /// Ensure the executable's directory is in the user's PATH by modifying shell config files.
+    fn ensure_path_entry(exe_path: &Path) -> anyhow::Result<()> {
+        use std::io::{BufRead, BufReader};
+
+        let exe_dir = exe_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Executable has no parent directory"))?;
+        let exe_dir_str = exe_dir
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid directory path"))?;
+
+        // Check if already in current PATH
+        if let Ok(current_path) = std::env::var("PATH") {
+            if current_path.split(':').any(|p| p == exe_dir_str) {
+                log::debug!("Directory {} already in PATH", exe_dir_str);
+                return Ok(());
+            }
+        }
+
+        let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let shell_configs = vec![
+            home.join(".bashrc"),
+            home.join(".zshrc"),
+            home.join(".profile"),
+        ];
+
+        let marker = "# Added by AgentCronScheduler";
+        let path_line = format!("export PATH=\"$PATH:{}\" {}", exe_dir_str, marker);
+
+        for config_file in shell_configs {
+            if !config_file.exists() {
+                continue;
+            }
+
+            // Check if already present
+            let file = std::fs::File::open(&config_file)?;
+            let reader = BufReader::new(file);
+            let mut already_present = false;
+
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    if (l.contains(marker) && l.contains(exe_dir_str)) || (l.contains("PATH=") && l.contains(exe_dir_str)) {
+                        already_present = true;
+                        break;
+                    }
+                }
+            }
+
+            if !already_present {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&config_file)?;
+                writeln!(file, "\n{}", path_line)?;
+                log::info!("Added PATH entry to {}", config_file.display());
+            } else {
+                log::debug!("PATH entry already exists in {}", config_file.display());
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn install_service(exe_path: &Path) -> anyhow::Result<()> {
         let unit_dir = unit_path().parent().unwrap().to_path_buf();
         std::fs::create_dir_all(&unit_dir)?;
@@ -315,6 +445,11 @@ WantedBy=default.target
         let _ = std::process::Command::new("loginctl")
             .arg("enable-linger")
             .status();
+
+        // Best-effort PATH modification
+        if let Err(e) = ensure_path_entry(exe_path) {
+            log::warn!("Failed to add PATH entry: {}", e);
+        }
 
         Ok(())
     }
