@@ -1,0 +1,103 @@
+<behavior name="git-with-beads">
+
+  <summary>
+    All git rules in one place: branching model, branch naming, commit format,
+    push discipline, and beads integration. Every agent that touches git must follow these rules.
+  </summary>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       BRANCHING MODEL
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="branching-model">
+
+    <rule name="trunk-based">
+      All development is trunk-based. Every ticket gets its own short-lived branch
+      off the base branch and merges back. Branches are deleted after merge.
+    </rule>
+
+    <rule name="base-branch-selection">
+      The base branch determines where ticket branches are created from and where
+      pull requests target:
+      - "main" (default): ticket branches are created from main, PRs merge to main.
+      - A feature branch (EPIC/{epic-id}): created from main for multi-ticket work.
+        Ticket branches are created from the feature branch, PRs merge to the
+        feature branch. A final PR merges the feature branch to main after all
+        children complete.
+    </rule>
+
+    <rule name="epic-closed-last">
+      The epic ticket is closed only after all children are closed. When using a
+      feature branch, the epic is closed as part of the final pull request from the
+      feature branch to main.
+    </rule>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       BRANCH NAMING
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="branch-naming">
+    <rule name="no-direct-main-commits">Never commit directly to main</rule>
+    <rule name="all-commits-on-branch">All commits happen on a ticket branch or feature branch, never directly on main</rule>
+
+    <issue-type-to-branch>
+      <type name="feature" branch-prefix="FEAT/" />
+      <type name="bug"     branch-prefix="BUG/" />
+      <type name="task"    branch-prefix="TASK/" />
+      <type name="chore"   branch-prefix="CHORE/" />
+      <type name="epic"    branch-prefix="EPIC/" />
+    </issue-type-to-branch>
+
+    <examples>
+      <example>git checkout -b FEAT/sp-0004</example>
+      <example>git checkout -b BUG/sp-0012</example>
+      <example>git checkout -b EPIC/sp-0020</example>
+    </examples>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       COMMIT DISCIPLINE
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="commit-discipline">
+    <rule name="ticket-id-prefix">
+      Every commit message starts with the ticket ID being worked (discover prefix
+      from beads, never guess). Always use the child ticket ID, not the epic ID.
+    </rule>
+    <rule name="granular-commits">Commits must be granular — one logical change per commit</rule>
+    <rule name="multiple-commits-expected">Multiple commits per sub-task are expected</rule>
+    <rule name="atomic-commits">Each commit must be atomic and independently valid (builds, no broken imports)</rule>
+    <rule name="no-secrets">Never commit secrets, .env files, or credentials</rule>
+    <rule name="include-beads-files">Always include .beads/ files (especially .beads/issues.jsonl) in commits — the pre-commit hook exports the SQLite database to JSONL and stages issues.jsonl automatically, but verify it is included before pushing</rule>
+    <rule name="verify-build-before-final-commit">Always verify the build passes before the final commit of a task</rule>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       PUSH DISCIPLINE
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="push-discipline">
+    <rule name="single-push-authority">
+      Only one agent pushes to the remote, and only after human approval.
+      This ensures unapproved work never reaches the remote.
+    </rule>
+    <rule name="push-after-ticket-creation">
+      After ticket creation and branch setup: beads metadata (.beads/ files) is committed
+      to the new branch and pushed to remote. This is a metadata-only push — no code
+      changes are included. It ensures the ticket state is preserved on the remote
+      before any further work begins.
+    </rule>
+    <rule name="push-after-implementation-approval">
+      After human approval following implementation: the branch is pushed to remote.
+      This is a single push covering all commits.
+    </rule>
+    <rule name="push-before-pr">
+      After human approval before opening the pull request: any remaining commits
+      (from documentation updates or ticket closure) are pushed and the pull request is created.
+    </rule>
+    <rule name="no-force-push">Never force-push unless the human explicitly requests it</rule>
+  </section>
+
+</behavior>

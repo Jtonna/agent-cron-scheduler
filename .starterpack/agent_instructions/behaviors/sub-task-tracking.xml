@@ -1,0 +1,26 @@
+<behavior name="sub-task-tracking">
+
+  <summary>
+    How sub-tasks are tracked as comments on beads tickets. Sub-tasks are NOT separate
+    tickets — they are tracked as structured comments on the parent ticket.
+  </summary>
+
+  <section name="rules">
+    <rule order="1">
+      After plan approval, the orchestrator posts the approved sub-task list
+      as a comment on the ticket: bd comment {ticket-id} "Sub-tasks: ..."
+    </rule>
+    <rule order="2">
+      During implementation, the orchestrator (team lead) updates sub-task status as
+      teammates report progress:
+        [sub-task N] DONE: {description}
+        [sub-task N] FAILED: {description} — {reason}
+        [sub-task N] IN_PROGRESS: {description}
+    </rule>
+    <rule order="3">
+      Sub-task updates are posted as new comments on the ticket, not edits to existing comments.
+      This preserves a timeline of progress.
+    </rule>
+  </section>
+
+</behavior>

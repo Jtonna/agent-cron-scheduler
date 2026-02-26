@@ -1,0 +1,92 @@
+<behavior name="escalation">
+
+  <summary>
+    Failure protocol for all agent types. Defines what to do when an error is encountered,
+    how to report failures, and the escalation chain. Includes model-tier definitions so
+    agents understand the escalation hierarchy without referencing external files.
+  </summary>
+
+
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       MODEL TIERS (embedded for self-containment)
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="model-tiers">
+    <model-tiers>
+      <tier name="reasoning" model="opus">Planning, review, debugging, escalation, team coordination.</tier>
+      <tier name="worker" model="sonnet">Standard implementation tasks.</tier>
+      <tier name="light" model="haiku">Simple/mechanical implementation — renames, moves, boilerplate.</tier>
+    </model-tiers>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       ESCALATION CHAINS
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="escalation-chains">
+    Escalation means upgrading to a more capable model when the current tier fails.
+    This is MODEL-TIER escalation, separate from WORKFLOW escalation (reporting to orchestrator/human).
+    All agents can always escalate to the orchestrator regardless of their tier.
+
+    <chain role="implementer">worker → reasoning → human</chain>
+    <chain role="light-implementer">light → worker → reasoning → human</chain>
+    <chain role="doc-writer">worker → orchestrator → human</chain>
+    <chain role="submitter">light → orchestrator → human</chain>
+    <chain role="reasoning-agents">reasoning → human (already at highest tier)</chain>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       FAILURE PROTOCOLS BY AGENT TYPE
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="implementation-agents">
+    For worker and light tier agents (implementer, light-implementer) operating as
+    teammates under the orchestrator (team lead).
+
+    <rule order="1">If you encounter an error, retry once with a different approach</rule>
+    <rule order="2">If the retry fails, stop immediately</rule>
+    <rule order="3">Commit any partial work that is valid</rule>
+    <rule order="4">
+      Return a structured failure report to the orchestrator (team lead):
+        FAILURE REPORT
+        Sub-task: {description}
+        Attempted: {what was tried}
+        Error: {the error}
+        Files involved: {list}
+        Partial work committed: yes/no
+        Suggested fix: {if any}
+    </rule>
+    <rule order="5">
+      What happens next (you do not need to handle this — just report and stop):
+      → The orchestrator classifies your failure
+      → Technical failures (logic bugs, command errors): an Opus teammate is spawned to attempt resolution
+      → Requirements failures (impossible plan, unclear spec): the human is asked for clarification
+      → If the Opus teammate also fails, the human is asked
+    </rule>
+  </section>
+
+  <section name="doc-agents">
+    For doc-writer agents. They report directly to the orchestrator.
+
+    <rule order="1">If you encounter an error, retry once with a different approach</rule>
+    <rule order="2">If the retry fails, stop immediately. Return a structured failure report to the orchestrator.</rule>
+    <rule order="3">The orchestrator presents the failure to the human for guidance.</rule>
+  </section>
+
+  <section name="admin-agents">
+    For the submitter agent. Reports directly to the orchestrator.
+
+    <rule order="1">If a git or GitHub operation fails (e.g. push rejected, gh pr create fails), stop immediately and report the error to the orchestrator.</rule>
+    <rule order="2">The orchestrator presents the failure to the human for guidance.</rule>
+  </section>
+
+  <section name="reasoning-agents">
+    For reasoning tier agents (explorer, planner, plan-reviewer, doc-scout, doc-auditor, pr-drafter).
+    These are already at the highest tier.
+
+    <rule order="1">If a reasoning-tier agent fails, it reports the failure back to the orchestrator.</rule>
+    <rule order="2">The orchestrator presents the failure to the human for guidance.</rule>
+  </section>
+
+</behavior>

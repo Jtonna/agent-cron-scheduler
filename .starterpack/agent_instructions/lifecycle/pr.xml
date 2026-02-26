@@ -1,0 +1,83 @@
+<lifecycle name="PR">
+
+  <summary>
+    Creates the pull request, closes the ticket, and handles the next-child loop
+    for multi-ticket work.
+  </summary>
+
+  <uses-behavior name="pr-template" />
+  <uses-behavior name="response-format" lifecycle="PR" />
+
+  <!--
+    ASCII FLOW: PR lifecycle
+
+    [PREPARE_AND_SUBMIT]
+        |
+        v
+    [HANDOFF]
+        |
+        +~~ more children ~~> [PLANNING]
+        |
+        +~~ feature branch done ~~> [FINAL_PR] ~~> complete
+        |
+        +~~ done ~~> complete
+  -->
+
+  <phase name="PREPARE_AND_SUBMIT" order="1">
+    <actor>Orchestrator launches a PR agent (reasoning tier)</actor>
+    <actions>
+      <action>Compile all commits on the ticket branch</action>
+      <action>Review the full diff against the base branch</action>
+      <action>Draft the PR description using the pr-template behavior</action>
+      <action>Close the child ticket with a close_reason summarizing what was done</action>
+      <action>Commit the beads closure to the branch</action>
+      <action>Push all remaining commits to remote</action>
+      <action>Create the PR via "gh pr create" targeting the base branch</action>
+      <action>Report the PR URL back to the orchestrator</action>
+    </actions>
+    <on-success>Proceed to HANDOFF</on-success>
+    <on-failure>Stop and report failure to human</on-failure>
+  </phase>
+
+  <phase name="HANDOFF" order="2">
+    <actor>Orchestrator (reasoning tier)</actor>
+    <actions>
+      <action>Report PR URL to the human for review.</action>
+      <action>
+        Check for remaining ready child tickets (bd ready).
+        If more children exist: checkout the base branch, pick the next child
+        ticket, and loop to PLANNING for that child.
+      </action>
+      <action>
+        If all children are complete and the base branch is a feature branch:
+        proceed to FINAL_PR to merge the feature branch to main.
+      </action>
+      <action>
+        If all children are complete and the base branch is main:
+        close the epic ticket (if applicable) and commit the closure. Done.
+      </action>
+    </actions>
+    <on-success>Lifecycle complete</on-success>
+    <on-failure>Stop and report failure to human</on-failure>
+  </phase>
+
+  <phase name="FINAL_PR" order="3">
+    <actor>Orchestrator launches a PR agent (reasoning tier)</actor>
+    <actions>
+      <action>
+        Checkout the feature branch. Run a final documentation review
+        (diff the full feature branch against main).
+      </action>
+      <action>
+        Close the epic ticket with a close_reason summarizing all completed work.
+        Commit the beads closure and any doc updates to the feature branch.
+      </action>
+      <action>Push the feature branch to remote</action>
+      <action>Create the final PR from the feature branch to main via "gh pr create"</action>
+      <action>Report the final PR URL to the human for review.</action>
+    </actions>
+    <on-success>Lifecycle complete</on-success>
+    <on-failure>Stop and report failure to human</on-failure>
+  </phase>
+
+</lifecycle>

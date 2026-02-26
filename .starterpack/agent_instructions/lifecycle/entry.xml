@@ -1,0 +1,166 @@
+<lifecycle name="ENTRY">
+
+  <summary>
+    Routes incoming work to the correct lifecycle. Creates tickets if needed.
+    Determines the base branch, creates initial branches, and pushes beads
+    metadata to remote. Every change must be tied to a beads ticket.
+  </summary>
+
+  <!--
+    ASCII FLOW: ENTRY lifecycle
+
+    [START]
+        |
+        v
+    [Phase 1: IDENTIFY_ENTRY]
+        |
+        +~~ EXISTING_TICKET ~~~~~~> [Phase 2: TICKET_AND_BRANCH_SETUP]
+        |                                  |
+        |                                  v
+        |                            [Phase 4: BRANCH_AND_PUSH] ~~> [PLANNING]
+        |
+        +~~ AD_HOC_REQUEST ~~~~~~=> [Phase 2: TICKET_AND_BRANCH_SETUP]
+        |                                  |
+        |                                  v
+        |                            [Phase 4: BRANCH_AND_PUSH] ~~> [PLANNING]
+        |
+        +~~ SPEC_FILE ~~~~~~~~~~~~~> [Phase 2: TICKET_AND_BRANCH_SETUP]
+                                          |
+                                          v
+                                    [Phase 3: SPEC_FILE_APPROVAL]
+                                          |
+                                          +~~ approved ~~> [Phase 4: BRANCH_AND_PUSH] ~~> [PLANNING]
+                                          |
+                                          +~~ rejected ~~> [Phase 2: TICKET_AND_BRANCH_SETUP]
+                                                           (revise breakdown and re-present)
+  -->
+
+  <uses-behavior name="git-with-beads" />
+  <uses-behavior name="scope-enforcement" />
+  <uses-behavior name="human-gate" context="ENTRY/SPEC_FILE_APPROVAL" />
+  <uses-behavior name="response-format" lifecycle="ENTRY" />
+
+  <phase name="IDENTIFY_ENTRY" order="1">
+    <actor>Orchestrator (reasoning tier)</actor>
+    <actions>
+      <action>
+        Determine which entry point applies based on the human's request:
+        - EXISTING_TICKET: A beads ticket already exists (the human says "work on KAN-29b"
+          or the orchestrator picks one from "bd ready").
+        - SPEC_FILE: The human points to a spec file or provides a large feature description
+          that needs to be broken into multiple tickets before work can begin.
+        - AD_HOC_REQUEST: The human gives an instruction directly (e.g. "add a logout button").
+          This is NOT a ticket yet.
+      </action>
+      <action>
+        If the request does not match any recognized entry point or appears out of scope,
+        apply scope-enforcement: push back respectfully and offer to create a new ticket instead.
+      </action>
+    </actions>
+    <on-success>Proceed to TICKET_AND_BRANCH_SETUP</on-success>
+    <on-failure>Stop and ask the human to clarify their request</on-failure>
+  </phase>
+
+  <phase name="TICKET_AND_BRANCH_SETUP" order="2">
+    <actor>Orchestrator (reasoning tier)</actor>
+    <actions>
+
+      <!-- EXISTING_TICKET path -->
+      <action entry="EXISTING_TICKET">
+        Run "bd show {id}" to read the ticket and confirm it is understood.
+      </action>
+
+      <!-- SPEC_FILE path -->
+      <action entry="SPEC_FILE">Read the spec file in full.</action>
+      <action entry="SPEC_FILE">
+        Create an epic ticket: bd create --type epic --title "..." --description "..."
+      </action>
+      <action entry="SPEC_FILE">
+        Decompose the spec into individual feature/task tickets.
+        Do NOT create dependencies between children and the epic — the epic is a tracking
+        container, not a blocker.
+      </action>
+      <action entry="SPEC_FILE">
+        Establish dependencies between child tickets where ordering matters:
+        bd dep add {later-ticket} {earlier-ticket}
+      </action>
+
+      <!-- AD_HOC_REQUEST path -->
+      <action entry="AD_HOC_REQUEST">
+        Create a beads ticket: bd create --type feature|bug|task --title "..." --description "..."
+        Never implement an ad-hoc request without a ticket. If the human insists on skipping,
+        explain that every change must be tracked and push back respectfully.
+      </action>
+      <action entry="AD_HOC_REQUEST">
+        Confirm with the human: "Created {ticket-id}: {title}. Proceeding."
+      </action>
+
+      <!-- Base branch selection — all paths -->
+      <action>
+        Determine the base branch. Check the current git context first — if
+        already on a feature branch (e.g. mid-epic work), default to that
+        branch as the base. Otherwise, reason about the appropriate base:
+        - If the context makes the base branch obvious, use it.
+        - If ambiguous, ask the human which base branch to use (main or an
+          existing feature branch).
+        The base branch is where the ticket's branch will be created from
+        and where its PR will target.
+      </action>
+
+    </actions>
+    <on-success entry="EXISTING_TICKET">Proceed to BRANCH_AND_PUSH</on-success>
+    <on-success entry="AD_HOC_REQUEST">Proceed to BRANCH_AND_PUSH</on-success>
+    <on-success entry="SPEC_FILE">Proceed to SPEC_FILE_APPROVAL</on-success>
+    <on-failure>Stop and report the failure to the human before continuing</on-failure>
+  </phase>
+
+  <phase name="SPEC_FILE_APPROVAL" order="3">
+    <actor>Orchestrator (reasoning tier)</actor>
+    <actions>
+      <action>
+        Present the full ticket breakdown to the human for approval (see human-gate behavior).
+        Include: epic ticket ID, all child ticket IDs and titles, dependency ordering, and
+        selected base branch (main or feature branch).
+      </action>
+      <action>Wait for explicit human approval before proceeding.</action>
+    </actions>
+    <on-success>Proceed to BRANCH_AND_PUSH</on-success>
+    <on-failure>Stop and report the failure to the human</on-failure>
+    <on-rejection>Return to TICKET_AND_BRANCH_SETUP to revise the ticket breakdown based on human feedback, then re-present</on-rejection>
+  </phase>
+
+  <phase name="BRANCH_AND_PUSH" order="4">
+    <actor>Orchestrator launches a branch setup agent (light tier)</actor>
+    <actions>
+      <action>
+        If a feature branch was selected as the base branch:
+        Create the feature branch from main: git checkout -b EPIC/{epic-id}
+      </action>
+      <action>
+        For multi-ticket work (SPEC_FILE or epic): pick the first ready child
+        ticket (bd ready). This child ticket ID becomes the active ticket for
+        the PLANNING and IMPLEMENTATION phases.
+      </action>
+      <action>
+        Create the active ticket's branch off the base branch using the
+        issue-type to branch-prefix mapping from git-with-beads:
+        git checkout -b {PREFIX}/{ticket-id}
+      </action>
+      <action>
+        Commit beads metadata to the ticket branch:
+        git add .beads/ &amp;&amp; git commit -m "{ticket-id}: initialize beads metadata"
+      </action>
+      <action>
+        Push the branch with metadata to remote:
+        git push -u origin {branch-name}
+      </action>
+    </actions>
+    <note>
+      This push contains only beads metadata (ticket definitions, dependencies).
+      It is distinct from the implementation push — no code changes are included.
+    </note>
+    <on-success>Proceed to PLANNING</on-success>
+    <on-failure>Stop and report the failure to the human</on-failure>
+  </phase>
+
+</lifecycle>

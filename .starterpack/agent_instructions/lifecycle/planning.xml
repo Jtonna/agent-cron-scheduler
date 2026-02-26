@@ -1,0 +1,86 @@
+<lifecycle name="PLANNING">
+
+  <summary>
+    Produces an approved implementation plan before any code is written.
+    Explores the codebase, drafts a plan, reviews it, and gets human approval.
+  </summary>
+
+  <uses-behavior name="sub-task-tracking" />
+  <uses-behavior name="human-gate" context="PLANNING/PLAN_APPROVAL" />
+  <uses-behavior name="response-format" lifecycle="PLANNING" />
+
+  <loop>
+    <!--
+      INTAKE → DRAFT → REVIEW → HUMAN_GATE → HANDOFF
+                                      │
+                                      │ rejected → DRAFT
+                                      └──────────┘
+    -->
+
+    <phase name="INTAKE" order="1">
+      <actor>Orchestrator launches an Explorer agent (reasoning tier)</actor>
+      <actions>
+        <action>Read the beads ticket (bd show {ticket-id})</action>
+        <action>Explore the codebase: relevant source files, existing patterns, dependencies</action>
+        <action>Explore existing documentation (code is source of truth — docs may be outdated)</action>
+        <action>When docs contradict code, flag the discrepancy in the context report</action>
+        <action>Return a context report to the orchestrator</action>
+      </actions>
+      <on-success>Proceed to DRAFT</on-success>
+      <on-failure>Stop and report failure to human</on-failure>
+    </phase>
+
+    <phase name="DRAFT" order="2">
+      <actor>Orchestrator launches a Planner agent (reasoning tier)</actor>
+      <actions>
+        <action>Receive the Explorer's context report and the ticket details</action>
+        <action>
+          Break the work into sub-tasks. For each sub-task, provide:
+          - Description of what to do
+          - Files to modify
+          - Acceptance criteria
+          - Complexity rating: light / standard / complex
+        </action>
+        <action>Identify dependencies between sub-tasks (which must complete before others)</action>
+        <action>Return the plan to the orchestrator</action>
+      </actions>
+      <on-success>Proceed to REVIEW</on-success>
+      <on-failure>Stop and report failure to human</on-failure>
+    </phase>
+
+    <phase name="REVIEW" order="3">
+      <actor>Orchestrator launches a Plan Reviewer agent (reasoning tier)</actor>
+      <actions>
+        <action>Receive the Planner's plan and the original ticket</action>
+        <action>Check: does the plan cover all acceptance criteria?</action>
+        <action>Check: are complexity ratings reasonable?</action>
+        <action>Check: are dependencies correct?</action>
+        <action>Raise any questions or concerns to the orchestrator</action>
+      </actions>
+      <on-success>Proceed to HUMAN_GATE</on-success>
+      <on-failure>Stop and report failure to human</on-failure>
+    </phase>
+
+    <phase name="HUMAN_GATE" order="4">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>Present the plan for approval (see human-gate behavior, context: PLAN_APPROVAL)</action>
+      </actions>
+      <on-success>Proceed to HANDOFF</on-success>
+      <on-rejection>Feed corrections back to the Planner → loop to DRAFT</on-rejection>
+      <on-failure>Report the failure to the human. Do not proceed.</on-failure>
+    </phase>
+
+    <phase name="HANDOFF" order="5">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>Post the approved plan as a comment on the ticket (sub-task-tracking behavior)</action>
+        <action>Proceed to IMPLEMENTATION</action>
+      </actions>
+      <on-success>Lifecycle complete — proceed to IMPLEMENTATION</on-success>
+      <on-failure>Stop and report failure to human</on-failure>
+    </phase>
+
+  </loop>
+
+</lifecycle>
