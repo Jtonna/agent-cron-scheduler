@@ -261,7 +261,7 @@ mod platform {
         // Check if already in current PATH
         if let Ok(current_path) = std::env::var("PATH") {
             if current_path.split(':').any(|p| p == exe_dir_str) {
-                log::debug!("Directory {} already in PATH", exe_dir_str);
+                tracing::debug!("Directory {} already in PATH", exe_dir_str);
                 return Ok(());
             }
         }
@@ -300,9 +300,9 @@ mod platform {
                     .append(true)
                     .open(&config_file)?;
                 writeln!(file, "\n{}", path_line)?;
-                log::info!("Added PATH entry to {}", config_file.display());
+                tracing::info!("Added PATH entry to {}", config_file.display());
             } else {
-                log::debug!("PATH entry already exists in {}", config_file.display());
+                tracing::debug!("PATH entry already exists in {}", config_file.display());
             }
         }
 
@@ -349,7 +349,7 @@ mod platform {
 
         // Best-effort PATH modification
         if let Err(e) = ensure_path_entry(exe_path) {
-            log::warn!("Failed to add PATH entry: {}", e);
+            tracing::warn!("Failed to add PATH entry: {}", e);
         }
 
         Ok(())
@@ -439,7 +439,7 @@ mod platform {
         // Check if already in current PATH
         if let Ok(current_path) = std::env::var("PATH") {
             if current_path.split(':').any(|p| p == exe_dir_str) {
-                log::debug!("Directory {} already in PATH", exe_dir_str);
+                tracing::debug!("Directory {} already in PATH", exe_dir_str);
                 return Ok(());
             }
         }
@@ -482,9 +482,9 @@ mod platform {
                     .append(true)
                     .open(&config_file)?;
                 writeln!(file, "\n{}", path_line)?;
-                log::info!("Added PATH entry to {}", config_file.display());
+                tracing::info!("Added PATH entry to {}", config_file.display());
             } else {
-                log::debug!("PATH entry already exists in {}", config_file.display());
+                tracing::debug!("PATH entry already exists in {}", config_file.display());
             }
         }
 
@@ -534,7 +534,7 @@ WantedBy=default.target
 
         // Best-effort PATH modification
         if let Err(e) = ensure_path_entry(exe_path) {
-            log::warn!("Failed to add PATH entry: {}", e);
+            tracing::warn!("Failed to add PATH entry: {}", e);
         }
 
         Ok(())
