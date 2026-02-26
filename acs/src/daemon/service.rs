@@ -283,7 +283,7 @@ mod platform {
             let reader = BufReader::new(file);
             let mut already_present = false;
 
-            for l in reader.lines().flatten() {
+            for l in reader.lines().map_while(Result::ok) {
                 if (l.contains(marker) && l.contains(exe_dir_str))
                     || (l.contains("PATH=") && l.contains(exe_dir_str))
                 {
@@ -463,7 +463,7 @@ mod platform {
             let reader = BufReader::new(file);
             let mut already_present = false;
 
-            for l in reader.lines().flatten() {
+            for l in reader.lines().map_while(Result::ok) {
                 if (l.contains(marker) && l.contains(exe_dir_str))
                     || (l.contains("PATH=") && l.contains(exe_dir_str))
                 {
