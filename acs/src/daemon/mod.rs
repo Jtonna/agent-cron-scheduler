@@ -218,6 +218,7 @@ impl PortFile {
     /// directory.
     pub fn write(port: u16) -> Result<Self> {
         let data_dir = resolve_data_dir(None);
+        // Keep filename as "acs.port" for backward compatibility with existing installations
         let path = data_dir.join("acs.port");
         Self::write_to(path, port)
     }
@@ -774,6 +775,7 @@ pub async fn start_daemon(
     }
 
     // Acquire PID file
+    // Keep filename as "acs.pid" for backward compatibility with existing installations
     let pid_file_path = data_dir.join("acs.pid");
     let pid_file = PidFile::new(pid_file_path);
     pid_file.acquire()?;
