@@ -16,7 +16,7 @@ fn handle_request_error(err: reqwest::Error, host: &str, port: u16) -> anyhow::E
     }
 }
 
-/// acs start
+/// agentcronsystem start
 pub async fn cmd_start(
     host: &str,
     port: u16,
@@ -112,8 +112,8 @@ pub async fn cmd_start(
 
     if started {
         println!("Daemon started in background.");
-        println!("Use 'acs status' to check daemon status.");
-        println!("Use 'acs stop' to stop the daemon.");
+        println!("Use 'agentcronsystem status' to check daemon status.");
+        println!("Use 'agentcronsystem stop' to stop the daemon.");
         Ok(())
     } else {
         eprintln!(
@@ -160,7 +160,7 @@ async fn run_daemon_foreground(
     .await
 }
 
-/// acs stop
+/// agentcronsystem stop
 pub async fn cmd_stop(host: &str, port: u16, force: bool) -> anyhow::Result<()> {
     if force {
         // Force kill: read PID file and kill the process
@@ -272,7 +272,7 @@ fn force_kill_daemon() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// acs status
+/// agentcronsystem status
 pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<()> {
     let client = Client::new();
     let url = format!("{}/health", base_url(host, port));
@@ -331,7 +331,7 @@ pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<
     Ok(())
 }
 
-/// acs uninstall
+/// agentcronsystem uninstall
 pub async fn cmd_uninstall(host: &str, port: u16, purge: bool) -> anyhow::Result<()> {
     // Stop the daemon — try API first (graceful), fall back to task end
     let client = Client::new();
@@ -394,7 +394,7 @@ pub async fn cmd_uninstall(host: &str, port: u16, purge: bool) -> anyhow::Result
     Ok(())
 }
 
-/// acs restart
+/// agentcronsystem restart
 pub async fn cmd_restart(host: &str, port: u16) -> anyhow::Result<()> {
     let client = Client::new();
     let url = format!("{}/api/restart", base_url(host, port));
