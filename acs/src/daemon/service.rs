@@ -81,6 +81,9 @@ mod platform {
             .context("Failed to run schtasks")?;
 
         if status.success() {
+            if let Err(e) = ensure_path_entry(exe_path) {
+                tracing::warn!("Could not add binary to PATH: {}", e);
+            }
             Ok(())
         } else {
             anyhow::bail!("schtasks /Create failed (exit code {:?})", status.code())
@@ -141,6 +144,86 @@ mod platform {
             Ok(())
         } else {
             anyhow::bail!("schtasks /End failed (exit code {:?})", status.code())
+        }
+    }
+
+    /// Ensure the binary's directory is in the user's PATH (HKCU\Environment).
+    pub fn ensure_path_entry(exe_path: &Path) -> anyhow::Result<()> {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        let dir = exe_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine binary directory"))?
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Binary path is not valid UTF-8"))?;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let env = hkcu.open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)?;
+
+        let current_path: String = env.get_value("Path").unwrap_or_default();
+
+        // Case-insensitive check if already in PATH
+        let already_present = current_path
+            .split(';')
+            .any(|entry| entry.eq_ignore_ascii_case(dir));
+
+        if already_present {
+            tracing::info!("Binary directory already in PATH: {}", dir);
+            return Ok(());
+        }
+
+        let new_path = if current_path.is_empty() {
+            dir.to_string()
+        } else {
+            format!("{};{}", current_path, dir)
+        };
+
+        env.set_value("Path", &new_path)?;
+
+        // Broadcast WM_SETTINGCHANGE so new shells pick up the change
+        broadcast_environment_change();
+
+        tracing::info!("Added binary directory to PATH: {}", dir);
+        Ok(())
+    }
+
+    fn broadcast_environment_change() {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+
+        #[link(name = "user32")]
+        extern "system" {
+            fn SendMessageTimeoutW(
+                hwnd: isize,
+                msg: u32,
+                wparam: usize,
+                lparam: isize,
+                flags: u32,
+                timeout: u32,
+                result: *mut usize,
+            ) -> isize;
+        }
+
+        const HWND_BROADCAST: isize = 0xFFFF;
+        const WM_SETTINGCHANGE: u32 = 0x001A;
+        const SMTO_ABORTIFHUNG: u32 = 0x0002;
+
+        let environment: Vec<u16> = OsStr::new("Environment")
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+
+        unsafe {
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                environment.as_ptr() as isize,
+                SMTO_ABORTIFHUNG,
+                5000,
+                std::ptr::null_mut(),
+            );
         }
     }
 }
