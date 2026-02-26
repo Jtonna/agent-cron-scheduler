@@ -69,14 +69,17 @@ async function startStandaloneServer() {
     tempServer.on('error', reject);
   });
 
-  // Spawn the standalone server
+  // Spawn the standalone server using Electron's built-in Node.js runtime.
+  // ELECTRON_RUN_AS_NODE=1 makes the Electron binary act as plain Node.js,
+  // which is required because packaged apps don't have system `node` in PATH.
   const { spawn } = require('child_process');
-  standaloneServerProcess = spawn('node', ['server.js'], {
+  standaloneServerProcess = spawn(process.execPath, ['server.js'], {
     cwd: standaloneDir,
     env: {
       ...process.env,
       PORT: String(port),
       HOSTNAME: '127.0.0.1',
+      ELECTRON_RUN_AS_NODE: '1',
     },
     stdio: 'pipe',
   });
