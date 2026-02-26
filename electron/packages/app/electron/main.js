@@ -57,7 +57,9 @@ let standaloneServerProcess = null;
  * Returns the port the server is listening on.
  */
 async function startStandaloneServer() {
-  const standaloneDir = path.join(__dirname, '..', 'standalone', 'packages', 'frontend');
+  // In production, standalone/ lives in extraResources (outside the ASAR archive)
+  // because child_process.spawn needs a real filesystem CWD.
+  const standaloneDir = path.join(process.resourcesPath, 'standalone', 'packages', 'frontend');
 
   // Find a free port
   const port = await new Promise((resolve, reject) => {
@@ -133,9 +135,11 @@ async function startDaemon() {
 }
 
 function getTrayIconPath() {
-  // Try favicon from built frontend (production)
-  const standaloneIcon = path.join(__dirname, '..', 'standalone', 'packages', 'frontend', 'public', 'favicon.ico');
-  if (fs.existsSync(standaloneIcon)) return standaloneIcon;
+  // Try favicon from built frontend (production — extraResources)
+  if (!isDev) {
+    const standaloneIcon = path.join(process.resourcesPath, 'standalone', 'packages', 'frontend', 'public', 'favicon.ico');
+    if (fs.existsSync(standaloneIcon)) return standaloneIcon;
+  }
 
   // Try from frontend source (dev mode)
   const srcIcon = path.join(__dirname, '..', '..', 'frontend', 'src', 'app', 'favicon.ico');

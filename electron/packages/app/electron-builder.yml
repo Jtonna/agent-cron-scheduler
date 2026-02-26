@@ -8,7 +8,6 @@ directories:
 
 files:
   - electron/**/*
-  - standalone/**/*
   - package.json
 
 extraResources:
@@ -17,6 +16,8 @@ extraResources:
     filter:
       - "agentcronsystem"
       - "agentcronsystem.exe"
+  - from: standalone
+    to: standalone
 
 win:
   target:
