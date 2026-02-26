@@ -12,7 +12,7 @@ Many troubleshooting steps reference files in the ACS data directory. See [Confi
 
 **Symptom:** You see an error like `Daemon is already running (PID 12345). PID file: <path>` but no daemon process is actually running.
 
-**Cause:** The daemon previously crashed or was killed without performing a graceful shutdown, leaving behind a stale `acs.pid` file.
+**Cause:** The daemon previously crashed or was killed without performing a graceful shutdown, leaving behind a stale `agentcronsystem.pid` file.
 
 **How ACS Detects Stale PIDs:**
 - On **Unix**: ACS calls `kill(pid, 0)` (signal 0), which checks whether the process exists without actually sending a signal.
@@ -25,9 +25,9 @@ If the recorded PID is still alive, ACS waits up to 10 seconds (20 retries at 50
    - Windows: `tasklist | findstr agentcronsystem`
    - Unix: `ps aux | grep agentcronsystem`
 2. Manually delete the PID file:
-   - Windows: `del "%LOCALAPPDATA%\agent-cron-scheduler\acs.pid"`
-   - macOS: `rm ~/Library/Application\ Support/agent-cron-scheduler/acs.pid`
-   - Linux: `rm ~/.local/share/agent-cron-scheduler/acs.pid`
+   - Windows: `del "%LOCALAPPDATA%\agent-cron-scheduler\agentcronsystem.pid"`
+   - macOS: `rm ~/Library/Application\ Support/agent-cron-scheduler/agentcronsystem.pid`
+   - Linux: `rm ~/.local/share/agent-cron-scheduler/agentcronsystem.pid`
 3. Restart the daemon: `agentcronsystem start`
 
 Alternatively, use force stop which handles PID file cleanup automatically:
@@ -50,7 +50,7 @@ agentcronsystem start
 3. If a different process is using the port, change the ACS port:
    - Via CLI flag: `agentcronsystem start --port 9000`
    - Via config file: Set `"port": 9000` in `config.json`
-   - Via the `acs.port` file: Check `{data_dir}/acs.port` to see the current port
+   - Via the `agentcronsystem.port` file: Check `{data_dir}/agentcronsystem.port` to see the current port
 
 ### Config File Errors
 
@@ -86,11 +86,11 @@ ACS registers itself as a user-level service for auto-start at login. See [Servi
 **Symptom:** The daemon does not start automatically after login, or `launchctl load` fails.
 
 **Possible causes:**
-- The plist file has incorrect XML syntax. Validate with: `plutil ~/Library/LaunchAgents/com.acs.scheduler.plist`
+- The plist file has incorrect XML syntax. Validate with: `plutil ~/Library/LaunchAgents/com.agentcronsystem.scheduler.plist`
 - The executable path in the plist no longer exists (e.g., after moving the binary).
 - SIP (System Integrity Protection) or privacy settings may block background processes.
 
-**Quick check:** `launchctl list | grep com.acs.scheduler`
+**Quick check:** `launchctl list | grep com.agentcronsystem.scheduler`
 
 ### Linux (systemd user unit)
 
@@ -101,8 +101,8 @@ ACS registers itself as a user-level service for auto-start at login. See [Servi
 - The unit file references an incorrect executable path.
 - systemd user instance is not running. Check with: `systemctl --user status`
 
-**Quick check:** `systemctl --user status acs.service`
-**View service logs:** `journalctl --user -u acs.service`
+**Quick check:** `systemctl --user status agentcronsystem.service`
+**View service logs:** `journalctl --user -u agentcronsystem.service`
 
 ---
 
@@ -277,7 +277,7 @@ Run the daemon in the foreground with debug logging to see detailed output:
 agentcronsystem start --foreground -v
 ```
 
-Alternatively, when running WITHOUT `-v`, you can use `RUST_LOG` for fine-grained control over log filtering (e.g., `RUST_LOG=agentcronsystem=debug,tower_http=warn acs start --foreground`). Note: the `-v` flag initializes its own tracing subscriber, so `RUST_LOG` is ignored when `-v` is present. Use one or the other, not both.
+Alternatively, when running WITHOUT `-v`, you can use `RUST_LOG` for fine-grained control over log filtering (e.g., `RUST_LOG=agentcronsystem=debug,tower_http=warn agentcronsystem start --foreground`). Note: the `-v` flag initializes its own tracing subscriber, so `RUST_LOG` is ignored when `-v` is present. Use one or the other, not both.
 
 When `-v` is used, `main.rs` initializes the global tracing subscriber (stderr-only, debug level) before `start_daemon` runs. This causes `start_daemon`'s own subscriber initialization (which includes the `daemon.log` file layer) to silently fail via `try_init()`, because a global subscriber is already set. As a result, `-v` produces verbose log lines to **stderr only** (not to `daemon.log`). Without `-v`, `start_daemon` successfully initializes its subscriber with both stderr and file layers, and `RUST_LOG` controls the log level for both outputs.
 
@@ -305,7 +305,7 @@ This contacts the daemon's `/health` endpoint and displays:
 
 For raw JSON output, use the global `-v` flag:
 ```
-acs -v status
+agentcronsystem -v status
 ```
 Note: `-v` also enables debug-level tracing, so the raw JSON may be interspersed with debug log lines from HTTP and other subsystems.
 
@@ -344,8 +344,8 @@ This returns a JSON object with daemon status, version, uptime, job counts, and 
 
 **Solution:**
 1. Start the daemon: `agentcronsystem start`
-2. If you configured a non-default port, pass it to CLI commands: `acs --port 9000 status`
-3. Check the `acs.port` file in the data directory to see the actual port.
+2. If you configured a non-default port, pass it to CLI commands: `agentcronsystem --port 9000 status`
+3. Check the `agentcronsystem.port` file in the data directory to see the actual port.
 
 ### "Daemon is already running (PID ...)"
 
@@ -397,8 +397,8 @@ This returns a JSON object with daemon status, version, uptime, job counts, and 
 1. Check the daemon log for startup errors (see [Daemon Log Location](#daemon-log-location) above).
 2. Try a manual stop-and-start cycle:
    ```
-   acs stop
-   acs start
+   agentcronsystem stop
+   agentcronsystem start
    ```
 3. If that also fails, try running in the foreground to see the error: `agentcronsystem start --foreground`
 4. Common root causes: port conflict (old process still releasing the port), permission issues, corrupted config file.

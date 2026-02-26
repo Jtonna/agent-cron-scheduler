@@ -95,7 +95,7 @@ cargo build --release
 cargo install --path .
 ```
 
-The binary is at `acs/target/debug/acs` (or `acs/target/release/acs`).
+The binary is at `acs/target/debug/agentcronsystem` (or `acs/target/release/agentcronsystem`).
 
 `cargo build` does not build the frontend. The `web/` directory contains Swagger UI API documentation (an `openapi.yaml` spec plus Swagger JS/CSS assets) embedded into the binary via `rust-embed`. The `build.rs` script verifies that `web/` exists but does not run npm or any frontend build step.
 

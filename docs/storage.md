@@ -10,8 +10,8 @@ the **data directory** (`{data_dir}`).
 
 ```
 {data_dir}/
-├── acs.pid              # Daemon PID file (exclusive creation prevents duplicate instances)
-├── acs.port             # TCP port the daemon is listening on
+├── agentcronsystem.pid  # Daemon PID file (exclusive creation prevents duplicate instances)
+├── agentcronsystem.port # TCP port the daemon is listening on
 ├── config.json          # Daemon config (fallback location, priority 4 of 5; see configuration.md)
 ├── daemon.log           # Daemon process log (size-managed, max 1 GB)
 ├── jobs.json            # Authoritative list of all registered jobs

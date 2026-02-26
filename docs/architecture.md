@@ -99,8 +99,8 @@ See [CLI Reference](cli-reference.md) for the full command documentation.
 #### `daemon` -- Daemon Lifecycle and Core Engine
 
 - **`daemon::start_daemon()`**: The master orchestration function. Acquires PID file, loads config, creates data directories, initializes storage, sets up channels, starts the Scheduler, Executor dispatch loop, metadata updater, and HTTP server, then waits for shutdown signals.
-- **`daemon::PidFile`**: Manages an exclusive PID file (`acs.pid`) to enforce single-instance. Uses `create_new(true)` for atomic creation with stale PID detection.
-- **`daemon::PortFile`**: Writes the actual bound port to `acs.port` so CLI clients can discover the daemon.
+- **`daemon::PidFile`**: Manages an exclusive PID file (`agentcronsystem.pid`) to enforce single-instance. Uses `create_new(true)` for atomic creation with stale PID detection.
+- **`daemon::PortFile`**: Writes the actual bound port to `agentcronsystem.port` so CLI clients can discover the daemon.
 - **`daemon::load_config()`**: Loads `DaemonConfig` via a multi-level resolution order (see [Configuration](configuration.md)).
 - **`daemon::resolve_data_dir()`**: Resolves the data directory from CLI override, env var, or platform default (see [Configuration](configuration.md#data-directory-locations)).
 - **`daemon::graceful_shutdown()`**: Implements the shutdown sequence (see Section 3.4).
@@ -180,7 +180,7 @@ The `start_daemon()` function in `daemon::mod.rs` orchestrates startup:
                                 std::fs::File::create), then separately open with
                                 SizeManagedWriter (appends, auto-drops oldest 25%
                                 when file exceeds 1 GB). Falls back to stderr-only on error.
-6.  PidFile::acquire()      -- Exclusive PID file (acs.pid)
+6.  PidFile::acquire()      -- Exclusive PID file (agentcronsystem.pid)
 7.  JsonJobStore::new()     -- Load jobs.json into memory cache
 8.  FsLogStore::new()       -- Initialize logs directory
 9.  cleanup_orphaned_logs() -- Remove log dirs for deleted jobs
@@ -195,7 +195,7 @@ The `start_daemon()` function in `daemon::mod.rs` orchestrates startup:
 18. tokio::spawn(dispatch)   -- Start dispatch loop (recv jobs, call executor)
 19. tokio::spawn(updater)    -- Start metadata updater (listen for events)
 20. TcpListener::bind()      -- Bind HTTP server
-21. PortFile::write_to()     -- Write actual port to acs.port
+21. PortFile::write_to()     -- Write actual port to agentcronsystem.port
 22. tokio::spawn(server)     -- Start Axum server with graceful shutdown
 23. Wait for signal          -- Ctrl+C, SIGTERM (Unix), or API shutdown
 ```
@@ -305,8 +305,8 @@ Triggered by Ctrl+C, SIGTERM (Unix), or `POST /api/shutdown`:
       - Await join_handle with 30s timeout
    c. For each in-flight run:
       - Update JobRun to Killed status with finished_at and error message
-   d. PidFile::release()           -- Remove acs.pid
-   e. PortFile::remove()           -- Remove acs.port
+   d. PidFile::release()           -- Remove agentcronsystem.pid
+   e. PortFile::remove()           -- Remove agentcronsystem.port
 6. Await server_handle             -- Wait for HTTP server to finish
 7. Exit with code 0
 ```
