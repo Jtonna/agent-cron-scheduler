@@ -70,7 +70,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: acs-${{ matrix.platform }}
+          name: agentcronsystem-${{ matrix.platform }}
           path: |
             dist/*.exe
             dist/*.dmg
