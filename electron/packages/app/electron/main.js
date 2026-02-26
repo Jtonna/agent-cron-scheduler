@@ -57,7 +57,7 @@ let standaloneServerProcess = null;
  * Returns the port the server is listening on.
  */
 async function startStandaloneServer() {
-  const standaloneDir = path.join(__dirname, '..', 'standalone');
+  const standaloneDir = path.join(__dirname, '..', 'standalone', 'packages', 'frontend');
 
   // Find a free port
   const port = await new Promise((resolve, reject) => {
@@ -131,7 +131,7 @@ async function startDaemon() {
 
 function getTrayIconPath() {
   // Try favicon from built frontend (production)
-  const standaloneIcon = path.join(__dirname, '..', 'standalone', 'public', 'favicon.ico');
+  const standaloneIcon = path.join(__dirname, '..', 'standalone', 'packages', 'frontend', 'public', 'favicon.ico');
   if (fs.existsSync(standaloneIcon)) return standaloneIcon;
 
   // Try from frontend source (dev mode)

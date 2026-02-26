@@ -21,16 +21,16 @@ const destDir = path.join(__dirname, '..', 'packages', 'app', 'standalone');
 console.log('Copying standalone server...');
 copyDir(standaloneDir, destDir);
 
-// Copy static files
+// Copy static files into the frontend subdirectory
 const staticDir = path.join(__dirname, '..', 'packages', 'frontend', '.next', 'static');
-const destStaticDir = path.join(destDir, '.next', 'static');
+const destStaticDir = path.join(destDir, 'packages', 'frontend', '.next', 'static');
 
 console.log('Copying static files...');
 copyDir(staticDir, destStaticDir);
 
-// Copy public files
+// Copy public files into the frontend subdirectory
 const publicDir = path.join(__dirname, '..', 'packages', 'frontend', 'public');
-const destPublicDir = path.join(destDir, 'public');
+const destPublicDir = path.join(destDir, 'packages', 'frontend', 'public');
 
 console.log('Copying public files...');
 copyDir(publicDir, destPublicDir);

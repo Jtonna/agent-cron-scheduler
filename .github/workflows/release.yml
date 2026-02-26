@@ -60,10 +60,10 @@ jobs:
         run: |
           mkdir -p electron/packages/app/standalone
           cp -r electron/packages/frontend/.next/standalone/* electron/packages/app/standalone/
-          mkdir -p electron/packages/app/standalone/.next/static
-          cp -r electron/packages/frontend/.next/static/* electron/packages/app/standalone/.next/static/
-          mkdir -p electron/packages/app/standalone/public
-          cp -r electron/packages/frontend/public/* electron/packages/app/standalone/public/
+          mkdir -p electron/packages/app/standalone/packages/frontend/.next/static
+          cp -r electron/packages/frontend/.next/static/* electron/packages/app/standalone/packages/frontend/.next/static/
+          mkdir -p electron/packages/app/standalone/packages/frontend/public
+          cp -r electron/packages/frontend/public/* electron/packages/app/standalone/packages/frontend/public/
 
       - name: Build & package
         run: npm run dist:${{ matrix.platform }}
