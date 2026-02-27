@@ -1,8 +1,13 @@
-import type { Metadata, Viewport } from "next";
+"use client";
+
 import { Montserrat, Source_Code_Pro } from "next/font/google";
 import "./globals.css";
-import { AppShell } from "@/components/layout/AppShell";
+import dynamic from "next/dynamic";
 import { ThemeProvider } from "@/components/theme-provider";
+
+const AppShell = dynamic(() => import("@/components/layout/AppShell").then(mod => ({ default: mod.AppShell })), {
+  ssr: false,
+});
 
 const montserrat = Montserrat({
   subsets: ["latin"],
@@ -13,16 +18,6 @@ const sourceCodePro = Source_Code_Pro({
   variable: "--font-mono",
 });
 
-export const metadata: Metadata = {
-  title: "Agent Cron Scheduler",
-  description: "Cron job scheduler with web dashboard",
-};
-
-export const viewport: Viewport = {
-  width: "device-width",
-  initialScale: 1,
-};
-
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -30,13 +25,18 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        <title>Agent Cron Scheduler</title>
+        <meta name="description" content="Cron job scheduler with web dashboard" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+      </head>
       <body className={`${montserrat.variable} ${sourceCodePro.variable} font-sans antialiased`}>
         <ThemeProvider
           attribute="class"
           defaultTheme="light"
           disableTransitionOnChange
         >
-          <AppShell>{children}</AppShell>
+          <AppShell />
         </ThemeProvider>
       </body>
     </html>

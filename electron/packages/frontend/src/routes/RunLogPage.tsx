@@ -1,8 +1,5 @@
-"use client";
-
 import React, { useEffect, useState, useCallback } from "react";
-import Link from "next/link";
-import { useRouteParams } from "@/hooks/useRouteParams";
+import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeftIcon,
   ArrowPathIcon,
@@ -17,8 +14,8 @@ import { formatDate, formatBytes } from "@/lib/format";
 import { api } from "@/lib/api";
 import type { JobRun } from "@/lib/types";
 
-export function RunLogContent() {
-  const { id: jobId, runId } = useRouteParams<{ id: string; runId: string }>("/jobs/[id]/runs/[runId]");
+export function RunLogPage() {
+  const { id: jobId, runId } = useParams<{ id: string; runId: string }>();
 
   const [run, setRun] = useState<JobRun | null>(null);
   const [runLoading, setRunLoading] = useState(true);
@@ -26,12 +23,12 @@ export function RunLogContent() {
   const [streamedContent, setStreamedContent] = useState<string>("");
 
   const isRunning = run?.status === "Running";
-  const { log, loading: logLoading, error: logError, refresh: refreshLog } = useRunLog(runId, isRunning ? 3000 : undefined);
+  const { log, loading: logLoading, error: logError, refresh: refreshLog } = useRunLog(runId!, isRunning ? 3000 : undefined);
 
   // Fetch the run metadata from the runs list
   const fetchRunMeta = useCallback(async () => {
     try {
-      const data = await api.listRuns(jobId, 50, 0);
+      const data = await api.listRuns(jobId!, 50, 0);
       const found = data.runs.find((r) => r.run_id === runId);
       if (found) {
         setRun(found);
@@ -102,7 +99,7 @@ export function RunLogContent() {
   if (runError && !run) {
     return (
       <div className="flex flex-col gap-4">
-        <Link href={`/jobs/${jobId}`}>
+        <Link to={`/jobs/${jobId}`}>
           <Button variant="ghost" size="sm">
             <ArrowLeftIcon className="h-4 w-4 mr-1.5" />
             Back to Job
@@ -131,7 +128,7 @@ export function RunLogContent() {
   return (
     <div className="flex flex-col gap-4 w-full">
       {/* Back navigation */}
-      <Link href={`/jobs/${jobId}`}>
+      <Link to={`/jobs/${jobId}`}>
         <Button variant="ghost" size="sm">
           <ArrowLeftIcon className="h-4 w-4 mr-1.5" />
           Back to Job

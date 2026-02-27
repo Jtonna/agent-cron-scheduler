@@ -1,9 +1,5 @@
-"use client";
-
 import React, { useState, useCallback } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useRouteParams } from "@/hooks/useRouteParams";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeftIcon,
   PencilIcon,
@@ -43,21 +39,21 @@ import { api } from "@/lib/api";
 import { formatDate, formatBytes } from "@/lib/format";
 import { toast } from "sonner";
 
-export function JobDetailContent() {
-  const { id } = useRouteParams<{ id: string }>("/jobs/[id]");
-  const router = useRouter();
+export function JobDetailPage() {
+  const navigate = useNavigate();
+  const { id } = useParams<{ id: string }>();
   const {
     job,
     loading: jobLoading,
     error: jobError,
     refresh: refreshJob,
-  } = useJob(id);
+  } = useJob(id!);
   const {
     runs,
     total,
     loading: runsLoading,
     refresh: refreshRuns,
-  } = useRuns(id);
+  } = useRuns(id!);
   const [showDelete, setShowDelete] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
@@ -81,11 +77,11 @@ export function JobDetailContent() {
   const handleTrigger = async () => {
     setActionLoading(true);
     try {
-      const result = await api.triggerJob(id);
+      const result = await api.triggerJob(id!);
       toast.success("Job triggered");
       refreshRuns();
       if (result?.run_id) {
-        router.push(`/jobs/${id}/runs/${result.run_id}`);
+        navigate(`/jobs/${id}/runs/${result.run_id}`);
       }
     } catch (err) {
       toast.error(
@@ -99,9 +95,9 @@ export function JobDetailContent() {
   const handleDelete = async () => {
     setActionLoading(true);
     try {
-      await api.deleteJob(id);
+      await api.deleteJob(id!);
       toast.success("Job deleted");
-      router.push("/jobs");
+      navigate("/jobs");
     } catch (err) {
       toast.error(
         `Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`
@@ -134,7 +130,7 @@ export function JobDetailContent() {
     <div className="flex flex-col gap-6 w-full">
       {/* Back navigation */}
       <Button variant="ghost" size="sm" asChild>
-        <Link href="/jobs">
+        <Link to="/jobs">
           <ArrowLeftIcon className="h-4 w-4 mr-1.5" />
           Back to Jobs
         </Link>
@@ -152,7 +148,7 @@ export function JobDetailContent() {
         </div>
         <div className="flex gap-2">
           <Button variant="secondary" size="sm" asChild>
-            <Link href={`/jobs/${id}/edit`}>
+            <Link to={`/jobs/${id}/edit`}>
               <PencilIcon className="h-4 w-4 mr-1.5" />
               Edit
             </Link>
@@ -277,12 +273,12 @@ export function JobDetailContent() {
                   <TableRow
                     key={run.run_id}
                     onClick={() =>
-                      router.push(`/jobs/${id}/runs/${run.run_id}`)
+                      navigate(`/jobs/${id}/runs/${run.run_id}`)
                     }
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        router.push(`/jobs/${id}/runs/${run.run_id}`);
+                        navigate(`/jobs/${id}/runs/${run.run_id}`);
                       }
                     }}
                     className="cursor-pointer hover:bg-muted/50"

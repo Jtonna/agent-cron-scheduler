@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   CheckCircleIcon as CheckCircleSolid,
   XCircleIcon as XCircleSolid,
@@ -23,8 +23,8 @@ interface RecentJobsWidgetProps {
  * Designed to slot into a parent Collapsible > SidebarMenuItem structure.
  */
 export function RecentJobsWidget({ jobs }: RecentJobsWidgetProps) {
-  const pathname = usePathname();
-  const router = useRouter();
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
 
   const recentJobs = jobs
     .filter((j) => j.last_run_at)
@@ -48,7 +48,7 @@ export function RecentJobsWidget({ jobs }: RecentJobsWidgetProps) {
           <SidebarMenuSubItem key={job.id}>
             <SidebarMenuSubButton
               isActive={pathname === `/jobs/${job.id}`}
-              onClick={() => router.push(`/jobs/${job.id}`)}
+              onClick={() => navigate(`/jobs/${job.id}`)}
             >
               {job.last_exit_code === null ? (
                 <ArrowPathIcon className="size-4 text-muted-foreground shrink-0" />

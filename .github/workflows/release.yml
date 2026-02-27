@@ -58,12 +58,8 @@ jobs:
       - name: Copy frontend to Electron app
         shell: bash
         run: |
-          mkdir -p electron/packages/app/standalone
-          cp -r electron/packages/frontend/.next/standalone/* electron/packages/app/standalone/
-          mkdir -p electron/packages/app/standalone/packages/frontend/.next/static
-          cp -r electron/packages/frontend/.next/static/* electron/packages/app/standalone/packages/frontend/.next/static/
-          mkdir -p electron/packages/app/standalone/packages/frontend/public
-          cp -r electron/packages/frontend/public/* electron/packages/app/standalone/packages/frontend/public/
+          mkdir -p electron/packages/app/out
+          cp -r electron/packages/frontend/out/* electron/packages/app/out/
 
       - name: Build & package
         run: npm run dist:${{ matrix.platform }}

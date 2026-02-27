@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -50,67 +50,6 @@ function isDaemonRunning() {
   });
 }
 
-let standaloneServerProcess = null;
-
-/**
- * Start the Next.js standalone server.
- * Returns the port the server is listening on.
- */
-async function startStandaloneServer() {
-  // In production, standalone/ lives in extraResources (outside the ASAR archive)
-  // because child_process.spawn needs a real filesystem CWD.
-  const standaloneDir = path.join(process.resourcesPath, 'standalone', 'packages', 'frontend');
-
-  // Find a free port
-  const port = await new Promise((resolve, reject) => {
-    const tempServer = http.createServer();
-    tempServer.listen(0, '127.0.0.1', () => {
-      const freePort = tempServer.address().port;
-      tempServer.close(() => resolve(freePort));
-    });
-    tempServer.on('error', reject);
-  });
-
-  // Spawn the standalone server using Electron's built-in Node.js runtime.
-  // ELECTRON_RUN_AS_NODE=1 makes the Electron binary act as plain Node.js,
-  // which is required because packaged apps don't have system `node` in PATH.
-  const { spawn } = require('child_process');
-  standaloneServerProcess = spawn(process.execPath, ['server.js'], {
-    cwd: standaloneDir,
-    env: {
-      ...process.env,
-      PORT: String(port),
-      HOSTNAME: '127.0.0.1',
-      ELECTRON_RUN_AS_NODE: '1',
-    },
-    stdio: 'pipe',
-  });
-
-  // Wait for the server to be ready
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('Standalone server failed to start within 10 seconds'));
-    }, 10000);
-
-    const checkReady = () => {
-      http.get(`http://127.0.0.1:${port}/`, { timeout: 1000 }, (res) => {
-        if (res.statusCode === 200 || res.statusCode === 404) {
-          clearTimeout(timeout);
-          resolve();
-        } else {
-          setTimeout(checkReady, 100);
-        }
-      }).on('error', () => {
-        setTimeout(checkReady, 100);
-      });
-    };
-    checkReady();
-  });
-
-  console.log(`Standalone server running on http://127.0.0.1:${port}`);
-  return port;
-}
-
 async function startDaemon() {
   const running = await isDaemonRunning();
   if (running) {
@@ -134,12 +73,81 @@ async function startDaemon() {
   console.log('ACS daemon process launched.');
 }
 
-function getTrayIconPath() {
-  // Try favicon from built frontend (production — extraResources)
-  if (!isDev) {
-    const standaloneIcon = path.join(process.resourcesPath, 'standalone', 'packages', 'frontend', 'public', 'favicon.ico');
-    if (fs.existsSync(standaloneIcon)) return standaloneIcon;
+function getOutDir() {
+  return path.join(__dirname, '..', 'out');
+}
+
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain',
+  '.map': 'application/json',
+};
+
+/**
+ * Start an in-process HTTP server that serves the React SPA
+ * with static file resolution and SPA fallback.
+ * Runs inside Electron's main process — no child process, no terminal windows.
+ */
+function startStaticServer(outDir) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const parsedUrl = new URL(req.url, 'http://localhost');
+      let pathname = decodeURIComponent(parsedUrl.pathname);
+
+      // Try exact file
+      let filePath = path.join(outDir, pathname);
+      if (tryServeFile(filePath, res)) return;
+
+      // Try with /index.html appended (directory index)
+      if (tryServeFile(path.join(filePath, 'index.html'), res)) return;
+
+      // Try with .html extension
+      if (tryServeFile(filePath + '.html', res)) return;
+
+      // SPA fallback — serve index.html for all other requests
+      // React Router will handle client-side routing
+      serveFile(path.join(outDir, 'index.html'), res);
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      console.log(`Static server running on http://127.0.0.1:${port}`);
+      resolve(port);
+    });
+    server.on('error', reject);
+  });
+}
+
+function tryServeFile(filePath, res) {
+  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+    serveFile(filePath, res);
+    return true;
   }
+  return false;
+}
+
+function serveFile(filePath, res) {
+  const ext = path.extname(filePath).toLowerCase();
+  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+  const content = fs.readFileSync(filePath);
+  res.writeHead(200, { 'Content-Type': contentType });
+  res.end(content);
+}
+
+function getTrayIconPath() {
+  const outDir = getOutDir();
+  const outIcon = path.join(outDir, 'favicon.ico');
+  if (fs.existsSync(outIcon)) return outIcon;
 
   // Try from frontend source (dev mode)
   const srcIcon = path.join(__dirname, '..', '..', 'frontend', 'src', 'app', 'favicon.ico');
@@ -223,8 +231,9 @@ app.whenReady().then(async () => {
   if (isDev) {
     frontendUrl = 'http://localhost:3000';
   } else {
-    const standalonePort = await startStandaloneServer();
-    frontendUrl = `http://127.0.0.1:${standalonePort}`;
+    const outDir = getOutDir();
+    const port = await startStaticServer(outDir);
+    frontendUrl = `http://127.0.0.1:${port}`;
   }
 
   const win = createWindow(frontendUrl);
@@ -248,13 +257,4 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   app.isQuitting = true;
-  if (standaloneServerProcess) {
-    standaloneServerProcess.kill();
-  }
-});
-
-app.on('will-quit', () => {
-  if (standaloneServerProcess) {
-    standaloneServerProcess.kill();
-  }
 });
