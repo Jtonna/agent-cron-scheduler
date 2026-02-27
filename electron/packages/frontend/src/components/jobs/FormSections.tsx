@@ -150,11 +150,14 @@ export function RuntimeFields({
         <Input
           id="timeout"
           type="number"
-          min={1}
+          min={0}
           value={timeoutSecs}
           onChange={(e) => setTimeoutSecs(parseInt(e.target.value, 10) || 3600)}
           className={cn(errors.timeout && "border-destructive")}
         />
+        <p className="text-xs text-muted-foreground">
+          Set to 0 for no timeout limit
+        </p>
         {errors.timeout && (
           <p className="text-xs text-destructive">{errors.timeout}</p>
         )}
