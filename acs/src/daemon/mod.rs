@@ -2158,9 +2158,7 @@ mod tests {
                         updater_job_store.update_job(job_id, update).await.unwrap();
                     }
                     JobEvent::Failed {
-                        job_id,
-                        timestamp,
-                        ..
+                        job_id, timestamp, ..
                     } => {
                         let update = crate::models::JobUpdate {
                             last_run_at: Some(Some(timestamp)),
