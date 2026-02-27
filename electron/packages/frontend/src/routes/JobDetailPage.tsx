@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeftIcon,
@@ -38,9 +38,6 @@ import { useSSEEvents } from "@/hooks/useSSE";
 import { api } from "@/lib/api";
 import { formatDate, formatBytes } from "@/lib/format";
 import { toast } from "sonner";
-import type { JobRun } from "@/lib/types";
-
-const PAGE_SIZE = 15;
 
 export function JobDetailPage() {
   const navigate = useNavigate();
@@ -51,29 +48,15 @@ export function JobDetailPage() {
     error: jobError,
     refresh: refreshJob,
   } = useJob(id!);
-
-  const [page, setPage] = useState(0);
-  const [allRuns, setAllRuns] = useState<JobRun[]>([]);
-  const [loadingMore, setLoadingMore] = useState(false);
-
   const {
     runs,
     total,
     loading: runsLoading,
     refresh: refreshRuns,
-  } = useRuns(id!, PAGE_SIZE, 0);
-
+  } = useRuns(id!);
   const [showDelete, setShowDelete] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
-  // When runs from the hook changes and we're on page 0, replace allRuns
-  useEffect(() => {
-    if (page === 0 && runs.length > 0) {
-      setAllRuns(runs);
-    }
-  }, [runs, page]);
-
-  // Reset page on SSE events
   useSSEEvents(
     useCallback(
       (event) => {
@@ -84,30 +67,12 @@ export function JobDetailPage() {
           event.type === "started"
         ) {
           refreshJob();
-          setPage(0);
           refreshRuns();
         }
       },
       [refreshJob, refreshRuns]
     )
   );
-
-  const handleLoadMore = async () => {
-    setLoadingMore(true);
-    try {
-      const nextPage = page + 1;
-      const nextOffset = nextPage * PAGE_SIZE;
-      const data = await api.listRuns(id!, PAGE_SIZE, nextOffset);
-      setAllRuns((prev) => [...prev, ...data.runs]);
-      setPage(nextPage);
-    } catch (err) {
-      toast.error(
-        `Failed to load more: ${err instanceof Error ? err.message : "Unknown error"}`
-      );
-    } finally {
-      setLoadingMore(false);
-    }
-  };
 
   const handleTrigger = async () => {
     setActionLoading(true);
@@ -280,11 +245,11 @@ export function JobDetailPage() {
             ({total})
           </span>
         </h2>
-        {runsLoading && allRuns.length === 0 ? (
+        {runsLoading && runs.length === 0 ? (
           <div className="flex items-center justify-center py-6">
             <ArrowPathIcon className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
-        ) : allRuns.length === 0 ? (
+        ) : runs.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-lg border border-dashed">
             <p className="text-sm text-muted-foreground">No runs yet</p>
             <p className="text-xs text-muted-foreground">
@@ -292,77 +257,56 @@ export function JobDetailPage() {
             </p>
           </div>
         ) : (
-          <>
-            <div className="rounded-lg border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Started</TableHead>
-                    <TableHead>Finished</TableHead>
-                    <TableHead>Exit Code</TableHead>
-                    <TableHead>Log Size</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {allRuns.map((run) => (
-                    <TableRow
-                      key={run.run_id}
-                      onClick={() =>
-                        navigate(`/jobs/${id}/runs/${run.run_id}`)
+          <div className="rounded-lg border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Started</TableHead>
+                  <TableHead>Finished</TableHead>
+                  <TableHead>Exit Code</TableHead>
+                  <TableHead>Log Size</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {runs.map((run) => (
+                  <TableRow
+                    key={run.run_id}
+                    onClick={() =>
+                      navigate(`/jobs/${id}/runs/${run.run_id}`)
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        navigate(`/jobs/${id}/runs/${run.run_id}`);
                       }
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          navigate(`/jobs/${id}/runs/${run.run_id}`);
-                        }
-                      }}
-                      className="cursor-pointer hover:bg-muted/50"
-                      role="link"
-                      tabIndex={0}
-                    >
-                      <TableCell>
-                        <Badge variant={statusToBadgeVariant(run.status, run.exit_code)}>
-                          {run.status}{run.status === "Completed" && run.exit_code !== null && run.exit_code !== 0 ? ` (${run.exit_code})` : ""}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        {formatDate(run.started_at)}
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        {formatDate(run.finished_at)}
-                      </TableCell>
-                      <TableCell className="font-mono text-sm">
-                        {run.exit_code ?? "--"}
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        {formatBytes(run.log_size_bytes)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-            {allRuns.length < total && (
-              <div className="flex justify-center">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleLoadMore}
-                  disabled={loadingMore}
-                >
-                  {loadingMore ? (
-                    <>
-                      <ArrowPathIcon className="h-4 w-4 mr-1.5 animate-spin" />
-                      Loading...
-                    </>
-                  ) : (
-                    "Load More"
-                  )}
-                </Button>
-              </div>
-            )}
-          </>
+                    }}
+                    className="cursor-pointer hover:bg-muted/50"
+                    role="link"
+                    tabIndex={0}
+                  >
+                    <TableCell>
+                      <Badge variant={statusToBadgeVariant(run.status, run.exit_code)}>
+                        {run.status}{run.status === "Completed" && run.exit_code !== null && run.exit_code !== 0 ? ` (${run.exit_code})` : ""}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {formatDate(run.started_at)}
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {formatDate(run.finished_at)}
+                    </TableCell>
+                    <TableCell className="font-mono text-sm">
+                      {run.exit_code ?? "--"}
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {formatBytes(run.log_size_bytes)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         )}
       </div>
 

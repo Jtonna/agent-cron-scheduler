@@ -49,13 +49,6 @@ export interface JobRun {
   exit_code: number | null;
   log_size_bytes: number;
   error: string | null;
-  trigger_params?: TriggerParams;
-}
-
-export interface TriggerParams {
-  args?: string;
-  env?: Record<string, string>;
-  input?: string;
 }
 
 export interface RunsResponse {

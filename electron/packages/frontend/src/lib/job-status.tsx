@@ -10,7 +10,6 @@ export function JobStatusBadge({ enabled, last_exit_code, last_run_at }: JobStat
   if (!enabled) return <Badge variant="disabled">Disabled</Badge>;
   if (last_exit_code === null && !last_run_at) return <Badge variant="default">Pending</Badge>;
   if (last_exit_code === 0) return <Badge variant="success">OK</Badge>;
-  if (last_exit_code === -1) return <Badge variant="error">Failed</Badge>;
   if (last_exit_code !== null) return <Badge variant="error">{`Failed (exit ${last_exit_code})`}</Badge>;
   return <Badge variant="default">Unknown</Badge>;
 }
