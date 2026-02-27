@@ -906,6 +906,7 @@ pub async fn start_daemon(
                     tracing::warn!("Job run {} failed: {}", run_id, error);
                     let update = crate::models::JobUpdate {
                         last_run_at: Some(Some(timestamp)),
+                        last_exit_code: Some(Some(-1)),
                         ..Default::default()
                     };
                     if let Err(e) = updater_job_store.update_job(job_id, update).await {
@@ -1017,7 +1018,7 @@ mod tests {
     use super::*;
     use crate::daemon::executor::RunHandle;
     use crate::models::{JobRun, RunStatus};
-    use crate::storage::LogStore;
+    use crate::storage::{JobStore, LogStore};
     use async_trait::async_trait;
     use tempfile::TempDir;
     use tokio::sync::RwLock;
@@ -2033,5 +2034,208 @@ mod tests {
             "Latest data should be present: {}",
             content
         );
+    }
+
+    // =======================================================================
+    // Failed event sets last_exit_code to -1
+    // =======================================================================
+
+    /// Test-only JobStore that supports update_job for exit code testing.
+    struct TestJobStore {
+        jobs: RwLock<Vec<crate::models::Job>>,
+    }
+
+    impl TestJobStore {
+        fn new() -> Self {
+            Self {
+                jobs: RwLock::new(Vec::new()),
+            }
+        }
+
+        async fn add_job(&self, job: crate::models::Job) {
+            self.jobs.write().await.push(job);
+        }
+    }
+
+    #[async_trait]
+    impl crate::storage::JobStore for TestJobStore {
+        async fn list_jobs(&self) -> anyhow::Result<Vec<crate::models::Job>> {
+            Ok(self.jobs.read().await.clone())
+        }
+
+        async fn get_job(&self, id: Uuid) -> anyhow::Result<Option<crate::models::Job>> {
+            Ok(self.jobs.read().await.iter().find(|j| j.id == id).cloned())
+        }
+
+        async fn find_by_name(&self, name: &str) -> anyhow::Result<Option<crate::models::Job>> {
+            Ok(self
+                .jobs
+                .read()
+                .await
+                .iter()
+                .find(|j| j.name == name)
+                .cloned())
+        }
+
+        async fn create_job(
+            &self,
+            _new: crate::models::NewJob,
+        ) -> anyhow::Result<crate::models::Job> {
+            unimplemented!()
+        }
+
+        async fn update_job(
+            &self,
+            id: Uuid,
+            update: crate::models::JobUpdate,
+        ) -> anyhow::Result<crate::models::Job> {
+            let mut jobs = self.jobs.write().await;
+            let job = jobs
+                .iter_mut()
+                .find(|j| j.id == id)
+                .ok_or_else(|| anyhow::anyhow!("Job not found"))?;
+
+            // Apply update
+            if let Some(last_run_at) = update.last_run_at {
+                job.last_run_at = last_run_at;
+            }
+            if let Some(last_exit_code) = update.last_exit_code {
+                job.last_exit_code = last_exit_code;
+            }
+
+            Ok(job.clone())
+        }
+
+        async fn delete_job(&self, _id: Uuid) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_failed_event_sets_exit_code_minus_one() {
+        let job_store = Arc::new(TestJobStore::new());
+        let job_id = Uuid::now_v7();
+
+        // Create a test job with no exit code initially
+        let test_job = crate::models::Job {
+            id: job_id,
+            name: "test-job".to_string(),
+            schedule: "* * * * *".to_string(),
+            execution: crate::models::ExecutionType::ShellCommand("echo test".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+        job_store.add_job(test_job).await;
+
+        // Create broadcast channel for events
+        let (event_tx, mut event_rx) = broadcast::channel::<JobEvent>(16);
+
+        // Spawn event handler (mimicking the updater task from run())
+        let updater_job_store = Arc::clone(&job_store);
+        let updater_handle = tokio::spawn(async move {
+            while let Ok(event) = event_rx.recv().await {
+                match event {
+                    JobEvent::Completed {
+                        job_id,
+                        exit_code,
+                        timestamp,
+                        ..
+                    } => {
+                        let update = crate::models::JobUpdate {
+                            last_run_at: Some(Some(timestamp)),
+                            last_exit_code: Some(Some(exit_code)),
+                            ..Default::default()
+                        };
+                        updater_job_store.update_job(job_id, update).await.unwrap();
+                    }
+                    JobEvent::Failed {
+                        job_id, timestamp, ..
+                    } => {
+                        let update = crate::models::JobUpdate {
+                            last_run_at: Some(Some(timestamp)),
+                            last_exit_code: Some(Some(-1)),
+                            ..Default::default()
+                        };
+                        updater_job_store.update_job(job_id, update).await.unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        // Test sequence:
+        // 1. Completed event with exit code 0
+        let timestamp1 = Utc::now();
+        event_tx
+            .send(JobEvent::Completed {
+                job_id,
+                run_id: Uuid::now_v7(),
+                exit_code: 0,
+                timestamp: timestamp1,
+            })
+            .unwrap();
+
+        // Give the updater task time to process
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let job = job_store.get_job(job_id).await.unwrap().unwrap();
+        assert_eq!(
+            job.last_exit_code,
+            Some(0),
+            "After Completed event, last_exit_code should be 0"
+        );
+
+        // 2. Failed event
+        let timestamp2 = Utc::now();
+        event_tx
+            .send(JobEvent::Failed {
+                job_id,
+                run_id: Uuid::now_v7(),
+                error: "simulated failure".to_string(),
+                timestamp: timestamp2,
+            })
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let job = job_store.get_job(job_id).await.unwrap().unwrap();
+        assert_eq!(
+            job.last_exit_code,
+            Some(-1),
+            "After Failed event, last_exit_code should be -1"
+        );
+
+        // 3. Another Completed event with exit code 0
+        let timestamp3 = Utc::now();
+        event_tx
+            .send(JobEvent::Completed {
+                job_id,
+                run_id: Uuid::now_v7(),
+                exit_code: 0,
+                timestamp: timestamp3,
+            })
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let job = job_store.get_job(job_id).await.unwrap().unwrap();
+        assert_eq!(
+            job.last_exit_code,
+            Some(0),
+            "After second Completed event, last_exit_code should be restored to 0"
+        );
+
+        // Clean up
+        drop(event_tx);
+        updater_handle.await.unwrap();
     }
 }

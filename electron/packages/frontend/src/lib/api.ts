@@ -2,6 +2,7 @@ import type {
   Job,
   NewJob,
   JobUpdate,
+  TriggerParams,
   RunsResponse,
   HealthResponse,
   ServiceStatus,
@@ -128,10 +129,17 @@ export const api = {
     });
   },
 
-  triggerJob(id: string): Promise<{ run_id: string }> {
-    return request<{ run_id: string }>(`/api/jobs/${id}/trigger`, {
-      method: "POST",
-    });
+  triggerJob(
+    id: string,
+    params?: TriggerParams
+  ): Promise<{ message: string; job_id: string; job_name: string; run_id: string }> {
+    return request<{ message: string; job_id: string; job_name: string; run_id: string }>(
+      `/api/jobs/${id}/trigger`,
+      {
+        method: "POST",
+        ...(params && { body: JSON.stringify(params) }),
+      }
+    );
   },
 
   listRuns(
