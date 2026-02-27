@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import Link from "next/link";
+import { Link } from "react-router-dom";
 import { PlayIcon, PencilIcon, TrashIcon } from "@heroicons/react/24/outline";
 import type { Job } from "@/lib/types";
 import { JobStatusBadge } from "@/lib/job-status";
@@ -158,7 +158,7 @@ export function JobTable({
                 </TableCell>
                 <TableCell>
                   <Link
-                    href={`/jobs/${job.id}`}
+                    to={`/jobs/${job.id}`}
                     className="font-medium text-foreground hover:underline"
                   >
                     {job.name}
@@ -213,7 +213,7 @@ export function JobTable({
                           className="h-8 w-8"
                           asChild
                         >
-                          <Link href={`/jobs/${job.id}/edit`}>
+                          <Link to={`/jobs/${job.id}/edit`}>
                             <PencilIcon className="h-4 w-4" />
                           </Link>
                         </Button>

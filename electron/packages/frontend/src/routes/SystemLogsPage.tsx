@@ -1,5 +1,3 @@
-"use client";
-
 import React, { useState, useEffect } from "react";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { Switch } from "@/components/ui/switch";
@@ -8,7 +6,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LogViewer } from "@/components/LogViewer";
 import { useSystemLogs } from "@/hooks/useSystemLogs";
 
-export default function SystemLogsPage() {
+export function SystemLogsPage() {
   const [tail, setTail] = useState("200");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const { logs, loading, error, refresh } = useSystemLogs(Number(tail));

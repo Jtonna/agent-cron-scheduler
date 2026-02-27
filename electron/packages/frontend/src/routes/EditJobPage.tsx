@@ -1,8 +1,5 @@
-"use client";
-
 import React from "react";
-import { useRouter } from "next/navigation";
-import { useRouteParams } from "@/hooks/useRouteParams";
+import { useNavigate, useParams } from "react-router-dom";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { useJob } from "@/hooks/useJob";
 import { JobForm } from "@/components/jobs/JobForm";
@@ -10,16 +7,16 @@ import { api } from "@/lib/api";
 import { toast } from "sonner";
 import type { NewJob } from "@/lib/types";
 
-export function EditJobContent() {
-  const { id } = useRouteParams<{ id: string }>("/jobs/[id]/edit");
-  const router = useRouter();
-  const { job, loading, error } = useJob(id);
+export function EditJobPage() {
+  const navigate = useNavigate();
+  const { id } = useParams<{ id: string }>();
+  const { job, loading, error } = useJob(id!);
 
   const handleSubmit = async (data: NewJob) => {
     try {
-      await api.updateJob(id, data);
+      await api.updateJob(id!, data);
       toast.success("Job updated successfully");
-      router.push(`/jobs/${id}`);
+      navigate(`/jobs/${id}`);
     } catch (err) {
       toast.error(
         `Failed to update job: ${err instanceof Error ? err.message : "Unknown error"}`

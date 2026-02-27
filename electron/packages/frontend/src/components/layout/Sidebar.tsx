@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+
+import { Link, useLocation } from "react-router-dom";
 import {
   HomeIcon,
   DocumentTextIcon,
@@ -77,7 +77,7 @@ interface NavSection {
 }
 
 export function Sidebar() {
-  const pathname = usePathname();
+  const { pathname } = useLocation();
   const { theme, setTheme } = useTheme();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [showRestart, setShowRestart] = useState(false);
@@ -211,7 +211,7 @@ export function Sidebar() {
                           isActive={pathname === item.path}
                           tooltip={item.label}
                         >
-                          <Link href={item.path}>
+                          <Link to={item.path}>
                             <item.icon className="size-4" />
                             <span>{item.label}</span>
                           </Link>
@@ -257,7 +257,7 @@ export function Sidebar() {
                               asChild
                               isActive={pathname === `/jobs/${job.id}`}
                             >
-                              <Link href={`/jobs/${job.id}`}>
+                              <Link to={`/jobs/${job.id}`}>
                                 {job.last_exit_code === null ? (
                                   <ArrowPathIcon className="size-4 text-muted-foreground shrink-0" />
                                 ) : job.last_exit_code === 0 ? (

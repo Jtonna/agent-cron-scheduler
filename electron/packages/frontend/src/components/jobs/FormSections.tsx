@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { useRouter } from "next/navigation";
+import { useNavigate } from "react-router-dom";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -221,7 +221,7 @@ export function FormTopBar({
   title: string; enabled: boolean; setEnabled: (v: boolean) => void;
   submitLabel: string; submitting: boolean;
 }) {
-  const router = useRouter();
+  const navigate = useNavigate();
 
   return (
     <>
@@ -243,7 +243,7 @@ export function FormTopBar({
             type="button"
             variant="secondary"
             size="sm"
-            onClick={() => router.back()}
+            onClick={() => navigate(-1)}
           >
             Cancel
           </Button>

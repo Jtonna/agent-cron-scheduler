@@ -1,7 +1,5 @@
-"use client";
-
 import React, { useCallback } from "react";
-import Link from "next/link";
+import { Link } from "react-router-dom";
 import { ArrowPathIcon, PlusCircleIcon } from "@heroicons/react/24/outline";
 import { useJobs } from "@/hooks/useJobs";
 import { JobTable } from "@/components/jobs/JobTable";
@@ -9,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useSSEEvents } from "@/hooks/useSSE";
 import { toast } from "sonner";
 
-export default function AllJobsPage() {
+export function AllJobsPage() {
   const {
     jobs,
     loading,
@@ -85,7 +83,7 @@ export default function AllJobsPage() {
       <div className="flex items-center justify-between w-full">
         <h1 className="text-2xl font-semibold tracking-tight">All Jobs</h1>
         <Button asChild>
-          <Link href="/jobs/create">
+          <Link to="/jobs/create">
             <PlusCircleIcon className="h-4 w-4 mr-1.5" />
             Create Job
           </Link>
