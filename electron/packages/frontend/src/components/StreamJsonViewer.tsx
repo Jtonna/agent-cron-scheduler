@@ -15,18 +15,7 @@ interface StreamJsonViewerProps {
   maxHeight?: string;
 }
 
-// Event types based on Claude CLI stream-json output
-interface BaseEvent {
-  type: string;
-  [key: string]: unknown;
-}
-
-interface SystemEvent extends BaseEvent {
-  type: "system";
-  session_id?: string;
-  tools?: unknown[];
-  model?: string;
-}
+// ── Claude CLI stream-json event types (real format) ─────────────
 
 interface TextContent {
   type: "text";
@@ -38,6 +27,7 @@ interface ToolUseContent {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  caller?: unknown;
 }
 
 interface ToolResultContent {
@@ -47,25 +37,62 @@ interface ToolResultContent {
   is_error?: boolean;
 }
 
-interface AssistantEvent extends BaseEvent {
+type ContentItem = TextContent | ToolUseContent | ToolResultContent;
+
+interface MessageWrapper {
+  role?: string;
+  content?: ContentItem[];
+  [key: string]: unknown;
+}
+
+interface SystemEvent {
+  type: "system";
+  subtype?: string;
+  session_id?: string;
+  tools?: string[];
+  model?: string;
+  [key: string]: unknown;
+}
+
+interface AssistantEvent {
   type: "assistant";
-  content: Array<TextContent | ToolUseContent>;
+  message?: MessageWrapper;
+  session_id?: string;
+  [key: string]: unknown;
 }
 
-interface UserEvent extends BaseEvent {
+interface UserEvent {
   type: "user";
-  content: Array<ToolResultContent>;
+  message?: MessageWrapper;
+  session_id?: string;
+  tool_use_result?: unknown;
+  [key: string]: unknown;
 }
 
-interface ResultEvent extends BaseEvent {
+interface ResultEvent {
   type: "result";
-  success?: boolean;
-  error?: string;
-  cost?: number;
+  subtype?: string;
+  is_error?: boolean;
+  result?: string;
+  total_cost_usd?: number;
+  duration_ms?: number;
+  num_turns?: number;
   usage?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
-type ParsedEvent = SystemEvent | AssistantEvent | UserEvent | ResultEvent | BaseEvent;
+type ParsedEvent = SystemEvent | AssistantEvent | UserEvent | ResultEvent;
+
+/**
+ * Extract the content array from an event, handling the message wrapper
+ */
+function getContent(event: ParsedEvent): ContentItem[] {
+  if (event.type === "assistant" || event.type === "user") {
+    const msg = (event as AssistantEvent | UserEvent).message;
+    return msg?.content || [];
+  }
+  return [];
+}
 
 /**
  * Tries to parse a single NDJSON line
@@ -85,7 +112,7 @@ function parseJsonLine(line: string): ParsedEvent | null {
 }
 
 /**
- * Lightweight recursive JSON syntax highlighter (same as LogViewer)
+ * Lightweight recursive JSON syntax highlighter
  */
 function JsonSyntaxHighlight({ value, indent = 0 }: { value: unknown; indent?: number }) {
   const pad = "  ".repeat(indent);
@@ -156,7 +183,6 @@ function JsonSyntaxHighlight({ value, indent = 0 }: { value: unknown; indent?: n
       </>
     );
   }
-  // Fallback for any other type
   return <span>{String(value)}</span>;
 }
 
@@ -204,17 +230,18 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
     return events;
   }, [content]);
 
-  // Extract text messages from assistant events
+  // Extract text messages from assistant events (via message.content)
   const textMessages = useMemo(() => {
     return parsedEvents
       .filter((e): e is AssistantEvent => e.type === "assistant")
       .flatMap((e) =>
-        (e.content || []).filter((c): c is TextContent => c.type === "text")
+        getContent(e).filter((c): c is TextContent => c.type === "text")
       )
-      .map((c) => c.text);
+      .map((c) => c.text)
+      .filter((t) => t.trim().length > 0);
   }, [parsedEvents]);
 
-  // Extract tool calls and their results
+  // Extract tool calls and their results (via message.content)
   const toolCalls = useMemo(() => {
     const calls: Array<{
       id: string;
@@ -225,25 +252,21 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
 
     for (const event of parsedEvents) {
       if (event.type === "assistant") {
-        const assistantEvent = event as AssistantEvent;
-        for (const c of assistantEvent.content || []) {
+        for (const c of getContent(event)) {
           if (c.type === "tool_use") {
-            const toolUse = c as ToolUseContent;
             calls.push({
-              id: toolUse.id,
-              name: toolUse.name,
-              input: toolUse.input,
+              id: c.id,
+              name: c.name,
+              input: c.input,
             });
           }
         }
       } else if (event.type === "user") {
-        const userEvent = event as UserEvent;
-        for (const c of userEvent.content || []) {
+        for (const c of getContent(event)) {
           if (c.type === "tool_result") {
-            const toolResult = c as ToolResultContent;
-            const call = calls.find((tc) => tc.id === toolResult.tool_use_id);
+            const call = calls.find((tc) => tc.id === c.tool_use_id);
             if (call) {
-              call.result = toolResult;
+              call.result = c;
             }
           }
         }
@@ -269,8 +292,12 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
     <Tabs defaultValue="raw" className={className}>
       <TabsList className="w-full justify-start">
         <TabsTrigger value="raw">Raw</TabsTrigger>
-        <TabsTrigger value="messages">Messages</TabsTrigger>
-        <TabsTrigger value="tools">Tool Calls</TabsTrigger>
+        <TabsTrigger value="messages">
+          Messages{textMessages.length > 0 && ` (${textMessages.length})`}
+        </TabsTrigger>
+        <TabsTrigger value="tools">
+          Tool Calls{toolCalls.length > 0 && ` (${toolCalls.length})`}
+        </TabsTrigger>
         <TabsTrigger value="all">All Parsed</TabsTrigger>
       </TabsList>
 
@@ -399,7 +426,7 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
           ) : (
             <div className="p-2 space-y-2">
               {parsedEvents.map((event, i) => {
-                const isExpanded = expandedItems.has(1000 + i); // offset to avoid collision
+                const isExpanded = expandedItems.has(1000 + i);
                 const variant = getEventTypeBadgeVariant(event.type);
                 const summary = (() => {
                   if (event.type === "system") {
@@ -407,22 +434,30 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
                     return `Session: ${sys.session_id?.slice(0, 8) || "unknown"}`;
                   }
                   if (event.type === "assistant") {
-                    const asst = event as AssistantEvent;
-                    const textCount = (asst.content || []).filter(
+                    const items = getContent(event);
+                    const textCount = items.filter(
                       (c) => c.type === "text"
                     ).length;
-                    const toolCount = (asst.content || []).filter(
+                    const toolCount = items.filter(
                       (c) => c.type === "tool_use"
                     ).length;
-                    return `${textCount} text, ${toolCount} tool(s)`;
+                    const parts: string[] = [];
+                    if (textCount > 0) parts.push(`${textCount} text`);
+                    if (toolCount > 0) parts.push(`${toolCount} tool(s)`);
+                    return parts.length > 0 ? parts.join(", ") : "empty";
                   }
                   if (event.type === "user") {
-                    const usr = event as UserEvent;
-                    return `${(usr.content || []).length} tool result(s)`;
+                    const items = getContent(event);
+                    return `${items.length} tool result(s)`;
                   }
                   if (event.type === "result") {
                     const res = event as ResultEvent;
-                    return res.success ? "Success" : `Error: ${res.error}`;
+                    if (res.is_error) {
+                      return `Error: ${res.result || "unknown"}`;
+                    }
+                    const cost = res.total_cost_usd;
+                    const costStr = cost != null ? ` ($${cost.toFixed(4)})` : "";
+                    return `${res.subtype || "done"}${costStr}`;
                   }
                   return JSON.stringify(event).slice(0, 50) + "...";
                 })();
