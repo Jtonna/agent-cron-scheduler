@@ -209,7 +209,7 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
     return parsedEvents
       .filter((e): e is AssistantEvent => e.type === "assistant")
       .flatMap((e) =>
-        e.content.filter((c): c is TextContent => c.type === "text")
+        (e.content || []).filter((c): c is TextContent => c.type === "text")
       )
       .map((c) => c.text);
   }, [parsedEvents]);
@@ -226,7 +226,7 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
     for (const event of parsedEvents) {
       if (event.type === "assistant") {
         const assistantEvent = event as AssistantEvent;
-        for (const c of assistantEvent.content) {
+        for (const c of assistantEvent.content || []) {
           if (c.type === "tool_use") {
             const toolUse = c as ToolUseContent;
             calls.push({
@@ -238,7 +238,7 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
         }
       } else if (event.type === "user") {
         const userEvent = event as UserEvent;
-        for (const c of userEvent.content) {
+        for (const c of userEvent.content || []) {
           if (c.type === "tool_result") {
             const toolResult = c as ToolResultContent;
             const call = calls.find((tc) => tc.id === toolResult.tool_use_id);
