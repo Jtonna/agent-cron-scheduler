@@ -6,6 +6,8 @@ import {
   PlayIcon,
   TrashIcon,
   ArrowPathIcon,
+  PlusIcon,
+  XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { useJob } from "@/hooks/useJob";
 import { useRuns } from "@/hooks/useRuns";
@@ -34,11 +36,22 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { useSSEEvents } from "@/hooks/useSSE";
 import { api } from "@/lib/api";
 import { formatDate, formatBytes } from "@/lib/format";
 import { toast } from "sonner";
-import type { JobRun } from "@/lib/types";
+import type { JobRun, TriggerParams } from "@/lib/types";
 
 const PAGE_SIZE = 15;
 
@@ -65,6 +78,14 @@ export function JobDetailPage() {
 
   const [showDelete, setShowDelete] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+
+  // Trigger with overrides state
+  const [showTriggerOverrides, setShowTriggerOverrides] = useState(false);
+  const [triggerArgs, setTriggerArgs] = useState("");
+  const [triggerEnv, setTriggerEnv] = useState<Array<{ key: string; value: string }>>([
+    { key: "", value: "" },
+  ]);
+  const [triggerInput, setTriggerInput] = useState("");
 
   // When runs from the hook changes and we're on page 0, replace allRuns
   useEffect(() => {
@@ -143,6 +164,67 @@ export function JobDetailPage() {
     }
   };
 
+  const handleTriggerWithOverrides = async () => {
+    setActionLoading(true);
+    try {
+      const params: TriggerParams = {};
+
+      // Add args if not empty
+      if (triggerArgs.trim()) {
+        params.args = triggerArgs.trim();
+      }
+
+      // Add env if there are non-empty key pairs
+      const envPairs = triggerEnv.filter((pair) => pair.key.trim() !== "");
+      if (envPairs.length > 0) {
+        params.env = envPairs.reduce((acc, pair) => {
+          acc[pair.key] = pair.value;
+          return acc;
+        }, {} as Record<string, string>);
+      }
+
+      // Add input if not empty
+      if (triggerInput.trim()) {
+        params.input = triggerInput.trim();
+      }
+
+      const result = await api.triggerJob(id!, params);
+      toast.success("Job triggered with overrides");
+      setShowTriggerOverrides(false);
+      resetTriggerForm();
+      refreshRuns();
+      if (result?.run_id) {
+        navigate(`/jobs/${id}/runs/${result.run_id}`);
+      }
+    } catch (err) {
+      toast.error(
+        `Failed to trigger: ${err instanceof Error ? err.message : "Unknown error"}`
+      );
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const resetTriggerForm = () => {
+    setTriggerArgs("");
+    setTriggerEnv([{ key: "", value: "" }]);
+    setTriggerInput("");
+  };
+
+  const addEnvRow = () => {
+    setTriggerEnv([...triggerEnv, { key: "", value: "" }]);
+  };
+
+  const removeEnvRow = (index: number) => {
+    setTriggerEnv(triggerEnv.filter((_, i) => i !== index));
+  };
+
+  const updateEnvRow = (index: number, field: "key" | "value", value: string) => {
+    const updated = [...triggerEnv];
+    updated[index][field] = value;
+    setTriggerEnv(updated);
+  };
+
   if (jobLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -199,6 +281,15 @@ export function JobDetailPage() {
               <PlayIcon className="h-4 w-4 mr-1.5" />
             )}
             Trigger
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTriggerOverrides(true)}
+            disabled={actionLoading}
+          >
+            <PlayIcon className="h-4 w-4 mr-1.5" />
+            Trigger with Overrides
           </Button>
           <Button
             variant="destructive"
@@ -388,6 +479,128 @@ export function JobDetailPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Trigger with Overrides Modal */}
+      <Dialog
+        open={showTriggerOverrides}
+        onOpenChange={(open) => {
+          setShowTriggerOverrides(open);
+          if (!open) {
+            resetTriggerForm();
+          }
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Trigger with Overrides</DialogTitle>
+            <DialogDescription>
+              Override parameters for this run only. These do not modify the job
+              definition.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-4">
+            {/* Additional Arguments */}
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="trigger-args">Additional Arguments</Label>
+              <Input
+                id="trigger-args"
+                value={triggerArgs}
+                onChange={(e) => setTriggerArgs(e.target.value)}
+                placeholder="e.g. --verbose --dry-run"
+                className="font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Extra command-line arguments to append
+              </p>
+            </div>
+
+            {/* Environment Variables */}
+            <div className="flex flex-col gap-2">
+              <Label>Environment Variables</Label>
+              <div className="flex flex-col gap-2">
+                {triggerEnv.map((pair, index) => (
+                  <div key={index} className="flex gap-2 items-center">
+                    <Input
+                      value={pair.key}
+                      onChange={(e) => updateEnvRow(index, "key", e.target.value)}
+                      placeholder="KEY"
+                      className="font-mono text-sm flex-1"
+                    />
+                    <Input
+                      value={pair.value}
+                      onChange={(e) => updateEnvRow(index, "value", e.target.value)}
+                      placeholder="value"
+                      className="font-mono text-sm flex-1"
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => removeEnvRow(index)}
+                      disabled={triggerEnv.length === 1}
+                    >
+                      <XMarkIcon className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={addEnvRow}
+                  className="self-start"
+                >
+                  <PlusIcon className="h-4 w-4 mr-1.5" />
+                  Add Variable
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Additional or override environment variables
+              </p>
+            </div>
+
+            {/* Stdin Input */}
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="trigger-input">Stdin Input</Label>
+              <Textarea
+                id="trigger-input"
+                value={triggerInput}
+                onChange={(e) => setTriggerInput(e.target.value)}
+                placeholder="Text to pipe to stdin..."
+                className="font-mono text-sm"
+                rows={4}
+              />
+              <p className="text-xs text-muted-foreground">
+                Data to send to the command's standard input
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setShowTriggerOverrides(false);
+                resetTriggerForm();
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleTriggerWithOverrides} disabled={actionLoading}>
+              {actionLoading ? (
+                <>
+                  <ArrowPathIcon className="h-4 w-4 mr-1.5 animate-spin" />
+                  Triggering...
+                </>
+              ) : (
+                <>
+                  <PlayIcon className="h-4 w-4 mr-1.5" />
+                  Trigger
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
