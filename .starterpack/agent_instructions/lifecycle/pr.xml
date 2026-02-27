@@ -1,11 +1,12 @@
 <lifecycle name="PR">
 
   <summary>
-    Creates the pull request, closes the ticket, and handles the next-child loop
-    for multi-ticket work.
+    Creates the pull request, waits for CI checks to pass, closes the ticket,
+    and handles the next-child loop for multi-ticket work.
   </summary>
 
   <uses-behavior name="pr-template" />
+  <uses-behavior name="ci-gate" />
   <uses-behavior name="response-format" lifecycle="PR" />
 
   <!--
@@ -14,11 +15,26 @@
     [PREPARE_AND_SUBMIT]
         |
         v
+    [CI_GATE]
+        |
+        +~~ checks pass ~~> [HANDOFF]
+        |
+        +~~ checks fail ~~> report to orchestrator
+        |                     |
+        |                     +~~ orchestrator resolves ~~> re-push ~~> [CI_GATE]
+        |                     |
+        |                     +~~ unresolvable ~~> HUMAN escalation
+        |
+        +~~ no checks ~~> [HANDOFF]
+        |
+        +~~ timed out ~~> report to human
+        |
+        v
     [HANDOFF]
         |
         +~~ more children ~~> [PLANNING]
         |
-        +~~ feature branch done ~~> [FINAL_PR] ~~> complete
+        +~~ feature branch done ~~> [FINAL_PR] ~~> [FINAL_CI_GATE] ~~> complete
         |
         +~~ done ~~> complete
   -->
@@ -35,11 +51,32 @@
       <action>Create the PR via "gh pr create" targeting the base branch</action>
       <action>Report the PR URL back to the orchestrator</action>
     </actions>
-    <on-success>Proceed to HANDOFF</on-success>
+    <on-success>Proceed to CI_GATE</on-success>
     <on-failure>Stop and report failure to human</on-failure>
   </phase>
 
-  <phase name="HANDOFF" order="2">
+  <phase name="CI_GATE" order="2">
+    <actor>Orchestrator launches a submitter agent (light tier)</actor>
+    <actions>
+      <action>Wait for CI checks on the PR using the ci-gate behavior protocol</action>
+      <action>Produce a CI report (PASSED, FAILED, NO CHECKS CONFIGURED, or TIMED OUT)</action>
+      <action>Return the CI report to the orchestrator</action>
+    </actions>
+    <on-success>
+      If CI_PASS or CI_NONE: proceed to HANDOFF.
+    </on-success>
+    <on-failure>
+      If CI_FAIL: the orchestrator classifies the failure.
+      Technical failures (test errors, lint errors, build failures):
+      the orchestrator spawns an implementer agent to resolve the failing checks,
+      commits and pushes the fix, then re-enters CI_GATE.
+      Requirements failures (missing configuration, infrastructure issues):
+      the orchestrator escalates to the human.
+      If CI_TIMED_OUT: the orchestrator reports to the human for guidance.
+    </on-failure>
+  </phase>
+
+  <phase name="HANDOFF" order="3">
     <actor>Orchestrator (reasoning tier)</actor>
     <actions>
       <action>Report PR URL to the human for review.</action>
@@ -61,7 +98,7 @@
     <on-failure>Stop and report failure to human</on-failure>
   </phase>
 
-  <phase name="FINAL_PR" order="3">
+  <phase name="FINAL_PR" order="4">
     <actor>Orchestrator launches a PR agent (reasoning tier)</actor>
     <actions>
       <action>
@@ -74,10 +111,27 @@
       </action>
       <action>Push the feature branch to remote</action>
       <action>Create the final PR from the feature branch to main via "gh pr create"</action>
-      <action>Report the final PR URL to the human for review.</action>
+      <action>Report the final PR URL to the orchestrator</action>
     </actions>
-    <on-success>Lifecycle complete</on-success>
+    <on-success>Proceed to FINAL_CI_GATE</on-success>
     <on-failure>Stop and report failure to human</on-failure>
+  </phase>
+
+  <phase name="FINAL_CI_GATE" order="5">
+    <actor>Orchestrator launches a submitter agent (light tier)</actor>
+    <actions>
+      <action>Wait for CI checks on the final PR using the ci-gate behavior protocol</action>
+      <action>Produce a CI report (PASSED, FAILED, NO CHECKS CONFIGURED, or TIMED OUT)</action>
+      <action>Return the CI report to the orchestrator</action>
+    </actions>
+    <on-success>
+      If CI_PASS or CI_NONE: report the final PR URL to the human for review. Lifecycle complete.
+    </on-success>
+    <on-failure>
+      If CI_FAIL: the orchestrator classifies the failure and spawns an implementer
+      to resolve, then re-enters FINAL_CI_GATE after the fix is pushed.
+      If CI_TIMED_OUT: the orchestrator reports to the human for guidance.
+    </on-failure>
   </phase>
 
 </lifecycle>

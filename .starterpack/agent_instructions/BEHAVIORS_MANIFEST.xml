@@ -58,4 +58,10 @@
     naming conventions, and how to register new lifecycles in the manifest.
   </behavior>
 
+  <behavior name="ci-gate" file="behaviors/ci-gate.xml">
+    Protocol for waiting on CI/CD status checks after a pull request is created.
+    Covers how to poll for check results, interpret outcomes, and structure reports
+    for passed, failed, and no-checks-configured scenarios.
+  </behavior>
+
 </behaviors-manifest>

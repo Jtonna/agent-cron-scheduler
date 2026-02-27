@@ -11,3 +11,15 @@ electron/packages/app/out/
 
 # Claude Code
 .claude/settings.local.json
+
+# starterpack — these paths must be tracked by git
+!.beads/
+!.beads/**
+!.starterpack/
+!.starterpack/**
+!.claude/
+!.claude/**
+!.github/
+!.github/**
+!CLAUDE.md
+!.gitattributes

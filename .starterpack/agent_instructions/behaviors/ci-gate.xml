@@ -1,0 +1,84 @@
+<behavior name="ci-gate">
+
+  <summary>
+    Protocol for waiting on CI/CD status checks after a pull request is created.
+    Covers how to poll for check results, interpret outcomes, and structure reports
+    for passed, failed, and no-checks-configured scenarios.
+  </summary>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       WAITING PROTOCOL
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="waiting-protocol">
+
+    <rule order="1">
+      After a pull request URL is available, run:
+        gh pr checks {pr-url} --watch --fail-fast
+      This blocks until all checks complete or any check fails.
+    </rule>
+
+    <rule order="2">
+      If the command exits with code 0, all checks passed. Produce a CI_PASS report.
+    </rule>
+
+    <rule order="3">
+      If the command exits with a non-zero code, one or more checks failed.
+      Run the following to capture details:
+        gh pr checks {pr-url}
+      Produce a CI_FAIL report including the names and statuses of all checks.
+    </rule>
+
+    <rule order="4">
+      If the command produces no output or indicates no checks are configured
+      for the repository, produce a CI_NONE report.
+    </rule>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       REPORT FORMATS
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="report-formats">
+
+    <rule name="CI_PASS_FORMAT">
+      CI REPORT — PASSED
+      PR: {pr-url}
+      Checks: {count} passed
+      Details: {list of check names and statuses}
+    </rule>
+
+    <rule name="CI_FAIL_FORMAT">
+      CI REPORT — FAILED
+      PR: {pr-url}
+      Failed checks: {list of failed check names}
+      Passed checks: {list of passed check names, if any}
+      Details: {full output of gh pr checks}
+    </rule>
+
+    <rule name="CI_NONE_FORMAT">
+      CI REPORT — NO CHECKS CONFIGURED
+      PR: {pr-url}
+      No CI checks are configured for this repository.
+    </rule>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       TIMEOUT
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="timeout">
+
+    <rule name="TIMEOUT_HANDLING">
+      If checks have not completed after 10 minutes, stop waiting and produce a report:
+      CI REPORT — TIMED OUT
+      PR: {pr-url}
+      Status: Checks still pending after 10-minute timeout.
+      Details: {current status of each check}
+    </rule>
+
+  </section>
+
+</behavior>

@@ -49,9 +49,9 @@
   </phase>
 
   <phase name="PR" file="lifecycle/pr.xml">
-    Closes ticket, pushes, and creates pull request for human review.
+    Closes ticket, pushes, creates pull request, and waits for CI checks to pass.
     Handles next-child loop and final feature-branch PR.
-    Behaviors: pr-template, response-format
+    Behaviors: pr-template, ci-gate, response-format
   </phase>
 
   <phase name="AUTHORING_BEHAVIORS_AND_LIFECYCLES" file="lifecycle/authoring-behaviors-and-lifecycles.xml" on-demand="true">
