@@ -408,17 +408,17 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
                   }
                   if (event.type === "assistant") {
                     const asst = event as AssistantEvent;
-                    const textCount = asst.content.filter(
+                    const textCount = (asst.content || []).filter(
                       (c) => c.type === "text"
                     ).length;
-                    const toolCount = asst.content.filter(
+                    const toolCount = (asst.content || []).filter(
                       (c) => c.type === "tool_use"
                     ).length;
                     return `${textCount} text, ${toolCount} tool(s)`;
                   }
                   if (event.type === "user") {
                     const usr = event as UserEvent;
-                    return `${usr.content.length} tool result(s)`;
+                    return `${(usr.content || []).length} tool result(s)`;
                   }
                   if (event.type === "result") {
                     const res = event as ResultEvent;
