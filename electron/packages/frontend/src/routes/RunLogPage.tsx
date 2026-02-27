@@ -11,6 +11,7 @@ import { useSSEEvents } from "@/hooks/useSSE";
 import { Badge, statusToBadgeVariant } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { LogViewer } from "@/components/LogViewer";
+import { StreamJsonViewer } from "@/components/StreamJsonViewer";
 import { formatDate, formatBytes } from "@/lib/format";
 import { api } from "@/lib/api";
 import type { JobRun } from "@/lib/types";
@@ -136,6 +137,29 @@ export function RunLogPage() {
 
   const displayContent = log + streamedContent;
 
+  /**
+   * Detect if content is stream-json format (NDJSON with type field)
+   */
+  function isStreamJson(content: string): boolean {
+    if (!content) return false;
+    const lines = content.split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object" && "type" in parsed) {
+          return true;
+        }
+      } catch {
+        // not JSON, keep checking other lines
+      }
+      // Only check first non-empty line
+      break;
+    }
+    return false;
+  }
+
   function statusIcon(status: string, exitCode: number | null) {
     if (status === "Running") {
       return <ArrowPathIcon className="h-4 w-4 text-primary animate-spin" />;
@@ -237,12 +261,21 @@ export function RunLogPage() {
       )}
 
       {/* Log viewer */}
-      <LogViewer
-        content={displayContent}
-        loading={logLoading}
-        error={logError}
-        live={run?.status === "Running"}
-      />
+      {isStreamJson(displayContent) ? (
+        <StreamJsonViewer
+          content={displayContent}
+          loading={logLoading}
+          error={logError}
+          live={run?.status === "Running"}
+        />
+      ) : (
+        <LogViewer
+          content={displayContent}
+          loading={logLoading}
+          error={logError}
+          live={run?.status === "Running"}
+        />
+      )}
     </div>
   );
 }
