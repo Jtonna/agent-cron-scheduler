@@ -139,23 +139,32 @@ export function RunLogPage() {
 
   /**
    * Detect if content is stream-json format (NDJSON with type field)
+   * Skips ACS log headers (command echo, environment block) to find the first real JSON line
    */
   function isStreamJson(content: string): boolean {
     if (!content) return false;
     const lines = content.split("\n");
-    for (const line of lines) {
-      const trimmed = line.trim();
+    let inEnvBlock = false;
+    const limit = Math.min(lines.length, 30);
+    for (let i = 0; i < limit; i++) {
+      const trimmed = lines[i].trim();
       if (!trimmed) continue;
+      // Skip environment block delimiters
+      if (trimmed.startsWith("=== ") && trimmed.endsWith(" ===")) {
+        inEnvBlock = !inEnvBlock;
+        continue;
+      }
+      // Skip lines inside environment block
+      if (inEnvBlock) continue;
+      // Skip command echo line
+      if (trimmed.startsWith("$ ")) continue;
+      // First real content line — check if it's stream-json
       try {
         const parsed = JSON.parse(trimmed);
-        if (parsed && typeof parsed === "object" && "type" in parsed) {
-          return true;
-        }
+        return parsed && typeof parsed === "object" && "type" in parsed;
       } catch {
-        // not JSON, keep checking other lines
+        return false;
       }
-      // Only check first non-empty line
-      break;
     }
     return false;
   }
