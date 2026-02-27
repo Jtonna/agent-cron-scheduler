@@ -906,6 +906,7 @@ pub async fn start_daemon(
                     tracing::warn!("Job run {} failed: {}", run_id, error);
                     let update = crate::models::JobUpdate {
                         last_run_at: Some(Some(timestamp)),
+                        last_exit_code: Some(Some(-1)),
                         ..Default::default()
                     };
                     if let Err(e) = updater_job_store.update_job(job_id, update).await {
