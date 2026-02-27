@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeftIcon,
   ArrowPathIcon,
+  PlayIcon,
 } from "@heroicons/react/24/outline";
 import { CheckCircleIcon, XCircleIcon } from "@heroicons/react/20/solid";
 import { useRunLog } from "@/hooks/useRunLog";
@@ -13,14 +14,17 @@ import { LogViewer } from "@/components/LogViewer";
 import { formatDate, formatBytes } from "@/lib/format";
 import { api } from "@/lib/api";
 import type { JobRun } from "@/lib/types";
+import { toast } from "sonner";
 
 export function RunLogPage() {
   const { id: jobId, runId } = useParams<{ id: string; runId: string }>();
+  const navigate = useNavigate();
 
   const [run, setRun] = useState<JobRun | null>(null);
   const [runLoading, setRunLoading] = useState(true);
   const [runError, setRunError] = useState<string | null>(null);
   const [streamedContent, setStreamedContent] = useState<string>("");
+  const [retryLoading, setRetryLoading] = useState(false);
 
   const isRunning = run?.status === "Running";
   const { log, loading: logLoading, error: logError, refresh: refreshLog } = useRunLog(runId!, isRunning ? 3000 : undefined);
@@ -51,6 +55,24 @@ export function RunLogPage() {
   useEffect(() => {
     setStreamedContent("");
   }, [runId]);
+
+  const handleRetry = async () => {
+    if (!run || !jobId) return;
+    setRetryLoading(true);
+    try {
+      const result = await api.triggerJob(jobId, run.trigger_params ?? undefined);
+      toast.success("Job triggered");
+      if (result?.run_id) {
+        navigate(`/jobs/${jobId}/runs/${result.run_id}`);
+      }
+    } catch (err) {
+      toast.error(
+        `Failed to retry: ${err instanceof Error ? err.message : "Unknown error"}`
+      );
+    } finally {
+      setRetryLoading(false);
+    }
+  };
 
   // SSE streaming for live output + run status updates
   useSSEEvents(
@@ -187,6 +209,22 @@ export function RunLogPage() {
             <span className="text-xs text-muted-foreground">
               {formatBytes(run.log_size_bytes)}
             </span>
+
+            <div className="ml-auto">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleRetry}
+                disabled={run.status === "Running" || retryLoading}
+              >
+                {retryLoading ? (
+                  <ArrowPathIcon className="h-4 w-4 mr-1.5 animate-spin" />
+                ) : (
+                  <PlayIcon className="h-4 w-4 mr-1.5" />
+                )}
+                Retry
+              </Button>
+            </div>
           </div>
 
           {/* Error line (only if present) */}
