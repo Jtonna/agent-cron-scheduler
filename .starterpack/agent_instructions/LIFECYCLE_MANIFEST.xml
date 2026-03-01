@@ -61,4 +61,11 @@
     Behaviors: create-behavior, create-lifecycle
   </phase>
 
+  <phase name="NIGHTLY_AUTONOMOUS_RUN" file="lifecycle/nightly-autonomous-run.xml" on-demand="true">
+    On-demand pre-flight gate for tickets labeled autonomously-nightly. Acts as an
+    alternative entry point that assesses ticket completeness, then either activates
+    autonomous mode on the standard workflow or posts clarifying questions and exits.
+    Behaviors: autonomous-nightly, response-format
+  </phase>
+
 </lifecycle-manifest>

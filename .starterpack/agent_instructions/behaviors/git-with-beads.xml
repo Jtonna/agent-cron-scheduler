@@ -58,6 +58,24 @@
   </section>
 
   <!-- ═══════════════════════════════════════════════════════════════════════
+       ADD-ON LABELS
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="add-on-labels">
+    <rule name="LABELS_ARE_ADDITIVE">
+      Add-on labels are optional tags applied to tickets alongside their issue type
+      using "bd label add {id} label-name". They do NOT affect branch naming or
+      commit format — those are determined solely by the ticket's issue type.
+    </rule>
+
+    <label name="autonomously-nightly">
+      Signals that the ticket will be executed by an AI agent running the full
+      workflow in autonomous mode with no human at the gates. Applied via:
+        bd label add {id} "autonomously-nightly"
+    </label>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
        COMMIT DISCIPLINE
        ═══════════════════════════════════════════════════════════════════════ -->
 

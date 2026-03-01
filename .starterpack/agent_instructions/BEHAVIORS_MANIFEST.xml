@@ -64,4 +64,9 @@
     for passed, failed, and no-checks-configured scenarios.
   </behavior>
 
+  <behavior name="autonomous-nightly" file="behaviors/autonomous-nightly.xml">
+    How to assess whether a ticket has enough information for autonomous execution,
+    how to request clarification when it does not, and PR merge rules for autonomous work.
+  </behavior>
+
 </behaviors-manifest>

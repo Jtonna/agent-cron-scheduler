@@ -83,6 +83,15 @@ The `[skip ci]` tag prevents the GitHub Action from triggering on these housekee
 | Label | Purpose |
 |-------|---------|
 | `pending-close` | Applied on feature branches when an issue is closed in beads but the branch hasn't merged yet |
+| `autonomously-nightly` | Applied when the beads ticket has the `autonomously-nightly` label, indicating it will be executed autonomously by an AI agent |
+
+### Add-On Labels
+
+Add-on labels are optional beads labels applied alongside issue types using `bd label add {id} "label-name"`. They are orthogonal to issue type — a ticket keeps its original type and branch prefix. Add-on labels sync directly to GitHub with the same name.
+
+| Beads Label | GitHub Label |
+|-------------|-------------|
+| `autonomously-nightly` | `autonomously-nightly` |
 
 ## Status Mapping (for GitHub Projects)
 

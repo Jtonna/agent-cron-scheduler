@@ -136,6 +136,12 @@ build_labels() {
     3) labels="$labels,priority:low" ;;
   esac
 
+  # Add-on labels
+  local raw_labels="${3:-}"
+  if [[ ",$raw_labels," == *",autonomously-nightly,"* ]]; then
+    labels="$labels,autonomously-nightly"
+  fi
+
   echo "$labels"
 }
 
@@ -385,7 +391,7 @@ setup_project_fields
 
 # Ensure labels exist
 if [[ "$DRY_RUN" == "false" ]]; then
-  for label in task epic "priority:critical" "priority:high" "priority:medium" "priority:low" "pending-close"; do
+  for label in task epic "priority:critical" "priority:high" "priority:medium" "priority:low" "pending-close" "autonomously-nightly"; do
     gh label create "$label" --repo "$GITHUB_REPOSITORY" --force 2>/dev/null || true
   done
 fi
@@ -411,6 +417,7 @@ while IFS= read -r line; do
   status=$(echo "$line" | jq -r '.status // "open"')
   issue_type=$(echo "$line" | jq -r '.issue_type // "task"')
   priority=$(echo "$line" | jq -r '.priority // 2')
+  raw_labels=$(echo "$line" | jq -r '.labels // [] | join(",")')
 
   # Skip tombstones and ephemeral events
   if [[ "$status" == "tombstone" ]] || [[ "$issue_type" == "event" ]]; then
@@ -419,7 +426,7 @@ while IFS= read -r line; do
   fi
 
   column=$(map_status_to_column "$status")
-  labels=$(build_labels "$issue_type" "$priority")
+  labels=$(build_labels "$issue_type" "$priority" "$raw_labels")
 
   # Build body with beads metadata footer
   body="${description}
