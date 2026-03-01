@@ -1,0 +1,107 @@
+<lifecycle name="NIGHTLY_AUTONOMOUS_RUN">
+
+  <summary>
+    On-demand pre-flight gate for tickets labeled autonomously-nightly. Acts as an
+    alternative entry point that assesses ticket completeness, then either activates
+    autonomous mode on the standard workflow or posts clarifying questions and exits.
+  </summary>
+
+  <uses-behavior name="autonomous-nightly" />
+  <uses-behavior name="response-format" lifecycle="NIGHTLY_AUTONOMOUS_RUN" />
+
+  <loop>
+    <!--
+      [START]
+          |
+          v
+      [Phase 1: DETECT]
+          |
+          +~~ label NOT present ~~> [EXIT — lifecycle does not apply]
+          |
+          +~~ command failure ~~> [EXIT — report error]
+          |
+          +~~ label present ~~> [Phase 2: ASSESS]
+                                    |
+                                    +~~ INCOMPLETE ~~> [Phase 3: ROUTE_INCOMPLETE] ~~> [EXIT — questions posted]
+                                    |
+                                    +~~ COMPLETE ~~> [Phase 4: ROUTE_COMPLETE] ~~> [ENTRY lifecycle, autonomous mode]
+    -->
+
+    <phase name="DETECT" order="1">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>Read the ticket using "bd show {id}".</action>
+        <action>
+          Run "bd label list {id}" to retrieve the ticket's labels.
+          If the command fails (error, unrecognized subcommand), report the
+          error and exit. Do not treat a command failure as "label not present."
+        </action>
+        <action>
+          If the command succeeds but the "autonomously-nightly" label is NOT
+          in the results, report that this lifecycle does not apply and exit.
+        </action>
+      </actions>
+      <on-success>Label confirmed — proceed to ASSESS.</on-success>
+      <on-failure>Exit — command error or label not present.</on-failure>
+    </phase>
+
+    <phase name="ASSESS" order="2">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>
+          Apply the autonomous-nightly behavior's ticket-assessment rules to the
+          ticket content retrieved in DETECT.
+        </action>
+        <action>
+          Determine whether the ticket has sufficient information for autonomous
+          execution. Produce a verdict: COMPLETE or INCOMPLETE.
+        </action>
+      </actions>
+      <on-success>
+        If COMPLETE, proceed to ROUTE_COMPLETE.
+        If INCOMPLETE, proceed to ROUTE_INCOMPLETE.
+      </on-success>
+      <on-failure>Exit and report the assessment failure.</on-failure>
+    </phase>
+
+    <phase name="ROUTE_INCOMPLETE" order="3">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>
+          Apply the autonomous-nightly behavior's insufficient-information rules:
+          formulate questions, find the GitHub issue, tag the repository owner,
+          and post the comment.
+        </action>
+      </actions>
+      <on-success>Exit — questions posted, no further action.</on-success>
+      <on-failure>Report the failure to post questions and exit.</on-failure>
+    </phase>
+
+    <phase name="ROUTE_COMPLETE" order="4">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>
+          Activate autonomous mode — all human gates in the standard workflow
+          are auto-approved for this ticket. The following configuration is
+          pre-set and not prompted:
+          - Scope: single ticket (current ticket only).
+          - Docs phase: run normally (scout, audit if needed, auto-approve changes).
+        </action>
+        <action>
+          Apply the autonomous-nightly behavior's pr-merge-rules for PR handling.
+        </action>
+        <action>
+          Log the autonomous mode activation in the status output.
+        </action>
+      </actions>
+      <on-success>
+        Proceed to the standard ENTRY lifecycle flow. The standard sequence
+        (ENTRY branch setup, PLANNING, IMPLEMENTATION, DOCS, PR) runs with
+        all human gates auto-approved.
+      </on-success>
+      <on-failure>Report the failure and exit. Do not proceed to the standard workflow.</on-failure>
+    </phase>
+
+  </loop>
+
+</lifecycle>

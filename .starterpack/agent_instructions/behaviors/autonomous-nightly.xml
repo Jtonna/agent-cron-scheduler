@@ -1,0 +1,160 @@
+<behavior name="autonomous-nightly">
+
+  <summary>
+    How to assess whether a ticket has enough information for autonomous execution,
+    how to request clarification when it does not, and PR merge rules for autonomous work.
+  </summary>
+
+  <definition>
+    When a ticket carries the autonomously-nightly label, the agent must evaluate the
+    ticket's completeness BEFORE beginning any work. If the ticket contains enough
+    information to execute without human input, the agent proceeds with all gates
+    auto-approved. If the ticket is incomplete, the agent posts targeted questions
+    on the corresponding GitHub issue and exits without doing any work.
+  </definition>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       TICKET ASSESSMENT
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="ticket-assessment">
+
+    <rule name="ASSESSMENT_GATE">
+      Before starting any work on an autonomously-nightly ticket, run through every
+      criterion below. ALL must pass for the ticket to be considered complete enough
+      for autonomous execution. If any criterion fails, the ticket is incomplete.
+    </rule>
+
+    <rule name="CLEAR_SCOPE">
+      The ticket must make it obvious what to change and where the boundaries are.
+      You should be able to answer: "What files or components are affected?" and
+      "What is NOT part of this work?" If the scope is ambiguous or open-ended
+      (e.g., "improve the API" with no specifics), the ticket is incomplete.
+    </rule>
+
+    <rule name="EXPECTED_BEHAVIOR">
+      The ticket must describe what the result looks like when the work is done.
+      This can be explicit acceptance criteria, a description of expected behavior,
+      before/after examples, or a clear statement of the problem being fixed.
+      If you cannot determine how to verify the work is correct, the ticket is incomplete.
+    </rule>
+
+    <rule name="BOUNDED_WORK">
+      The work must be finishable in a single pass — no multi-phase rollouts,
+      no "phase 1 of N" without a clear deliverable, no dependency on external
+      systems being set up first. If completing the ticket requires waiting on
+      something outside the repository, the ticket is incomplete.
+    </rule>
+
+    <rule name="NO_AMBIGUOUS_DECISIONS">
+      The ticket must not require judgment calls about design, architecture, or
+      user-facing behavior that could reasonably go multiple ways. If the
+      implementation approach is not obvious from the description and you would
+      normally ask a human "do you want A or B?", the ticket is incomplete.
+      Minor implementation details (variable names, internal structure) do not
+      count — only decisions that affect the outcome or public interface.
+    </rule>
+
+    <rule name="EDGE_CASES">
+      If the work involves input handling, error paths, or boundary conditions,
+      the ticket should either address them or the correct handling should be
+      obvious from context. If there are edge cases where the right behavior is
+      genuinely unclear, the ticket is incomplete.
+    </rule>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       INSUFFICIENT INFORMATION HANDLING
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="insufficient-information">
+
+    <rule order="1">
+      When assessment fails, identify every criterion that failed and draft one
+      specific, actionable question per gap. Do not ask vague questions like
+      "can you clarify the scope?" — instead ask exactly what is missing.
+
+      <example>
+        BAD:  "Can you clarify what this ticket means?"
+        GOOD: "Should the new endpoint return a 404 or an empty array when no
+               records match the filter?"
+      </example>
+      <example>
+        BAD:  "What files should I change?"
+        GOOD: "This ticket says 'update the auth flow' but the repo has both
+               a session-based auth module (src/auth/session.ts) and a
+               JWT module (src/auth/jwt.ts) — which one is in scope?"
+      </example>
+    </rule>
+
+    <rule order="2">
+      Find the GitHub issue number for the ticket. Look in .beads/github-map.json
+      for a mapping from the beads ticket ID to the GitHub issue number. If no
+      mapping exists, search GitHub issues for the ticket title:
+        gh issue list --search "{ticket title}" --json number,title --limit 5
+      If no matching issue is found, create one:
+        gh issue create --title "{ticket title}" --body "Linked to beads ticket {id}"
+      Record the issue number for the next step.
+    </rule>
+
+    <rule order="3">
+      Determine the repository owner:
+        gh repo view --json owner --jq ".owner.login"
+      Store the result as {owner}.
+    </rule>
+
+    <rule order="4">
+      Post a comment on the GitHub issue tagging the repository owner with all
+      the questions. Format the comment as follows:
+
+        gh issue comment {number} --body "@{owner} This ticket needs clarification before autonomous execution:
+
+        {numbered list of specific questions}
+
+        This ticket is labeled autonomously-nightly but cannot proceed without answers to the above.
+        Once resolved, re-run the nightly workflow or remove the label and work on it manually."
+    </rule>
+
+    <rule order="5">
+      After posting the comment, exit cleanly. Do not start any work. Do not
+      create a branch. Do not make any changes. Log that the ticket was deferred
+      due to insufficient information and stop.
+    </rule>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       PR MERGE RULES
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="pr-merge-rules">
+
+    <rule name="DEFAULT_NO_MERGE">
+      By default, autonomously-nightly work creates pull requests but does NOT merge
+      them. The PR is left open for human review. This is the safe default — a
+      human reviews and merges when ready.
+    </rule>
+
+    <rule name="EXPLICIT_AUTO_MERGE">
+      Only merge a PR automatically if the ticket description contains an explicit
+      instruction to auto-merge. Look for clear, unambiguous language such as
+      "auto-merge", "merge automatically", or "merge when CI passes" in the ticket
+      body. Implied or inferred intent does not count — the instruction must be
+      stated directly.
+
+      <when condition="auto-merge requested and CI passes">
+        Merge the PR using: gh pr merge {pr-url} --squash --delete-branch
+      </when>
+      <when condition="auto-merge requested and CI fails">
+        Do NOT merge. Leave the PR open and post a comment noting that auto-merge
+        was requested but CI checks did not pass.
+      </when>
+      <when condition="auto-merge requested and no CI configured">
+        Merge the PR using: gh pr merge {pr-url} --squash --delete-branch
+      </when>
+    </rule>
+
+  </section>
+
+</behavior>
