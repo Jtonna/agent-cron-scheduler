@@ -18,6 +18,8 @@ import {
   Cog6ToothIcon,
   ChevronUpDownIcon,
   PlusIcon,
+  PencilIcon,
+  TrashIcon,
 } from "@heroicons/react/24/outline";
 import {
   CheckCircleIcon as CheckCircleSolid,
@@ -66,7 +68,7 @@ import {
 import { api } from "@/lib/api";
 import type { Job, SavedConnection } from "@/lib/types";
 import { useSSEEvents } from "@/hooks/useSSE";
-import { getConnections, getActiveConnectionId, setActiveConnectionId } from "@/lib/connections";
+import { getConnections, getActiveConnectionId, setActiveConnectionId, deleteConnection } from "@/lib/connections";
 import { InstanceDialog } from "@/components/InstanceDialog";
 
 interface NavItem {
@@ -90,6 +92,8 @@ export function Sidebar() {
   const [connections, setConnections] = useState<SavedConnection[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [editingConnection, setEditingConnection] = useState<SavedConnection | null>(null);
+  const [deletingConnection, setDeletingConnection] = useState<SavedConnection | null>(null);
 
   // Refresh connections from localStorage
   const refreshConnections = useCallback(() => {
@@ -105,6 +109,16 @@ export function Sidebar() {
     setActiveConnectionId(connectionId);
     // Full page reload to re-init SSE and all API calls with the new base URL
     window.location.href = "/";
+  };
+
+  const handleDeleteConnection = (conn: SavedConnection) => {
+    deleteConnection(conn.id);
+    refreshConnections();
+    setDeletingConnection(null);
+    // If the deleted connection was active, reload to go back to local
+    if (activeId === conn.id) {
+      window.location.href = "/";
+    }
   };
 
   // Compute the active instance name for dialog messages
@@ -237,12 +251,35 @@ export function Sidebar() {
                   <DropdownMenuItem
                     key={conn.id}
                     onClick={() => handleSwitchInstance(conn.id)}
+                    className="group"
                   >
                     <span className="inline-block size-2 rounded-full bg-muted-foreground/50 mr-2 shrink-0" />
                     <span className="flex-1 truncate">{conn.label}</span>
                     {activeId === conn.id && (
-                      <span className="text-xs text-muted-foreground ml-2">&#10003;</span>
+                      <span className="text-xs text-muted-foreground ml-1">&#10003;</span>
                     )}
+                    <span className="ml-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingConnection(conn);
+                        }}
+                        className="p-0.5 rounded hover:bg-accent"
+                      >
+                        <PencilIcon className="size-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeletingConnection(conn);
+                        }}
+                        className="p-0.5 rounded hover:bg-destructive/20 text-destructive"
+                      >
+                        <TrashIcon className="size-3" />
+                      </button>
+                    </span>
                   </DropdownMenuItem>
                 ))}
 
@@ -450,6 +487,35 @@ export function Sidebar() {
         onOpenChange={setShowAddDialog}
         onSaved={refreshConnections}
       />
+      <InstanceDialog
+        open={!!editingConnection}
+        onOpenChange={(open) => {
+          if (!open) setEditingConnection(null);
+        }}
+        editConnection={editingConnection}
+        onSaved={refreshConnections}
+      />
+      <AlertDialog open={!!deletingConnection} onOpenChange={(open) => { if (!open) setDeletingConnection(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Connection</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deletingConnection && activeId === deletingConnection.id
+                ? `"${deletingConnection?.label}" is the active connection. Removing it will switch back to the local instance.`
+                : `Are you sure you want to remove "${deletingConnection?.label}"?`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deletingConnection && handleDeleteConnection(deletingConnection)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </SidebarRoot>
   );
 }
