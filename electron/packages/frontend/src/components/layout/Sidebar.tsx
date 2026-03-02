@@ -16,6 +16,8 @@ import {
   ChevronRightIcon,
   ClockIcon,
   Cog6ToothIcon,
+  ChevronUpDownIcon,
+  PlusIcon,
 } from "@heroicons/react/24/outline";
 import {
   CheckCircleIcon as CheckCircleSolid,
@@ -62,8 +64,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { api } from "@/lib/api";
-import type { Job } from "@/lib/types";
+import type { Job, SavedConnection } from "@/lib/types";
 import { useSSEEvents } from "@/hooks/useSSE";
+import { getConnections, getActiveConnectionId, setActiveConnectionId } from "@/lib/connections";
+import { InstanceDialog } from "@/components/InstanceDialog";
 
 interface NavItem {
   label: string;
@@ -83,6 +87,30 @@ export function Sidebar() {
   const [showRestart, setShowRestart] = useState(false);
   const [showShutdown, setShowShutdown] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [connections, setConnections] = useState<SavedConnection[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [showAddDialog, setShowAddDialog] = useState(false);
+
+  // Refresh connections from localStorage
+  const refreshConnections = useCallback(() => {
+    setConnections(getConnections());
+    setActiveId(getActiveConnectionId());
+  }, []);
+
+  useEffect(() => {
+    refreshConnections();
+  }, [refreshConnections]);
+
+  const handleSwitchInstance = (connectionId: string | null) => {
+    setActiveConnectionId(connectionId);
+    // Full page reload to re-init SSE and all API calls with the new base URL
+    window.location.href = "/";
+  };
+
+  // Compute the active instance name for dialog messages
+  const instanceName = activeId
+    ? connections.find((c) => c.id === activeId)?.label ?? "Remote"
+    : "Local";
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -167,21 +195,64 @@ export function Sidebar() {
 
   return (
     <SidebarRoot collapsible="offcanvas">
-      {/* Header - App branding */}
+      {/* Header - Instance Switcher */}
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" className="pointer-events-none">
-              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                <CommandLineIcon className="size-4" />
-              </div>
-              <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-semibold">ACS</span>
-                <span className="truncate text-xs text-muted-foreground">
-                  Agent Cron Scheduler
-                </span>
-              </div>
-            </SidebarMenuButton>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton size="lg">
+                  <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                    <CommandLineIcon className="size-4" />
+                  </div>
+                  <div className="grid flex-1 text-left text-sm leading-tight">
+                    <span className="truncate font-semibold">
+                      {activeId
+                        ? connections.find((c) => c.id === activeId)?.label ?? "Remote"
+                        : "Local"}
+                    </span>
+                    <span className="truncate text-xs text-muted-foreground">
+                      ACS Instance
+                    </span>
+                  </div>
+                  <ChevronUpDownIcon className="ml-auto size-4" />
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                className="w-[--radix-popper-anchor-width] min-w-56"
+                align="start"
+                side="bottom"
+                sideOffset={4}
+              >
+                {/* Local instance - always first */}
+                <DropdownMenuItem onClick={() => handleSwitchInstance(null)}>
+                  <span className="inline-block size-2 rounded-full bg-emerald-500 mr-2 shrink-0" />
+                  <span className="flex-1">Local</span>
+                  {!activeId && <span className="text-xs text-muted-foreground ml-2">&#10003;</span>}
+                </DropdownMenuItem>
+
+                {connections.length > 0 && <DropdownMenuSeparator />}
+
+                {connections.map((conn) => (
+                  <DropdownMenuItem
+                    key={conn.id}
+                    onClick={() => handleSwitchInstance(conn.id)}
+                  >
+                    <span className="inline-block size-2 rounded-full bg-muted-foreground/50 mr-2 shrink-0" />
+                    <span className="flex-1 truncate">{conn.label}</span>
+                    {activeId === conn.id && (
+                      <span className="text-xs text-muted-foreground ml-2">&#10003;</span>
+                    )}
+                  </DropdownMenuItem>
+                ))}
+
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setShowAddDialog(true)}>
+                  <PlusIcon className="size-4 mr-2" />
+                  <span>Add Connection...</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
@@ -334,8 +405,9 @@ export function Sidebar() {
           <AlertDialogHeader>
             <AlertDialogTitle>Restart Server</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to restart the server? Active jobs will
-              continue running.
+              {activeId
+                ? `Are you sure you want to restart ${instanceName}? Active jobs will continue running.`
+                : "Are you sure you want to restart the server? Active jobs will continue running."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -356,8 +428,9 @@ export function Sidebar() {
           <AlertDialogHeader>
             <AlertDialogTitle>Shutdown Server</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to shut down the server? This will stop all
-              scheduled jobs.
+              {activeId
+                ? `Are you sure you want to shut down ${instanceName}? This will stop all scheduled jobs.`
+                : "Are you sure you want to shut down the server? This will stop all scheduled jobs."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -372,6 +445,11 @@ export function Sidebar() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <InstanceDialog
+        open={showAddDialog}
+        onOpenChange={setShowAddDialog}
+        onSaved={refreshConnections}
+      />
     </SidebarRoot>
   );
 }
