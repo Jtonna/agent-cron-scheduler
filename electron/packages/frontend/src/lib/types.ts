@@ -79,3 +79,10 @@ export interface ServiceStatus {
   service_installed: boolean;
   service_running: boolean;
 }
+
+export interface SavedConnection {
+  id: string;
+  label: string;
+  url: string;
+  addedAt: string;
+}
