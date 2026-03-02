@@ -1,8 +1,10 @@
 <lifecycle name="IMPLEMENTATION">
 
   <summary>
-    Executes the approved plan. The orchestrator acts as Agent Team lead, spawning
-    implementation teammates and coordinating their work. Uses Agent Teams (experimental).
+    Executes the approved plan. The orchestrator dispatches implementation sub-tasks
+    using the dispatch mode determined by the runtime (see CLAUDE.md dispatch-mode).
+    In agent-teams mode, teammates coordinate via async messages. In sub-agent mode,
+    each Task call blocks until the sub-agent completes and returns its result.
   </summary>
 
   <uses-behavior name="git-with-beads" />
@@ -23,7 +25,7 @@
     -->
 
     <phase name="LAUNCH" order="1">
-      <actor>Orchestrator (reasoning tier, acting as Agent Team lead)</actor>
+      <actor>Orchestrator (reasoning tier)</actor>
       <actions>
         <action>Read the approved plan, ticket ID, ticket issue_type, and base branch</action>
         <action>
@@ -31,13 +33,16 @@
           off the base branch if not already checked out, or verify it is checked
           out if it already exists.
         </action>
-        <action>Create the Agent Team for this implementation cycle</action>
+        <action>
+          Initialize the dispatch mode's infrastructure (create Agent Team if
+          agent-teams mode, or proceed directly if sub-agent mode).
+        </action>
       </actions>
       <on-success>Proceed to DISPATCH</on-success>
     </phase>
 
     <phase name="DISPATCH" order="2">
-      <actor>Orchestrator (reasoning tier, Team Lead)</actor>
+      <actor>Orchestrator (reasoning tier)</actor>
       <actions>
         <action>Read the plan's sub-task list and dependency ordering</action>
         <action>
@@ -47,10 +52,10 @@
           - standard → sonnet
           - complex → opus
         </action>
-        <action>Spawn independent sub-tasks as teammates in parallel</action>
-        <action>Spawn dependent sub-tasks sequentially after their dependencies complete</action>
+        <action>Dispatch independent sub-tasks in parallel using the active dispatch mode</action>
+        <action>Dispatch dependent sub-tasks only after their dependencies complete</action>
         <action>
-          Each teammate receives:
+          Each sub-task receives:
           - The sub-task description, files to modify, acceptance criteria
           - The branch to commit to
           - The ticket ID for commit messages
@@ -61,30 +66,28 @@
     </phase>
 
     <phase name="MONITOR" order="3">
-      <actor>Orchestrator (reasoning tier, Team Lead)</actor>
+      <actor>Orchestrator (reasoning tier)</actor>
       <actions>
-        <action>Receive messages from teammates as they complete or encounter issues</action>
+        <action>Collect results from all dispatched sub-tasks as they complete</action>
         <action>Track: success/failure, files modified, commits made</action>
-        <action>For failed teammates, collect the structured failure report (escalation behavior)</action>
+        <action>For failed sub-tasks, collect the structured failure report (escalation behavior)</action>
       </actions>
       <on-success>Proceed to EVALUATE</on-success>
     </phase>
 
     <phase name="EVALUATE" order="4">
-      <actor>Orchestrator (reasoning tier, Team Lead)</actor>
+      <actor>Orchestrator (reasoning tier)</actor>
       <!-- All evaluation logic is conditional on success or failure; no unconditional actions. -->
       <actions>
-        <action>Assess the outcome of every teammate: determine whether each sub-task completed successfully or produced a failure report</action>
+        <action>Assess the outcome of every sub-task: determine whether each completed successfully or produced a failure report</action>
         <action>Classify any failures as TECHNICAL (logic bug, command error, test failure, syntax issue) or REQUIREMENTS (impossible plan, unclear spec, wrong direction)</action>
       </actions>
-      <on-success>All teammates succeeded → proceed to HUMAN_GATE</on-success>
+      <on-success>All sub-tasks succeeded → proceed to HUMAN_GATE</on-success>
       <on-failure>
         Classify the failure as TECHNICAL or REQUIREMENTS.
-        TECHNICAL (logic bug, command error, test failure, syntax issue): spawn an
-        Opus teammate with the failure context. If resolved, loop to DISPATCH for
-        remaining work. If Opus also fails, present to human.
-        REQUIREMENTS (impossible plan, unclear spec, wrong direction): present to
-        the human for clarification.
+        TECHNICAL: spawn an Opus sub-agent with the failure context. If resolved,
+        loop to DISPATCH for remaining work. If Opus also fails, present to human.
+        REQUIREMENTS: present to the human for clarification.
       </on-failure>
     </phase>
 
@@ -94,7 +97,7 @@
         <action>Present implementation results for approval (see human-gate behavior, context: IMPLEMENTATION_REVIEW)</action>
       </actions>
       <on-success>Proceed to PUSH</on-success>
-      <on-rejection>Pass feedback to teammates or spawn new teammates → loop to DISPATCH</on-rejection>
+      <on-rejection>Pass feedback and dispatch corrective sub-tasks → loop to DISPATCH</on-rejection>
     </phase>
 
     <phase name="PUSH" order="6">
@@ -104,14 +107,21 @@
         <action>Confirm the push succeeded before transitioning</action>
       </actions>
       <note>
-        This is the only push during implementation. Teammates never push directly.
+        This is the only push during implementation. Sub-tasks never push directly.
         The push happens after human approval so unapproved work never reaches the remote.
       </note>
       <on-success>Proceed to HANDOFF</on-success>
     </phase>
 
     <phase name="HANDOFF" order="7">
-      <actor>Orchestrator (reasoning tier, Team Lead)</actor>
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>
+          If agent-teams dispatch mode was used: send shutdown_request to all
+          teammates, wait for acknowledgment, then call TeamDelete to clean up
+          the team.
+        </action>
+      </actions>
       <on-success>Lifecycle complete. Proceed to DOCS.</on-success>
     </phase>
 

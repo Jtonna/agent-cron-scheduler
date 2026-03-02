@@ -42,13 +42,13 @@
 
   <section name="implementation-agents">
     For worker and light tier agents (implementer, light-implementer) operating as
-    teammates under the orchestrator (team lead).
+    implementation sub-tasks under the orchestrator.
 
     <rule order="1">If you encounter an error, retry once with a different approach</rule>
     <rule order="2">If the retry fails, stop immediately</rule>
     <rule order="3">Commit any partial work that is valid</rule>
     <rule order="4">
-      Return a structured failure report to the orchestrator (team lead):
+      Return a structured failure report to the orchestrator:
         FAILURE REPORT
         Sub-task: {description}
         Attempted: {what was tried}
@@ -60,9 +60,9 @@
     <rule order="5">
       What happens next (you do not need to handle this — just report and stop):
       → The orchestrator classifies your failure
-      → Technical failures (logic bugs, command errors): an Opus teammate is spawned to attempt resolution
+      → Technical failures (logic bugs, command errors): an Opus sub-agent is dispatched to attempt resolution
       → Requirements failures (impossible plan, unclear spec): the human is asked for clarification
-      → If the Opus teammate also fails, the human is asked
+      → If the Opus sub-agent also fails, the human is asked
     </rule>
   </section>
 

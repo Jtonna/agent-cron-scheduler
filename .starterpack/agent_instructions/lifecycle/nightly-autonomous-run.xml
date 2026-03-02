@@ -93,6 +93,11 @@
         <action>
           Log the autonomous mode activation in the status output.
         </action>
+        <note>
+          Activating autonomous mode also activates sub-agent dispatch mode
+          for IMPLEMENTATION (see CLAUDE.md dispatch-mode). Agent Teams will
+          not be used — all implementation sub-tasks use blocking Task calls.
+        </note>
       </actions>
       <on-success>
         Proceed to the standard ENTRY lifecycle flow. The standard sequence

@@ -20,7 +20,6 @@
     <rule>Sub-agents cannot spawn other sub-agents</rule>
     <rule>Only the team lead (orchestrator) can spawn teammates</rule>
     <rule>Teammates cannot spawn their own teams or sub-agents</rule>
-    <rule>The IMPLEMENTATION phase is the ONLY lifecycle that uses Agent Teams</rule>
     <rule>All other phases (planning, docs, PR) use standard sub-agents via the Task tool</rule>
   </constraints>
 
@@ -41,7 +40,7 @@
   <roles>
     <role name="orchestrator" tier="reasoning">
       Never writes code or runs commands. Human interface and lifecycle coordinator.
-      During IMPLEMENTATION, acts as Agent Team lead.
+      During IMPLEMENTATION, dispatches and coordinates sub-tasks.
     </role>
     <role name="explorer" tier="reasoning">
       Explores codebase and docs to build context for planning. Read-only.
