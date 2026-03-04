@@ -47,6 +47,18 @@ jobs:
         run: cargo build --release
         working-directory: acs
 
+      - name: Rename raw binary for release
+        shell: bash
+        run: |
+          mkdir -p dist-raw
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp acs/target/release/agentcronsystem.exe dist-raw/agentcronsystem-windows-x86_64.exe
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            cp acs/target/release/agentcronsystem dist-raw/agentcronsystem-macos-aarch64
+          else
+            cp acs/target/release/agentcronsystem dist-raw/agentcronsystem-linux-x86_64
+          fi
+
       - name: Install Electron dependencies
         run: npm ci
         working-directory: electron
@@ -75,6 +87,7 @@ jobs:
             dist/*.exe
             dist/*.dmg
             dist/*.AppImage
+            dist-raw/*
           if-no-files-found: warn
 
   release:
@@ -95,13 +108,16 @@ jobs:
           body: |
             ## Downloads
 
-            | Platform | Installer |
-            |----------|-----------|
-            | Windows | `AgentCronScheduler-${{ github.ref_name }}-windows.exe` |
-            | macOS | `AgentCronScheduler-${{ github.ref_name }}-mac.dmg` |
-            | Linux | `AgentCronScheduler-${{ github.ref_name }}-linux.AppImage` |
+            | Platform | Installer | Raw Binary |
+            |----------|-----------|------------|
+            | Windows | `AgentCronScheduler-${{ github.ref_name }}-windows.exe` | `agentcronsystem-windows-x86_64.exe` |
+            | macOS | `AgentCronScheduler-${{ github.ref_name }}-mac.dmg` | `agentcronsystem-macos-aarch64` |
+            | Linux | `AgentCronScheduler-${{ github.ref_name }}-linux.AppImage` | `agentcronsystem-linux-x86_64` |
 
             ### Installation
             **Windows** — Run the `.exe` installer. SmartScreen warning expected (unsigned).
             **macOS** — Drag to Applications, right-click and "Open" to bypass Gatekeeper.
             **Linux** — `chmod +x *.AppImage && ./AgentCronScheduler-*.AppImage`
+
+            ### Raw Binaries
+            Raw compiled binaries are provided for use with the `acs update` command and headless environments.
