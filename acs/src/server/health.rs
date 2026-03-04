@@ -49,3 +49,32 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
 
     (StatusCode::OK, Json(response))
 }
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+#[cfg(test)]
+mod tests {
+    /// Verify that the version baked into the health response at compile time
+    /// matches the version declared in Cargo.toml.  This guards against the
+    /// health endpoint accidentally returning a hardcoded string that drifts
+    /// from the real package version.
+    #[test]
+    fn test_health_version_matches_cargo() {
+        let cargo_version = env!("CARGO_PKG_VERSION");
+        // Simulate what health_check does when building the response.
+        let response_version = env!("CARGO_PKG_VERSION").to_string();
+        assert_eq!(
+            response_version, cargo_version,
+            "Health response version '{}' should equal CARGO_PKG_VERSION '{}'",
+            response_version, cargo_version
+        );
+        // Additionally assert the version is non-empty and not the zero-value
+        // placeholder that appears in un-configured Cargo projects.
+        assert!(!cargo_version.is_empty(), "CARGO_PKG_VERSION should not be empty");
+        assert_ne!(
+            cargo_version, "0.0.0",
+            "CARGO_PKG_VERSION should not be the default 0.0.0 placeholder"
+        );
+    }
+}

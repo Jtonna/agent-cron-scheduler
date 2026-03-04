@@ -801,4 +801,43 @@ mod tests {
         let result: Result<u32, _> = content.trim().parse();
         assert!(result.is_err(), "Should fail to parse invalid PID");
     }
+
+    // -----------------------------------------------------------------------
+    // get_platform_asset_name
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_get_platform_asset_name() {
+        let name = get_platform_asset_name();
+
+        // On the supported CI/dev platforms (Windows x86_64, macOS aarch64/x86_64,
+        // Linux x86_64) this must return Some.  On exotic platforms it returns None
+        // which is also acceptable — we simply skip the content assertions.
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+        let supported = matches!(
+            (os, arch),
+            ("windows", "x86_64")
+                | ("macos", "aarch64")
+                | ("macos", "x86_64")
+                | ("linux", "x86_64")
+        );
+
+        if supported {
+            let name = name.expect("Expected Some on supported platform");
+            assert!(
+                name.contains("agentcronsystem"),
+                "Asset name should contain 'agentcronsystem', got: {}",
+                name
+            );
+            assert!(
+                name.contains(os),
+                "Asset name should contain OS '{}', got: {}",
+                os,
+                name
+            );
+        } else {
+            // Unsupported platform — None is the correct return value.
+            assert!(name.is_none(), "Expected None on unsupported platform");
+        }
+    }
 }
