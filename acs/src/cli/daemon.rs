@@ -272,6 +272,27 @@ fn force_kill_daemon() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Fetch the latest release version from GitHub releases API.
+/// Returns `None` on any error (network, parsing, timeout, etc.).
+pub(crate) async fn fetch_latest_version() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .ok()?;
+
+    let response = client
+        .get("https://api.github.com/repos/Jtonna/agent-cron-scheduler/releases/latest")
+        .header("User-Agent", "agentcronsystem")
+        .send()
+        .await
+        .ok()?;
+
+    let body: Value = response.json().await.ok()?;
+    let tag_name = body["tag_name"].as_str()?;
+    let version = tag_name.strip_prefix('v').unwrap_or(tag_name);
+    Some(version.to_string())
+}
+
 /// agentcronsystem status
 pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<()> {
     let client = Client::new();
@@ -312,6 +333,9 @@ pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<
         "Not registered".to_string()
     };
 
+    // Fetch latest version from GitHub (non-blocking, returns None on any error)
+    let latest_version = fetch_latest_version().await;
+
     println!("Daemon Status: {}", daemon_status);
     println!("  Data Dir:    {}", data_dir);
     println!("  Web UI:      http://{}:{}", host, port);
@@ -321,6 +345,24 @@ pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<
     );
     println!("  Uptime:      {}", format_uptime(uptime));
     println!("  Version:     {}", version);
+
+    match &latest_version {
+        Some(latest) if latest != version => {
+            println!(
+                "  Update:      {} available — run: agentcronsystem update",
+                latest
+            );
+        }
+        Some(_) => {
+            println!("  Update:      up to date");
+        }
+        None => {
+            if verbose {
+                println!("  Update:      (could not check)");
+            }
+        }
+    }
+
     println!("  Service:     {}", service_status);
 
     if verbose {
