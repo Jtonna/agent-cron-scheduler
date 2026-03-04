@@ -11,10 +11,6 @@ info:
   license:
     name: MIT
 
-servers:
-  - url: http://127.0.0.1:8377
-    description: Local development daemon (default host and port)
-
 tags:
   - name: Health
     description: Daemon health and readiness checks
