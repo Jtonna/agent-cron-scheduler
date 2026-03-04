@@ -52,11 +52,20 @@ for FILE in electron/package.json electron/packages/app/package.json; do
     echo "Updated $FILE"
 done
 
+# Update acs/Cargo.toml version (anchor to start of line to avoid matching dependency versions)
+sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" acs/Cargo.toml
+echo "Updated acs/Cargo.toml"
+
+# Update acs/web/openapi.yaml version (info.version and example version — 2 occurrences)
+sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$NEW_VERSION\"/g" acs/web/openapi.yaml
+echo "Updated acs/web/openapi.yaml"
+
 # Update lock file
 echo "Updating package-lock.json..."
 (cd electron && npm install --package-lock-only --silent)
 
 # Commit and tag
+git add acs/Cargo.toml acs/web/openapi.yaml
 git add -A
 git commit -m "chore: bump version to $NEW_VERSION"
 git tag "v$NEW_VERSION"
