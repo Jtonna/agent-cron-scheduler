@@ -974,8 +974,7 @@ mod tests {
     /// optional fields default to their zero-values.
     #[test]
     fn test_cli_update_no_flags() {
-        let cli =
-            Cli::try_parse_from(["agentcronsystem", "update"]).expect("Should parse update");
+        let cli = Cli::try_parse_from(["agentcronsystem", "update"]).expect("Should parse update");
 
         match &cli.command {
             Some(Commands::Update { version, force }) => {

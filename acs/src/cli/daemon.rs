@@ -440,8 +440,7 @@ pub async fn cmd_update(target_version: Option<&str>, force: bool) -> anyhow::Re
     let _ = std::fs::remove_file(&backup_path);
 
     // Rename current to backup
-    std::fs::rename(&current_exe, &backup_path)
-        .context("Failed to backup current binary")?;
+    std::fs::rename(&current_exe, &backup_path).context("Failed to backup current binary")?;
 
     // Move new binary into place
     if let Err(e) = std::fs::rename(&temp_path, &current_exe) {

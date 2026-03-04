@@ -71,7 +71,10 @@ mod tests {
         );
         // Additionally assert the version is non-empty and not the zero-value
         // placeholder that appears in un-configured Cargo projects.
-        assert!(!cargo_version.is_empty(), "CARGO_PKG_VERSION should not be empty");
+        assert!(
+            !cargo_version.is_empty(),
+            "CARGO_PKG_VERSION should not be empty"
+        );
         assert_ne!(
             cargo_version, "0.0.0",
             "CARGO_PKG_VERSION should not be the default 0.0.0 placeholder"
