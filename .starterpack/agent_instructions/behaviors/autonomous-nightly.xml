@@ -89,9 +89,10 @@
     </rule>
 
     <rule order="2">
-      Find the GitHub issue number for the ticket. Look in .beads/github-map.json
-      for a mapping from the beads ticket ID to the GitHub issue number. If no
-      mapping exists, search GitHub issues for the ticket title:
+      The GitHub issue number was resolved during the DETECT phase. Use that
+      issue number directly. If for any reason it is not available, fall back
+      to searching .beads/github-map.json for a mapping from the beads ticket
+      ID to the GitHub issue number, or search GitHub issues:
         gh issue list --search "{ticket title}" --json number,title --limit 5
       If no matching issue is found, create one:
         gh issue create --title "{ticket title}" --body "Linked to beads ticket {id}"

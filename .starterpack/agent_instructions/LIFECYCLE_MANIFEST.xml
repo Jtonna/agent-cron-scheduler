@@ -36,7 +36,7 @@
   </phase>
 
   <phase name="IMPLEMENTATION" file="lifecycle/implementation.xml">
-    Ensures ticket branch exists. Spawns implementation teammates via Agent Teams. Monitors progress.
+    Ensures ticket branch exists. Dispatches implementation sub-tasks using the active dispatch mode. Monitors progress.
     Escalates failures (technical → Opus, requirements → human). Human approval gate.
     Pushes to remote after approval.
     Behaviors: git-with-beads, escalation, scope-enforcement, sub-task-tracking, human-gate, response-format

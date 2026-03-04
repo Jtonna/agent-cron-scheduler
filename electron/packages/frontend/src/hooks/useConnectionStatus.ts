@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { getBaseUrl } from "@/lib/api";
 
 export type ConnectionState = "connected" | "connecting" | "offline";
 
@@ -9,10 +10,7 @@ export function useConnectionStatus(pollIntervalMs = 2500) {
 
   const checkHealth = useCallback(async () => {
     try {
-      // Use window.acs if available (Electron), otherwise use relative URL
-      const baseUrl =
-        (typeof window !== "undefined" && (window as any).acs?.getDaemonUrl?.()) ?? "";
-      const res = await fetch(`${baseUrl}/health`, {
+      const res = await fetch(`${getBaseUrl()}/health`, {
         signal: AbortSignal.timeout(2000),
       });
       setState(res.ok ? "connected" : "offline");
