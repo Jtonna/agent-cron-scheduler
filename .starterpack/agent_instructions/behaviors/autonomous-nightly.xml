@@ -89,27 +89,11 @@
     </rule>
 
     <rule order="2">
-      The GitHub issue number was resolved during the DETECT phase. Use that
-      issue number directly. If for any reason it is not available, fall back
-      to searching .beads/github-map.json for a mapping from the beads ticket
-      ID to the GitHub issue number, or search GitHub issues:
-        gh issue list --search "{ticket title}" --json number,title --limit 5
-      If no matching issue is found, create one:
-        gh issue create --title "{ticket title}" --body "Linked to beads ticket {id}"
-      Record the issue number for the next step.
-    </rule>
+      Add a comment to the beads ticket with all the questions. Do NOT post
+      directly to the GitHub issue — beads-sync will propagate the comment
+      to GitHub (appearing as github-actions[bot] instead of the user).
 
-    <rule order="3">
-      Determine the repository owner:
-        gh repo view --json owner --jq ".owner.login"
-      Store the result as {owner}.
-    </rule>
-
-    <rule order="4">
-      Post a comment on the GitHub issue tagging the repository owner with all
-      the questions. Format the comment as follows:
-
-        gh issue comment {number} --body "@{owner} This ticket needs clarification before autonomous execution:
+        bd comment add {ticket-id} "This ticket needs clarification before autonomous execution:
 
         {numbered list of specific questions}
 
@@ -117,17 +101,21 @@
         Once resolved, re-run the nightly workflow or remove the label and work on it manually."
     </rule>
 
-    <rule order="5">
-      After posting the comment, exit cleanly. Do not start any work. Do not
-      create a branch. Do not make any changes. Log that the ticket was deferred
+    <rule order="3">
+      Commit and push the beads metadata so beads-sync can propagate the
+      comment to the GitHub issue:
+        git add .beads/
+        git commit -m "{ticket-id}: post clarification questions"
+        git push
+    </rule>
+
+    <rule order="4">
+      After pushing, exit cleanly. Do not start any work. Do not create a
+      branch. Do not make any changes. Log that the ticket was deferred
       due to insufficient information and stop.
     </rule>
 
   </section>
-
-  <!-- ═══════════════════════════════════════════════════════════════════════
-       PR MERGE RULES
-       ═══════════════════════════════════════════════════════════════════════ -->
 
   <!-- ═══════════════════════════════════════════════════════════════════════
        GITHUB ISSUE LIFECYCLE — HANDS OFF
@@ -135,23 +123,27 @@
 
   <section name="github-issue-lifecycle">
 
-    <rule name="NEVER_CLOSE_GITHUB_ISSUES">
-      The nightly lifecycle must NEVER close GitHub issues directly via
-      "gh issue close". GitHub issue closure is handled exclusively by the
-      beads-sync workflow:
+    <rule name="NO_DIRECT_GITHUB_ISSUE_MUTATIONS">
+      The nightly lifecycle must NEVER modify GitHub issues directly via
+      "gh issue close" or "gh issue comment". All comments and status changes
+      flow through beads → beads-sync → GitHub. This ensures comments appear
+      as github-actions[bot] rather than the user's personal account.
+
+      GitHub issue closure is handled exclusively by the beads-sync workflow:
         - On feature branches: beads-sync adds a "pending-close" label
         - On main (after PR merge): beads-sync actually closes the issue
 
       The only GitHub issue operations the nightly lifecycle may perform are:
-        - Reading issue content and comments (gh issue view)
-        - Posting comments (gh issue comment)
+        - Reading issue content and comments (gh issue view, gh issue list)
         - Adding or removing labels (gh issue edit --add-label / --remove-label)
-        - Creating new issues (gh issue create) — only in ROUTE_INCOMPLETE fallback
+
+      To post a comment that appears on a GitHub issue, add it to the beads
+      ticket instead:
+        bd comment add {ticket-id} "comment text"
+      Then commit and push .beads/ so beads-sync propagates it.
 
       This rule applies to ALL phases of the nightly lifecycle and to any
-      post-lifecycle cleanup. Do not close GitHub issues even if the beads
-      ticket is closed and all work is complete. The beads-sync workflow
-      will handle it when the PR merges to main.
+      post-lifecycle cleanup.
     </rule>
 
   </section>

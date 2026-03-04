@@ -132,10 +132,10 @@
           Use jq or python3 to safely merge the new entry into the existing JSON file.
         </action>
         <action>
-          Post a migration comment on the GitHub issue (do NOT close it — beads-sync
-          handles issue closure when the beads ticket is closed and the PR is merged):
-            gh issue comment {number} --body "This issue is now tracked as beads ticket {ticket-id}. Work will proceed via the starterpack orchestration workflow."
-          Remove the "autonomously-nightly" label since the ticket is now in beads:
+          Add a migration comment to the beads ticket (do NOT post directly to GitHub —
+          beads-sync will propagate it as github-actions[bot]):
+            bd comment add {ticket-id} "Migrated from GitHub issue #{number}. Work will proceed via the starterpack orchestration workflow."
+          Remove the "autonomously-nightly" label from the GitHub issue since the ticket is now in beads:
             gh issue edit {number} --remove-label "autonomously-nightly"
         </action>
         <action>
@@ -173,8 +173,8 @@
       <actions>
         <action>
           Apply the autonomous-nightly behavior's insufficient-information rules:
-          formulate questions, find the GitHub issue, tag the repository owner,
-          and post the comment.
+          formulate questions, add a comment to the beads ticket via "bd comment add",
+          commit and push so beads-sync propagates the comment to GitHub.
         </action>
       </actions>
       <on-success>Exit — questions posted, no further action.</on-success>
