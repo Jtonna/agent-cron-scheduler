@@ -357,8 +357,8 @@ mod tests {
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
         let output = err.to_string();
         assert!(
-            output.contains("0.1.0"),
-            "Expected version 0.1.0 in output: {}",
+            output.contains("1.6.0"),
+            "Expected version 1.6.0 in output: {}",
             output
         );
     }
