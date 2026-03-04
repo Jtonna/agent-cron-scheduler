@@ -43,7 +43,7 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
         uptime_seconds: uptime,
         active_jobs: total_jobs.0,
         total_jobs: total_jobs.1,
-        version: "0.1.0".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
         data_dir,
     };
 
