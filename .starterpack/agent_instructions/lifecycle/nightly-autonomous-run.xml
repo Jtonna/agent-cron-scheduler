@@ -27,7 +27,7 @@
           |       |
           |       +~~ follow-up work found ~~> [Phase 2: MIGRATE_ISSUE] (new ticket for follow-up)
           |       |
-          |       +~~ no follow-up ~~> close issue, remove label, [EXIT — work already done]
+          |       +~~ no follow-up ~~> remove label, [EXIT — work already done]
           |
           +~~ issue found, NO beads ticket ~~> [Phase 2: MIGRATE_ISSUE]
                                                     |
@@ -89,9 +89,10 @@
         </action>
         <action>
           If NO follow-up work is found in the comments (ticket is closed, work is done):
-            Close the GitHub issue and remove the "autonomously-nightly" label:
-              gh issue close {number} --comment "Work completed in beads ticket {ticket-id}. All sub-tasks done. Closing."
+            Remove the "autonomously-nightly" label so the issue is not picked up again:
               gh issue edit {number} --remove-label "autonomously-nightly"
+            Do NOT close the GitHub issue directly — beads-sync handles issue closure
+            when the beads ticket is closed and the PR is merged.
             Report that the issue was cleaned up and exit.
         </action>
         <action>
@@ -131,8 +132,11 @@
           Use jq or python3 to safely merge the new entry into the existing JSON file.
         </action>
         <action>
-          Close the GitHub issue with a migration comment:
-            gh issue close {number} --comment "This issue is now tracked as beads ticket {ticket-id}. Work will proceed via the starterpack orchestration workflow."
+          Post a migration comment on the GitHub issue (do NOT close it — beads-sync
+          handles issue closure when the beads ticket is closed and the PR is merged):
+            gh issue comment {number} --body "This issue is now tracked as beads ticket {ticket-id}. Work will proceed via the starterpack orchestration workflow."
+          Remove the "autonomously-nightly" label since the ticket is now in beads:
+            gh issue edit {number} --remove-label "autonomously-nightly"
         </action>
         <action>
           Commit and push the beads metadata:

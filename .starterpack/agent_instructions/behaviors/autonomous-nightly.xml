@@ -129,6 +129,37 @@
        PR MERGE RULES
        ═══════════════════════════════════════════════════════════════════════ -->
 
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       GITHUB ISSUE LIFECYCLE — HANDS OFF
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <section name="github-issue-lifecycle">
+
+    <rule name="NEVER_CLOSE_GITHUB_ISSUES">
+      The nightly lifecycle must NEVER close GitHub issues directly via
+      "gh issue close". GitHub issue closure is handled exclusively by the
+      beads-sync workflow:
+        - On feature branches: beads-sync adds a "pending-close" label
+        - On main (after PR merge): beads-sync actually closes the issue
+
+      The only GitHub issue operations the nightly lifecycle may perform are:
+        - Reading issue content and comments (gh issue view)
+        - Posting comments (gh issue comment)
+        - Adding or removing labels (gh issue edit --add-label / --remove-label)
+        - Creating new issues (gh issue create) — only in ROUTE_INCOMPLETE fallback
+
+      This rule applies to ALL phases of the nightly lifecycle and to any
+      post-lifecycle cleanup. Do not close GitHub issues even if the beads
+      ticket is closed and all work is complete. The beads-sync workflow
+      will handle it when the PR merges to main.
+    </rule>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       PR MERGE RULES
+       ═══════════════════════════════════════════════════════════════════════ -->
+
   <section name="pr-merge-rules">
 
     <rule name="DEFAULT_NO_MERGE">
