@@ -1,9 +1,10 @@
 <lifecycle name="NIGHTLY_AUTONOMOUS_RUN">
 
   <summary>
-    On-demand pre-flight gate for tickets labeled autonomously-nightly. Acts as an
-    alternative entry point that assesses ticket completeness, then either activates
-    autonomous mode on the standard workflow or posts clarifying questions and exits.
+    On-demand pre-flight gate for GitHub issues labeled autonomously-nightly. Scans
+    open issues, correlates with beads tickets (creating one if needed), assesses
+    completeness, then either activates autonomous mode on the standard workflow
+    or posts clarifying questions and exits.
   </summary>
 
   <uses-behavior name="autonomous-nightly" />
@@ -16,36 +17,96 @@
           v
       [Phase 1: DETECT]
           |
-          +~~ label NOT present ~~> [EXIT — lifecycle does not apply]
+          +~~ no GitHub issues labeled autonomously-nightly ~~> [EXIT — nothing to process]
           |
           +~~ command failure ~~> [EXIT — report error]
           |
-          +~~ label present ~~> [Phase 2: ASSESS]
-                                    |
-                                    +~~ INCOMPLETE ~~> [Phase 3: ROUTE_INCOMPLETE] ~~> [EXIT — questions posted]
-                                    |
-                                    +~~ COMPLETE ~~> [Phase 4: ROUTE_COMPLETE] ~~> [ENTRY lifecycle, autonomous mode]
+          +~~ issue found, beads ticket exists ~~> [Phase 3: ASSESS]
+          |
+          +~~ issue found, NO beads ticket ~~> [Phase 2: MIGRATE_ISSUE]
+                                                    |
+                                                    +~~ success ~~> [Phase 3: ASSESS]
+                                                    |
+                                                    +~~ failure ~~> [EXIT — report error]
+
+      [Phase 3: ASSESS]
+          |
+          +~~ INCOMPLETE ~~> [Phase 4: ROUTE_INCOMPLETE] ~~> [EXIT — questions posted]
+          |
+          +~~ COMPLETE ~~> [Phase 5: ROUTE_COMPLETE] ~~> [ENTRY lifecycle, autonomous mode]
     -->
 
     <phase name="DETECT" order="1">
       <actor>Orchestrator (reasoning tier)</actor>
       <actions>
-        <action>Read the ticket using "bd show {id}".</action>
         <action>
-          Run "bd label list {id}" to retrieve the ticket's labels.
-          If the command fails (error, unrecognized subcommand), report the
-          error and exit. Do not treat a command failure as "label not present."
+          Query GitHub for open issues labeled "autonomously-nightly":
+            gh issue list --label "autonomously-nightly" --state open --json number,title,body,labels,createdAt --limit 20
+          If the command fails, report the error and exit.
+          If no issues are returned, report that no issues are labeled for nightly processing and exit.
         </action>
         <action>
-          If the command succeeds but the "autonomously-nightly" label is NOT
-          in the results, report that this lifecycle does not apply and exit.
+          Select the oldest issue by createdAt (one-at-a-time processing).
+          Store the issue number, title, and body for subsequent phases.
+        </action>
+        <action>
+          Check .beads/github-map.json for a beads ticket mapped to this GitHub issue number.
+          (Reverse lookup: scan values for the issue number, return the matching key/ticket ID.)
+        </action>
+        <action>
+          If a mapped beads ticket exists:
+            Read the ticket with "bd show {ticket-id}" to confirm it still exists and is valid.
+            If valid, proceed to ASSESS with this ticket.
+            If the ticket no longer exists (bd show fails), treat as unmapped and fall through.
+        </action>
+        <action>
+          If NO mapped beads ticket exists:
+            Proceed to MIGRATE_ISSUE phase to create one.
         </action>
       </actions>
-      <on-success>Label confirmed — proceed to ASSESS.</on-success>
-      <on-failure>Exit — command error or label not present.</on-failure>
+      <on-success>Ticket correlation established — proceed to ASSESS or MIGRATE_ISSUE.</on-success>
+      <on-failure>Exit — no labeled issues found or command error.</on-failure>
     </phase>
 
-    <phase name="ASSESS" order="2">
+    <phase name="MIGRATE_ISSUE" order="2">
+      <actor>Orchestrator (reasoning tier)</actor>
+      <actions>
+        <action>
+          Determine the ticket type from the GitHub issue labels:
+            - If labeled "bug" → type = bug
+            - If labeled "enhancement" or "feature" → type = feature
+            - Otherwise → type = task
+        </action>
+        <action>
+          Create a beads ticket from the GitHub issue content:
+            bd create --type {type} --title "{issue title}" --description "{issue body}"
+          Store the new ticket ID.
+        </action>
+        <action>
+          Add the label to the new beads ticket:
+            bd label add {ticket-id} autonomously-nightly
+        </action>
+        <action>
+          Update .beads/github-map.json to record the mapping:
+            {ticket-id} → {github-issue-number}
+          Use jq or python3 to safely merge the new entry into the existing JSON file.
+        </action>
+        <action>
+          Close the GitHub issue with a migration comment:
+            gh issue close {number} --comment "This issue is now tracked as beads ticket {ticket-id}. Work will proceed via the starterpack orchestration workflow."
+        </action>
+        <action>
+          Commit and push the beads metadata:
+            git add .beads/
+            git commit -m "{ticket-id}: migrate GitHub issue #{number} to beads"
+            git push
+        </action>
+      </actions>
+      <on-success>Migration complete — proceed to ASSESS with the new ticket.</on-success>
+      <on-failure>Report migration failure and exit.</on-failure>
+    </phase>
+
+    <phase name="ASSESS" order="3">
       <actor>Orchestrator (reasoning tier)</actor>
       <actions>
         <action>
@@ -64,7 +125,7 @@
       <on-failure>Exit and report the assessment failure.</on-failure>
     </phase>
 
-    <phase name="ROUTE_INCOMPLETE" order="3">
+    <phase name="ROUTE_INCOMPLETE" order="4">
       <actor>Orchestrator (reasoning tier)</actor>
       <actions>
         <action>
@@ -77,7 +138,7 @@
       <on-failure>Report the failure to post questions and exit.</on-failure>
     </phase>
 
-    <phase name="ROUTE_COMPLETE" order="4">
+    <phase name="ROUTE_COMPLETE" order="5">
       <actor>Orchestrator (reasoning tier)</actor>
       <actions>
         <action>
