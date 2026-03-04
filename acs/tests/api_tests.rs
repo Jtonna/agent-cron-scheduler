@@ -226,7 +226,7 @@ async fn test_health_endpoint_returns_correct_structure() {
     assert!(json["uptime_seconds"].is_number());
     assert!(json["active_jobs"].is_number());
     assert!(json["total_jobs"].is_number());
-    assert_eq!(json["version"], "0.1.0");
+    assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
 }
 
 #[tokio::test]
