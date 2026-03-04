@@ -22,7 +22,7 @@
 
   <section name="agent-level">
     <rule name="AGENT_SCOPE_ENFORCEMENT">
-      Implementation agents (teammates) must only modify files listed in their sub-task
+      Implementation agents must only modify files listed in their sub-task
       assignment. If an agent discovers that additional files need changes:
       1. Do NOT modify the out-of-scope files
       2. Complete the in-scope work

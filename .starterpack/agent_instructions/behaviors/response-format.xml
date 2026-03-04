@@ -14,7 +14,7 @@
     Examples:
       LIFECYCLE: {current-phase} // Created ticket sp-04a: "Add logout button".
       LIFECYCLE: {current-phase} // Launching explorer agent to build codebase context.
-      LIFECYCLE: {current-phase} // 3/5 teammates complete. Waiting on sub-task 4 (auth module).
+      LIFECYCLE: {current-phase} // 3/5 sub-tasks complete. Waiting on sub-task 4 (auth module).
       LIFECYCLE: {current-phase} // Doc scout found 2 files needing updates. Launching auditors.
       LIFECYCLE: {current-phase} // Draft PR ready for review.
 

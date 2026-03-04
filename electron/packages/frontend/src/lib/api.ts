@@ -7,8 +7,16 @@ import type {
   HealthResponse,
   ServiceStatus,
 } from "./types";
+import { getActiveConnection } from "./connections";
 
 export function getBaseUrl(): string {
+  // Check for user-selected remote connection first
+  if (typeof window !== "undefined") {
+    const active = getActiveConnection();
+    if (active) {
+      return active.url;
+    }
+  }
   return (
     (typeof window !== "undefined" && (window as any).acs?.getDaemonUrl?.()) ??
     process.env.NEXT_PUBLIC_API_URL ??

@@ -1,0 +1,74 @@
+name: Check Starterpack
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required files
+        run: |
+          STATUS=0
+          REQUIRED_FILES=(
+            "CLAUDE.md"
+            ".starterpack/agent_instructions/LIFECYCLE_MANIFEST.xml"
+            ".starterpack/agent_instructions/BEHAVIORS_MANIFEST.xml"
+            ".starterpack/agent_instructions/MODELS_AND_ROLES.xml"
+          )
+
+          # VERSION can be in new or legacy location
+          if [ -f ".starterpack/VERSION" ] || [ -f ".starterpack-version" ]; then
+            echo "✓ Version file found"
+          else
+            echo "::error::Missing version file (.starterpack/VERSION)"
+            STATUS=1
+          fi
+
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ -f "$file" ]; then
+              echo "✓ $file"
+            else
+              echo "::error::Missing required file: $file"
+              STATUS=1
+            fi
+          done
+
+          exit $STATUS
+
+      - name: Check starterpack version
+        if: always()
+        run: |
+          # Read local version
+          if [ -f ".starterpack/VERSION" ]; then
+            LOCAL_VERSION=$(tr -d '[:space:]' < .starterpack/VERSION)
+          elif [ -f ".starterpack-version" ]; then
+            LOCAL_VERSION=$(tr -d '[:space:]' < .starterpack-version)
+          else
+            echo "::warning::No version file found — cannot check for updates"
+            exit 0
+          fi
+
+          echo "Local starterpack version: $LOCAL_VERSION"
+
+          # Fetch latest release from GitHub
+          LATEST=$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/Jtonna/starterpack/releases/latest" \
+            2>/dev/null | grep -oP '"tag_name"\s*:\s*"\K[^"]+' || true)
+
+          if [ -z "$LATEST" ]; then
+            echo "::warning::Could not fetch latest starterpack version from GitHub"
+            exit 0
+          fi
+
+          echo "Latest starterpack version: $LATEST"
+
+          if [ "$LOCAL_VERSION" != "$LATEST" ]; then
+            echo "::warning::Starterpack is outdated ($LOCAL_VERSION → $LATEST). Run install.sh to update."
+          else
+            echo "✓ Starterpack is up to date ($LOCAL_VERSION)"
+          fi

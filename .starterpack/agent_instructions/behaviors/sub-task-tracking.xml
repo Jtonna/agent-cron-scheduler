@@ -11,8 +11,8 @@
       as a comment on the ticket: bd comment {ticket-id} "Sub-tasks: ..."
     </rule>
     <rule order="2">
-      During implementation, the orchestrator (team lead) updates sub-task status as
-      teammates report progress:
+      During implementation, the orchestrator updates sub-task status as
+      sub-tasks complete:
         [sub-task N] DONE: {description}
         [sub-task N] FAILED: {description} — {reason}
         [sub-task N] IN_PROGRESS: {description}
