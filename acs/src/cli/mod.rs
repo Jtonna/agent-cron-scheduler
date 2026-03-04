@@ -168,6 +168,16 @@ pub enum Commands {
     /// Restart the daemon
     Restart,
 
+    /// Update to the latest version
+    Update {
+        /// Target version (default: latest)
+        #[arg(long)]
+        version: Option<String>,
+        /// Force update even if already on latest
+        #[arg(long)]
+        force: bool,
+    },
+
     /// View job run logs
     Logs {
         /// Job name or UUID
@@ -325,6 +335,9 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
                 *json,
             )
             .await
+        }
+        Some(Commands::Update { version, force }) => {
+            daemon::cmd_update(version.as_deref(), *force).await
         }
         None => {
             // No subcommand provided -- print help
