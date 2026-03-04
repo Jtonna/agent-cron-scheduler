@@ -146,6 +146,7 @@ This command has no subcommand-specific options. Use the global `--verbose` (`-v
 - **Jobs** -- count of active and total jobs
 - **Uptime** -- human-readable uptime (e.g., "1d 2h 30m 15s")
 - **Version** -- daemon version string
+- **Update** -- indicates if an update is available with version number, or "up to date". Shows "(could not check)" if GitHub API is unreachable (only visible with `--verbose`)
 - **Service** -- system service registration status
 
 #### Exit Codes
@@ -193,6 +194,62 @@ This command has no subcommand-specific options.
 
 ```sh
 agentcronsystem restart
+```
+
+---
+
+### `agentcronsystem update`
+
+Update the ACS daemon to the latest release version from GitHub. Downloads the appropriate platform-specific binary, creates a backup of the current executable, and replaces it in-place. The new version takes effect on restart.
+
+```
+agentcronsystem update [OPTIONS]
+```
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--version` | | `String` | latest | Target version (e.g., `1.6.0` or `v1.6.0`). If omitted, checks GitHub for the latest release. |
+| `--force` | | flag | `false` | Force update even if already on the target version |
+
+#### Platform Support
+
+Auto-update is supported on:
+- **Windows x86_64** -- downloads `agentcronsystem-windows-x86_64.exe`
+- **macOS aarch64** -- downloads `agentcronsystem-macos-aarch64`
+- **macOS x86_64** -- downloads `agentcronsystem-macos-x86_64`
+- **Linux x86_64** -- downloads `agentcronsystem-linux-x86_64`
+
+Other platforms are not supported and will return an error.
+
+#### Behavior
+
+1. **Version check** -- If `--version` is omitted, fetches the latest release from GitHub's API
+2. **Already up-to-date** -- If the target version matches the current version and `--force` is not set, prints a message and exits successfully
+3. **Download** -- Downloads the release binary from GitHub and displays download progress
+4. **Backup** -- Renames the current executable to `.bak` (removes any existing backup first)
+5. **Replace** -- Moves the downloaded binary into place. If this fails, the backup is restored
+6. **Permissions** -- On Unix systems (macOS, Linux), sets execute permissions (`0o755`) on the new binary
+
+#### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Update completed successfully (including no update needed if already on target version) |
+| 1 | Error: unsupported platform, network failure, download failed, or binary replacement failed |
+
+#### Examples
+
+```sh
+# Update to the latest version (checks GitHub)
+agentcronsystem update
+
+# Update to a specific version
+agentcronsystem update --version 1.5.0
+
+# Force update even if already on the latest version
+agentcronsystem update --force
 ```
 
 ---

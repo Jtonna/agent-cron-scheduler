@@ -272,6 +272,188 @@ fn force_kill_daemon() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Fetch the latest release version from GitHub releases API.
+/// Returns `None` on any error (network, parsing, timeout, etc.).
+pub(crate) async fn fetch_latest_version() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .ok()?;
+
+    let response = client
+        .get("https://api.github.com/repos/Jtonna/agent-cron-scheduler/releases/latest")
+        .header("User-Agent", "agentcronsystem")
+        .send()
+        .await
+        .ok()?;
+
+    let body: Value = response.json().await.ok()?;
+    let tag_name = body["tag_name"].as_str()?;
+    let version = tag_name.strip_prefix('v').unwrap_or(tag_name);
+    Some(version.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Update helpers
+// ---------------------------------------------------------------------------
+
+struct ReleaseInfo {
+    tag: String,
+    version: String,
+}
+
+async fn fetch_latest_release_info() -> anyhow::Result<ReleaseInfo> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let resp: serde_json::Value = client
+        .get("https://api.github.com/repos/Jtonna/agent-cron-scheduler/releases/latest")
+        .header("User-Agent", "agentcronsystem")
+        .send()
+        .await?
+        .json()
+        .await?;
+    let tag = resp["tag_name"]
+        .as_str()
+        .context("No tag_name in response")?
+        .to_string();
+    let version = tag.trim_start_matches('v').to_string();
+    Ok(ReleaseInfo { tag, version })
+}
+
+fn get_platform_asset_name() -> Option<String> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    match (os, arch) {
+        ("windows", "x86_64") => Some("agentcronsystem-windows-x86_64.exe".to_string()),
+        ("macos", "aarch64") => Some("agentcronsystem-macos-aarch64".to_string()),
+        ("macos", "x86_64") => Some("agentcronsystem-macos-x86_64".to_string()),
+        ("linux", "x86_64") => Some("agentcronsystem-linux-x86_64".to_string()),
+        _ => None,
+    }
+}
+
+async fn get_asset_download_url(tag: &str, asset_name: &str) -> anyhow::Result<String> {
+    Ok(format!(
+        "https://github.com/Jtonna/agent-cron-scheduler/releases/download/{}/{}",
+        tag, asset_name
+    ))
+}
+
+async fn download_file(url: &str, dest: &std::path::Path) -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+    let resp = client
+        .get(url)
+        .header("User-Agent", "agentcronsystem")
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let total_size = resp.content_length();
+    let mut file = tokio::fs::File::create(dest).await?;
+    let mut stream = resp.bytes_stream();
+    let mut downloaded: u64 = 0;
+
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
+        if let Some(total) = total_size {
+            print!(
+                "\r  Progress: {:.1}%",
+                (downloaded as f64 / total as f64) * 100.0
+            );
+        }
+    }
+    file.flush().await?;
+    if total_size.is_some() {
+        println!(); // newline after progress
+    }
+
+    Ok(())
+}
+
+/// agentcronsystem update
+pub async fn cmd_update(target_version: Option<&str>, force: bool) -> anyhow::Result<()> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    println!("Current version: {}", current_version);
+
+    // 1. Determine target version
+    let (tag, version) = if let Some(v) = target_version {
+        let tag = if v.starts_with('v') {
+            v.to_string()
+        } else {
+            format!("v{}", v)
+        };
+        let ver = tag.trim_start_matches('v').to_string();
+        (tag, ver)
+    } else {
+        println!("Checking for latest version...");
+        let latest = fetch_latest_release_info()
+            .await
+            .context("Failed to fetch latest release info")?;
+        (latest.tag, latest.version)
+    };
+
+    // 2. Check if already on target
+    if version == current_version && !force {
+        println!("Already up to date (v{}).", current_version);
+        return Ok(());
+    }
+
+    println!("Updating to v{}...", version);
+
+    // 3. Determine platform asset name
+    let asset_name = get_platform_asset_name().context("Unsupported platform for auto-update")?;
+
+    // 4. Find download URL from release assets
+    let download_url = get_asset_download_url(&tag, &asset_name)
+        .await
+        .context("Failed to find download URL for asset")?;
+
+    // 5. Download to temp file
+    let current_exe =
+        std::env::current_exe().context("Failed to determine current executable path")?;
+    let temp_path = current_exe.with_extension("new");
+
+    println!("Downloading {}...", asset_name);
+    download_file(&download_url, &temp_path)
+        .await
+        .context("Failed to download update")?;
+
+    // 6. Set permissions on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    // 7. Replace binary
+    let backup_path = current_exe.with_extension("bak");
+
+    // Remove old backup if exists
+    let _ = std::fs::remove_file(&backup_path);
+
+    // Rename current to backup
+    std::fs::rename(&current_exe, &backup_path).context("Failed to backup current binary")?;
+
+    // Move new binary into place
+    if let Err(e) = std::fs::rename(&temp_path, &current_exe) {
+        // Restore backup on failure
+        let _ = std::fs::rename(&backup_path, &current_exe);
+        return Err(e).context("Failed to replace binary");
+    }
+
+    println!("Successfully updated to v{}.", version);
+    println!("Restart agentcronsystem to use the new version.");
+    Ok(())
+}
+
 /// agentcronsystem status
 pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<()> {
     let client = Client::new();
@@ -312,6 +494,9 @@ pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<
         "Not registered".to_string()
     };
 
+    // Fetch latest version from GitHub (non-blocking, returns None on any error)
+    let latest_version = fetch_latest_version().await;
+
     println!("Daemon Status: {}", daemon_status);
     println!("  Data Dir:    {}", data_dir);
     println!("  Web UI:      http://{}:{}", host, port);
@@ -321,6 +506,24 @@ pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<
     );
     println!("  Uptime:      {}", format_uptime(uptime));
     println!("  Version:     {}", version);
+
+    match &latest_version {
+        Some(latest) if latest != version => {
+            println!(
+                "  Update:      {} available — run: agentcronsystem update",
+                latest
+            );
+        }
+        Some(_) => {
+            println!("  Update:      up to date");
+        }
+        None => {
+            if verbose {
+                println!("  Update:      (could not check)");
+            }
+        }
+    }
+
     println!("  Service:     {}", service_status);
 
     if verbose {
@@ -596,5 +799,44 @@ mod tests {
         let content = std::fs::read_to_string(&pid_path).expect("read PID file");
         let result: Result<u32, _> = content.trim().parse();
         assert!(result.is_err(), "Should fail to parse invalid PID");
+    }
+
+    // -----------------------------------------------------------------------
+    // get_platform_asset_name
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_get_platform_asset_name() {
+        let name = get_platform_asset_name();
+
+        // On the supported CI/dev platforms (Windows x86_64, macOS aarch64/x86_64,
+        // Linux x86_64) this must return Some.  On exotic platforms it returns None
+        // which is also acceptable — we simply skip the content assertions.
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+        let supported = matches!(
+            (os, arch),
+            ("windows", "x86_64")
+                | ("macos", "aarch64")
+                | ("macos", "x86_64")
+                | ("linux", "x86_64")
+        );
+
+        if supported {
+            let name = name.expect("Expected Some on supported platform");
+            assert!(
+                name.contains("agentcronsystem"),
+                "Asset name should contain 'agentcronsystem', got: {}",
+                name
+            );
+            assert!(
+                name.contains(os),
+                "Asset name should contain OS '{}', got: {}",
+                os,
+                name
+            );
+        } else {
+            // Unsupported platform — None is the correct return value.
+            assert!(name.is_none(), "Expected None on unsupported platform");
+        }
     }
 }

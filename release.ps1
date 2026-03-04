@@ -63,6 +63,20 @@ foreach ($file in $packageFiles) {
     Write-Host "Updated $file" -ForegroundColor Gray
 }
 
+# Update acs/Cargo.toml version (only first match = [package] version, anchored to start of line)
+$cargoPath = "acs/Cargo.toml"
+$cargoContent = Get-Content $cargoPath -Raw
+$cargoContent = $cargoContent -replace '(?m)^version = ".*"', "version = `"$newVersion`""
+Set-Content $cargoPath -Value $cargoContent -NoNewline
+Write-Host "Updated $cargoPath" -ForegroundColor Gray
+
+# Update acs/web/openapi.yaml version (info.version and example version — 2 occurrences)
+$openapiPath = "acs/web/openapi.yaml"
+$openapiContent = Get-Content $openapiPath -Raw
+$openapiContent = $openapiContent -replace [regex]::Escape("version: `"$currentVersion`""), "version: `"$newVersion`""
+Set-Content $openapiPath -Value $openapiContent -NoNewline
+Write-Host "Updated $openapiPath" -ForegroundColor Gray
+
 # Update lock file
 Write-Host "Updating package-lock.json..."
 Push-Location "electron"
@@ -70,6 +84,7 @@ npm install --package-lock-only --silent
 Pop-Location
 
 # Commit and tag
+git add acs/Cargo.toml acs/web/openapi.yaml
 git add -A
 git commit -m "chore: bump version to $newVersion"
 git tag "v$newVersion"

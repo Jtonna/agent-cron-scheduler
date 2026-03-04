@@ -358,7 +358,7 @@ mod tests {
         assert!(json["uptime_seconds"].is_number());
         assert!(json["active_jobs"].is_number());
         assert!(json["total_jobs"].is_number());
-        assert_eq!(json["version"], "0.1.0");
+        assert!(json["version"].is_string());
     }
 
     // =======================================================================

@@ -168,6 +168,16 @@ pub enum Commands {
     /// Restart the daemon
     Restart,
 
+    /// Update to the latest version
+    Update {
+        /// Target version (default: latest)
+        #[arg(long)]
+        version: Option<String>,
+        /// Force update even if already on latest
+        #[arg(long)]
+        force: bool,
+    },
+
     /// View job run logs
     Logs {
         /// Job name or UUID
@@ -326,6 +336,9 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
             )
             .await
         }
+        Some(Commands::Update { version, force }) => {
+            daemon::cmd_update(version.as_deref(), *force).await
+        }
         None => {
             // No subcommand provided -- print help
             use clap::CommandFactory;
@@ -357,8 +370,8 @@ mod tests {
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
         let output = err.to_string();
         assert!(
-            output.contains("0.1.0"),
-            "Expected version 0.1.0 in output: {}",
+            output.contains("1.6.0"),
+            "Expected version 1.6.0 in output: {}",
             output
         );
     }
@@ -951,5 +964,70 @@ mod tests {
         assert_eq!(cli.host, "10.0.0.1");
         assert_eq!(cli.port, 1234);
         assert!(matches!(cli.command, Some(Commands::Status)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Update command parsing
+    // -----------------------------------------------------------------------
+
+    /// `agentcronsystem update` with no flags parses successfully and both
+    /// optional fields default to their zero-values.
+    #[test]
+    fn test_cli_update_no_flags() {
+        let cli = Cli::try_parse_from(["agentcronsystem", "update"]).expect("Should parse update");
+
+        match &cli.command {
+            Some(Commands::Update { version, force }) => {
+                assert!(version.is_none(), "version should be None by default");
+                assert!(!force, "force should be false by default");
+            }
+            other => panic!("Expected Update command, got: {:?}", other),
+        }
+    }
+
+    /// `agentcronsystem update --version 1.5.0` sets the version field.
+    #[test]
+    fn test_cli_update_with_version() {
+        let cli = Cli::try_parse_from(["agentcronsystem", "update", "--version", "1.5.0"])
+            .expect("Should parse update --version");
+
+        match &cli.command {
+            Some(Commands::Update { version, force }) => {
+                assert_eq!(version.as_deref(), Some("1.5.0"));
+                assert!(!force);
+            }
+            other => panic!("Expected Update command, got: {:?}", other),
+        }
+    }
+
+    /// `agentcronsystem update --force` sets the force flag.
+    #[test]
+    fn test_cli_update_with_force() {
+        let cli = Cli::try_parse_from(["agentcronsystem", "update", "--force"])
+            .expect("Should parse update --force");
+
+        match &cli.command {
+            Some(Commands::Update { version, force }) => {
+                assert!(version.is_none());
+                assert!(force);
+            }
+            other => panic!("Expected Update command, got: {:?}", other),
+        }
+    }
+
+    /// `agentcronsystem update --version 2.0.0 --force` sets both fields.
+    #[test]
+    fn test_cli_update_version_and_force() {
+        let cli =
+            Cli::try_parse_from(["agentcronsystem", "update", "--version", "2.0.0", "--force"])
+                .expect("Should parse update with version and force");
+
+        match &cli.command {
+            Some(Commands::Update { version, force }) => {
+                assert_eq!(version.as_deref(), Some("2.0.0"));
+                assert!(force);
+            }
+            other => panic!("Expected Update command, got: {:?}", other),
+        }
     }
 }
