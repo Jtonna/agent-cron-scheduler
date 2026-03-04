@@ -25,6 +25,12 @@ After installing, verify with:
 agentcronsystem --version
 ```
 
+To update an existing installation:
+
+```sh
+agentcronsystem update
+```
+
 ## Quick Start
 
 ```sh
