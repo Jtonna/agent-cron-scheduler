@@ -21,7 +21,13 @@
           |
           +~~ command failure ~~> [EXIT — report error]
           |
-          +~~ issue found, beads ticket exists ~~> [Phase 3: ASSESS]
+          +~~ issue found, beads ticket OPEN ~~> [Phase 3: ASSESS]
+          |
+          +~~ issue found, beads ticket CLOSED ~~> read GitHub comments
+          |       |
+          |       +~~ follow-up work found ~~> [Phase 2: MIGRATE_ISSUE] (new ticket for follow-up)
+          |       |
+          |       +~~ no follow-up ~~> close issue, remove label, [EXIT — work already done]
           |
           +~~ issue found, NO beads ticket ~~> [Phase 2: MIGRATE_ISSUE]
                                                     |
@@ -56,8 +62,41 @@
         <action>
           If a mapped beads ticket exists:
             Read the ticket with "bd show {ticket-id}" to confirm it still exists and is valid.
-            If valid, proceed to ASSESS with this ticket.
-            If the ticket no longer exists (bd show fails), treat as unmapped and fall through.
+            If the ticket no longer exists (bd show fails), treat as unmapped and fall through
+            to MIGRATE_ISSUE.
+        </action>
+        <action>
+          If the mapped beads ticket exists but is CLOSED (all work done):
+            Read the GitHub issue comments to check for follow-up work:
+              gh issue view {number} --json comments --jq '.comments[].body'
+            Scan the comments for:
+              - New feature requests or enhancements beyond the original scope
+              - Bug reports or issues with the completed work
+              - Explicit requests for additional changes
+              - Review feedback that requires code changes
+            Ignore:
+              - Bot comments, CI status updates, migration notices
+              - Comments that are purely informational or acknowledgments
+              - Comments that predate the ticket's close date
+        </action>
+        <action>
+          If follow-up work IS found in the comments:
+            Summarize the follow-up work from the comments into a new ticket description.
+            Proceed to MIGRATE_ISSUE to create a new beads ticket for the follow-up work.
+            The new ticket title should reference the original (e.g., "Follow-up: {original title}").
+            The new ticket description should include the relevant comment content and
+            a link back to the original GitHub issue for context.
+        </action>
+        <action>
+          If NO follow-up work is found in the comments (ticket is closed, work is done):
+            Close the GitHub issue and remove the "autonomously-nightly" label:
+              gh issue close {number} --comment "Work completed in beads ticket {ticket-id}. All sub-tasks done. Closing."
+              gh issue edit {number} --remove-label "autonomously-nightly"
+            Report that the issue was cleaned up and exit.
+        </action>
+        <action>
+          If the mapped beads ticket exists and is OPEN (work remaining):
+            Proceed to ASSESS with this ticket.
         </action>
         <action>
           If NO mapped beads ticket exists:
