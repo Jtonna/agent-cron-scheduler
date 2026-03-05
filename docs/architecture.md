@@ -418,7 +418,7 @@ Single-instance enforcement uses `create_new(true)` (maps to `O_EXCL`/`CREATE_NE
 
 ### 5.3 Piped I/O over PTY
 
-The production `NoPtySpawner` uses `std::process::Command` with piped stdout, stderr, and stdin rather than a real PTY. Stderr is piped but only stdout is read by the `PtyProcess::read()` implementation; stderr output is not currently captured or forwarded. Piped I/O reliably delivers EOF on all platforms, avoiding platform-specific PTY issues. On Windows, `NoPtySpawner::spawn()` uses `raw_arg()` to bypass Rust's MSVC quoting for `cmd.exe` compatibility.
+The production `NoPtySpawner` uses `std::process::Command` with piped stdout, stderr, and stdin rather than a real PTY. Both stdout and stderr are read by the `PtyProcess::read()` implementation and merged into the unified output stream. Piped I/O reliably delivers EOF on all platforms, avoiding platform-specific PTY issues. On Windows, `NoPtySpawner::spawn()` uses `raw_arg()` to bypass Rust's MSVC quoting for `cmd.exe` compatibility.
 
 ### 5.4 Atomic File Persistence
 

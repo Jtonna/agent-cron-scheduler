@@ -94,23 +94,110 @@ impl PtySpawner for NoPtySpawner {
             command.env(key, val);
         }
 
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
 
-        Ok(Box::new(NoPtyProcess { child }))
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        let (tx, rx) = std::sync::mpsc::channel::<io::Result<Vec<u8>>>();
+
+        if let Some(stdout) = stdout {
+            let tx_stdout = tx.clone();
+            std::thread::Builder::new()
+                .name("stdout-reader".to_string())
+                .spawn(move || {
+                    use std::io::Read;
+                    let mut reader = stdout;
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match reader.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                if tx_stdout.send(Ok(buf[..n].to_vec())).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e)
+                                if e.kind() == io::ErrorKind::BrokenPipe
+                                    || e.kind() == io::ErrorKind::UnexpectedEof =>
+                            {
+                                break;
+                            }
+                            Err(e) => {
+                                let _ = tx_stdout.send(Err(e));
+                                break;
+                            }
+                        }
+                    }
+                })?;
+        }
+
+        if let Some(stderr) = stderr {
+            std::thread::Builder::new()
+                .name("stderr-reader".to_string())
+                .spawn(move || {
+                    use std::io::Read;
+                    let mut reader = stderr;
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match reader.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                if tx.send(Ok(buf[..n].to_vec())).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e)
+                                if e.kind() == io::ErrorKind::BrokenPipe
+                                    || e.kind() == io::ErrorKind::UnexpectedEof =>
+                            {
+                                break;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Err(e));
+                                break;
+                            }
+                        }
+                    }
+                })?;
+        }
+
+        Ok(Box::new(NoPtyProcess {
+            child,
+            rx,
+            leftover: Vec::new(),
+        }))
     }
 }
 
 struct NoPtyProcess {
     child: std::process::Child,
+    rx: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    leftover: Vec<u8>,
 }
 
 impl PtyProcess for NoPtyProcess {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if let Some(ref mut stdout) = self.child.stdout {
-            use std::io::Read;
-            stdout.read(buf)
-        } else {
-            Ok(0)
+        // Drain leftover bytes from a previous oversized chunk first.
+        if !self.leftover.is_empty() {
+            let n = std::cmp::min(self.leftover.len(), buf.len());
+            buf[..n].copy_from_slice(&self.leftover[..n]);
+            self.leftover.drain(..n);
+            return Ok(n);
+        }
+
+        match self.rx.recv() {
+            Ok(Ok(data)) => {
+                let n = std::cmp::min(data.len(), buf.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                if data.len() > n {
+                    self.leftover.extend_from_slice(&data[n..]);
+                }
+                Ok(n)
+            }
+            Ok(Err(e)) => Err(e),
+            // Both senders dropped — EOF
+            Err(_) => Ok(0),
         }
     }
 
@@ -373,5 +460,72 @@ mod tests {
     fn test_exit_status_from_code_nonzero() {
         let status = exit_status_from_code(1);
         assert!(!status.success());
+    }
+
+    /// Helper: read all output from a PtyProcess until EOF, returning the collected bytes.
+    fn read_all(process: &mut Box<dyn PtyProcess>) -> Vec<u8> {
+        let mut output = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match process.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => output.extend_from_slice(&buf[..n]),
+                Err(e) => panic!("read error: {e}"),
+            }
+        }
+        output
+    }
+
+    #[test]
+    fn test_nopty_stderr_captured() {
+        let spawner = NoPtySpawner;
+        let mut cmd = portable_pty::CommandBuilder::new("cmd");
+        cmd.arg("/C");
+        cmd.arg("echo stderr_test_output 1>&2");
+        let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
+
+        let output = read_all(&mut process);
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains("stderr_test_output"),
+            "expected 'stderr_test_output' in output, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_nopty_stdout_and_stderr_merged() {
+        let spawner = NoPtySpawner;
+        let mut cmd = portable_pty::CommandBuilder::new("cmd");
+        cmd.arg("/C");
+        cmd.arg("echo stdout_output && echo stderr_output 1>&2");
+        let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
+
+        let output = read_all(&mut process);
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains("stdout_output"),
+            "expected 'stdout_output' in merged output, got: {text:?}"
+        );
+        assert!(
+            text.contains("stderr_output"),
+            "expected 'stderr_output' in merged output, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_nopty_eof_after_both_streams_close() {
+        let spawner = NoPtySpawner;
+        let mut cmd = portable_pty::CommandBuilder::new("cmd");
+        cmd.arg("/C");
+        cmd.arg("echo hello");
+        let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
+
+        // Read until EOF — this must terminate cleanly (not hang or error).
+        let output = read_all(&mut process);
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains("hello"),
+            "expected 'hello' in output before EOF, got: {text:?}"
+        );
     }
 }

@@ -138,7 +138,7 @@ Inside that directory, each run produces two files:
 
 | File | Description |
 |---|---|
-| `{run_id}.log` | Combined process output (stdout + stderr merged via PTY), appended incrementally. The executor prepends a `$ command` header line, and optionally an `=== Environment ===` block when `log_environment` is enabled on the job. |
+| `{run_id}.log` | Combined process output (stdout + stderr merged), appended incrementally. The executor prepends a `$ command` header line, and optionally an `=== Environment ===` block when `log_environment` is enabled on the job. |
 | `{run_id}.meta.json` | Structured metadata (`JobRun` struct as pretty-printed JSON) |
 
 ### Metadata file format (`{run_id}.meta.json`)
