@@ -94,23 +94,110 @@ impl PtySpawner for NoPtySpawner {
             command.env(key, val);
         }
 
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
 
-        Ok(Box::new(NoPtyProcess { child }))
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        let (tx, rx) = std::sync::mpsc::channel::<io::Result<Vec<u8>>>();
+
+        if let Some(stdout) = stdout {
+            let tx_stdout = tx.clone();
+            std::thread::Builder::new()
+                .name("stdout-reader".to_string())
+                .spawn(move || {
+                    use std::io::Read;
+                    let mut reader = stdout;
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match reader.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                if tx_stdout.send(Ok(buf[..n].to_vec())).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e)
+                                if e.kind() == io::ErrorKind::BrokenPipe
+                                    || e.kind() == io::ErrorKind::UnexpectedEof =>
+                            {
+                                break;
+                            }
+                            Err(e) => {
+                                let _ = tx_stdout.send(Err(e));
+                                break;
+                            }
+                        }
+                    }
+                })?;
+        }
+
+        if let Some(stderr) = stderr {
+            std::thread::Builder::new()
+                .name("stderr-reader".to_string())
+                .spawn(move || {
+                    use std::io::Read;
+                    let mut reader = stderr;
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match reader.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                if tx.send(Ok(buf[..n].to_vec())).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e)
+                                if e.kind() == io::ErrorKind::BrokenPipe
+                                    || e.kind() == io::ErrorKind::UnexpectedEof =>
+                            {
+                                break;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Err(e));
+                                break;
+                            }
+                        }
+                    }
+                })?;
+        }
+
+        Ok(Box::new(NoPtyProcess {
+            child,
+            rx,
+            leftover: Vec::new(),
+        }))
     }
 }
 
 struct NoPtyProcess {
     child: std::process::Child,
+    rx: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    leftover: Vec<u8>,
 }
 
 impl PtyProcess for NoPtyProcess {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if let Some(ref mut stdout) = self.child.stdout {
-            use std::io::Read;
-            stdout.read(buf)
-        } else {
-            Ok(0)
+        // Drain leftover bytes from a previous oversized chunk first.
+        if !self.leftover.is_empty() {
+            let n = std::cmp::min(self.leftover.len(), buf.len());
+            buf[..n].copy_from_slice(&self.leftover[..n]);
+            self.leftover.drain(..n);
+            return Ok(n);
+        }
+
+        match self.rx.recv() {
+            Ok(Ok(data)) => {
+                let n = std::cmp::min(data.len(), buf.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                if data.len() > n {
+                    self.leftover.extend_from_slice(&data[n..]);
+                }
+                Ok(n)
+            }
+            Ok(Err(e)) => Err(e),
+            // Both senders dropped — EOF
+            Err(_) => Ok(0),
         }
     }
 
