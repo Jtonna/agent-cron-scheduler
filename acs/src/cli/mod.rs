@@ -373,7 +373,8 @@ mod tests {
         assert!(
             output.contains(expected),
             "Expected version {} in output: {}",
-            expected, output
+            expected,
+            output
         );
     }
 
