@@ -186,7 +186,7 @@ Creation --> Scheduling --> Execution --> Completion
    - Optionally dumps the environment to the log (if `log_environment` is `true`).
    - Builds the effective command: if trigger `args` are provided, they are appended to the base command (`"{command} {args}"`).
    - Writes a command header to the log showing the effective command (`$ <command>` for ShellCommand, `$ [script] <path>` for ScriptFile).
-   - Spawns the process via `NoPtySpawner`, which uses `std::process::Command` with `Stdio::piped()` for stdout, stderr, and stdin. Only stdout is read by `NoPtyProcess::read()`; stderr is piped but never captured. Trigger `env` vars are merged if present.
+   - Spawns the process via `NoPtySpawner`, which uses `std::process::Command` with `Stdio::piped()` for stdout, stderr, and stdin. Both stdout and stderr are read by `NoPtyProcess::read()` and merged into the unified output stream. Trigger `env` vars are merged if present.
    - If trigger `input` is provided, writes it to the process's stdin, then closes stdin (EOF).
    - Streams output to both the log store and the event broadcast channel.
    - Monitors for timeout and kill signals.
