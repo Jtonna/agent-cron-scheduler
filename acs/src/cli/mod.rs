@@ -369,10 +369,11 @@ mod tests {
         // The error kind should be DisplayVersion
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
         let output = err.to_string();
+        let expected = env!("CARGO_PKG_VERSION");
         assert!(
-            output.contains("1.6.0"),
-            "Expected version 1.6.0 in output: {}",
-            output
+            output.contains(expected),
+            "Expected version {} in output: {}",
+            expected, output
         );
     }
 
