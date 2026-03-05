@@ -25,8 +25,8 @@
 
   <phase name="ENTRY" file="lifecycle/entry.xml">
     Routes incoming work. Three entry points: existing ticket, spec file, or ad-hoc request.
-    Creates tickets if needed. Selects base branch (main or feature branch). Creates initial branch and pushes beads metadata.
-    Behaviors: git-with-beads, scope-enforcement, human-gate, response-format
+    Creates tickets if needed. Selects base branch (main or feature branch). Creates initial branch.
+    Behaviors: git-conventions, scope-enforcement, human-gate, response-format
   </phase>
 
   <phase name="PLANNING" file="lifecycle/planning.xml">
@@ -39,7 +39,7 @@
     Ensures ticket branch exists. Dispatches implementation sub-tasks using the active dispatch mode. Monitors progress.
     Escalates failures (technical → Opus, requirements → human). Human approval gate.
     Pushes to remote after approval.
-    Behaviors: git-with-beads, escalation, scope-enforcement, sub-task-tracking, human-gate, response-format
+    Behaviors: git-conventions, escalation, scope-enforcement, sub-task-tracking, human-gate, response-format
   </phase>
 
   <phase name="DOCS" file="lifecycle/docs.xml">

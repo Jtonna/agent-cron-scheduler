@@ -1,8 +1,10 @@
 <lifecycle name="PR">
 
   <summary>
-    Creates the pull request, waits for CI checks to pass, closes the ticket,
-    and handles the next-child loop for multi-ticket work.
+    Creates the pull request, waits for CI checks to pass, and handles the
+    next-child loop for multi-ticket work. Issue closure is handled via
+    "Closes #N" in the PR body (for main-targeting PRs) or "Relates to #N"
+    (for feature-branch-targeting PRs).
   </summary>
 
   <uses-behavior name="pr-template" />
@@ -45,8 +47,12 @@
       <action>Compile all commits on the ticket branch</action>
       <action>Review the full diff against the base branch</action>
       <action>Draft the PR description using the pr-template behavior</action>
-      <action>Close the child ticket with a close_reason summarizing what was done</action>
-      <action>Commit the beads closure to the branch</action>
+      <action>
+        Include the appropriate issue reference in the PR body:
+        - If the PR targets main: use "Closes #{number}" so GitHub auto-closes the issue on merge.
+        - If the PR targets a feature branch: use "Relates to #{number}" to avoid premature closure.
+          The final feature-branch-to-main PR will use "Closes #{number}".
+      </action>
       <action>Push all remaining commits to remote</action>
       <action>Create the PR via "gh pr create" targeting the base branch</action>
       <action>Report the PR URL back to the orchestrator</action>
@@ -81,9 +87,9 @@
     <actions>
       <action>Report PR URL to the human for review.</action>
       <action>
-        Check for remaining ready child tickets (bd ready).
+        Check for remaining open child issues (gh issue list --state open --label {epic-label}).
         If more children exist: checkout the base branch, pick the next child
-        ticket, and loop to PLANNING for that child.
+        issue, and loop to PLANNING for that child.
       </action>
       <action>
         If all children are complete and the base branch is a feature branch:
@@ -91,7 +97,7 @@
       </action>
       <action>
         If all children are complete and the base branch is main:
-        close the epic ticket (if applicable) and commit the closure. Done.
+        done.
       </action>
     </actions>
     <on-success>Lifecycle complete</on-success>
@@ -106,8 +112,7 @@
         (diff the full feature branch against main).
       </action>
       <action>
-        Close the epic ticket with a close_reason summarizing all completed work.
-        Commit the beads closure and any doc updates to the feature branch.
+        Use "Closes #{epic-number}" in the final PR body to close the epic issue on merge.
       </action>
       <action>Push the feature branch to remote</action>
       <action>Create the final PR from the feature branch to main via "gh pr create"</action>

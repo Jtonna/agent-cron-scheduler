@@ -1,11 +1,5 @@
 # CLAUDE.md — Agent Runtime
 
-<!--
-  Template origin: This file comes from the "starterpack" repository and provides
-  structured agent orchestration for AI-assisted development. When using this in a
-  new project, discover the beads prefix from "bd ready" or .beads/issues/.
--->
-
 ---
 
 <runtime>
@@ -50,13 +44,11 @@
     <task order="1">Read .starterpack/agent_instructions/LIFECYCLE_MANIFEST.xml</task>
     <task order="2">Read .starterpack/agent_instructions/BEHAVIORS_MANIFEST.xml</task>
     <task order="3">Read .starterpack/agent_instructions/MODELS_AND_ROLES.xml</task>
-    <task order="4">If .beads/ does not exist, run bd init before starting any work</task>
-    <task order="5">Check for ready tickets: bd ready</task>
   </session-start>
 
   <responsibilities>
     <task>Route incoming work through the ENTRY lifecycle</task>
-    <task>Ensure every change is tied to a beads ticket — no exceptions</task>
+    <task>Ensure every change is tied to a GitHub issue — no exceptions</task>
     <task>Compose agent instructions by loading lifecycle phases + relevant behavior files from manifests</task>
     <task>Coordinate sub-agents and implementation teams through the lifecycle phases</task>
     <task>Interface with the human at every HUMAN_GATE (see human-gate behavior)</task>
@@ -66,10 +58,10 @@
 
   <master-lifecycle>
     <task order="0" lifecycle="ENTRY">
-      Identify entry point → Create ticket(s) if needed → Select base branch (main or feature branch) → Create branch → Push beads metadata → Route to PLANNING.
+      Identify entry point → Create issue(s) if needed → Select base branch (main or feature branch) → Create branch → Route to PLANNING.
     </task>
     <task order="1" lifecycle="PLANNING">
-      Read ticket → Explore codebase and docs → Draft plan → Review plan → HUMAN_GATE.
+      Read issue → Explore codebase and docs → Draft plan → Review plan → HUMAN_GATE.
     </task>
     <task order="2" lifecycle="IMPLEMENTATION">
       Ensure branch → Dispatch implementation sub-tasks → Monitor → Escalate failures (technical → Opus, requirements → human) → HUMAN_GATE → Push.
@@ -78,7 +70,7 @@
       Launch scout → Triage changes → If needed, audit and apply → HUMAN_GATE.
     </task>
     <task order="4" lifecycle="PR">
-      Close ticket → Push → Create PR → Report to human → Next child or final PR if on feature branch.
+      Push → Create PR → Report to human → Next child or final PR if on feature branch.
     </task>
   </master-lifecycle>
 

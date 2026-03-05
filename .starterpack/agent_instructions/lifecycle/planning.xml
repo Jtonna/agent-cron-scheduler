@@ -20,7 +20,7 @@
     <phase name="INTAKE" order="1">
       <actor>Orchestrator launches an Explorer agent (reasoning tier)</actor>
       <actions>
-        <action>Read the beads ticket (bd show {ticket-id})</action>
+        <action>Read the GitHub issue (gh issue view {number})</action>
         <action>Explore the codebase: relevant source files, existing patterns, dependencies</action>
         <action>Explore existing documentation (code is source of truth — docs may be outdated)</action>
         <action>When docs contradict code, flag the discrepancy in the context report</action>

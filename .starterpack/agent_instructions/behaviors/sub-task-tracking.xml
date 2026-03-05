@@ -1,14 +1,15 @@
 <behavior name="sub-task-tracking">
 
   <summary>
-    How sub-tasks are tracked as comments on beads tickets. Sub-tasks are NOT separate
-    tickets — they are tracked as structured comments on the parent ticket.
+    How sub-tasks are tracked as comments on GitHub issues. Sub-tasks are NOT separate
+    issues — they are tracked as structured comments on the parent issue.
   </summary>
 
   <section name="rules">
     <rule order="1">
       After plan approval, the orchestrator posts the approved sub-task list
-      as a comment on the ticket: bd comment {ticket-id} "Sub-tasks: ..."
+      as a comment on the issue by writing to the comment queue:
+      Append {"issue": {number}, "body": "Sub-tasks: ..."} to .github/comment-queue.json
     </rule>
     <rule order="2">
       During implementation, the orchestrator updates sub-task status as
@@ -18,7 +19,7 @@
         [sub-task N] IN_PROGRESS: {description}
     </rule>
     <rule order="3">
-      Sub-task updates are posted as new comments on the ticket, not edits to existing comments.
+      Sub-task updates are posted as new comments on the issue, not edits to existing comments.
       This preserves a timeline of progress.
     </rule>
   </section>

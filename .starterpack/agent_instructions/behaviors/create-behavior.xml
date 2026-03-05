@@ -50,7 +50,7 @@
 
     <rule name="NAMING">
       File name: kebab-case. Must match the name attribute exactly.
-      Example: behavior name="git-with-beads" → file git-with-beads.xml
+      Example: behavior name="git-conventions" → file git-conventions.xml
     </rule>
 
     <rule name="STRUCTURE_COMPLEXITY">

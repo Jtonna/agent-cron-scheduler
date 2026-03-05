@@ -2,12 +2,12 @@
 
   <summary>
     Rules for maintaining scope boundaries and preventing scope creep.
-    Every change must be tied to a beads ticket. Agents must only modify files assigned to them.
+    Every change must be tied to a GitHub issue. Agents must only modify files assigned to them.
   </summary>
 
   <section name="orchestrator-level">
     <rule name="NO_UNTRACKED_CHANGES">
-      Every change to the codebase must be tied to a beads ticket. If an agent discovers
+      Every change to the codebase must be tied to a GitHub issue. If an agent discovers
       something that needs fixing but is outside the current ticket's scope, report it to
       the orchestrator — never fix it silently.
     </rule>

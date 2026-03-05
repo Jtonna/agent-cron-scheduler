@@ -7,7 +7,7 @@
     each Task call blocks until the sub-agent completes and returns its result.
   </summary>
 
-  <uses-behavior name="git-with-beads" />
+  <uses-behavior name="git-conventions" />
   <uses-behavior name="escalation" />
   <uses-behavior name="scope-enforcement" />
   <uses-behavior name="sub-task-tracking" />

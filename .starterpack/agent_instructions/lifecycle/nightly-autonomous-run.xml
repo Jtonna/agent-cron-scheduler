@@ -2,9 +2,8 @@
 
   <summary>
     On-demand pre-flight gate for GitHub issues labeled autonomously-nightly. Scans
-    open issues, correlates with beads tickets (creating one if needed), assesses
-    completeness, then either activates autonomous mode on the standard workflow
-    or posts clarifying questions and exits.
+    open issues, assesses completeness, then either activates autonomous mode on the
+    standard workflow or posts clarifying questions via the comment queue and exits.
   </summary>
 
   <uses-behavior name="autonomous-nightly" />
@@ -21,25 +20,19 @@
           |
           +~~ command failure ~~> [EXIT — report error]
           |
-          +~~ issue found, beads ticket OPEN ~~> [Phase 3: ASSESS]
+          +~~ issue found, OPEN ~~> [Phase 2: ASSESS]
           |
-          +~~ issue found, beads ticket CLOSED ~~> read GitHub comments
+          +~~ issue found, CLOSED ~~> read GitHub comments
           |       |
-          |       +~~ follow-up work found ~~> [Phase 2: MIGRATE_ISSUE] (new ticket for follow-up)
+          |       +~~ follow-up work found ~~> create new issue, [Phase 2: ASSESS]
           |       |
           |       +~~ no follow-up ~~> remove label, [EXIT — work already done]
-          |
-          +~~ issue found, NO beads ticket ~~> [Phase 2: MIGRATE_ISSUE]
-                                                    |
-                                                    +~~ success ~~> [Phase 3: ASSESS]
-                                                    |
-                                                    +~~ failure ~~> [EXIT — report error]
 
-      [Phase 3: ASSESS]
+      [Phase 2: ASSESS]
           |
-          +~~ INCOMPLETE ~~> [Phase 4: ROUTE_INCOMPLETE] ~~> [EXIT — questions posted]
+          +~~ INCOMPLETE ~~> [Phase 3: ROUTE_INCOMPLETE] ~~> [EXIT — questions posted]
           |
-          +~~ COMPLETE ~~> [Phase 5: ROUTE_COMPLETE] ~~> [ENTRY lifecycle, autonomous mode]
+          +~~ COMPLETE ~~> [Phase 4: ROUTE_COMPLETE] ~~> [ENTRY lifecycle, autonomous mode]
     -->
 
     <phase name="DETECT" order="1">
@@ -56,17 +49,10 @@
           Store the issue number, title, and body for subsequent phases.
         </action>
         <action>
-          Check .beads/github-map.json for a beads ticket mapped to this GitHub issue number.
-          (Reverse lookup: scan values for the issue number, return the matching key/ticket ID.)
+          Check the issue state. If the issue is OPEN, proceed to ASSESS.
         </action>
         <action>
-          If a mapped beads ticket exists:
-            Read the ticket with "bd show {ticket-id}" to confirm it still exists and is valid.
-            If the ticket no longer exists (bd show fails), treat as unmapped and fall through
-            to MIGRATE_ISSUE.
-        </action>
-        <action>
-          If the mapped beads ticket exists but is CLOSED (all work done):
+          If the issue is CLOSED (all work done):
             Read the GitHub issue comments to check for follow-up work:
               gh issue view {number} --json comments --jq '.comments[].body'
             Scan the comments for:
@@ -75,89 +61,36 @@
               - Explicit requests for additional changes
               - Review feedback that requires code changes
             Ignore:
-              - Bot comments, CI status updates, migration notices
+              - Bot comments, CI status updates
               - Comments that are purely informational or acknowledgments
-              - Comments that predate the ticket's close date
+              - Comments that predate the issue's close date
         </action>
         <action>
           If follow-up work IS found in the comments:
-            Summarize the follow-up work from the comments into a new ticket description.
-            Proceed to MIGRATE_ISSUE to create a new beads ticket for the follow-up work.
-            The new ticket title should reference the original (e.g., "Follow-up: {original title}").
-            The new ticket description should include the relevant comment content and
-            a link back to the original GitHub issue for context.
+            Create a new GitHub issue for the follow-up work:
+              gh issue create --title "Follow-up: {original title}" --body "{follow-up description}" --label "autonomously-nightly"
+            Proceed to ASSESS with the new issue.
         </action>
         <action>
-          If NO follow-up work is found in the comments (ticket is closed, work is done):
+          If NO follow-up work is found (issue is closed, work is done):
             Remove the "autonomously-nightly" label so the issue is not picked up again:
               gh issue edit {number} --remove-label "autonomously-nightly"
-            Do NOT close the GitHub issue directly — beads-sync handles issue closure
-            when the beads ticket is closed and the PR is merged.
             Report that the issue was cleaned up and exit.
         </action>
-        <action>
-          If the mapped beads ticket exists and is OPEN (work remaining):
-            Proceed to ASSESS with this ticket.
-        </action>
-        <action>
-          If NO mapped beads ticket exists:
-            Proceed to MIGRATE_ISSUE phase to create one.
-        </action>
       </actions>
-      <on-success>Ticket correlation established — proceed to ASSESS or MIGRATE_ISSUE.</on-success>
+      <on-success>Issue found — proceed to ASSESS.</on-success>
       <on-failure>Exit — no labeled issues found or command error.</on-failure>
     </phase>
 
-    <phase name="MIGRATE_ISSUE" order="2">
-      <actor>Orchestrator (reasoning tier)</actor>
-      <actions>
-        <action>
-          Determine the ticket type from the GitHub issue labels:
-            - If labeled "bug" → type = bug
-            - If labeled "enhancement" or "feature" → type = feature
-            - Otherwise → type = task
-        </action>
-        <action>
-          Create a beads ticket from the GitHub issue content:
-            bd create --type {type} --title "{issue title}" --description "{issue body}"
-          Store the new ticket ID.
-        </action>
-        <action>
-          Add the label to the new beads ticket:
-            bd label add {ticket-id} autonomously-nightly
-        </action>
-        <action>
-          Update .beads/github-map.json to record the mapping:
-            {ticket-id} → {github-issue-number}
-          Use jq or python3 to safely merge the new entry into the existing JSON file.
-        </action>
-        <action>
-          Add a migration comment to the beads ticket (do NOT post directly to GitHub —
-          beads-sync will propagate it as github-actions[bot]):
-            bd comment add {ticket-id} "Migrated from GitHub issue #{number}. Work will proceed via the starterpack orchestration workflow."
-          Remove the "autonomously-nightly" label from the GitHub issue since the ticket is now in beads:
-            gh issue edit {number} --remove-label "autonomously-nightly"
-        </action>
-        <action>
-          Commit and push the beads metadata:
-            git add .beads/
-            git commit -m "{ticket-id}: migrate GitHub issue #{number} to beads"
-            git push
-        </action>
-      </actions>
-      <on-success>Migration complete — proceed to ASSESS with the new ticket.</on-success>
-      <on-failure>Report migration failure and exit.</on-failure>
-    </phase>
-
-    <phase name="ASSESS" order="3">
+    <phase name="ASSESS" order="2">
       <actor>Orchestrator (reasoning tier)</actor>
       <actions>
         <action>
           Apply the autonomous-nightly behavior's ticket-assessment rules to the
-          ticket content retrieved in DETECT.
+          issue content retrieved in DETECT.
         </action>
         <action>
-          Determine whether the ticket has sufficient information for autonomous
+          Determine whether the issue has sufficient information for autonomous
           execution. Produce a verdict: COMPLETE or INCOMPLETE.
         </action>
       </actions>
@@ -168,27 +101,28 @@
       <on-failure>Exit and report the assessment failure.</on-failure>
     </phase>
 
-    <phase name="ROUTE_INCOMPLETE" order="4">
+    <phase name="ROUTE_INCOMPLETE" order="3">
       <actor>Orchestrator (reasoning tier)</actor>
       <actions>
         <action>
           Apply the autonomous-nightly behavior's insufficient-information rules:
-          formulate questions, add a comment to the beads ticket via "bd comment add",
-          commit and push so beads-sync propagates the comment to GitHub.
+          formulate questions, then write them to the comment queue file
+          (.github/comment-queue.json) so they appear as github-actions[bot]
+          on the next push.
         </action>
       </actions>
-      <on-success>Exit — questions posted, no further action.</on-success>
+      <on-success>Exit — questions queued, no further action.</on-success>
       <on-failure>Report the failure to post questions and exit.</on-failure>
     </phase>
 
-    <phase name="ROUTE_COMPLETE" order="5">
+    <phase name="ROUTE_COMPLETE" order="4">
       <actor>Orchestrator (reasoning tier)</actor>
       <actions>
         <action>
           Activate autonomous mode — all human gates in the standard workflow
-          are auto-approved for this ticket. The following configuration is
+          are auto-approved for this issue. The following configuration is
           pre-set and not prompted:
-          - Scope: single ticket (current ticket only).
+          - Scope: single issue (current issue only).
           - Docs phase: run normally (scout, audit if needed, auto-approve changes).
         </action>
         <action>

@@ -89,23 +89,16 @@
     </rule>
 
     <rule order="2">
-      Add a comment to the beads ticket with all the questions. Do NOT post
-      directly to the GitHub issue — beads-sync will propagate the comment
-      to GitHub (appearing as github-actions[bot] instead of the user).
+      Write the questions to the comment queue so they appear as github-actions[bot]
+      on the GitHub issue. Append an entry to .github/comment-queue.json:
 
-        bd comment add {ticket-id} "This ticket needs clarification before autonomous execution:
-
-        {numbered list of specific questions}
-
-        This ticket is labeled autonomously-nightly but cannot proceed without answers to the above.
-        Once resolved, re-run the nightly workflow or remove the label and work on it manually."
+        {"issue": {number}, "body": "This issue needs clarification before autonomous execution:\n\n{numbered list of specific questions}\n\nThis issue is labeled autonomously-nightly but cannot proceed without answers to the above.\nOnce resolved, re-run the nightly workflow or remove the label and work on it manually."}
     </rule>
 
     <rule order="3">
-      Commit and push the beads metadata so beads-sync can propagate the
-      comment to the GitHub issue:
-        git add .beads/
-        git commit -m "{ticket-id}: post clarification questions"
+      Commit and push so the comment-sync workflow can post the comment:
+        git add .github/comment-queue.json
+        git commit -m "#{number}: queue clarification questions"
         git push
     </rule>
 
@@ -118,29 +111,30 @@
   </section>
 
   <!-- ═══════════════════════════════════════════════════════════════════════
-       GITHUB ISSUE LIFECYCLE — HANDS OFF
+       GITHUB ISSUE LIFECYCLE — COMMENT QUEUE
        ═══════════════════════════════════════════════════════════════════════ -->
 
   <section name="github-issue-lifecycle">
 
-    <rule name="NO_DIRECT_GITHUB_ISSUE_MUTATIONS">
-      The nightly lifecycle must NEVER modify GitHub issues directly via
-      "gh issue close" or "gh issue comment". All comments and status changes
-      flow through beads → beads-sync → GitHub. This ensures comments appear
-      as github-actions[bot] rather than the user's personal account.
+    <rule name="NO_DIRECT_GITHUB_ISSUE_COMMENTS">
+      The nightly lifecycle must NEVER post comments directly to GitHub issues
+      via "gh issue comment". All comments flow through the comment queue
+      (.github/comment-queue.json) so they appear as github-actions[bot]
+      rather than the user's personal account.
 
-      GitHub issue closure is handled exclusively by the beads-sync workflow:
-        - On feature branches: beads-sync adds a "pending-close" label
-        - On main (after PR merge): beads-sync actually closes the issue
+      GitHub issue closure is handled by the PR body:
+        - PRs targeting main use "Closes #{number}" (GitHub auto-closes on merge)
+        - PRs targeting feature branches use "Relates to #{number}" (no premature closure)
 
-      The only GitHub issue operations the nightly lifecycle may perform are:
+      The only GitHub issue operations the nightly lifecycle may perform directly are:
         - Reading issue content and comments (gh issue view, gh issue list)
         - Adding or removing labels (gh issue edit --add-label / --remove-label)
+        - Creating new issues (gh issue create)
 
-      To post a comment that appears on a GitHub issue, add it to the beads
-      ticket instead:
-        bd comment add {ticket-id} "comment text"
-      Then commit and push .beads/ so beads-sync propagates it.
+      To post a comment that appears on a GitHub issue, append it to the comment
+      queue instead:
+        Append {"issue": {number}, "body": "comment text"} to .github/comment-queue.json
+      Then commit and push so comment-sync propagates it.
 
       This rule applies to ALL phases of the nightly lifecycle and to any
       post-lifecycle cleanup.
