@@ -461,4 +461,71 @@ mod tests {
         let status = exit_status_from_code(1);
         assert!(!status.success());
     }
+
+    /// Helper: read all output from a PtyProcess until EOF, returning the collected bytes.
+    fn read_all(process: &mut Box<dyn PtyProcess>) -> Vec<u8> {
+        let mut output = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match process.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => output.extend_from_slice(&buf[..n]),
+                Err(e) => panic!("read error: {e}"),
+            }
+        }
+        output
+    }
+
+    #[test]
+    fn test_nopty_stderr_captured() {
+        let spawner = NoPtySpawner;
+        let mut cmd = portable_pty::CommandBuilder::new("cmd");
+        cmd.arg("/C");
+        cmd.arg("echo stderr_test_output 1>&2");
+        let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
+
+        let output = read_all(&mut process);
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains("stderr_test_output"),
+            "expected 'stderr_test_output' in output, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_nopty_stdout_and_stderr_merged() {
+        let spawner = NoPtySpawner;
+        let mut cmd = portable_pty::CommandBuilder::new("cmd");
+        cmd.arg("/C");
+        cmd.arg("echo stdout_output && echo stderr_output 1>&2");
+        let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
+
+        let output = read_all(&mut process);
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains("stdout_output"),
+            "expected 'stdout_output' in merged output, got: {text:?}"
+        );
+        assert!(
+            text.contains("stderr_output"),
+            "expected 'stderr_output' in merged output, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_nopty_eof_after_both_streams_close() {
+        let spawner = NoPtySpawner;
+        let mut cmd = portable_pty::CommandBuilder::new("cmd");
+        cmd.arg("/C");
+        cmd.arg("echo hello");
+        let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
+
+        // Read until EOF — this must terminate cleanly (not hang or error).
+        let output = read_all(&mut process);
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains("hello"),
+            "expected 'hello' in output before EOF, got: {text:?}"
+        );
+    }
 }
