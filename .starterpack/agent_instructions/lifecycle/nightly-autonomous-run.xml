@@ -16,17 +16,17 @@
           v
       [Phase 1: DETECT]
           |
-          +~~ no GitHub issues labeled autonomously-nightly ~~> [EXIT — nothing to process]
+          +~~ no open issues labeled autonomously-nightly ~~> [EXIT — nothing to process]
           |
           +~~ command failure ~~> [EXIT — report error]
           |
-          +~~ issue found, OPEN ~~> [Phase 2: ASSESS]
+          +~~ open issue found, no open PR ~~> [Phase 2: ASSESS]
           |
-          +~~ issue found, CLOSED ~~> read GitHub comments
+          +~~ open issue found, open PR exists ~~> check PR/issue comments for follow-up
           |       |
-          |       +~~ follow-up work found ~~> create new issue, [Phase 2: ASSESS]
+          |       +~~ actionable feedback ~~> [Phase 2: ASSESS] (address feedback)
           |       |
-          |       +~~ no follow-up ~~> remove label, [EXIT — work already done]
+          |       +~~ no actionable feedback ~~> skip issue, try next
 
       [Phase 2: ASSESS]
           |
@@ -39,46 +39,30 @@
       <actor>Orchestrator (reasoning tier)</actor>
       <actions>
         <action>
-          Query GitHub for open issues labeled "autonomously-nightly":
+          Query GitHub for OPEN issues labeled "autonomously-nightly":
             gh issue list --label "autonomously-nightly" --state open --json number,title,body,labels,createdAt --limit 20
           If the command fails, report the error and exit.
           If no issues are returned, report that no issues are labeled for nightly processing and exit.
+          Only open issues are candidates — ignore closed issues entirely.
         </action>
         <action>
-          Select the oldest issue by createdAt (one-at-a-time processing).
+          Select the oldest open issue by createdAt (one-at-a-time processing).
           Store the issue number, title, and body for subsequent phases.
         </action>
         <action>
-          Check the issue state. If the issue is OPEN, proceed to ASSESS.
+          Check whether an open PR already exists for this issue:
+            gh pr list --search "{number}" --state open --json number,title,url --limit 5
+          If an open PR exists, the issue may have in-flight work. Check the PR
+          comments and issue comments for actionable follow-up (review feedback
+          requesting code changes, bug reports, explicit requests for modifications).
+          If actionable feedback is found, proceed to ASSESS to address it.
+          If no actionable feedback is found, skip this issue and try the next oldest.
         </action>
         <action>
-          If the issue is CLOSED (all work done):
-            Read the GitHub issue comments to check for follow-up work:
-              gh issue view {number} --json comments --jq '.comments[].body'
-            Scan the comments for:
-              - New feature requests or enhancements beyond the original scope
-              - Bug reports or issues with the completed work
-              - Explicit requests for additional changes
-              - Review feedback that requires code changes
-            Ignore:
-              - Bot comments, CI status updates
-              - Comments that are purely informational or acknowledgments
-              - Comments that predate the issue's close date
-        </action>
-        <action>
-          If follow-up work IS found in the comments:
-            Create a new GitHub issue for the follow-up work:
-              gh issue create --title "Follow-up: {original title}" --body "{follow-up description}" --label "autonomously-nightly"
-            Proceed to ASSESS with the new issue.
-        </action>
-        <action>
-          If NO follow-up work is found (issue is closed, work is done):
-            Remove the "autonomously-nightly" label so the issue is not picked up again:
-              gh issue edit {number} --remove-label "autonomously-nightly"
-            Report that the issue was cleaned up and exit.
+          If no open PR exists, proceed directly to ASSESS.
         </action>
       </actions>
-      <on-success>Issue found — proceed to ASSESS.</on-success>
+      <on-success>Open issue found — proceed to ASSESS.</on-success>
       <on-failure>Exit — no labeled issues found or command error.</on-failure>
     </phase>
 
