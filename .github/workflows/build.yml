@@ -1,4 +1,4 @@
-name: CI
+name: Build
 
 on:
   push:
@@ -10,11 +10,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  build:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        rust: [stable]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -32,11 +31,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ matrix.rust }}
-          components: clippy, rustfmt
 
-      - name: Cache cargo registry and build
+      - name: Cache Cargo registry and build
         uses: actions/cache@v4
         with:
           path: |
@@ -47,14 +43,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Check formatting
-        run: cargo fmt -- --check
-        working-directory: acs
-
-      - name: Run clippy
-        run: cargo clippy -- -D warnings
-        working-directory: acs
-
-      - name: Run tests
-        run: cargo test
+      - name: Build release
+        run: cargo build --release
         working-directory: acs

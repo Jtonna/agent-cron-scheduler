@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Check gh CLI
+if ! command -v gh &> /dev/null; then
+    echo "Error: GitHub CLI (gh) is not installed. Install from https://cli.github.com/"
+    exit 1
+fi
+
 # Check branch
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ "$BRANCH" != "main" ]; then
@@ -33,53 +39,16 @@ echo ""
 read -rp "Select version bump (1/2/3): " CHOICE
 
 case $CHOICE in
-    1) NEW_VERSION=$PATCH_VERSION ;;
-    2) NEW_VERSION=$MINOR_VERSION ;;
-    3) NEW_VERSION=$MAJOR_VERSION ;;
+    1) BUMP_TYPE="patch" ;;
+    2) BUMP_TYPE="minor" ;;
+    3) BUMP_TYPE="major" ;;
     *) echo "Invalid choice"; exit 1 ;;
 esac
 
-echo "Bumping to $NEW_VERSION"
+echo "Triggering release workflow with $BUMP_TYPE bump..."
+gh workflow run release.yml -f bump="$BUMP_TYPE"
 
-# Update all package.json files
-for FILE in electron/package.json electron/packages/app/package.json; do
-    node -e "
-        const fs = require('fs');
-        const pkg = JSON.parse(fs.readFileSync('$FILE', 'utf8'));
-        pkg.version = '$NEW_VERSION';
-        fs.writeFileSync('$FILE', JSON.stringify(pkg, null, 2) + '\n');
-    "
-    echo "Updated $FILE"
-done
-
-# Update acs/Cargo.toml version (anchor to start of line to avoid matching dependency versions)
-sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" acs/Cargo.toml
-echo "Updated acs/Cargo.toml"
-
-# Update acs/web/openapi.yaml version (info.version and example version — 2 occurrences)
-sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$NEW_VERSION\"/g" acs/web/openapi.yaml
-echo "Updated acs/web/openapi.yaml"
-
-# Update lock file
-echo "Updating package-lock.json..."
-(cd electron && npm install --package-lock-only --silent)
-
-# Commit and tag
-git add acs/Cargo.toml acs/web/openapi.yaml
-git add -A
-git commit -m "chore: bump version to $NEW_VERSION"
-git tag "v$NEW_VERSION"
-
+REPO_URL=$(gh repo view --json url -q '.url')
 echo ""
-echo "Version bumped to $NEW_VERSION"
-echo "Tag v$NEW_VERSION created"
-echo ""
-
-read -rp "Push to origin? (y/n): " PUSH
-if [ "$PUSH" = "y" ]; then
-    git push origin main
-    git push origin "v$NEW_VERSION"
-    echo "Pushed! GitHub Actions will build the release."
-else
-    echo "Run 'git push origin main && git push origin v$NEW_VERSION' when ready."
-fi
+echo "Release workflow triggered! Monitor progress at:"
+echo "$REPO_URL/actions/workflows/release.yml"

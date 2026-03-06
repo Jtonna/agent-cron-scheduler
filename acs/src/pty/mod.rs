@@ -479,8 +479,13 @@ mod tests {
     #[test]
     fn test_nopty_stderr_captured() {
         let spawner = NoPtySpawner;
-        let mut cmd = portable_pty::CommandBuilder::new("cmd");
-        cmd.arg("/C");
+        let (shell, flag) = if cfg!(windows) {
+            ("cmd", "/C")
+        } else {
+            ("sh", "-c")
+        };
+        let mut cmd = portable_pty::CommandBuilder::new(shell);
+        cmd.arg(flag);
         cmd.arg("echo stderr_test_output 1>&2");
         let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
 
@@ -495,8 +500,13 @@ mod tests {
     #[test]
     fn test_nopty_stdout_and_stderr_merged() {
         let spawner = NoPtySpawner;
-        let mut cmd = portable_pty::CommandBuilder::new("cmd");
-        cmd.arg("/C");
+        let (shell, flag) = if cfg!(windows) {
+            ("cmd", "/C")
+        } else {
+            ("sh", "-c")
+        };
+        let mut cmd = portable_pty::CommandBuilder::new(shell);
+        cmd.arg(flag);
         cmd.arg("echo stdout_output && echo stderr_output 1>&2");
         let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
 
@@ -515,8 +525,13 @@ mod tests {
     #[test]
     fn test_nopty_eof_after_both_streams_close() {
         let spawner = NoPtySpawner;
-        let mut cmd = portable_pty::CommandBuilder::new("cmd");
-        cmd.arg("/C");
+        let (shell, flag) = if cfg!(windows) {
+            ("cmd", "/C")
+        } else {
+            ("sh", "-c")
+        };
+        let mut cmd = portable_pty::CommandBuilder::new(shell);
+        cmd.arg(flag);
         cmd.arg("echo hello");
         let mut process = spawner.spawn(cmd, 24, 80).expect("spawn");
 
