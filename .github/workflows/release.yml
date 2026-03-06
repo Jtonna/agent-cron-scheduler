@@ -1,14 +1,95 @@
-name: Build & Release
+name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
 
 jobs:
+  version-bump:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Bump version
+        id: bump
+        shell: bash
+        run: |
+          CURRENT_VERSION=$(node -e "console.log(require('./electron/package.json').version)")
+          echo "Current version: $CURRENT_VERSION"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+          case "${{ inputs.bump }}" in
+            patch) NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))" ;;
+            minor) NEW_VERSION="$MAJOR.$((MINOR + 1)).0" ;;
+            major) NEW_VERSION="$((MAJOR + 1)).0.0" ;;
+          esac
+
+          echo "New version: $NEW_VERSION"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+          # Bump electron/package.json
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('electron/package.json', 'utf8'));
+            pkg.version = '$NEW_VERSION';
+            fs.writeFileSync('electron/package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+          # Bump electron/packages/app/package.json
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('electron/packages/app/package.json', 'utf8'));
+            pkg.version = '$NEW_VERSION';
+            fs.writeFileSync('electron/packages/app/package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+          # Bump acs/Cargo.toml (anchored to line start)
+          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" acs/Cargo.toml
+
+          # Bump acs/web/openapi.yaml — replace ALL version: "X.Y.Z" patterns
+          # Read current openapi version (may differ from package.json due to known desync)
+          OPENAPI_VERSION=$(grep -oP 'version: "\K[^"]+' acs/web/openapi.yaml | head -1)
+          if [ -n "$OPENAPI_VERSION" ]; then
+            sed -i "s/version: \"$OPENAPI_VERSION\"/version: \"$NEW_VERSION\"/g" acs/web/openapi.yaml
+          fi
+
+          # Regenerate lockfile
+          cd electron && npm install --package-lock-only --silent
+
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add acs/Cargo.toml acs/web/openapi.yaml electron/package.json electron/packages/app/package.json electron/package-lock.json
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.new_version }}"
+          git tag "v${{ steps.bump.outputs.new_version }}"
+          git push origin main
+          git push origin "v${{ steps.bump.outputs.new_version }}"
+
   build:
+    needs: version-bump
     strategy:
       matrix:
         include:
@@ -18,11 +99,11 @@ jobs:
             platform: mac
           - os: ubuntu-latest
             platform: linux
-
     runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version-bump.outputs.new_version }}
 
       - uses: actions/setup-node@v4
         with:
@@ -91,9 +172,8 @@ jobs:
           if-no-files-found: warn
 
   release:
-    needs: build
+    needs: [version-bump, build]
     runs-on: ubuntu-latest
-
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -104,15 +184,16 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.version-bump.outputs.new_version }}
           files: artifacts/**/*
           body: |
             ## Downloads
 
             | Platform | Installer | Raw Binary |
             |----------|-----------|------------|
-            | Windows | `AgentCronScheduler-${{ github.ref_name }}-windows.exe` | `agentcronsystem-windows-x86_64.exe` |
-            | macOS | `AgentCronScheduler-${{ github.ref_name }}-mac.dmg` | `agentcronsystem-macos-aarch64` |
-            | Linux | `AgentCronScheduler-${{ github.ref_name }}-linux.AppImage` | `agentcronsystem-linux-x86_64` |
+            | Windows | `AgentCronScheduler-v${{ needs.version-bump.outputs.new_version }}-windows.exe` | `agentcronsystem-windows-x86_64.exe` |
+            | macOS | `AgentCronScheduler-v${{ needs.version-bump.outputs.new_version }}-mac.dmg` | `agentcronsystem-macos-aarch64` |
+            | Linux | `AgentCronScheduler-v${{ needs.version-bump.outputs.new_version }}-linux.AppImage` | `agentcronsystem-linux-x86_64` |
 
             ### Installation
             **Windows** — Run the `.exe` installer. SmartScreen warning expected (unsigned).
