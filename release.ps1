@@ -1,5 +1,11 @@
 $ErrorActionPreference = "Stop"
 
+# Check gh CLI
+if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+    Write-Host "Error: GitHub CLI (gh) is not installed. Install from https://cli.github.com/" -ForegroundColor Red
+    exit 1
+}
+
 # Check branch
 $branch = git rev-parse --abbrev-ref HEAD
 if ($branch -ne "main") {
@@ -38,67 +44,19 @@ Write-Host ""
 $choice = Read-Host "Select version bump (1/2/3)"
 
 switch ($choice) {
-    "1" { $newVersion = $patchVersion }
-    "2" { $newVersion = $minorVersion }
-    "3" { $newVersion = $majorVersion }
+    "1" { $bumpType = "patch" }
+    "2" { $bumpType = "minor" }
+    "3" { $bumpType = "major" }
     default {
         Write-Host "Invalid choice" -ForegroundColor Red
         exit 1
     }
 }
 
-Write-Host "Bumping to $newVersion" -ForegroundColor Green
+Write-Host "Triggering release workflow with $bumpType bump..." -ForegroundColor Green
+gh workflow run release.yml -f bump="$bumpType"
 
-# Update all package.json files
-$packageFiles = @(
-    "electron/package.json",
-    "electron/packages/app/package.json"
-)
-
-foreach ($file in $packageFiles) {
-    $content = Get-Content $file -Raw
-    $json = $content | ConvertFrom-Json
-    $json.version = $newVersion
-    $json | ConvertTo-Json -Depth 10 | Set-Content $file -NoNewline
-    Write-Host "Updated $file" -ForegroundColor Gray
-}
-
-# Update acs/Cargo.toml version (only first match = [package] version, anchored to start of line)
-$cargoPath = "acs/Cargo.toml"
-$cargoContent = Get-Content $cargoPath -Raw
-$cargoContent = $cargoContent -replace '(?m)^version = ".*"', "version = `"$newVersion`""
-Set-Content $cargoPath -Value $cargoContent -NoNewline
-Write-Host "Updated $cargoPath" -ForegroundColor Gray
-
-# Update acs/web/openapi.yaml version (info.version and example version — 2 occurrences)
-$openapiPath = "acs/web/openapi.yaml"
-$openapiContent = Get-Content $openapiPath -Raw
-$openapiContent = $openapiContent -replace [regex]::Escape("version: `"$currentVersion`""), "version: `"$newVersion`""
-Set-Content $openapiPath -Value $openapiContent -NoNewline
-Write-Host "Updated $openapiPath" -ForegroundColor Gray
-
-# Update lock file
-Write-Host "Updating package-lock.json..."
-Push-Location "electron"
-npm install --package-lock-only --silent
-Pop-Location
-
-# Commit and tag
-git add acs/Cargo.toml acs/web/openapi.yaml
-git add -A
-git commit -m "chore: bump version to $newVersion"
-git tag "v$newVersion"
-
+$repoUrl = gh repo view --json url -q '.url'
 Write-Host ""
-Write-Host "Version bumped to $newVersion" -ForegroundColor Green
-Write-Host "Tag v$newVersion created" -ForegroundColor Green
-Write-Host ""
-
-$push = Read-Host "Push to origin? (y/n)"
-if ($push -eq "y") {
-    git push origin main
-    git push origin "v$newVersion"
-    Write-Host "Pushed! GitHub Actions will build the release." -ForegroundColor Green
-} else {
-    Write-Host "Run 'git push origin main && git push origin v$newVersion' when ready." -ForegroundColor Yellow
-}
+Write-Host "Release workflow triggered! Monitor progress at:" -ForegroundColor Green
+Write-Host "$repoUrl/actions/workflows/release.yml" -ForegroundColor Cyan
