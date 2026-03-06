@@ -43,7 +43,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             acs/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('acs/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
@@ -58,11 +58,3 @@ jobs:
       - name: Run tests
         run: cargo test
         working-directory: acs
-
-      - name: Build release
-        run: cargo build --release
-        working-directory: acs
-
-      # Note: cargo llvm-cov requires a separate LLVM tools installation.
-      # To enable code coverage, install llvm-tools-preview and cargo-llvm-cov,
-      # then run: cargo llvm-cov --html
