@@ -90,6 +90,8 @@ pub async fn cmd_add(
         env_vars,
         timeout_secs: 0,
         log_environment: log_env,
+        pre_hook: None,
+        post_hook: None,
     };
 
     let client = Client::new();
