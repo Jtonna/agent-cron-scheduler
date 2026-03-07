@@ -1,1 +1,6 @@
-[]
+[
+  {
+    "issue": 29,
+    "body": "## Implementation Plan — Job Lifecycle Hooks\n\n**Sub-tasks:**\n\n1. **Model changes** (light) — Add hook fields to Job/NewJob/JobUpdate, DaemonConfig defaults, CompletedWithWarnings status\n2. **Storage layer** (light) — Update JsonJobStore create/update for hook fields\n3. **Executor logic** (complex) — Pre-hook before spawn, post-hook after completion, tokio::process::Command\n4. **OpenAPI spec** (light) — Add hook properties to schemas, update RunStatus enum\n5. **CLI support** (light) — Add --pre-hook/--post-hook args to acs add\n6. **Integration tests** (standard) — End-to-end hook lifecycle tests\n\n**Dependencies:** 1 → (2, 3, 4, 5 parallel) → 6\n\n**Key decisions:**\n- Hooks are shell commands via tokio::process::Command (not PTY)\n- Global/per-job inheritance: job.hook.or(config.default_hook)\n- Pre-hook failure → Failed, post-hook failure → CompletedWithWarnings\n- Post-hook receives ACS_JOB_EXIT_CODE env var\n- 30s hook timeout (hardcoded)"
+  }
+]
