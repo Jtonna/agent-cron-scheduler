@@ -252,6 +252,18 @@ impl Executor {
             timestamp: now,
         });
 
+        // Resolve effective hooks: job-level overrides config default; empty string = no hook
+        let effective_pre_hook = job
+            .pre_hook
+            .clone()
+            .or_else(|| self.config.default_pre_hook.clone())
+            .filter(|h| !h.is_empty());
+        let effective_post_hook = job
+            .post_hook
+            .clone()
+            .or_else(|| self.config.default_post_hook.clone())
+            .filter(|h| !h.is_empty());
+
         // Build the command
         let cmd = Self::build_command(
             job,
@@ -263,6 +275,7 @@ impl Executor {
         let execution = job.execution.clone();
         let log_environment = job.log_environment;
         let job_env_vars = job.env_vars.clone();
+        let job_working_dir = job.working_dir.clone();
         let trigger_input = trigger_params.and_then(|p| p.input.clone());
         let trigger_args = trigger_params.and_then(|p| p.args.clone());
         let trigger_params_owned = trigger_params.cloned();
@@ -285,6 +298,54 @@ impl Executor {
 
         // Spawn the execution task
         let join_handle = tokio::spawn(async move {
+            // Run pre-hook if configured (before PTY spawn)
+            if let Some(ref hook_cmd) = effective_pre_hook {
+                tracing::debug!("Running pre-hook for job {}: {}", job_id, hook_cmd);
+                match run_hook(
+                    hook_cmd,
+                    job_working_dir.as_deref(),
+                    job_env_vars.as_ref(),
+                    None,
+                    "pre-hook",
+                )
+                .await
+                {
+                    HookOutcome::Success => {
+                        tracing::debug!("Pre-hook succeeded for job {}", job_id);
+                    }
+                    HookOutcome::Failure(detail) => {
+                        let error_msg = format!("Pre-hook failed: {}", detail);
+                        tracing::warn!("{} for job {}", error_msg, job_id);
+
+                        let failed_run = JobRun {
+                            run_id,
+                            job_id,
+                            started_at: now,
+                            finished_at: Some(Utc::now()),
+                            status: RunStatus::Failed,
+                            exit_code: None,
+                            log_size_bytes: 0,
+                            error: Some(error_msg.clone()),
+                            trigger_params: trigger_params_owned.clone(),
+                        };
+                        if let Err(e) = log_store.update_run(&failed_run).await {
+                            tracing::error!("Failed to save run on pre-hook failure: {}", e);
+                        }
+                        let _ = event_tx.send(JobEvent::Completed {
+                            job_id,
+                            run_id,
+                            exit_code: -1,
+                            timestamp: Utc::now(),
+                        });
+                        // Cleanup old log files
+                        if let Err(e) = log_store.cleanup(job_id, max_log_files).await {
+                            tracing::error!("Failed to cleanup logs for job {}: {}", job_id, e);
+                        }
+                        return;
+                    }
+                }
+            }
+
             // Try to spawn the process
             let spawn_result = {
                 let spawner = pty_spawner;
