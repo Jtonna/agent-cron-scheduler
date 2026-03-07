@@ -2155,4 +2155,253 @@ mod tests {
         let deserialized: JobRun = serde_json::from_str(&json).expect("deserialize");
         assert!(deserialized.trigger_params.is_none());
     }
+
+    // --- Hook integration tests ---
+
+    fn setup_executor_with_config(
+        spawner: MockPtySpawner,
+        config: DaemonConfig,
+    ) -> (
+        Executor,
+        broadcast::Receiver<JobEvent>,
+        Arc<InMemoryLogStore>,
+    ) {
+        let config = Arc::new(config);
+        let (event_tx, event_rx) = broadcast::channel::<JobEvent>(4096);
+        let log_store = Arc::new(InMemoryLogStore::new());
+        let pty_spawner = Arc::new(spawner);
+
+        let executor = Executor::new(
+            event_tx,
+            Arc::clone(&log_store) as Arc<dyn LogStore>,
+            config,
+            pty_spawner as Arc<dyn PtySpawner>,
+        );
+
+        (executor, event_rx, log_store)
+    }
+
+    #[tokio::test]
+    async fn test_pre_hook_success_allows_job_to_run() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"job output\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.pre_hook = Some("echo pre-hook-ran".to_string());
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::Completed,
+            "Job should complete normally when pre-hook succeeds"
+        );
+        assert!(run.error.is_none(), "Should have no error on success");
+    }
+
+    #[tokio::test]
+    async fn test_pre_hook_failure_blocks_job() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"job output\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.pre_hook = Some("exit 1".to_string());
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::Failed,
+            "Job should fail when pre-hook fails"
+        );
+        assert!(run.error.is_some(), "Should have an error message");
+        let error = run.error.as_ref().unwrap();
+        assert!(
+            error.to_lowercase().contains("pre-hook"),
+            "Error should mention pre-hook, got: {}",
+            error
+        );
+        // Verify the job itself did NOT execute: exit_code is None (pre-hook failure path
+        // sets exit_code to None in the stored run)
+        assert!(
+            run.exit_code.is_none(),
+            "Exit code should be None when pre-hook blocked the job"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_post_hook_failure_yields_completed_with_warnings() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"job output\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.post_hook = Some("exit 1".to_string());
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::CompletedWithWarnings,
+            "Job should be CompletedWithWarnings when post-hook fails"
+        );
+        assert!(run.error.is_some(), "Should have an error message");
+        let error = run.error.as_ref().unwrap();
+        assert!(
+            error.to_lowercase().contains("post-hook"),
+            "Error should mention post-hook, got: {}",
+            error
+        );
+        // The main job succeeded (exit code 0)
+        assert_eq!(
+            run.exit_code,
+            Some(0),
+            "Exit code should reflect the main job result"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_post_hook_success_yields_completed() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"job output\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.post_hook = Some("echo post-hook-ran".to_string());
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::Completed,
+            "Job should be Completed when post-hook succeeds"
+        );
+        assert!(run.error.is_none(), "Should have no error on success");
+        assert_eq!(run.exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_hook_inherited_from_config_default_pre_hook() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"job output\n".to_vec()], 0);
+        let config = DaemonConfig {
+            default_pre_hook: Some("echo global-pre-hook".to_string()),
+            ..Default::default()
+        };
+        let (executor, _event_rx, log_store) = setup_executor_with_config(spawner, config);
+
+        // Job has no hook set — should inherit from config
+        let job = make_test_job();
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::Completed,
+            "Job should complete normally when inherited config pre-hook succeeds"
+        );
+        assert!(run.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_job_level_hook_overrides_config_default() {
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"job output\n".to_vec()], 0);
+        // Config pre-hook would fail if it ran
+        let config = DaemonConfig {
+            default_pre_hook: Some("exit 1".to_string()),
+            ..Default::default()
+        };
+        let (executor, _event_rx, log_store) = setup_executor_with_config(spawner, config);
+
+        // Job-level pre-hook succeeds — should override the failing config hook
+        let mut job = make_test_job();
+        job.pre_hook = Some("echo override-hook".to_string());
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::Completed,
+            "Job should succeed when job-level hook overrides the failing config default"
+        );
+        assert!(
+            run.error.is_none(),
+            "Should have no error when job-level hook overrides config"
+        );
+    }
 }
