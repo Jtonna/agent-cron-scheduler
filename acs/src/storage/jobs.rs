@@ -187,6 +187,12 @@ impl JobStore for JsonJobStore {
         if let Some(log_environment) = update.log_environment {
             job.log_environment = log_environment;
         }
+        if let Some(pre_hook) = update.pre_hook {
+            job.pre_hook = Some(pre_hook);
+        }
+        if let Some(post_hook) = update.post_hook {
+            job.post_hook = Some(post_hook);
+        }
         // Internal metadata fields (not user-editable, set by the daemon)
         if let Some(last_run_at) = update.last_run_at {
             job.last_run_at = last_run_at;
@@ -234,6 +240,8 @@ mod tests {
             env_vars: None,
             timeout_secs: 0,
             log_environment: false,
+            pre_hook: None,
+            post_hook: None,
         }
     }
 
@@ -554,5 +562,122 @@ mod tests {
         // Verify persistence works
         let jobs = store.list_jobs().await.expect("list");
         assert_eq!(jobs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_job_with_pre_hook() {
+        let (store, _tmp) = setup_store().await;
+        let mut job = make_new_job("with-pre-hook");
+        job.pre_hook = Some("echo 'before job'".to_string());
+
+        let created = store.create_job(job).await.expect("create");
+        assert_eq!(created.pre_hook, Some("echo 'before job'".to_string()));
+
+        // Verify persistence
+        let fetched = store
+            .get_job(created.id)
+            .await
+            .expect("get")
+            .expect("found");
+        assert_eq!(fetched.pre_hook, Some("echo 'before job'".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_job_with_post_hook() {
+        let (store, _tmp) = setup_store().await;
+        let mut job = make_new_job("with-post-hook");
+        job.post_hook = Some("echo 'after job'".to_string());
+
+        let created = store.create_job(job).await.expect("create");
+        assert_eq!(created.post_hook, Some("echo 'after job'".to_string()));
+
+        // Verify persistence
+        let fetched = store
+            .get_job(created.id)
+            .await
+            .expect("get")
+            .expect("found");
+        assert_eq!(fetched.post_hook, Some("echo 'after job'".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_job_with_both_hooks() {
+        let (store, _tmp) = setup_store().await;
+        let mut job = make_new_job("with-both-hooks");
+        job.pre_hook = Some("echo 'before'".to_string());
+        job.post_hook = Some("echo 'after'".to_string());
+
+        let created = store.create_job(job).await.expect("create");
+        assert_eq!(created.pre_hook, Some("echo 'before'".to_string()));
+        assert_eq!(created.post_hook, Some("echo 'after'".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_job_pre_hook() {
+        let (store, _tmp) = setup_store().await;
+        let created = store
+            .create_job(make_new_job("test-job"))
+            .await
+            .expect("create");
+
+        let update = JobUpdate {
+            pre_hook: Some("echo 'updated pre'".to_string()),
+            ..Default::default()
+        };
+
+        let updated = store.update_job(created.id, update).await.expect("update");
+        assert_eq!(updated.pre_hook, Some("echo 'updated pre'".to_string()));
+
+        // Verify persistence
+        let fetched = store
+            .get_job(created.id)
+            .await
+            .expect("get")
+            .expect("found");
+        assert_eq!(fetched.pre_hook, Some("echo 'updated pre'".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_job_post_hook() {
+        let (store, _tmp) = setup_store().await;
+        let created = store
+            .create_job(make_new_job("test-job"))
+            .await
+            .expect("create");
+
+        let update = JobUpdate {
+            post_hook: Some("echo 'updated post'".to_string()),
+            ..Default::default()
+        };
+
+        let updated = store.update_job(created.id, update).await.expect("update");
+        assert_eq!(updated.post_hook, Some("echo 'updated post'".to_string()));
+
+        // Verify persistence
+        let fetched = store
+            .get_job(created.id)
+            .await
+            .expect("get")
+            .expect("found");
+        assert_eq!(fetched.post_hook, Some("echo 'updated post'".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_both_hooks() {
+        let (store, _tmp) = setup_store().await;
+        let created = store
+            .create_job(make_new_job("test-job"))
+            .await
+            .expect("create");
+
+        let update = JobUpdate {
+            pre_hook: Some("pre-hook-value".to_string()),
+            post_hook: Some("post-hook-value".to_string()),
+            ..Default::default()
+        };
+
+        let updated = store.update_job(created.id, update).await.expect("update");
+        assert_eq!(updated.pre_hook, Some("pre-hook-value".to_string()));
+        assert_eq!(updated.post_hook, Some("post-hook-value".to_string()));
     }
 }
