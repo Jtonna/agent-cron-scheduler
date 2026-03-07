@@ -12,6 +12,88 @@ use crate::models::{DaemonConfig, ExecutionType, Job, JobRun, RunStatus};
 use crate::pty::PtySpawner;
 use crate::storage::LogStore;
 
+/// Result of executing a hook command.
+enum HookOutcome {
+    /// Hook succeeded (exit code zero).
+    Success,
+    /// Hook failed: carries a human-readable description of the failure.
+    Failure(String),
+}
+
+/// Execute a hook command string using the platform shell.
+///
+/// * `command`     – the shell command to run
+/// * `working_dir` – optional working directory (inherits cwd if None)
+/// * `env_vars`    – optional extra environment variables to set
+/// * `extra_env`   – optional single additional key/value env pair (e.g. ACS_JOB_EXIT_CODE)
+/// * `label`       – a short label used in log/error messages ("pre-hook" or "post-hook")
+///
+/// Returns [`HookOutcome::Success`] when the process exits with code 0, or
+/// [`HookOutcome::Failure`] for any other outcome (non-zero exit, timeout,
+/// spawn error, etc.).
+async fn run_hook(
+    command: &str,
+    working_dir: Option<&str>,
+    env_vars: Option<&HashMap<String, String>>,
+    extra_env: Option<(&str, &str)>,
+    label: &str,
+) -> HookOutcome {
+    let mut cmd = if cfg!(target_os = "windows") {
+        let mut c = tokio::process::Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
+    } else {
+        let mut c = tokio::process::Command::new("sh");
+        c.arg("-c").arg(command);
+        c
+    };
+
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
+    }
+
+    if let Some(vars) = env_vars {
+        for (k, v) in vars {
+            cmd.env(k, v);
+        }
+    }
+
+    if let Some((k, v)) = extra_env {
+        cmd.env(k, v);
+    }
+
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    // Spawn the hook process
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return HookOutcome::Failure(format!("{} spawn error: {}", label, e));
+        }
+    };
+
+    // Apply a 30-second timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await {
+        Ok(Ok(output)) => {
+            if output.status.success() {
+                HookOutcome::Success
+            } else {
+                let code = output.status.code().unwrap_or(-1);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let detail = if stderr.trim().is_empty() {
+                    format!("exited with code {}", code)
+                } else {
+                    format!("exited with code {}: {}", code, stderr.trim())
+                };
+                HookOutcome::Failure(format!("{} {}", label, detail))
+            }
+        }
+        Ok(Err(e)) => HookOutcome::Failure(format!("{} wait error: {}", label, e)),
+        Err(_) => HookOutcome::Failure(format!("{} timed out after 30 seconds", label)),
+    }
+}
+
 /// Handle to a running job, allowing monitoring and cancellation.
 pub struct RunHandle {
     pub run_id: Uuid,
@@ -683,6 +765,8 @@ mod tests {
             updated_at: now,
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         }
     }
@@ -1065,6 +1149,8 @@ mod tests {
             updated_at: Utc::now(),
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
@@ -1099,6 +1185,8 @@ mod tests {
             updated_at: Utc::now(),
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
@@ -1321,6 +1409,8 @@ mod tests {
             updated_at: Utc::now(),
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
@@ -1347,6 +1437,8 @@ mod tests {
             updated_at: Utc::now(),
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
@@ -1381,6 +1473,8 @@ mod tests {
             updated_at: Utc::now(),
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
@@ -1412,6 +1506,8 @@ mod tests {
             updated_at: Utc::now(),
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
@@ -1442,6 +1538,8 @@ mod tests {
             updated_at: Utc::now(),
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
@@ -1473,6 +1571,8 @@ mod tests {
             updated_at: Utc::now(),
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
@@ -1506,6 +1606,8 @@ mod tests {
             updated_at: Utc::now(),
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
@@ -1547,6 +1649,8 @@ mod tests {
             updated_at: Utc::now(),
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
@@ -1688,6 +1792,8 @@ mod tests {
             updated_at: now,
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
@@ -1889,6 +1995,8 @@ mod tests {
             updated_at: now,
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
 
