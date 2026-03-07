@@ -629,6 +629,33 @@ impl Executor {
                     // Get exit code
                     let exit_code = status.code().unwrap_or(-1);
 
+                    // Run post-hook if configured
+                    let (final_status, hook_error) = if let Some(ref hook_cmd) = effective_post_hook {
+                        tracing::debug!("Running post-hook for job {}: {}", job_id, hook_cmd);
+                        let exit_code_str = exit_code.to_string();
+                        match run_hook(
+                            hook_cmd,
+                            job_working_dir.as_deref(),
+                            job_env_vars.as_ref(),
+                            Some(("ACS_JOB_EXIT_CODE", &exit_code_str)),
+                            "post-hook",
+                        )
+                        .await
+                        {
+                            HookOutcome::Success => {
+                                tracing::debug!("Post-hook succeeded for job {}", job_id);
+                                (RunStatus::Completed, None)
+                            }
+                            HookOutcome::Failure(detail) => {
+                                let error_msg = format!("Post-hook failed: {}", detail);
+                                tracing::warn!("{} for job {}", error_msg, job_id);
+                                (RunStatus::CompletedWithWarnings, Some(error_msg))
+                            }
+                        }
+                    } else {
+                        (RunStatus::Completed, None)
+                    };
+
                     // Per SPEC: non-zero exit is Completed (not Failed).
                     // Failed = infrastructure error only.
                     let completed_run = JobRun {
@@ -636,10 +663,10 @@ impl Executor {
                         job_id,
                         started_at: now,
                         finished_at: Some(finished_at),
-                        status: RunStatus::Completed,
+                        status: final_status,
                         exit_code: Some(exit_code),
                         log_size_bytes: total_bytes,
-                        error: None,
+                        error: hook_error,
                         trigger_params: trigger_params_owned.clone(),
                     };
                     if let Err(e) = log_store.update_run(&completed_run).await {
