@@ -140,8 +140,8 @@ mod tests {
                 updated_at: now,
                 last_run_at: None,
                 last_exit_code: None,
-            pre_hook: None,
-            post_hook: None,
+                pre_hook: None,
+                post_hook: None,
                 next_run_at: None,
             };
             jobs.push(job.clone());
@@ -542,8 +542,8 @@ mod tests {
                     env_vars: None,
                     timeout_secs: 0,
                     log_environment: false,
-                pre_hook: None,
-                post_hook: None,
+                    pre_hook: None,
+                    post_hook: None,
                 })
                 .await
                 .unwrap();
@@ -1484,8 +1484,8 @@ mod tests {
                     env_vars: None,
                     timeout_secs: 0,
                     log_environment: false,
-                pre_hook: None,
-                post_hook: None,
+                    pre_hook: None,
+                    post_hook: None,
                 })
                 .await
                 .unwrap();

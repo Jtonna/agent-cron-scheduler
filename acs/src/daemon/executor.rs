@@ -630,7 +630,8 @@ impl Executor {
                     let exit_code = status.code().unwrap_or(-1);
 
                     // Run post-hook if configured
-                    let (final_status, hook_error) = if let Some(ref hook_cmd) = effective_post_hook {
+                    let (final_status, hook_error) = if let Some(ref hook_cmd) = effective_post_hook
+                    {
                         tracing::debug!("Running post-hook for job {}: {}", job_id, hook_cmd);
                         let exit_code_str = exit_code.to_string();
                         match run_hook(
