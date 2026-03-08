@@ -17,6 +17,7 @@ ACS uses a JSON configuration file. All fields are optional; any omitted field f
   "max_log_file_size": 10485760,
   "default_timeout_secs": 0,
   "broadcast_capacity": 4096,
+  "default_allow_concurrent": false,
   "pty_rows": 24,
   "pty_cols": 80
 }
@@ -33,6 +34,7 @@ ACS uses a JSON configuration file. All fields are optional; any omitted field f
 | `max_log_file_size` | integer (bytes) | `10485760` (10 MB) | Maximum size in bytes for individual job run log files. **(Not currently enforced; reserved for future use.)** |
 | `default_timeout_secs` | integer | `0` | Default timeout in seconds for job execution. A value of `0` means no timeout limit. |
 | `broadcast_capacity` | integer | `4096` | Capacity of the internal broadcast channel used for job events (SSE streaming, log updates). |
+| `default_allow_concurrent` | bool | `false` | Default concurrency setting for new jobs. When true, new jobs allow concurrent runs unless overridden per-job. When false (default), only one instance of a job runs at a time. |
 | `pty_rows` | integer (u16) | `24` | Number of rows for the pseudo-terminal allocated to job processes. **(No effect; the production spawner uses piped I/O, not a PTY.)** |
 | `pty_cols` | integer (u16) | `80` | Number of columns for the pseudo-terminal allocated to job processes. **(No effect; the production spawner uses piped I/O, not a PTY.)** |
 
