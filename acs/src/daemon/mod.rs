@@ -447,7 +447,7 @@ pub async fn create_data_dirs(data_dir: &Path) -> Result<()> {
 /// 6. Remove PID file and port file
 /// 7. Exit with code 0                          (handled by caller)
 pub async fn graceful_shutdown(
-    active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>>,
+    active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>,
     log_store: Arc<dyn LogStore>,
     pid_file: Option<&PidFile>,
     port_file: Option<&PortFile>,
@@ -460,13 +460,13 @@ pub async fn graceful_shutdown(
         let mut runs = active_runs.write().await;
         run_entries = runs
             .values()
-            .map(|handle| (handle.job_id, handle.run_id))
+            .flat_map(|handles| handles.iter().map(|h| (h.job_id, h.run_id)))
             .collect();
 
         // Send kill signals to all active runs
-        let keys: Vec<Uuid> = runs.keys().cloned().collect();
-        for key in keys {
-            if let Some(handle) = runs.remove(&key) {
+        for (_, handles) in runs.drain() {
+            for handle in handles {
+                let run_id = handle.run_id;
                 let _ = handle.kill_tx.send(());
                 // Wait up to 30s for the task to finish
                 let join_handle = handle.join_handle;
@@ -475,13 +475,13 @@ pub async fn graceful_shutdown(
 
                 match timeout_result {
                     Ok(Ok(())) => {
-                        tracing::info!("Run {} shut down gracefully", key);
+                        tracing::info!("Run {} shut down gracefully", run_id);
                     }
                     Ok(Err(e)) => {
-                        tracing::warn!("Run {} task failed during shutdown: {}", key, e);
+                        tracing::warn!("Run {} task failed during shutdown: {}", run_id, e);
                     }
                     Err(_) => {
-                        tracing::warn!("Run {} did not finish within 30s grace period", key);
+                        tracing::warn!("Run {} did not finish within 30s grace period", run_id);
                     }
                 }
             }
@@ -800,7 +800,7 @@ pub async fn start_daemon(
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
 
     // Active runs tracking
-    let active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>> = Arc::new(RwLock::new(HashMap::new()));
+    let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> = Arc::new(RwLock::new(HashMap::new()));
 
     // Create dispatch channel (used by both scheduler and API trigger)
     let (dispatch_tx, mut dispatch_rx) =
@@ -860,7 +860,21 @@ pub async fn start_daemon(
             {
                 Ok(handle) => {
                     let job_id = handle.job_id;
-                    dispatch_active_runs.write().await.insert(job_id, handle);
+                    let mut runs = dispatch_active_runs.write().await;
+                    let handles = runs.entry(job_id).or_insert_with(Vec::new);
+
+                    // Prune completed handles
+                    handles.retain(|h| !h.join_handle.is_finished());
+
+                    if request.job.allow_concurrent {
+                        handles.push(handle);
+                    } else {
+                        // Kill existing handles for non-concurrent jobs
+                        for old_handle in handles.drain(..) {
+                            let _ = old_handle.kill_tx.send(());
+                        }
+                        handles.push(handle);
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Failed to spawn job {}: {}", request.job.name, e);
@@ -1240,16 +1254,16 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         });
 
-        let active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>> =
+        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         active_runs.write().await.insert(
             job_id,
-            RunHandle {
+            vec![RunHandle {
                 run_id,
                 job_id,
                 join_handle,
                 kill_tx,
-            },
+            }],
         );
 
         // Run graceful shutdown (no PID file for this test)
@@ -1499,7 +1513,7 @@ mod tests {
 
         assert!(pid_path.exists(), "PID file should exist before shutdown");
 
-        let active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>> =
+        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
 
@@ -1516,7 +1530,7 @@ mod tests {
     // =======================================================================
     #[tokio::test]
     async fn test_shutdown_with_no_active_runs() {
-        let active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>> =
+        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
 
@@ -1649,7 +1663,7 @@ mod tests {
 
         assert!(port_path.exists(), "Port file should exist before shutdown");
 
-        let active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>> =
+        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
 
@@ -1675,7 +1689,7 @@ mod tests {
         assert!(pid_path.exists(), "PID file should exist before shutdown");
         assert!(port_path.exists(), "Port file should exist before shutdown");
 
-        let active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>> =
+        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
 

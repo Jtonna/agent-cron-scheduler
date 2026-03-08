@@ -70,6 +70,7 @@ impl JobStore for InMemoryJobStore {
             env_vars: new.env_vars,
             timeout_secs: new.timeout_secs,
             log_environment: new.log_environment,
+            allow_concurrent: new.allow_concurrent.unwrap_or(false),
             created_at: now,
             updated_at: now,
             last_run_at: None,

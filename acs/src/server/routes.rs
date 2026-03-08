@@ -351,11 +351,13 @@ pub async fn delete_job(
         Err(resp) => return resp.into_response(),
     };
 
-    // Kill active run if any
+    // Kill all active runs for this job
     {
         let mut runs = state.active_runs.write().await;
-        if let Some(handle) = runs.remove(&job.id) {
-            let _ = handle.kill_tx.send(());
+        if let Some(handles) = runs.remove(&job.id) {
+            for handle in handles {
+                let _ = handle.kill_tx.send(());
+            }
         }
     }
 

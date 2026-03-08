@@ -26,7 +26,7 @@ pub struct AppState {
     pub scheduler_notify: Arc<Notify>,
     pub config: Arc<DaemonConfig>,
     pub start_time: Instant,
-    pub active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>>,
+    pub active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>,
     pub shutdown_tx: Option<tokio::sync::watch::Sender<()>>,
     pub dispatch_tx: Option<tokio::sync::mpsc::Sender<crate::models::DispatchRequest>>,
 }
