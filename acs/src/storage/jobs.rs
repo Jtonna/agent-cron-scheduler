@@ -122,6 +122,7 @@ impl JobStore for JsonJobStore {
             env_vars: new.env_vars,
             timeout_secs: new.timeout_secs,
             log_environment: new.log_environment,
+            allow_concurrent: new.allow_concurrent.unwrap_or(false),
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -185,6 +186,9 @@ impl JobStore for JsonJobStore {
         if let Some(log_environment) = update.log_environment {
             job.log_environment = log_environment;
         }
+        if let Some(allow_concurrent) = update.allow_concurrent {
+            job.allow_concurrent = allow_concurrent;
+        }
         // Internal metadata fields (not user-editable, set by the daemon)
         if let Some(last_run_at) = update.last_run_at {
             job.last_run_at = last_run_at;
@@ -232,6 +236,7 @@ mod tests {
             env_vars: None,
             timeout_secs: 0,
             log_environment: false,
+            allow_concurrent: None,
         }
     }
 

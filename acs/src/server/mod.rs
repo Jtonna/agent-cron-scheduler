@@ -136,6 +136,7 @@ mod tests {
                 env_vars: new.env_vars,
                 timeout_secs: new.timeout_secs,
                 log_environment: new.log_environment,
+                allow_concurrent: new.allow_concurrent.unwrap_or(false),
                 created_at: now,
                 updated_at: now,
                 last_run_at: None,
@@ -451,6 +452,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -538,6 +540,7 @@ mod tests {
                     env_vars: None,
                     timeout_secs: 0,
                     log_environment: false,
+                allow_concurrent: None,
                 })
                 .await
                 .unwrap();
@@ -582,6 +585,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -598,6 +602,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -641,6 +646,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -680,6 +686,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -746,6 +753,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -799,6 +807,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -815,6 +824,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -867,6 +877,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -907,6 +918,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -953,6 +965,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -999,6 +1012,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -1046,6 +1060,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -1108,6 +1123,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
             })
             .await
             .unwrap();
@@ -1452,6 +1468,7 @@ mod tests {
                     env_vars: None,
                     timeout_secs: 0,
                     log_environment: false,
+                allow_concurrent: None,
                 })
                 .await
                 .unwrap();
