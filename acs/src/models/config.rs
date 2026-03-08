@@ -22,6 +22,8 @@ pub struct DaemonConfig {
     pub pty_rows: u16,
     #[serde(default = "default_pty_cols")]
     pub pty_cols: u16,
+    #[serde(default)]
+    pub default_allow_concurrent: bool,
 }
 
 fn default_host() -> String {
@@ -68,6 +70,7 @@ impl Default for DaemonConfig {
             broadcast_capacity: default_broadcast_capacity(),
             pty_rows: default_pty_rows(),
             pty_cols: default_pty_cols(),
+            default_allow_concurrent: false,
         }
     }
 }
@@ -88,6 +91,7 @@ mod tests {
         assert_eq!(config.broadcast_capacity, 4096);
         assert_eq!(config.pty_rows, 24);
         assert_eq!(config.pty_cols, 80);
+        assert!(!config.default_allow_concurrent);
     }
 
     #[test]
@@ -124,6 +128,7 @@ mod tests {
         assert_eq!(config.broadcast_capacity, 4096);
         assert_eq!(config.pty_rows, 24);
         assert_eq!(config.pty_cols, 80);
+        assert!(!config.default_allow_concurrent);
     }
 
     #[test]
@@ -167,5 +172,20 @@ mod tests {
         assert_eq!(config.broadcast_capacity, 8192);
         assert_eq!(config.pty_rows, 48);
         assert_eq!(config.pty_cols, 120);
+        assert!(!config.default_allow_concurrent);
+    }
+
+    #[test]
+    fn test_daemon_config_default_allow_concurrent_false() {
+        let json = "{}";
+        let config: DaemonConfig = serde_json::from_str(json).expect("deserialize");
+        assert!(!config.default_allow_concurrent);
+    }
+
+    #[test]
+    fn test_daemon_config_default_allow_concurrent_true() {
+        let json = r#"{"default_allow_concurrent": true}"#;
+        let config: DaemonConfig = serde_json::from_str(json).expect("deserialize");
+        assert!(config.default_allow_concurrent);
     }
 }
