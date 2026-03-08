@@ -800,7 +800,8 @@ pub async fn start_daemon(
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
 
     // Active runs tracking
-    let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> = Arc::new(RwLock::new(HashMap::new()));
+    let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
     // Create dispatch channel (used by both scheduler and API trigger)
     let (dispatch_tx, mut dispatch_rx) =

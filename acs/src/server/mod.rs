@@ -540,7 +540,7 @@ mod tests {
                     env_vars: None,
                     timeout_secs: 0,
                     log_environment: false,
-                allow_concurrent: None,
+                    allow_concurrent: None,
                 })
                 .await
                 .unwrap();
@@ -1468,7 +1468,7 @@ mod tests {
                     env_vars: None,
                     timeout_secs: 0,
                     log_environment: false,
-                allow_concurrent: None,
+                    allow_concurrent: None,
                 })
                 .await
                 .unwrap();
