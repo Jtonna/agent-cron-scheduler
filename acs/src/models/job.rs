@@ -27,6 +27,8 @@ pub struct Job {
     pub timeout_secs: u64,
     #[serde(default)]
     pub log_environment: bool,
+    #[serde(default)]
+    pub allow_concurrent: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_run_at: Option<DateTime<Utc>>,
@@ -47,6 +49,7 @@ impl PartialEq for Job {
             && self.env_vars == other.env_vars
             && self.timeout_secs == other.timeout_secs
             && self.log_environment == other.log_environment
+            && self.allow_concurrent == other.allow_concurrent
             && self.created_at == other.created_at
             && self.updated_at == other.updated_at
             && self.last_run_at == other.last_run_at
@@ -69,6 +72,7 @@ pub struct NewJob {
     pub timeout_secs: u64,
     #[serde(default)]
     pub log_environment: bool,
+    pub allow_concurrent: Option<bool>,
 }
 
 fn default_enabled() -> bool {
@@ -86,6 +90,7 @@ pub struct JobUpdate {
     pub env_vars: Option<HashMap<String, String>>,
     pub timeout_secs: Option<u64>,
     pub log_environment: Option<bool>,
+    pub allow_concurrent: Option<bool>,
     /// Internal metadata: set to Some(Some(ts)) to update, Some(None) to clear.
     /// Skipped during JSON deserialization from API clients (not user-editable).
     #[serde(skip)]
@@ -173,6 +178,7 @@ mod tests {
             env_vars: None,
             timeout_secs: 0,
             log_environment: false,
+            allow_concurrent: None,
         }
     }
 
@@ -193,6 +199,7 @@ mod tests {
             }),
             timeout_secs: 0,
             log_environment: false,
+            allow_concurrent: false,
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -390,5 +397,19 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_job_update(&update).is_ok());
+    }
+
+    #[test]
+    fn test_job_allow_concurrent_defaults_to_false() {
+        let json = r#"{"id":"550e8400-e29b-41d4-a716-446655440000","name":"test-job","schedule":"* * * * *","execution":{"type":"ShellCommand","value":"echo hi"},"enabled":true,"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z"}"#;
+        let job: Job = serde_json::from_str(json).expect("deserialize");
+        assert!(!job.allow_concurrent);
+    }
+
+    #[test]
+    fn test_new_job_allow_concurrent_defaults_to_none() {
+        let json = r#"{"name":"test","schedule":"* * * * *","execution":{"type":"ShellCommand","value":"echo hi"}}"#;
+        let job: NewJob = serde_json::from_str(json).expect("deserialize");
+        assert!(job.allow_concurrent.is_none());
     }
 }
