@@ -64,6 +64,7 @@ pub async fn cmd_add(
     env: &[String],
     disabled: bool,
     log_env: bool,
+    concurrent: bool,
 ) -> anyhow::Result<()> {
     let execution = match (cmd, script) {
         (Some(c), None) => ExecutionType::ShellCommand(c.to_string()),
@@ -90,6 +91,7 @@ pub async fn cmd_add(
         env_vars,
         timeout_secs: 0,
         log_environment: log_env,
+        allow_concurrent: if concurrent { Some(true) } else { None },
     };
 
     let client = Client::new();
