@@ -730,6 +730,7 @@ components:
         - enabled
         - timeout_secs
         - log_environment
+        - allow_concurrent
         - created_at
         - updated_at
       properties:
@@ -779,6 +780,11 @@ components:
         log_environment:
           type: boolean
           description: Whether to log the full environment at job start.
+          default: false
+          example: false
+        allow_concurrent:
+          type: boolean
+          description: When true, multiple instances of this job can run simultaneously. Default: false.
           default: false
           example: false
         created_at:
@@ -862,6 +868,11 @@ components:
           description: Whether to log the full environment at job start (default false).
           default: false
           example: false
+        allow_concurrent:
+          type: boolean
+          nullable: true
+          description: When true, allow concurrent runs. When null/omitted, uses the daemon's default_allow_concurrent config.
+          example: false
 
     # -----------------------------------------------------------------------
     # JobUpdate (patch request body)
@@ -907,6 +918,10 @@ components:
         log_environment:
           type: boolean
           description: Whether to log environment on run start.
+        allow_concurrent:
+          type: boolean
+          nullable: true
+          description: Set to true/false to change concurrency behavior.
 
     # -----------------------------------------------------------------------
     # JobRun
