@@ -125,10 +125,12 @@ export function ScheduleFields({
 
 /* -- Runtime / Advanced fields (no card wrapper) -- */
 export function RuntimeFields({
-  workingDir, setWorkingDir, timeoutSecs, setTimeoutSecs, errors,
+  workingDir, setWorkingDir, timeoutSecs, setTimeoutSecs,
+  allowConcurrent, setAllowConcurrent, errors,
 }: {
   workingDir: string; setWorkingDir: (v: string) => void;
   timeoutSecs: number; setTimeoutSecs: (v: number) => void;
+  allowConcurrent: boolean; setAllowConcurrent: (v: boolean) => void;
   errors: Record<string, string>;
 }) {
   return (
@@ -161,6 +163,19 @@ export function RuntimeFields({
         {errors.timeout && (
           <p className="text-xs text-destructive">{errors.timeout}</p>
         )}
+      </div>
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <Switch
+            id="allow-concurrent"
+            checked={allowConcurrent}
+            onCheckedChange={(checked) => setAllowConcurrent(checked)}
+          />
+          <Label htmlFor="allow-concurrent">Allow Concurrent Runs</Label>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Allow multiple instances of this job to run simultaneously
+        </p>
       </div>
     </>
   );

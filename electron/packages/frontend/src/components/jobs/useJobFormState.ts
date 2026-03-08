@@ -20,6 +20,9 @@ export function useJobFormState(job?: Job | null) {
   const [logEnvironment, setLogEnvironment] = useState(
     job?.log_environment ?? false
   );
+  const [allowConcurrent, setAllowConcurrent] = useState(
+    job?.allow_concurrent ?? false
+  );
   const [enabled, setEnabled] = useState(job?.enabled ?? true);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
@@ -36,6 +39,7 @@ export function useJobFormState(job?: Job | null) {
       setEnvVars(job.env_vars ?? {});
       setTimeoutSecs(job.timeout_secs);
       setLogEnvironment(job.log_environment);
+      setAllowConcurrent(job.allow_concurrent ?? false);
       setEnabled(job.enabled);
     }
   }, [job]);
@@ -64,6 +68,7 @@ export function useJobFormState(job?: Job | null) {
       enabled,
       timeout_secs: timeoutSecs,
       log_environment: logEnvironment,
+      allow_concurrent: allowConcurrent,
     };
     if (timezone) data.timezone = timezone;
     if (workingDir) data.working_dir = workingDir;
@@ -88,6 +93,7 @@ export function useJobFormState(job?: Job | null) {
     envVars, setEnvVars,
     timeoutSecs, setTimeoutSecs,
     logEnvironment, setLogEnvironment,
+    allowConcurrent, setAllowConcurrent,
     enabled, setEnabled,
     errors: visibleErrors,
     submitting, setSubmitting,
