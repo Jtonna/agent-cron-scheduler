@@ -56,7 +56,7 @@ impl Executor {
             ExecutionType::ShellCommand(command) => {
                 let effective_command = match trigger_args {
                     Some(args) => {
-                        let sanitized = args.replace('\n', " ").replace('\r', " ");
+                        let sanitized = args.replace(['\n', '\r'], " ");
                         format!("{} {}", command, sanitized)
                     }
                     None => command.clone(),
@@ -76,7 +76,7 @@ impl Executor {
             ExecutionType::ScriptFile(script) => {
                 let effective_script = match trigger_args {
                     Some(args) => {
-                        let sanitized = args.replace('\n', " ").replace('\r', " ");
+                        let sanitized = args.replace(['\n', '\r'], " ");
                         format!("{} {}", script, sanitized)
                     }
                     None => script.clone(),
