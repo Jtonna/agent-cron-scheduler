@@ -55,7 +55,10 @@ impl Executor {
         let mut cmd = match &job.execution {
             ExecutionType::ShellCommand(command) => {
                 let effective_command = match trigger_args {
-                    Some(args) => format!("{} {}", command, args),
+                    Some(args) => {
+                        let sanitized = args.replace('\n', " ").replace('\r', " ");
+                        format!("{} {}", command, sanitized)
+                    }
                     None => command.clone(),
                 };
                 if cfg!(target_os = "windows") {
@@ -72,7 +75,10 @@ impl Executor {
             }
             ExecutionType::ScriptFile(script) => {
                 let effective_script = match trigger_args {
-                    Some(args) => format!("{} {}", script, args),
+                    Some(args) => {
+                        let sanitized = args.replace('\n', " ").replace('\r', " ");
+                        format!("{} {}", script, sanitized)
+                    }
                     None => script.clone(),
                 };
                 if cfg!(target_os = "windows") {
