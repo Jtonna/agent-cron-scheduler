@@ -510,6 +510,11 @@ pub async fn graceful_shutdown(
                     log_size_bytes: run.log_size_bytes,
                     error: Some("Daemon shutting down".to_string()),
                     trigger_params: run.trigger_params.clone(),
+                    total_cost_usd: run.total_cost_usd,
+                    duration_ms: run.duration_ms,
+                    num_turns: run.num_turns,
+                    model: run.model.clone(),
+                    usage: run.usage.clone(),
                 };
                 if let Err(e) = log_store.update_run(&killed_run).await {
                     tracing::error!("Failed to mark run {} as Killed: {}", run_id, e);
@@ -1245,6 +1250,11 @@ mod tests {
             log_size_bytes: 0,
             error: None,
             trigger_params: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
         };
         log_store.create_run(&running_run).await.unwrap();
 

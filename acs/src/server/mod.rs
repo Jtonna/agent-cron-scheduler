@@ -1107,6 +1107,11 @@ mod tests {
                 log_size_bytes: 100,
                 error: None,
                 trigger_params: None,
+                total_cost_usd: None,
+                duration_ms: None,
+                num_turns: None,
+                model: None,
+                usage: None,
             };
             log_store.create_run(&run).await.unwrap();
         }
@@ -1171,6 +1176,11 @@ mod tests {
             log_size_bytes: 0,
             error: None,
             trigger_params: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
         };
         log_store.create_run(&run).await.unwrap();
 

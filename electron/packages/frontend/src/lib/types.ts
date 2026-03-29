@@ -48,11 +48,16 @@ export interface JobRun {
   job_id: string;
   started_at: string;
   finished_at: string | null;
-  status: "Running" | "Completed" | "Failed" | "Killed";
+  status: "Running" | "Completed" | "CompletedWithWarnings" | "Failed" | "Killed";
   exit_code: number | null;
   log_size_bytes: number;
   error: string | null;
   trigger_params?: TriggerParams;
+  total_cost_usd?: number | null;
+  duration_ms?: number | null;
+  num_turns?: number | null;
+  model?: string | null;
+  usage?: Record<string, unknown> | null;
 }
 
 export interface TriggerParams {

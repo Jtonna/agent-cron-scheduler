@@ -157,6 +157,15 @@ Inside that directory, each run produces two files:
     "args": "--full",
     "env": { "MODE": "manual" },
     "input": null
+  },
+  "total_cost_usd": 0.0042,
+  "duration_ms": 4821,
+  "num_turns": 3,
+  "model": "claude-sonnet-4-20250514",
+  "usage": {
+    "input_tokens": 1200,
+    "output_tokens": 340,
+    "cache_read_input_tokens": 800
   }
 }
 ```
@@ -175,6 +184,19 @@ contains:
 | `args`  | string or null            | Extra arguments that were appended to the job's command string.  |
 | `env`   | object or null            | Per-trigger environment variables that were merged into the run. |
 | `input` | string or null            | Data that was written to the process's stdin.                    |
+
+The following fields are populated only when the job is executed via the Claude
+CLI and the CLI reports cost/usage metadata. They are omitted from the JSON
+file entirely when not present, preserving backward compatibility with older
+metadata files.
+
+| Field | Type | Description |
+|---|---|---|
+| `total_cost_usd` | number or absent | Total cost in USD as reported by the Claude CLI. |
+| `duration_ms` | integer or absent | CLI-reported execution duration in milliseconds. |
+| `num_turns` | integer or absent | Number of conversation turns in the Claude CLI session. |
+| `model` | string or absent | Primary model used during the Claude CLI session. |
+| `usage` | object or absent | Full token usage data as returned by the Claude CLI (schema is pass-through from the CLI and may vary by model/version). |
 
 ### Append-mode writing
 

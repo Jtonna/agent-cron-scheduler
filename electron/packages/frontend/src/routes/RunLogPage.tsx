@@ -12,7 +12,7 @@ import { Badge, statusToBadgeVariant } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { LogViewer } from "@/components/LogViewer";
 import { StreamJsonViewer } from "@/components/StreamJsonViewer";
-import { formatDate, formatBytes } from "@/lib/format";
+import { formatDate, formatBytes, formatCost } from "@/lib/format";
 import { api } from "@/lib/api";
 import type { JobRun } from "@/lib/types";
 import { toast } from "sonner";
@@ -242,6 +242,17 @@ export function RunLogPage() {
             <span className="text-xs text-muted-foreground">
               {formatBytes(run.log_size_bytes)}
             </span>
+
+            {run.total_cost_usd != null && (
+              <>
+                <span className="text-muted-foreground/50 select-none">&middot;</span>
+
+                {/* Cost */}
+                <span className="text-xs text-muted-foreground">
+                  {formatCost(run.total_cost_usd)}
+                </span>
+              </>
+            )}
 
             <div className="ml-auto">
               <Button

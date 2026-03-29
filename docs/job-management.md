@@ -233,6 +233,8 @@ Creation --> Scheduling --> Execution --> Completion
 
 Each execution creates a `JobRun` with the following fields:
 
+> **Note:** The `total_cost_usd`, `duration_ms`, `num_turns`, `model`, and `usage` fields are only populated when the job command is a Claude CLI invocation that emits NDJSON result events. For all other jobs, these fields are omitted from the JSON response.
+
 | Field | Type | Description |
 |---|---|---|
 | `run_id` | `Uuid` (v7) | Unique identifier for this run. |
@@ -244,6 +246,11 @@ Each execution creates a `JobRun` with the following fields:
 | `log_size_bytes` | `u64` | Total bytes of process output captured (excludes the command header and environment dump written by the executor). |
 | `error` | `Option<String>` | Error description for `Failed` or `Killed` runs. |
 | `trigger_params` | `Option<TriggerParams>` | Trigger-time parameter overrides used for this run. Omitted from serialized JSON when `None`. See [Trigger Arguments](#trigger-arguments). |
+| `total_cost_usd` | `Option<f64>` | Total cost in USD reported by Claude CLI. Omitted from serialized JSON when `None`. |
+| `duration_ms` | `Option<u64>` | CLI-reported execution duration in milliseconds. Omitted from serialized JSON when `None`. |
+| `num_turns` | `Option<u32>` | Number of conversation turns reported by Claude CLI. Omitted from serialized JSON when `None`. |
+| `model` | `Option<String>` | Primary model used, taken from the Claude CLI system event. Omitted from serialized JSON when `None`. |
+| `usage` | `Option<serde_json::Value>` | Full token usage data from the Claude CLI result event. Omitted from serialized JSON when `None`. |
 
 ---
 

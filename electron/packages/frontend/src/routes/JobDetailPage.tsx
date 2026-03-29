@@ -49,9 +49,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { useSSEEvents } from "@/hooks/useSSE";
 import { api } from "@/lib/api";
-import { formatDate, formatBytes } from "@/lib/format";
+import { formatDate, formatBytes, formatCost } from "@/lib/format";
 import { toast } from "sonner";
 import type { JobRun, TriggerParams } from "@/lib/types";
+import { CostTrendChart } from "@/components/CostTrendChart";
 
 const PAGE_SIZE = 15;
 
@@ -371,6 +372,7 @@ export function JobDetailPage() {
             ({total})
           </span>
         </h2>
+        <CostTrendChart runs={allRuns} />
         {runsLoading && allRuns.length === 0 ? (
           <div className="flex items-center justify-center py-6">
             <ArrowPathIcon className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -392,6 +394,7 @@ export function JobDetailPage() {
                     <TableHead>Started</TableHead>
                     <TableHead>Finished</TableHead>
                     <TableHead>Exit Code</TableHead>
+                    <TableHead>Cost</TableHead>
                     <TableHead>Log Size</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -425,6 +428,9 @@ export function JobDetailPage() {
                       </TableCell>
                       <TableCell className="font-mono text-sm">
                         {run.exit_code ?? "--"}
+                      </TableCell>
+                      <TableCell className="font-mono text-right text-sm">
+                        {formatCost(run.total_cost_usd)}
                       </TableCell>
                       <TableCell className="text-sm">
                         {formatBytes(run.log_size_bytes)}

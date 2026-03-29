@@ -45,3 +45,15 @@ export function formatBytes(bytes: number): string {
 
   return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
+
+export function formatCost(usd: number | null | undefined): string {
+  if (usd === null || usd === undefined) return "--";
+
+  return `$${usd.toFixed(4)}`;
+}
+
+export function formatTokenCount(count: number | null | undefined): string {
+  if (count === null || count === undefined) return "--";
+
+  return count.toLocaleString("en-US");
+}

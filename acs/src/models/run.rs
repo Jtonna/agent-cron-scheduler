@@ -24,6 +24,21 @@ pub struct JobRun {
     /// Trigger-time parameter overrides used for this run, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_params: Option<crate::models::TriggerParams>,
+    /// Total cost from the Claude CLI result event (in USD)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_cost_usd: Option<f64>,
+    /// CLI-reported execution duration (in milliseconds)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Number of turns from the result event
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_turns: Option<u32>,
+    /// Primary model from the system event
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Full usage data blob from the result event (token counts per model)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -41,6 +56,11 @@ mod tests {
             log_size_bytes: 1024,
             error: None,
             trigger_params: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
         }
     }
 
@@ -109,6 +129,11 @@ mod tests {
             log_size_bytes: 0,
             error: Some("PTY spawn failed".to_string()),
             trigger_params: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
         };
         let json = serde_json::to_string(&run).expect("serialize");
         let deserialized: JobRun = serde_json::from_str(&json).expect("deserialize");
@@ -128,10 +153,37 @@ mod tests {
             log_size_bytes: 0,
             error: None,
             trigger_params: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
         };
         let json = serde_json::to_string(&run).expect("serialize");
         let deserialized: JobRun = serde_json::from_str(&json).expect("deserialize");
         assert!(deserialized.finished_at.is_none());
         assert!(deserialized.exit_code.is_none());
+    }
+
+    #[test]
+    fn test_job_run_backward_compat_without_cost_fields() {
+        // Test that JSON lacking cost fields deserializes with all cost fields as None
+        let old_json = r#"{
+            "run_id": "01234567-8901-2345-6789-012345678901",
+            "job_id": "98765432-1098-7654-3210-987654321098",
+            "started_at": "2025-01-01T00:00:00Z",
+            "finished_at": "2025-01-01T00:01:00Z",
+            "status": "Completed",
+            "exit_code": 0,
+            "log_size_bytes": 1024,
+            "error": null
+        }"#;
+
+        let deserialized: JobRun = serde_json::from_str(old_json).expect("deserialize");
+        assert!(deserialized.total_cost_usd.is_none());
+        assert!(deserialized.duration_ms.is_none());
+        assert!(deserialized.num_turns.is_none());
+        assert!(deserialized.model.is_none());
+        assert!(deserialized.usage.is_none());
     }
 }
