@@ -85,6 +85,7 @@ export function JobForm({ job, title, onSubmit, submitLabel = "Save" }: JobFormP
                 <RuntimeFields
                   workingDir={s.workingDir} setWorkingDir={s.setWorkingDir}
                   timeoutSecs={s.timeoutSecs} setTimeoutSecs={s.setTimeoutSecs}
+                  allowConcurrent={s.allowConcurrent} setAllowConcurrent={s.setAllowConcurrent}
                   errors={s.errors}
                 />
               </SectionCard>

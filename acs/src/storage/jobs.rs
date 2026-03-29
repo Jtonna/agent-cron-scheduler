@@ -122,6 +122,7 @@ impl JobStore for JsonJobStore {
             env_vars: new.env_vars,
             timeout_secs: new.timeout_secs,
             log_environment: new.log_environment,
+            allow_concurrent: new.allow_concurrent.unwrap_or(false),
             pre_hook: new.pre_hook,
             post_hook: new.post_hook,
             created_at: now,
@@ -187,6 +188,9 @@ impl JobStore for JsonJobStore {
         if let Some(log_environment) = update.log_environment {
             job.log_environment = log_environment;
         }
+        if let Some(allow_concurrent) = update.allow_concurrent {
+            job.allow_concurrent = allow_concurrent;
+        }
         if let Some(pre_hook) = update.pre_hook {
             job.pre_hook = Some(pre_hook);
         }
@@ -240,6 +244,7 @@ mod tests {
             env_vars: None,
             timeout_secs: 0,
             log_environment: false,
+            allow_concurrent: None,
             pre_hook: None,
             post_hook: None,
         }

@@ -112,6 +112,10 @@ pub enum Commands {
         /// Command to run after the job execution
         #[arg(long)]
         post_hook: Option<String>,
+
+        /// Allow concurrent runs of this job
+        #[arg(long)]
+        concurrent: bool,
     },
 
     /// Remove a scheduled job
@@ -282,6 +286,7 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
             log_env,
             pre_hook,
             post_hook,
+            concurrent,
         }) => {
             jobs::cmd_add(
                 &cli.host,
@@ -297,6 +302,7 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
                 *log_env,
                 pre_hook.as_deref(),
                 post_hook.as_deref(),
+                *concurrent,
             )
             .await
         }
@@ -638,6 +644,57 @@ mod tests {
         match &cli.command {
             Some(Commands::Add { disabled, .. }) => {
                 assert!(disabled);
+            }
+            other => panic!("Expected Add command, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional: add with --concurrent flag
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_cli_add_with_concurrent() {
+        let cli = Cli::try_parse_from([
+            "agentcronsystem",
+            "add",
+            "-n",
+            "concurrent-job",
+            "-s",
+            "* * * * *",
+            "-c",
+            "echo hi",
+            "--concurrent",
+        ])
+        .expect("Should parse add --concurrent");
+
+        match &cli.command {
+            Some(Commands::Add { concurrent, .. }) => {
+                assert!(concurrent);
+            }
+            other => panic!("Expected Add command, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional: add without --concurrent flag defaults to false
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_cli_add_without_concurrent() {
+        let cli = Cli::try_parse_from([
+            "agentcronsystem",
+            "add",
+            "-n",
+            "normal-job",
+            "-s",
+            "* * * * *",
+            "-c",
+            "echo hi",
+        ])
+        .expect("Should parse add without --concurrent");
+
+        match &cli.command {
+            Some(Commands::Add { concurrent, .. }) => {
+                assert!(!concurrent);
             }
             other => panic!("Expected Add command, got: {:?}", other),
         }

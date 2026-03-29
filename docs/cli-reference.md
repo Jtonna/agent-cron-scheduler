@@ -311,6 +311,7 @@ agentcronsystem add [OPTIONS] --name <NAME> --schedule <SCHEDULE>
 | `--timezone` | | `String` | UTC | IANA timezone name (e.g., `America/New_York`) |
 | `--working-dir` | | `String` | none | Working directory for the command |
 | `--env` | `-e` | `String` | none | Environment variable in `KEY=VALUE` format (repeatable) |
+| `--concurrent` | | flag | `false` | Allow concurrent runs of this job |
 | `--pre-hook` | | `String` | none | Shell command to run before job execution |
 | `--post-hook` | | `String` | none | Shell command to run after job execution |
 | `--disabled` | | flag | `false` | Create the job in a disabled state |
@@ -345,6 +346,9 @@ agentcronsystem add -n build -s "*/15 * * * *" -c "make build" --working-dir /ho
 
 # Add a job with environment logging enabled
 agentcronsystem add -n audit -s "0 0 * * *" -c "run-audit.sh" --log-env
+
+# Add a job that allows concurrent runs
+agentcronsystem add -n long-report -s "*/5 * * * *" -c "run-report.sh" --concurrent
 
 # Add a job with pre and post hooks
 agentcronsystem add -n my-job -s "0 * * * *" -c "python script.py" --pre-hook "echo starting" --post-hook "echo done"

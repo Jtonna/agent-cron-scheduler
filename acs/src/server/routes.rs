@@ -168,7 +168,7 @@ pub async fn list_jobs(
 /// POST /api/jobs
 pub async fn create_job(
     State(state): State<Arc<AppState>>,
-    Json(new_job): Json<NewJob>,
+    Json(mut new_job): Json<NewJob>,
 ) -> impl IntoResponse {
     // Validate the new job
     if let Err(e) = validate_new_job(&new_job) {
@@ -201,6 +201,11 @@ pub async fn create_job(
             )
             .into_response();
         }
+    }
+
+    // Resolve allow_concurrent against config default
+    if new_job.allow_concurrent.is_none() {
+        new_job.allow_concurrent = Some(state.config.default_allow_concurrent);
     }
 
     match state.job_store.create_job(new_job).await {
@@ -351,11 +356,13 @@ pub async fn delete_job(
         Err(resp) => return resp.into_response(),
     };
 
-    // Kill active run if any
+    // Kill all active runs for this job
     {
         let mut runs = state.active_runs.write().await;
-        if let Some(handle) = runs.remove(&job.id) {
-            let _ = handle.kill_tx.send(());
+        if let Some(handles) = runs.remove(&job.id) {
+            for handle in handles {
+                let _ = handle.kill_tx.send(());
+            }
         }
     }
 

@@ -9,6 +9,7 @@ export interface Job {
   env_vars: Record<string, string> | null;
   timeout_secs: number;
   log_environment: boolean;
+  allow_concurrent: boolean;
   created_at: string;
   updated_at: string;
   last_run_at: string | null;
@@ -26,6 +27,7 @@ export interface NewJob {
   env_vars?: Record<string, string>;
   timeout_secs?: number;
   log_environment?: boolean;
+  allow_concurrent?: boolean;
 }
 
 export interface JobUpdate {
@@ -38,6 +40,7 @@ export interface JobUpdate {
   env_vars?: Record<string, string> | null;
   timeout_secs?: number;
   log_environment?: boolean;
+  allow_concurrent?: boolean;
 }
 
 export interface JobRun {

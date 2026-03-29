@@ -20,6 +20,7 @@ A job represents a scheduled command or script that ACS executes on a cron-based
 | `env_vars` | `Option<HashMap<String, String>>` | Optional per-job environment variables injected into the process. |
 | `timeout_secs` | `u64` | Per-job timeout in seconds. `0` means fall back to the daemon config default. See [Timeouts](#timeouts). |
 | `log_environment` | `bool` | When `true`, the full environment is dumped to the run log before execution. Defaults to `false`. |
+| `allow_concurrent` | `bool` | Whether multiple instances of this job can run simultaneously. Defaults to false. When not set on creation, falls back to daemon's default_allow_concurrent config. |
 | `pre_hook` | `Option<String>` | Optional shell command to run before job execution. If the pre-hook fails, the job execution is blocked and the run is marked as `Failed`. |
 | `post_hook` | `Option<String>` | Optional shell command to run after job execution. If the post-hook fails, the run is marked as `CompletedWithWarnings` instead of `Completed`. |
 | `created_at` | `DateTime<Utc>` | Timestamp of job creation. |
@@ -41,12 +42,13 @@ When creating a job, the following fields are accepted:
 - `env_vars` (optional)
 - `timeout_secs` (optional, defaults to `0`)
 - `log_environment` (optional, defaults to `false`)
+- `allow_concurrent` (optional, defaults to daemon's default_allow_concurrent config)
 - `pre_hook` (optional)
 - `post_hook` (optional)
 
 ### JobUpdate (Partial Update Payload)
 
-All fields in `JobUpdate` are optional. Only the fields present in the request body are modified; omitted fields remain unchanged. The `last_run_at` and `last_exit_code` fields are internal-only and cannot be set through the API (they use `#[serde(skip)]`, which excludes them from both JSON serialization and deserialization of `JobUpdate`).
+All fields in `JobUpdate` are optional. Only the fields present in the request body are modified; omitted fields remain unchanged. The `last_run_at` and `last_exit_code` fields are internal-only and cannot be set through the API (they use `#[serde(skip)]`, which excludes them from both JSON serialization and deserialization of `JobUpdate`). Updatable fields include `name`, `schedule`, `execution`, `enabled`, `timezone`, `working_dir`, `env_vars`, `timeout_secs`, `log_environment`, `allow_concurrent`, `pre_hook`, and `post_hook`.
 
 Fields that can be updated include:
 - `name`
@@ -58,6 +60,7 @@ Fields that can be updated include:
 - `env_vars`
 - `timeout_secs`
 - `log_environment`
+- `allow_concurrent`
 - `pre_hook`
 - `post_hook`
 
@@ -197,7 +200,11 @@ Creation --> Scheduling --> Execution --> Completion
 
 2. **Scheduling**: The scheduler continuously loads all enabled jobs, computes their next run times, and sleeps until the earliest one is due. When the job list changes (create, update, delete, enable, disable), the scheduler is woken via a `Notify` signal to re-evaluate immediately.
 
-3. **Execution**: When a job's cron time arrives (or a manual trigger is received), the scheduler dispatches it to the executor via a `DispatchRequest` containing the job, a pre-generated `run_id`, and optional `TriggerParams`. The executor:
+3. **Execution**: When a job's cron time arrives (or a manual trigger is received), the scheduler dispatches it to the executor via a `DispatchRequest` containing the job, a pre-generated `run_id`, and optional `TriggerParams`. Before execution, the scheduler checks the job's `allow_concurrent` setting:
+   - If `allow_concurrent` is `false` (default), any existing active run for the job is killed before the new run starts.
+   - If `allow_concurrent` is `true`, the new run is started regardless of existing runs; multiple instances can coexist with no cap.
+
+   The executor then:
    - Creates a `JobRun` record with `Running` status using the pre-generated `run_id`.
    - Broadcasts a `Started` event.
    - If a `pre_hook` is configured, executes it. If the pre-hook fails (non-zero exit), the run is marked as `Failed` and execution is blocked. Success continues to the main job execution.

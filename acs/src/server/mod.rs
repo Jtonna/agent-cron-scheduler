@@ -26,7 +26,7 @@ pub struct AppState {
     pub scheduler_notify: Arc<Notify>,
     pub config: Arc<DaemonConfig>,
     pub start_time: Instant,
-    pub active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>>,
+    pub active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>,
     pub shutdown_tx: Option<tokio::sync::watch::Sender<()>>,
     pub dispatch_tx: Option<tokio::sync::mpsc::Sender<crate::models::DispatchRequest>>,
 }
@@ -136,12 +136,13 @@ mod tests {
                 env_vars: new.env_vars,
                 timeout_secs: new.timeout_secs,
                 log_environment: new.log_environment,
+                pre_hook: new.pre_hook,
+                post_hook: new.post_hook,
+                allow_concurrent: new.allow_concurrent.unwrap_or(false),
                 created_at: now,
                 updated_at: now,
                 last_run_at: None,
                 last_exit_code: None,
-                pre_hook: None,
-                post_hook: None,
                 next_run_at: None,
             };
             jobs.push(job.clone());
@@ -453,6 +454,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -542,6 +544,7 @@ mod tests {
                     env_vars: None,
                     timeout_secs: 0,
                     log_environment: false,
+                    allow_concurrent: None,
                     pre_hook: None,
                     post_hook: None,
                 })
@@ -588,6 +591,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -606,6 +610,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -651,6 +656,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -692,6 +698,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -760,6 +767,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -815,6 +823,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -833,6 +842,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -887,6 +897,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -929,6 +940,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -977,6 +989,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1025,6 +1038,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1074,6 +1088,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1138,6 +1153,7 @@ mod tests {
                 env_vars: None,
                 timeout_secs: 0,
                 log_environment: false,
+                allow_concurrent: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1484,6 +1500,7 @@ mod tests {
                     env_vars: None,
                     timeout_secs: 0,
                     log_environment: false,
+                    allow_concurrent: None,
                     pre_hook: None,
                     post_hook: None,
                 })

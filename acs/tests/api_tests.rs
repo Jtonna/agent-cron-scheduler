@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use agent_cron_scheduler::daemon::events::JobEvent;
-use agent_cron_scheduler::models::{DaemonConfig, Job, JobRun, JobUpdate, NewJob};
+use agent_cron_scheduler::daemon::executor::Executor;
+use agent_cron_scheduler::models::{DaemonConfig, DispatchRequest, Job, JobRun, JobUpdate, NewJob};
+use agent_cron_scheduler::pty::MockPtySpawner;
 use agent_cron_scheduler::server::{self, AppState};
 use agent_cron_scheduler::storage::{JobStore, LogStore};
 
@@ -70,6 +72,7 @@ impl JobStore for InMemoryJobStore {
             env_vars: new.env_vars,
             timeout_secs: new.timeout_secs,
             log_environment: new.log_environment,
+            allow_concurrent: new.allow_concurrent.unwrap_or(false),
             pre_hook: new.pre_hook,
             post_hook: new.post_hook,
             created_at: now,
@@ -110,6 +113,15 @@ impl JobStore for InMemoryJobStore {
         }
         if let Some(ts) = update.timeout_secs {
             job.timeout_secs = ts;
+        }
+        if let Some(ac) = update.allow_concurrent {
+            job.allow_concurrent = ac;
+        }
+        if let Some(ph) = update.pre_hook {
+            job.pre_hook = Some(ph);
+        }
+        if let Some(ph) = update.post_hook {
+            job.post_hook = Some(ph);
         }
         job.updated_at = Utc::now();
         Ok(job.clone())
@@ -160,6 +172,67 @@ impl LogStore for InMemoryLogStore {
 }
 
 // ---------------------------------------------------------------------------
+// Storing in-memory log store for executor-backed tests
+// ---------------------------------------------------------------------------
+
+struct StoringLogStore {
+    runs: RwLock<Vec<JobRun>>,
+}
+
+impl StoringLogStore {
+    fn new() -> Self {
+        Self {
+            runs: RwLock::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl LogStore for StoringLogStore {
+    async fn create_run(&self, run: &JobRun) -> anyhow::Result<()> {
+        self.runs.write().await.push(run.clone());
+        Ok(())
+    }
+    async fn update_run(&self, run: &JobRun) -> anyhow::Result<()> {
+        let mut runs = self.runs.write().await;
+        if let Some(existing) = runs.iter_mut().find(|r| r.run_id == run.run_id) {
+            *existing = run.clone();
+        }
+        Ok(())
+    }
+    async fn append_log(&self, _job_id: Uuid, _run_id: Uuid, _data: &[u8]) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn read_log(
+        &self,
+        _job_id: Uuid,
+        _run_id: Uuid,
+        _tail: Option<usize>,
+    ) -> anyhow::Result<String> {
+        Ok(String::new())
+    }
+    async fn list_runs(
+        &self,
+        job_id: Uuid,
+        limit: usize,
+        offset: usize,
+    ) -> anyhow::Result<(Vec<JobRun>, usize)> {
+        let runs = self.runs.read().await;
+        let filtered: Vec<JobRun> = runs
+            .iter()
+            .filter(|r| r.job_id == job_id)
+            .cloned()
+            .collect();
+        let total = filtered.len();
+        let paginated = filtered.into_iter().skip(offset).take(limit).collect();
+        Ok((paginated, total))
+    }
+    async fn cleanup(&self, _job_id: Uuid, _max_files: usize) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helper to spawn a test server on a random port
 // ---------------------------------------------------------------------------
 
@@ -194,6 +267,84 @@ async fn spawn_test_server() -> (String, tokio::task::JoinHandle<()>) {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     (base_url, handle)
+}
+
+/// Spawn a test server wired with a real executor (MockPtySpawner) and a
+/// storing log store so that triggered jobs actually run and appear in run
+/// history.  Returns (base_url, Arc<StoringLogStore>, server_handle).
+async fn spawn_test_server_with_executor(
+) -> (String, Arc<StoringLogStore>, tokio::task::JoinHandle<()>) {
+    let (event_tx, _) = broadcast::channel::<JobEvent>(4096);
+    let log_store: Arc<StoringLogStore> = Arc::new(StoringLogStore::new());
+    let active_runs = Arc::new(RwLock::new(HashMap::new()));
+
+    // Create dispatch channel
+    let (dispatch_tx, mut dispatch_rx) = tokio::sync::mpsc::channel::<DispatchRequest>(64);
+
+    let state = Arc::new(AppState {
+        job_store: Arc::new(InMemoryJobStore::new()),
+        log_store: Arc::clone(&log_store) as Arc<dyn LogStore>,
+        event_tx: event_tx.clone(),
+        scheduler_notify: Arc::new(Notify::new()),
+        config: Arc::new(DaemonConfig::default()),
+        start_time: Instant::now(),
+        active_runs: Arc::clone(&active_runs),
+        shutdown_tx: None,
+        dispatch_tx: Some(dispatch_tx),
+    });
+
+    // Executor using a MockPtySpawner that completes immediately with exit 0
+    let pty_spawner: Arc<dyn agent_cron_scheduler::pty::PtySpawner> = Arc::new(
+        MockPtySpawner::with_output_and_exit(vec![b"ok\n".to_vec()], 0),
+    );
+    let executor = Executor::new(
+        event_tx.clone(),
+        Arc::clone(&log_store) as Arc<dyn LogStore>,
+        Arc::new(DaemonConfig::default()),
+        pty_spawner,
+    );
+
+    // Background dispatch loop
+    tokio::spawn(async move {
+        while let Some(request) = dispatch_rx.recv().await {
+            if let Ok(handle) = executor
+                .spawn_job(
+                    &request.job,
+                    request.run_id,
+                    request.trigger_params.as_ref(),
+                )
+                .await
+            {
+                let job_id = handle.job_id;
+                let mut runs = active_runs.write().await;
+                let handles = runs.entry(job_id).or_insert_with(Vec::new);
+                handles.retain(|h: &agent_cron_scheduler::daemon::executor::RunHandle| {
+                    !h.join_handle.is_finished()
+                });
+                if request.job.allow_concurrent {
+                    handles.push(handle);
+                } else {
+                    handles.clear();
+                    handles.push(handle);
+                }
+            }
+        }
+    });
+
+    let router = server::create_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind to random port");
+    let addr = listener.local_addr().expect("get local addr");
+    let base_url = format!("http://{}", addr);
+
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, router).await.ok();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    (base_url, log_store, handle)
 }
 
 fn new_job_json(name: &str) -> serde_json::Value {
@@ -510,4 +661,112 @@ async fn test_sse_connection() {
         Ok(r) => assert_eq!(r.status(), 200),
         Err(e) => assert!(e.is_timeout(), "Expected timeout, got: {}", e),
     }
+}
+
+/// Verify that a job created with `allow_concurrent: true` can be triggered
+/// multiple times and both runs are recorded in run history.
+#[tokio::test]
+async fn test_concurrent_job_both_runs_appear_in_history() {
+    let (base_url, _log_store, _handle) = spawn_test_server_with_executor().await;
+    let client = reqwest::Client::new();
+
+    // Create a job with allow_concurrent: true
+    let job_body = serde_json::json!({
+        "name": "concurrent-job",
+        "schedule": "*/5 * * * *",
+        "allow_concurrent": true,
+        "execution": {
+            "type": "ShellCommand",
+            "value": "echo concurrent"
+        }
+    });
+
+    let create_resp = client
+        .post(format!("{}/api/jobs", base_url))
+        .json(&job_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), 201);
+
+    let created: serde_json::Value = create_resp.json().await.unwrap();
+    let job_id = created["id"].as_str().unwrap();
+    assert_eq!(created["allow_concurrent"], true);
+
+    // Trigger the job twice
+    let trigger1 = client
+        .post(format!("{}/api/jobs/{}/trigger", base_url, job_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(trigger1.status(), 202);
+    let t1_json: serde_json::Value = trigger1.json().await.unwrap();
+    let run_id_1 = t1_json["run_id"].as_str().unwrap().to_string();
+
+    let trigger2 = client
+        .post(format!("{}/api/jobs/{}/trigger", base_url, job_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(trigger2.status(), 202);
+    let t2_json: serde_json::Value = trigger2.json().await.unwrap();
+    let run_id_2 = t2_json["run_id"].as_str().unwrap().to_string();
+
+    // The two trigger calls must have produced distinct run IDs
+    assert_ne!(
+        run_id_1, run_id_2,
+        "each trigger should produce a unique run_id"
+    );
+
+    // Poll run history until both runs are present (executor is async)
+    let mut found_runs: Vec<serde_json::Value> = vec![];
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let runs_resp = client
+            .get(format!("{}/api/jobs/{}/runs?limit=10", base_url, job_id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(runs_resp.status(), 200);
+        let runs_json: serde_json::Value = runs_resp.json().await.unwrap();
+        let runs = runs_json["runs"].as_array().unwrap().clone();
+        if runs.len() >= 2 {
+            found_runs = runs;
+            break;
+        }
+    }
+
+    assert_eq!(
+        found_runs.len(),
+        2,
+        "expected 2 runs in history, got {}",
+        found_runs.len()
+    );
+
+    // Neither run should have a Failed status
+    for run in &found_runs {
+        let status = run["status"].as_str().unwrap_or("");
+        assert_ne!(
+            status,
+            "Failed",
+            "run {} should not be Failed",
+            run["run_id"].as_str().unwrap_or("")
+        );
+    }
+
+    // Verify both expected run IDs appear in history
+    let history_ids: Vec<&str> = found_runs
+        .iter()
+        .map(|r| r["run_id"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        history_ids.contains(&run_id_1.as_str()),
+        "run_id_1 ({}) not found in history",
+        run_id_1
+    );
+    assert!(
+        history_ids.contains(&run_id_2.as_str()),
+        "run_id_2 ({}) not found in history",
+        run_id_2
+    );
 }

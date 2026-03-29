@@ -80,6 +80,7 @@ mod tests {
             env_vars: None,
             timeout_secs: 0,
             log_environment: false,
+            allow_concurrent: false,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             last_run_at: None,

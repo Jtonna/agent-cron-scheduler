@@ -155,6 +155,9 @@ List all jobs, optionally filtered by enabled status.
     "env_vars": { "BACKUP_DIR": "/mnt/backup" },
     "timeout_secs": 3600,
     "log_environment": false,
+    "allow_concurrent": false,
+    "pre_hook": null,
+    "post_hook": null,
     "created_at": "2025-01-15T10:30:00Z",
     "updated_at": "2025-01-15T10:30:00Z",
     "last_run_at": "2025-01-16T02:00:00Z",
@@ -188,6 +191,7 @@ Create a new scheduled job.
   "env_vars": { "BACKUP_DIR": "/mnt/backup" },
   "timeout_secs": 3600,
   "log_environment": false,
+  "allow_concurrent": true,
   "pre_hook": null,
   "post_hook": null
 }
@@ -204,6 +208,7 @@ Create a new scheduled job.
 | `env_vars`       | object (string -> string)       | No       | `null`  | Environment variables to set for the command.        |
 | `timeout_secs`   | integer (u64)                   | No       | `0`     | Maximum execution time in seconds. `0` means no timeout. |
 | `log_environment`| bool                            | No       | `false` | Whether to log environment variables in the run output. |
+| `allow_concurrent`| boolean                        | No       | `null`  | Allow concurrent runs. Null uses daemon default. |
 | `pre_hook`       | string                          | No       | `null`  | Shell command to execute before the job runs.        |
 | `post_hook`      | string                          | No       | `null`  | Shell command to execute after the job completes.    |
 
@@ -233,6 +238,7 @@ Create a new scheduled job.
   "env_vars": { "BACKUP_DIR": "/mnt/backup" },
   "timeout_secs": 3600,
   "log_environment": false,
+  "allow_concurrent": false,
   "pre_hook": null,
   "post_hook": null,
   "created_at": "2025-01-15T10:30:00Z",
@@ -300,6 +306,9 @@ The `next_run_at` field is computed at runtime for enabled jobs.
   "env_vars": { "BACKUP_DIR": "/mnt/backup" },
   "timeout_secs": 3600,
   "log_environment": false,
+  "allow_concurrent": false,
+  "pre_hook": null,
+  "post_hook": null,
   "created_at": "2025-01-15T10:30:00Z",
   "updated_at": "2025-01-15T10:30:00Z",
   "last_run_at": "2025-01-16T02:00:00Z",
@@ -336,6 +345,7 @@ Partially update an existing job. Only the fields you include in the request bod
   "env_vars": { "MODE": "full" },
   "timeout_secs": 7200,
   "log_environment": true,
+  "allow_concurrent": true,
   "pre_hook": "echo 'Starting backup'",
   "post_hook": "echo 'Backup complete'"
 }
@@ -352,6 +362,7 @@ Partially update an existing job. Only the fields you include in the request bod
 | `env_vars`       | object (string -> string)       | No       | New environment variables (replaces all).  |
 | `timeout_secs`   | integer (u64)                   | No       | New timeout in seconds.                    |
 | `log_environment`| bool                            | No       | New log_environment setting.               |
+| `allow_concurrent`| boolean\|null                  | No       | Set to true/false to change concurrency behavior |
 | `pre_hook`       | string                          | No       | New pre-execution hook command.            |
 | `post_hook`      | string                          | No       | New post-execution hook command.           |
 
@@ -371,7 +382,7 @@ Partially update an existing job. Only the fields you include in the request bod
 
 ### DELETE /api/jobs/{id}
 
-Delete a job and kill its active run (if any).
+Delete a job and kill all active runs (if any).
 
 **Path Parameters:**
 
@@ -390,7 +401,7 @@ Delete a job and kill its active run (if any).
 | 500 Internal Server Error | Storage failure. |
 
 **Side effects:**
-- If the job has an active run, it is killed via the kill channel.
+- If the job has any active runs, all of them are killed via the kill channel.
 - Broadcasts a `JobChanged` SSE event with `change: "Removed"`.
 - Notifies the scheduler.
 
@@ -788,6 +799,7 @@ The full job object returned by GET, POST, and PATCH endpoints.
 | `env_vars`       | object (string -> string)       | Yes      | Environment variables map, or `null`.                        |
 | `timeout_secs`   | integer (u64)                   | No       | Max execution time in seconds. `0` = no timeout.            |
 | `log_environment`| bool                            | No       | Whether to log environment variables in run output.          |
+| `allow_concurrent`| boolean                        | No       | Whether multiple instances of this job can run simultaneously. |
 | `pre_hook`       | string                          | Yes      | Shell command to execute before the job runs, or `null`.     |
 | `post_hook`      | string                          | Yes      | Shell command to execute after the job completes, or `null`. |
 | `created_at`     | string (ISO 8601)               | No       | When the job was created.                                    |
@@ -811,6 +823,7 @@ Request body for `POST /api/jobs`.
 | `env_vars`       | object (string -> string)       | No       | `null`  | Environment variables.                   |
 | `timeout_secs`   | integer (u64)                   | No       | `0`     | Timeout in seconds (`0` = no timeout).   |
 | `log_environment`| bool                            | No       | `false` | Log environment variables.               |
+| `allow_concurrent`| boolean\|null                  | No       | `null`  | Allow concurrent runs. Null uses daemon default. |
 | `pre_hook`       | string                          | No       | `null`  | Shell command to execute before the job. |
 | `post_hook`      | string                          | No       | `null`  | Shell command to execute after the job.  |
 
@@ -829,6 +842,7 @@ Request body for `PATCH /api/jobs/{id}`. All fields are optional; only included 
 | `env_vars`       | object (string -> string)       | New environment variables (full replace).|
 | `timeout_secs`   | integer (u64)                   | New timeout in seconds.                  |
 | `log_environment`| bool                            | New log_environment flag.                |
+| `allow_concurrent`| boolean\|null                  | Set to true/false to change concurrency behavior. |
 | `pre_hook`       | string                          | New pre-execution hook command.          |
 | `post_hook`      | string                          | New post-execution hook command.         |
 
