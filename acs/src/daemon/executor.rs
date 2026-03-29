@@ -94,6 +94,85 @@ async fn run_hook(
     }
 }
 
+/// Extracted cost/usage summary from a Claude CLI NDJSON log.
+struct CostSummary {
+    total_cost_usd: Option<f64>,
+    duration_ms: Option<u64>,
+    num_turns: Option<u32>,
+    model: Option<String>,
+    usage: Option<serde_json::Value>,
+}
+
+/// Extract cost data from a Claude CLI NDJSON log.
+///
+/// Claude CLI emits newline-delimited JSON events. The relevant events are:
+/// - `{"type":"system","subtype":"init",...,"model":"<model>"}` — always near the start
+/// - `{"type":"result",...,"total_cost_usd":...}` — always the last line
+///
+/// For performance, only the first 4 KB and last 8 KB of the log are scanned.
+/// Non-NDJSON content (plain shell output, etc.) results in all fields being `None`.
+fn extract_cost_from_log(log_content: &[u8]) -> CostSummary {
+    let mut summary = CostSummary {
+        total_cost_usd: None,
+        duration_ms: None,
+        num_turns: None,
+        model: None,
+        usage: None,
+    };
+
+    if log_content.is_empty() {
+        return summary;
+    }
+
+    // Scan the first ~4KB for the system event (model info is at the start)
+    let head_window = &log_content[..log_content.len().min(4096)];
+    let head_str = String::from_utf8_lossy(head_window);
+    for line in head_str.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if val.get("type").and_then(|t| t.as_str()) == Some("system") {
+                if let Some(model) = val.get("model").and_then(|m| m.as_str()) {
+                    summary.model = Some(model.to_string());
+                }
+                break;
+            }
+        }
+    }
+
+    // Scan the last ~8KB for the result event (always the final NDJSON line)
+    let tail_start = log_content.len().saturating_sub(8192);
+    let tail_window = &log_content[tail_start..];
+    let tail_str = String::from_utf8_lossy(tail_window);
+    for line in tail_str.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if val.get("type").and_then(|t| t.as_str()) == Some("result") {
+                if let Some(cost) = val.get("total_cost_usd").and_then(|v| v.as_f64()) {
+                    summary.total_cost_usd = Some(cost);
+                }
+                if let Some(ms) = val.get("duration_ms").and_then(|v| v.as_u64()) {
+                    summary.duration_ms = Some(ms);
+                }
+                if let Some(turns) = val.get("num_turns").and_then(|v| v.as_u64()) {
+                    summary.num_turns = Some(turns as u32);
+                }
+                if let Some(usage) = val.get("usage").cloned() {
+                    summary.usage = Some(usage);
+                }
+                break;
+            }
+        }
+    }
+
+    summary
+}
+
 /// Handle to a running job, allowing monitoring and cancellation.
 pub struct RunHandle {
     pub run_id: Uuid,
@@ -584,6 +663,15 @@ impl Executor {
 
             let finished_at = Utc::now();
 
+            // Extract cost data from the NDJSON log (best-effort; errors are silently ignored).
+            // Fields are stored as individual variables so each terminal branch can use them
+            // even though some branches return early.
+            let (cost_total_usd, cost_duration_ms, cost_num_turns, cost_model, cost_usage) = {
+                let raw = log_store.read_log(job_id, run_id, None).await.unwrap_or_default();
+                let c = extract_cost_from_log(raw.as_bytes());
+                (c.total_cost_usd, c.duration_ms, c.num_turns, c.model, c.usage)
+            };
+
             if timed_out {
                 // Job timed out - mark as Failed with timeout message
                 let timeout_run = JobRun {
@@ -596,11 +684,11 @@ impl Executor {
                     log_size_bytes: total_bytes,
                     error: Some("execution timed out".to_string()),
                     trigger_params: trigger_params_owned.clone(),
-                    total_cost_usd: None,
-                    duration_ms: None,
-                    num_turns: None,
-                    model: None,
-                    usage: None,
+                    total_cost_usd: cost_total_usd,
+                    duration_ms: cost_duration_ms,
+                    num_turns: cost_num_turns,
+                    model: cost_model.clone(),
+                    usage: cost_usage.clone(),
                 };
                 if let Err(e) = log_store.update_run(&timeout_run).await {
                     tracing::error!("Failed to update run on timeout: {}", e);
@@ -631,11 +719,11 @@ impl Executor {
                     log_size_bytes: total_bytes,
                     error: Some("Job was killed".to_string()),
                     trigger_params: trigger_params_owned.clone(),
-                    total_cost_usd: None,
-                    duration_ms: None,
-                    num_turns: None,
-                    model: None,
-                    usage: None,
+                    total_cost_usd: cost_total_usd,
+                    duration_ms: cost_duration_ms,
+                    num_turns: cost_num_turns,
+                    model: cost_model.clone(),
+                    usage: cost_usage.clone(),
                 };
                 if let Err(e) = log_store.update_run(&killed_run).await {
                     tracing::error!("Failed to update run on kill: {}", e);
@@ -700,11 +788,11 @@ impl Executor {
                         log_size_bytes: total_bytes,
                         error: hook_error,
                         trigger_params: trigger_params_owned.clone(),
-                        total_cost_usd: None,
-                        duration_ms: None,
-                        num_turns: None,
-                        model: None,
-                        usage: None,
+                        total_cost_usd: cost_total_usd,
+                        duration_ms: cost_duration_ms,
+                        num_turns: cost_num_turns,
+                        model: cost_model.clone(),
+                        usage: cost_usage.clone(),
                     };
                     if let Err(e) = log_store.update_run(&completed_run).await {
                         tracing::error!("Failed to update run on completion: {}", e);
@@ -730,11 +818,11 @@ impl Executor {
                         log_size_bytes: total_bytes,
                         error: Some(error_msg.clone()),
                         trigger_params: trigger_params_owned.clone(),
-                        total_cost_usd: None,
-                        duration_ms: None,
-                        num_turns: None,
-                        model: None,
-                        usage: None,
+                        total_cost_usd: cost_total_usd,
+                        duration_ms: cost_duration_ms,
+                        num_turns: cost_num_turns,
+                        model: cost_model.clone(),
+                        usage: cost_usage.clone(),
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on wait failure: {}", e);
@@ -760,11 +848,11 @@ impl Executor {
                         log_size_bytes: total_bytes,
                         error: Some(error_msg.clone()),
                         trigger_params: trigger_params_owned,
-                        total_cost_usd: None,
-                        duration_ms: None,
-                        num_turns: None,
-                        model: None,
-                        usage: None,
+                        total_cost_usd: cost_total_usd,
+                        duration_ms: cost_duration_ms,
+                        num_turns: cost_num_turns,
+                        model: cost_model,
+                        usage: cost_usage,
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on join error: {}", e);
@@ -2602,5 +2690,95 @@ mod tests {
             "Both parts of args should be present. Got: {:?}",
             full_cmd
         );
+    }
+
+    // --- extract_cost_from_log unit tests ---
+
+    #[test]
+    fn test_extract_cost_full_ndjson_stream() {
+        let log = concat!(
+            r#"{"type":"system","subtype":"init","session_id":"abc123","tools":["Read","Write"],"model":"claude-sonnet-4-20250514"}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}}"#, "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0342,"duration_ms":15234,"num_turns":3,"usage":{"input_tokens":1234,"output_tokens":567,"cache_creation_input_tokens":100,"cache_read_input_tokens":200}}"#, "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        assert_eq!(summary.total_cost_usd, Some(0.0342));
+        assert_eq!(summary.duration_ms, Some(15234));
+        assert_eq!(summary.num_turns, Some(3));
+        assert_eq!(summary.model.as_deref(), Some("claude-sonnet-4-20250514"));
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 1234);
+        assert_eq!(usage["output_tokens"], 567);
+        assert_eq!(usage["cache_creation_input_tokens"], 100);
+        assert_eq!(usage["cache_read_input_tokens"], 200);
+    }
+
+    #[test]
+    fn test_extract_cost_empty_content() {
+        let summary = extract_cost_from_log(b"");
+        assert!(summary.total_cost_usd.is_none());
+        assert!(summary.duration_ms.is_none());
+        assert!(summary.num_turns.is_none());
+        assert!(summary.model.is_none());
+        assert!(summary.usage.is_none());
+    }
+
+    #[test]
+    fn test_extract_cost_non_ndjson_plain_shell_output() {
+        let log = b"$ echo hello\nhello\n";
+        let summary = extract_cost_from_log(log);
+        assert!(summary.total_cost_usd.is_none());
+        assert!(summary.duration_ms.is_none());
+        assert!(summary.num_turns.is_none());
+        assert!(summary.model.is_none());
+        assert!(summary.usage.is_none());
+    }
+
+    #[test]
+    fn test_extract_cost_result_without_system_event() {
+        let log = concat!(
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"duration_ms":5000,"num_turns":1,"usage":{"input_tokens":100,"output_tokens":50}}"#, "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+        assert_eq!(summary.total_cost_usd, Some(0.01));
+        assert_eq!(summary.duration_ms, Some(5000));
+        assert_eq!(summary.num_turns, Some(1));
+        assert!(summary.model.is_none(), "model should be None when no system event");
+        assert!(summary.usage.is_some());
+    }
+
+    #[test]
+    fn test_extract_cost_zero_cost() {
+        let log = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-haiku-4"}"#, "\n",
+            r#"{"type":"result","total_cost_usd":0.0,"duration_ms":100,"num_turns":1,"usage":{}}"#, "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+        assert_eq!(summary.total_cost_usd, Some(0.0));
+        assert_eq!(summary.model.as_deref(), Some("claude-haiku-4"));
+    }
+
+    #[test]
+    fn test_extract_cost_large_log_uses_tail_window() {
+        // Build a log that is larger than 8KB, with the result event at the very end
+        let system_line = r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#.to_string() + "\n";
+        // Fill with non-NDJSON lines to push the result event past the 8KB head/tail boundary
+        let filler: String = (0..500).map(|i| format!("plain output line {}\n", i)).collect();
+        let result_line = r#"{"type":"result","total_cost_usd":1.23,"duration_ms":99999,"num_turns":7,"usage":{"input_tokens":9999,"output_tokens":9999}}"#.to_string() + "\n";
+
+        let log = format!("{}{}{}", system_line, filler, result_line);
+        let bytes = log.as_bytes();
+
+        // Confirm log is indeed larger than 8KB
+        assert!(bytes.len() > 8192, "Log should be > 8KB for this test, got {} bytes", bytes.len());
+
+        let summary = extract_cost_from_log(bytes);
+        assert_eq!(summary.total_cost_usd, Some(1.23));
+        assert_eq!(summary.duration_ms, Some(99999));
+        assert_eq!(summary.num_turns, Some(7));
+        // model is in the first 4KB (system line is small) so it should be found
+        assert_eq!(summary.model.as_deref(), Some("claude-sonnet-4-20250514"));
     }
 }
