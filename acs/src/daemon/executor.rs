@@ -667,9 +667,18 @@ impl Executor {
             // Fields are stored as individual variables so each terminal branch can use them
             // even though some branches return early.
             let (cost_total_usd, cost_duration_ms, cost_num_turns, cost_model, cost_usage) = {
-                let raw = log_store.read_log(job_id, run_id, None).await.unwrap_or_default();
+                let raw = log_store
+                    .read_log(job_id, run_id, None)
+                    .await
+                    .unwrap_or_default();
                 let c = extract_cost_from_log(raw.as_bytes());
-                (c.total_cost_usd, c.duration_ms, c.num_turns, c.model, c.usage)
+                (
+                    c.total_cost_usd,
+                    c.duration_ms,
+                    c.num_turns,
+                    c.model,
+                    c.usage,
+                )
             };
 
             if timed_out {
@@ -2697,9 +2706,12 @@ mod tests {
     #[test]
     fn test_extract_cost_full_ndjson_stream() {
         let log = concat!(
-            r#"{"type":"system","subtype":"init","session_id":"abc123","tools":["Read","Write"],"model":"claude-sonnet-4-20250514"}"#, "\n",
-            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}}"#, "\n",
-            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0342,"duration_ms":15234,"num_turns":3,"usage":{"input_tokens":1234,"output_tokens":567,"cache_creation_input_tokens":100,"cache_read_input_tokens":200}}"#, "\n"
+            r#"{"type":"system","subtype":"init","session_id":"abc123","tools":["Read","Write"],"model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0342,"duration_ms":15234,"num_turns":3,"usage":{"input_tokens":1234,"output_tokens":567,"cache_creation_input_tokens":100,"cache_read_input_tokens":200}}"#,
+            "\n"
         );
         let summary = extract_cost_from_log(log.as_bytes());
 
@@ -2739,21 +2751,27 @@ mod tests {
     #[test]
     fn test_extract_cost_result_without_system_event() {
         let log = concat!(
-            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"duration_ms":5000,"num_turns":1,"usage":{"input_tokens":100,"output_tokens":50}}"#, "\n"
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"duration_ms":5000,"num_turns":1,"usage":{"input_tokens":100,"output_tokens":50}}"#,
+            "\n"
         );
         let summary = extract_cost_from_log(log.as_bytes());
         assert_eq!(summary.total_cost_usd, Some(0.01));
         assert_eq!(summary.duration_ms, Some(5000));
         assert_eq!(summary.num_turns, Some(1));
-        assert!(summary.model.is_none(), "model should be None when no system event");
+        assert!(
+            summary.model.is_none(),
+            "model should be None when no system event"
+        );
         assert!(summary.usage.is_some());
     }
 
     #[test]
     fn test_extract_cost_zero_cost() {
         let log = concat!(
-            r#"{"type":"system","subtype":"init","model":"claude-haiku-4"}"#, "\n",
-            r#"{"type":"result","total_cost_usd":0.0,"duration_ms":100,"num_turns":1,"usage":{}}"#, "\n"
+            r#"{"type":"system","subtype":"init","model":"claude-haiku-4"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.0,"duration_ms":100,"num_turns":1,"usage":{}}"#,
+            "\n"
         );
         let summary = extract_cost_from_log(log.as_bytes());
         assert_eq!(summary.total_cost_usd, Some(0.0));
@@ -2763,16 +2781,23 @@ mod tests {
     #[test]
     fn test_extract_cost_large_log_uses_tail_window() {
         // Build a log that is larger than 8KB, with the result event at the very end
-        let system_line = r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#.to_string() + "\n";
+        let system_line = r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#
+            .to_string() + "\n";
         // Fill with non-NDJSON lines to push the result event past the 8KB head/tail boundary
-        let filler: String = (0..500).map(|i| format!("plain output line {}\n", i)).collect();
+        let filler: String = (0..500)
+            .map(|i| format!("plain output line {}\n", i))
+            .collect();
         let result_line = r#"{"type":"result","total_cost_usd":1.23,"duration_ms":99999,"num_turns":7,"usage":{"input_tokens":9999,"output_tokens":9999}}"#.to_string() + "\n";
 
         let log = format!("{}{}{}", system_line, filler, result_line);
         let bytes = log.as_bytes();
 
         // Confirm log is indeed larger than 8KB
-        assert!(bytes.len() > 8192, "Log should be > 8KB for this test, got {} bytes", bytes.len());
+        assert!(
+            bytes.len() > 8192,
+            "Log should be > 8KB for this test, got {} bytes",
+            bytes.len()
+        );
 
         let summary = extract_cost_from_log(bytes);
         assert_eq!(summary.total_cost_usd, Some(1.23));
