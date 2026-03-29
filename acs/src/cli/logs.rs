@@ -264,10 +264,7 @@ async fn follow_sse_logs(client: &Client, url: &str) -> anyhow::Result<()> {
                 if let Some(rest) = line.strip_prefix("event: ") {
                     event_type = rest.to_string();
                 } else if let Some(rest) = line.strip_prefix("data: ") {
-                    if !data.is_empty() {
-                        data.push('\n');
-                    }
-                    data.push_str(rest);
+                    data = rest.to_string();
                 }
             }
 
