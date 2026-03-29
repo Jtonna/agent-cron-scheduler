@@ -22,6 +22,10 @@ pub struct DaemonConfig {
     pub pty_rows: u16,
     #[serde(default = "default_pty_cols")]
     pub pty_cols: u16,
+    #[serde(default)]
+    pub default_pre_hook: Option<String>,
+    #[serde(default)]
+    pub default_post_hook: Option<String>,
 }
 
 fn default_host() -> String {
@@ -68,6 +72,8 @@ impl Default for DaemonConfig {
             broadcast_capacity: default_broadcast_capacity(),
             pty_rows: default_pty_rows(),
             pty_cols: default_pty_cols(),
+            default_pre_hook: None,
+            default_post_hook: None,
         }
     }
 }
@@ -88,6 +94,8 @@ mod tests {
         assert_eq!(config.broadcast_capacity, 4096);
         assert_eq!(config.pty_rows, 24);
         assert_eq!(config.pty_cols, 80);
+        assert!(config.default_pre_hook.is_none());
+        assert!(config.default_post_hook.is_none());
     }
 
     #[test]

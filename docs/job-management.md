@@ -20,6 +20,8 @@ A job represents a scheduled command or script that ACS executes on a cron-based
 | `env_vars` | `Option<HashMap<String, String>>` | Optional per-job environment variables injected into the process. |
 | `timeout_secs` | `u64` | Per-job timeout in seconds. `0` means fall back to the daemon config default. See [Timeouts](#timeouts). |
 | `log_environment` | `bool` | When `true`, the full environment is dumped to the run log before execution. Defaults to `false`. |
+| `pre_hook` | `Option<String>` | Optional shell command to run before job execution. If the pre-hook fails, the job execution is blocked and the run is marked as `Failed`. |
+| `post_hook` | `Option<String>` | Optional shell command to run after job execution. If the post-hook fails, the run is marked as `CompletedWithWarnings` instead of `Completed`. |
 | `created_at` | `DateTime<Utc>` | Timestamp of job creation. |
 | `updated_at` | `DateTime<Utc>` | Timestamp of the last update to the job definition. |
 | `last_run_at` | `Option<DateTime<Utc>>` | Timestamp of the most recent execution start, or `None` if never run. |
@@ -39,10 +41,25 @@ When creating a job, the following fields are accepted:
 - `env_vars` (optional)
 - `timeout_secs` (optional, defaults to `0`)
 - `log_environment` (optional, defaults to `false`)
+- `pre_hook` (optional)
+- `post_hook` (optional)
 
 ### JobUpdate (Partial Update Payload)
 
 All fields in `JobUpdate` are optional. Only the fields present in the request body are modified; omitted fields remain unchanged. The `last_run_at` and `last_exit_code` fields are internal-only and cannot be set through the API (they use `#[serde(skip)]`, which excludes them from both JSON serialization and deserialization of `JobUpdate`).
+
+Fields that can be updated include:
+- `name`
+- `schedule`
+- `execution`
+- `enabled`
+- `timezone`
+- `working_dir`
+- `env_vars`
+- `timeout_secs`
+- `log_environment`
+- `pre_hook`
+- `post_hook`
 
 ---
 
@@ -183,6 +200,7 @@ Creation --> Scheduling --> Execution --> Completion
 3. **Execution**: When a job's cron time arrives (or a manual trigger is received), the scheduler dispatches it to the executor via a `DispatchRequest` containing the job, a pre-generated `run_id`, and optional `TriggerParams`. The executor:
    - Creates a `JobRun` record with `Running` status using the pre-generated `run_id`.
    - Broadcasts a `Started` event.
+   - If a `pre_hook` is configured, executes it. If the pre-hook fails (non-zero exit), the run is marked as `Failed` and execution is blocked. Success continues to the main job execution.
    - Optionally dumps the environment to the log (if `log_environment` is `true`).
    - Builds the effective command: if trigger `args` are provided, they are appended to the base command (`"{command} {args}"`).
    - Writes a command header to the log showing the effective command (`$ <command>` for ShellCommand, `$ [script] <path>` for ScriptFile).
@@ -190,6 +208,7 @@ Creation --> Scheduling --> Execution --> Completion
    - If trigger `input` is provided, writes it to the process's stdin, then closes stdin (EOF).
    - Streams output to both the log store and the event broadcast channel.
    - Monitors for timeout and kill signals.
+   - After the job completes (regardless of exit code), if a `post_hook` is configured, executes it. If the post-hook fails (non-zero exit), the run is marked as `CompletedWithWarnings`. If the post-hook succeeds, the run is marked as `Completed`.
 
 4. **Completion**: The run finishes with one of these terminal statuses. After completion, old run logs are cleaned up based on the configured retention limit (see [Configuration](configuration.md#field-reference)). Job metadata (`last_run_at`, `last_exit_code`) is updated automatically by a background task that listens for completion events.
 
@@ -199,7 +218,8 @@ Creation --> Scheduling --> Execution --> Completion
 |---|---|---|
 | `Running` | Execution is in progress. | Job spawned successfully. |
 | `Completed` | Process exited (any exit code). | Process returned an exit status, including non-zero codes. Non-zero exit is **not** treated as `Failed`. |
-| `Failed` | Infrastructure error prevented normal completion. | Process spawn failure, process wait failure, task join error, or timeout. |
+| `CompletedWithWarnings` | Job completed but post-hook failed. | Process exited successfully, but the post-hook command failed. |
+| `Failed` | Infrastructure error prevented normal completion. | Process spawn failure, process wait failure, task join error, timeout, or pre-hook failure. |
 | `Killed` | Job was forcefully terminated. | Job deleted while running (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. There is no dedicated kill endpoint. **Note:** Killed runs broadcast a `Failed` SSE event, not a separate `Killed` event type. The error message is `"Job was killed"` for explicit kills or `"Daemon shutting down"` during graceful shutdown. |
 
 ### JobRun Record
@@ -212,7 +232,7 @@ Each execution creates a `JobRun` with the following fields:
 | `job_id` | `Uuid` | The parent job's ID. |
 | `started_at` | `DateTime<Utc>` | When execution began. |
 | `finished_at` | `Option<DateTime<Utc>>` | When execution ended. `None` while running. |
-| `status` | `RunStatus` | One of: `Running`, `Completed`, `Failed`, `Killed`. |
+| `status` | `RunStatus` | One of: `Running`, `Completed`, `CompletedWithWarnings`, `Failed`, `Killed`. |
 | `exit_code` | `Option<i32>` | Process exit code. Present only for `Completed` status. |
 | `log_size_bytes` | `u64` | Total bytes of process output captured (excludes the command header and environment dump written by the executor). |
 | `error` | `Option<String>` | Error description for `Failed` or `Killed` runs. |

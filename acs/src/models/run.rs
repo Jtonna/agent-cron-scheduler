@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub enum RunStatus {
     Running,
     Completed,
+    CompletedWithWarnings,
     Failed,
     Killed,
 }
@@ -65,6 +66,15 @@ mod tests {
         let status = RunStatus::Completed;
         let json = serde_json::to_string(&status).expect("serialize");
         assert_eq!(json, "\"Completed\"");
+        let deserialized: RunStatus = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(status, deserialized);
+    }
+
+    #[test]
+    fn test_run_status_completed_with_warnings_serde() {
+        let status = RunStatus::CompletedWithWarnings;
+        let json = serde_json::to_string(&status).expect("serialize");
+        assert_eq!(json, "\"CompletedWithWarnings\"");
         let deserialized: RunStatus = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(status, deserialized);
     }

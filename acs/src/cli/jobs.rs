@@ -64,6 +64,8 @@ pub async fn cmd_add(
     env: &[String],
     disabled: bool,
     log_env: bool,
+    pre_hook: Option<&str>,
+    post_hook: Option<&str>,
 ) -> anyhow::Result<()> {
     let execution = match (cmd, script) {
         (Some(c), None) => ExecutionType::ShellCommand(c.to_string()),
@@ -90,6 +92,8 @@ pub async fn cmd_add(
         env_vars,
         timeout_secs: 0,
         log_environment: log_env,
+        pre_hook: pre_hook.map(|s| s.to_string()),
+        post_hook: post_hook.map(|s| s.to_string()),
     };
 
     let client = Client::new();

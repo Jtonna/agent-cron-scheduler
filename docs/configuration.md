@@ -18,7 +18,9 @@ ACS uses a JSON configuration file. All fields are optional; any omitted field f
   "default_timeout_secs": 0,
   "broadcast_capacity": 4096,
   "pty_rows": 24,
-  "pty_cols": 80
+  "pty_cols": 80,
+  "default_pre_hook": null,
+  "default_post_hook": null
 }
 ```
 
@@ -35,6 +37,8 @@ ACS uses a JSON configuration file. All fields are optional; any omitted field f
 | `broadcast_capacity` | integer | `4096` | Capacity of the internal broadcast channel used for job events (SSE streaming, log updates). |
 | `pty_rows` | integer (u16) | `24` | Number of rows for the pseudo-terminal allocated to job processes. **(No effect; the production spawner uses piped I/O, not a PTY.)** |
 | `pty_cols` | integer (u16) | `80` | Number of columns for the pseudo-terminal allocated to job processes. **(No effect; the production spawner uses piped I/O, not a PTY.)** |
+| `default_pre_hook` | Option<String> | `null` | Global shell command to run before all job executions. Overridden by per-job pre-hooks. |
+| `default_post_hook` | Option<String> | `null` | Global shell command to run after all job executions. Overridden by per-job post-hooks. |
 
 ### Partial Configuration
 

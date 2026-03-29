@@ -27,6 +27,10 @@ pub struct Job {
     pub timeout_secs: u64,
     #[serde(default)]
     pub log_environment: bool,
+    #[serde(default)]
+    pub pre_hook: Option<String>,
+    #[serde(default)]
+    pub post_hook: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_run_at: Option<DateTime<Utc>>,
@@ -47,6 +51,8 @@ impl PartialEq for Job {
             && self.env_vars == other.env_vars
             && self.timeout_secs == other.timeout_secs
             && self.log_environment == other.log_environment
+            && self.pre_hook == other.pre_hook
+            && self.post_hook == other.post_hook
             && self.created_at == other.created_at
             && self.updated_at == other.updated_at
             && self.last_run_at == other.last_run_at
@@ -69,6 +75,10 @@ pub struct NewJob {
     pub timeout_secs: u64,
     #[serde(default)]
     pub log_environment: bool,
+    #[serde(default)]
+    pub pre_hook: Option<String>,
+    #[serde(default)]
+    pub post_hook: Option<String>,
 }
 
 fn default_enabled() -> bool {
@@ -86,6 +96,8 @@ pub struct JobUpdate {
     pub env_vars: Option<HashMap<String, String>>,
     pub timeout_secs: Option<u64>,
     pub log_environment: Option<bool>,
+    pub pre_hook: Option<String>,
+    pub post_hook: Option<String>,
     /// Internal metadata: set to Some(Some(ts)) to update, Some(None) to clear.
     /// Skipped during JSON deserialization from API clients (not user-editable).
     #[serde(skip)]
@@ -173,6 +185,8 @@ mod tests {
             env_vars: None,
             timeout_secs: 0,
             log_environment: false,
+            pre_hook: None,
+            post_hook: None,
         }
     }
 
@@ -193,6 +207,8 @@ mod tests {
             }),
             timeout_secs: 0,
             log_environment: false,
+            pre_hook: None,
+            post_hook: None,
             created_at: now,
             updated_at: now,
             last_run_at: None,
