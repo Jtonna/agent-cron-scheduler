@@ -52,6 +52,7 @@ import { api } from "@/lib/api";
 import { formatDate, formatBytes, formatCost } from "@/lib/format";
 import { toast } from "sonner";
 import type { JobRun, TriggerParams } from "@/lib/types";
+import { CostTrendChart } from "@/components/CostTrendChart";
 
 const PAGE_SIZE = 15;
 
@@ -371,6 +372,7 @@ export function JobDetailPage() {
             ({total})
           </span>
         </h2>
+        <CostTrendChart runs={allRuns} />
         {runsLoading && allRuns.length === 0 ? (
           <div className="flex items-center justify-center py-6">
             <ArrowPathIcon className="h-6 w-6 animate-spin text-muted-foreground" />
