@@ -245,6 +245,11 @@ impl Executor {
             log_size_bytes: 0,
             error: None,
             trigger_params: trigger_params.cloned(),
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
         };
 
         // Save the initial run to the log store
@@ -333,6 +338,11 @@ impl Executor {
                             log_size_bytes: 0,
                             error: Some(error_msg.clone()),
                             trigger_params: trigger_params_owned.clone(),
+                            total_cost_usd: None,
+                            duration_ms: None,
+                            num_turns: None,
+                            model: None,
+                            usage: None,
                         };
                         if let Err(e) = log_store.update_run(&failed_run).await {
                             tracing::error!("Failed to save run on pre-hook failure: {}", e);
@@ -384,6 +394,11 @@ impl Executor {
                         log_size_bytes: 0,
                         error: Some(error_msg),
                         trigger_params: trigger_params_owned.clone(),
+                        total_cost_usd: None,
+                        duration_ms: None,
+                        num_turns: None,
+                        model: None,
+                        usage: None,
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on spawn failure: {}", e);
@@ -581,6 +596,11 @@ impl Executor {
                     log_size_bytes: total_bytes,
                     error: Some("execution timed out".to_string()),
                     trigger_params: trigger_params_owned.clone(),
+                    total_cost_usd: None,
+                    duration_ms: None,
+                    num_turns: None,
+                    model: None,
+                    usage: None,
                 };
                 if let Err(e) = log_store.update_run(&timeout_run).await {
                     tracing::error!("Failed to update run on timeout: {}", e);
@@ -611,6 +631,11 @@ impl Executor {
                     log_size_bytes: total_bytes,
                     error: Some("Job was killed".to_string()),
                     trigger_params: trigger_params_owned.clone(),
+                    total_cost_usd: None,
+                    duration_ms: None,
+                    num_turns: None,
+                    model: None,
+                    usage: None,
                 };
                 if let Err(e) = log_store.update_run(&killed_run).await {
                     tracing::error!("Failed to update run on kill: {}", e);
@@ -675,6 +700,11 @@ impl Executor {
                         log_size_bytes: total_bytes,
                         error: hook_error,
                         trigger_params: trigger_params_owned.clone(),
+                        total_cost_usd: None,
+                        duration_ms: None,
+                        num_turns: None,
+                        model: None,
+                        usage: None,
                     };
                     if let Err(e) = log_store.update_run(&completed_run).await {
                         tracing::error!("Failed to update run on completion: {}", e);
@@ -700,6 +730,11 @@ impl Executor {
                         log_size_bytes: total_bytes,
                         error: Some(error_msg.clone()),
                         trigger_params: trigger_params_owned.clone(),
+                        total_cost_usd: None,
+                        duration_ms: None,
+                        num_turns: None,
+                        model: None,
+                        usage: None,
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on wait failure: {}", e);
@@ -725,6 +760,11 @@ impl Executor {
                         log_size_bytes: total_bytes,
                         error: Some(error_msg.clone()),
                         trigger_params: trigger_params_owned,
+                        total_cost_usd: None,
+                        duration_ms: None,
+                        num_turns: None,
+                        model: None,
+                        usage: None,
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on join error: {}", e);
@@ -2065,6 +2105,11 @@ mod tests {
                 env: Some(env),
                 input: Some("data".to_string()),
             }),
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
         };
 
         let json = serde_json::to_string_pretty(&run).expect("serialize");
@@ -2162,6 +2207,11 @@ mod tests {
             log_size_bytes: 0,
             error: None,
             trigger_params: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
         };
 
         let json = serde_json::to_string(&run).expect("serialize");
