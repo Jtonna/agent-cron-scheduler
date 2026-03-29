@@ -137,7 +137,10 @@ impl Executor {
         let mut cmd = match &job.execution {
             ExecutionType::ShellCommand(command) => {
                 let effective_command = match trigger_args {
-                    Some(args) => format!("{} {}", command, args),
+                    Some(args) => {
+                        let sanitized = args.replace(['\n', '\r'], " ");
+                        format!("{} {}", command, sanitized)
+                    }
                     None => command.clone(),
                 };
                 if cfg!(target_os = "windows") {
@@ -154,7 +157,10 @@ impl Executor {
             }
             ExecutionType::ScriptFile(script) => {
                 let effective_script = match trigger_args {
-                    Some(args) => format!("{} {}", script, args),
+                    Some(args) => {
+                        let sanitized = args.replace(['\n', '\r'], " ");
+                        format!("{} {}", script, sanitized)
+                    }
                     None => script.clone(),
                 };
                 if cfg!(target_os = "windows") {
@@ -2416,6 +2422,135 @@ mod tests {
         assert!(
             run.error.is_none(),
             "Should have no error when job-level hook overrides config"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_command_trigger_args_newline_sanitized() {
+        let now = Utc::now();
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "newline-test".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ShellCommand("echo hello".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            pre_hook: None,
+            post_hook: None,
+            allow_concurrent: false,
+            created_at: now,
+            updated_at: now,
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let cmd = Executor::build_command(&job, Some("--flag\n--other"), None);
+        let args = cmd.get_argv();
+
+        // The trigger args newline should be replaced with a space in the final command string
+        let full_cmd = args[2].to_string_lossy();
+        assert!(
+            !full_cmd.contains('\n'),
+            "Command should not contain newline. Got: {:?}",
+            full_cmd
+        );
+        assert!(
+            full_cmd.contains("--flag --other"),
+            "Newline should be replaced with space. Got: {:?}",
+            full_cmd
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_command_trigger_args_crlf_sanitized() {
+        let now = Utc::now();
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "crlf-test".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ShellCommand("echo hello".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            pre_hook: None,
+            post_hook: None,
+            allow_concurrent: false,
+            created_at: now,
+            updated_at: now,
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let cmd = Executor::build_command(&job, Some("--flag\r\n--other"), None);
+        let args = cmd.get_argv();
+
+        // The trigger args CRLF should be replaced with spaces in the final command string
+        let full_cmd = args[2].to_string_lossy();
+        assert!(
+            !full_cmd.contains('\n'),
+            "Command should not contain newline. Got: {:?}",
+            full_cmd
+        );
+        assert!(
+            !full_cmd.contains('\r'),
+            "Command should not contain carriage return. Got: {:?}",
+            full_cmd
+        );
+        assert!(
+            full_cmd.contains("--flag") && full_cmd.contains("--other"),
+            "Both flags should be present. Got: {:?}",
+            full_cmd
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_command_script_trigger_args_newline_sanitized() {
+        let now = Utc::now();
+        let job = Job {
+            id: Uuid::now_v7(),
+            name: "script-newline-test".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ScriptFile("deploy.sh".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            pre_hook: None,
+            post_hook: None,
+            allow_concurrent: false,
+            created_at: now,
+            updated_at: now,
+            last_run_at: None,
+            last_exit_code: None,
+            next_run_at: None,
+        };
+
+        let cmd = Executor::build_command(&job, Some("--env\nprod"), None);
+        let args = cmd.get_argv();
+
+        // The final command argument (index 1 on unix with trigger args uses -c, index 2 is the cmd string)
+        // On Windows it's args[2] as well. Either way, no newlines should appear.
+        let full_cmd = args.last().unwrap().to_string_lossy();
+        assert!(
+            !full_cmd.contains('\n'),
+            "Script command should not contain newline. Got: {:?}",
+            full_cmd
+        );
+        assert!(
+            full_cmd.contains("--env") && full_cmd.contains("prod"),
+            "Both parts of args should be present. Got: {:?}",
+            full_cmd
         );
     }
 }
