@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import { ChevronRightIcon } from "@heroicons/react/24/outline";
+import { ChevronRightIcon, CurrencyDollarIcon } from "@heroicons/react/24/outline";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { LogViewer } from "@/components/LogViewer";
@@ -82,6 +82,43 @@ interface ResultEvent {
 }
 
 type ParsedEvent = SystemEvent | AssistantEvent | UserEvent | ResultEvent;
+
+// ── Cost data interface ───────────────────────────────────────────
+
+interface CostData {
+  total_cost_usd?: number;
+  duration_ms?: number;
+  num_turns?: number;
+  usage?: Record<string, unknown>;
+  model?: string;
+}
+
+// ── Helper formatting functions ───────────────────────────────────
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return seconds > 0 ? `${hours}h ${minutes}m ${seconds}s` : `${hours}h ${minutes}m`;
+  }
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function formatCost(usd: number): string {
+  if (usd === 0) return "$0.00";
+  if (usd < 0.0001) return `$${usd.toExponential(2)}`;
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(4)}`;
+}
+
+function formatTokens(count: number): string {
+  return count.toLocaleString("en-US");
+}
 
 /**
  * Extract the content array from an event, handling the message wrapper
@@ -276,6 +313,26 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
     return calls;
   }, [parsedEvents]);
 
+  // Extract cost data from parsed events
+  const costData = useMemo((): CostData | null => {
+    const resultEvent = [...parsedEvents]
+      .reverse()
+      .find((e): e is ResultEvent => e.type === "result");
+    if (!resultEvent) return null;
+
+    const systemEvent = parsedEvents.find(
+      (e): e is SystemEvent => e.type === "system"
+    );
+
+    return {
+      total_cost_usd: resultEvent.total_cost_usd,
+      duration_ms: resultEvent.duration_ms,
+      num_turns: resultEvent.num_turns,
+      usage: resultEvent.usage,
+      model: systemEvent?.model,
+    };
+  }, [parsedEvents]);
+
   const toggleExpanded = (index: number) => {
     setExpandedItems((prev) => {
       const next = new Set(prev);
@@ -299,6 +356,10 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
           Tool Calls{toolCalls.length > 0 && ` (${toolCalls.length})`}
         </TabsTrigger>
         <TabsTrigger value="all">All Parsed</TabsTrigger>
+        <TabsTrigger value="cost" className="flex items-center gap-1">
+          <CurrencyDollarIcon className="h-3.5 w-3.5" />
+          Cost
+        </TabsTrigger>
       </TabsList>
 
       {/* RAW mode */}
@@ -495,6 +556,94 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
                   </div>
                 );
               })}
+            </div>
+          )}
+        </div>
+      </TabsContent>
+      {/* COST mode */}
+      <TabsContent value="cost" className="mt-0">
+        <div
+          className="overflow-auto rounded-lg border bg-muted/40"
+          style={{ maxHeight }}
+        >
+          {!costData ? (
+            <div className="p-8 text-center">
+              <CurrencyDollarIcon className="h-8 w-8 mx-auto mb-2 text-muted-foreground/40" />
+              <p className="text-sm text-muted-foreground">
+                No cost data available for this run
+              </p>
+            </div>
+          ) : (
+            <div className="p-4 space-y-4">
+              {/* Summary cards */}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div className="rounded-lg border bg-background p-3">
+                  <p className="text-xs text-muted-foreground mb-1">Total Cost</p>
+                  <p className="font-mono text-lg font-semibold text-primary">
+                    {costData.total_cost_usd != null
+                      ? formatCost(costData.total_cost_usd)
+                      : "--"}
+                  </p>
+                </div>
+                <div className="rounded-lg border bg-background p-3">
+                  <p className="text-xs text-muted-foreground mb-1">Duration</p>
+                  <p className="font-mono text-lg font-semibold text-primary">
+                    {costData.duration_ms != null
+                      ? formatDuration(costData.duration_ms)
+                      : "--"}
+                  </p>
+                </div>
+                <div className="rounded-lg border bg-background p-3">
+                  <p className="text-xs text-muted-foreground mb-1">Turns</p>
+                  <p className="font-mono text-lg font-semibold text-primary">
+                    {costData.num_turns != null ? costData.num_turns : "--"}
+                  </p>
+                </div>
+                <div className="rounded-lg border bg-background p-3">
+                  <p className="text-xs text-muted-foreground mb-1">Model</p>
+                  <p className="text-sm font-medium text-primary truncate">
+                    {costData.model ?? "--"}
+                  </p>
+                </div>
+              </div>
+
+              {/* Token usage */}
+              {costData.usage && Object.keys(costData.usage).length > 0 && (
+                <div className="rounded-lg border bg-background overflow-hidden">
+                  <div className="px-3 py-2 border-b bg-muted/30">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                      Token Usage
+                    </p>
+                  </div>
+                  <table className="w-full text-sm">
+                    <tbody>
+                      {Object.entries(costData.usage).map(([key, value], i) => {
+                        const label = key
+                          .replace(/_/g, " ")
+                          .replace(/\b\w/g, (c) => c.toUpperCase());
+                        const isNumber = typeof value === "number";
+                        return (
+                          <tr
+                            key={key}
+                            className={
+                              i % 2 === 0 ? "bg-background" : "bg-muted/20"
+                            }
+                          >
+                            <td className="px-3 py-2 text-muted-foreground">
+                              {label}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono font-medium text-primary">
+                              {isNumber
+                                ? formatTokens(value as number)
+                                : String(value)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
         </div>
