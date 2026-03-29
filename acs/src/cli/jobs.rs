@@ -508,10 +508,7 @@ async fn follow_sse_stream(response: reqwest::Response) -> anyhow::Result<()> {
                 if let Some(rest) = line.strip_prefix("event: ") {
                     event_type = rest.to_string();
                 } else if let Some(rest) = line.strip_prefix("data: ") {
-                    if !data.is_empty() {
-                        data.push('\n');
-                    }
-                    data.push_str(rest);
+                    data = rest.to_string();
                 }
             }
 
@@ -564,37 +561,6 @@ async fn follow_sse_stream(response: reqwest::Response) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_sse_data_accumulation() {
-        // Simulate multi-line SSE data parsing
-        let event_block = "event: output\ndata: {\"line\":\ndata: \"hello\"}\n";
-        let mut data = String::new();
-        for line in event_block.lines() {
-            if let Some(rest) = line.strip_prefix("data: ") {
-                if !data.is_empty() {
-                    data.push('\n');
-                }
-                data.push_str(rest);
-            }
-        }
-        assert_eq!(data, "{\"line\":\n\"hello\"}");
-    }
-
-    #[test]
-    fn test_sse_single_data_line() {
-        let event_block = "event: output\ndata: {\"msg\":\"hello\"}\n";
-        let mut data = String::new();
-        for line in event_block.lines() {
-            if let Some(rest) = line.strip_prefix("data: ") {
-                if !data.is_empty() {
-                    data.push('\n');
-                }
-                data.push_str(rest);
-            }
-        }
-        assert_eq!(data, "{\"msg\":\"hello\"}");
-    }
 
     #[test]
     fn test_format_relative_time_past() {
