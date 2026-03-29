@@ -997,6 +997,34 @@ components:
             Optional trigger parameters used for this run.
             Only present when the run was manually triggered with
             per-invocation parameters. Omitted when null.
+        total_cost_usd:
+          type: number
+          format: double
+          nullable: true
+          description: Total cost in USD from Claude CLI.
+          example: 0.0342
+        duration_ms:
+          type: integer
+          format: int64
+          nullable: true
+          description: CLI-reported execution duration in milliseconds.
+          example: 5000
+        num_turns:
+          type: integer
+          format: int32
+          nullable: true
+          description: Number of conversation turns.
+          example: 3
+        model:
+          type: string
+          nullable: true
+          description: Primary model used.
+          example: claude-3-5-sonnet-20241022
+        usage:
+          type: object
+          nullable: true
+          description: Full token usage data from Claude CLI.
+          example: { "input_tokens": 1500, "output_tokens": 800 }
 
     # -----------------------------------------------------------------------
     # RunStatus enum
