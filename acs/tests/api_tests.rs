@@ -73,6 +73,8 @@ impl JobStore for InMemoryJobStore {
             timeout_secs: new.timeout_secs,
             log_environment: new.log_environment,
             allow_concurrent: new.allow_concurrent.unwrap_or(false),
+            pre_hook: new.pre_hook,
+            post_hook: new.post_hook,
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -111,6 +113,15 @@ impl JobStore for InMemoryJobStore {
         }
         if let Some(ts) = update.timeout_secs {
             job.timeout_secs = ts;
+        }
+        if let Some(ac) = update.allow_concurrent {
+            job.allow_concurrent = ac;
+        }
+        if let Some(ph) = update.pre_hook {
+            job.pre_hook = Some(ph);
+        }
+        if let Some(ph) = update.post_hook {
+            job.post_hook = Some(ph);
         }
         job.updated_at = Utc::now();
         Ok(job.clone())

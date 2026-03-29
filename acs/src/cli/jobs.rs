@@ -64,6 +64,8 @@ pub async fn cmd_add(
     env: &[String],
     disabled: bool,
     log_env: bool,
+    pre_hook: Option<&str>,
+    post_hook: Option<&str>,
     concurrent: bool,
 ) -> anyhow::Result<()> {
     let execution = match (cmd, script) {
@@ -91,6 +93,8 @@ pub async fn cmd_add(
         env_vars,
         timeout_secs: 0,
         log_environment: log_env,
+        pre_hook: pre_hook.map(|s| s.to_string()),
+        post_hook: post_hook.map(|s| s.to_string()),
         allow_concurrent: if concurrent { Some(true) } else { None },
     };
 

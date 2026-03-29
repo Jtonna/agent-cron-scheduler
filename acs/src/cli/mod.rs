@@ -105,6 +105,14 @@ pub enum Commands {
         #[arg(long)]
         log_env: bool,
 
+        /// Command to run before the job execution
+        #[arg(long)]
+        pre_hook: Option<String>,
+
+        /// Command to run after the job execution
+        #[arg(long)]
+        post_hook: Option<String>,
+
         /// Allow concurrent runs of this job
         #[arg(long)]
         concurrent: bool,
@@ -276,6 +284,8 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
             env,
             disabled,
             log_env,
+            pre_hook,
+            post_hook,
             concurrent,
         }) => {
             jobs::cmd_add(
@@ -290,6 +300,8 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
                 env,
                 *disabled,
                 *log_env,
+                pre_hook.as_deref(),
+                post_hook.as_deref(),
                 *concurrent,
             )
             .await
@@ -1087,6 +1099,127 @@ mod tests {
                 assert!(force);
             }
             other => panic!("Expected Update command, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional: add with --pre-hook and --post-hook
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_cli_add_with_hooks() {
+        let cli = Cli::try_parse_from([
+            "agentcronsystem",
+            "add",
+            "-n",
+            "hooked-job",
+            "-s",
+            "* * * * *",
+            "-c",
+            "echo running",
+            "--pre-hook",
+            "echo before",
+            "--post-hook",
+            "echo after",
+        ])
+        .expect("Should parse add with hooks");
+
+        match &cli.command {
+            Some(Commands::Add {
+                name,
+                pre_hook,
+                post_hook,
+                ..
+            }) => {
+                assert_eq!(name, "hooked-job");
+                assert_eq!(pre_hook.as_deref(), Some("echo before"));
+                assert_eq!(post_hook.as_deref(), Some("echo after"));
+            }
+            other => panic!("Expected Add command, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cli_add_with_only_pre_hook() {
+        let cli = Cli::try_parse_from([
+            "agentcronsystem",
+            "add",
+            "-n",
+            "pre-job",
+            "-s",
+            "0 * * * *",
+            "-c",
+            "echo main",
+            "--pre-hook",
+            "setup.sh",
+        ])
+        .expect("Should parse add with only pre-hook");
+
+        match &cli.command {
+            Some(Commands::Add {
+                pre_hook,
+                post_hook,
+                ..
+            }) => {
+                assert_eq!(pre_hook.as_deref(), Some("setup.sh"));
+                assert!(post_hook.is_none());
+            }
+            other => panic!("Expected Add command, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cli_add_with_only_post_hook() {
+        let cli = Cli::try_parse_from([
+            "agentcronsystem",
+            "add",
+            "-n",
+            "post-job",
+            "-s",
+            "0 * * * *",
+            "-c",
+            "echo main",
+            "--post-hook",
+            "cleanup.sh",
+        ])
+        .expect("Should parse add with only post-hook");
+
+        match &cli.command {
+            Some(Commands::Add {
+                pre_hook,
+                post_hook,
+                ..
+            }) => {
+                assert!(pre_hook.is_none());
+                assert_eq!(post_hook.as_deref(), Some("cleanup.sh"));
+            }
+            other => panic!("Expected Add command, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cli_add_without_hooks() {
+        let cli = Cli::try_parse_from([
+            "agentcronsystem",
+            "add",
+            "-n",
+            "simple-job",
+            "-s",
+            "0 * * * *",
+            "-c",
+            "echo simple",
+        ])
+        .expect("Should parse add without hooks");
+
+        match &cli.command {
+            Some(Commands::Add {
+                pre_hook,
+                post_hook,
+                ..
+            }) => {
+                assert!(pre_hook.is_none());
+                assert!(post_hook.is_none());
+            }
+            other => panic!("Expected Add command, got: {:?}", other),
         }
     }
 }

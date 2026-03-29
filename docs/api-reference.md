@@ -156,6 +156,8 @@ List all jobs, optionally filtered by enabled status.
     "timeout_secs": 3600,
     "log_environment": false,
     "allow_concurrent": false,
+    "pre_hook": null,
+    "post_hook": null,
     "created_at": "2025-01-15T10:30:00Z",
     "updated_at": "2025-01-15T10:30:00Z",
     "last_run_at": "2025-01-16T02:00:00Z",
@@ -189,7 +191,9 @@ Create a new scheduled job.
   "env_vars": { "BACKUP_DIR": "/mnt/backup" },
   "timeout_secs": 3600,
   "log_environment": false,
-  "allow_concurrent": true
+  "allow_concurrent": true,
+  "pre_hook": null,
+  "post_hook": null
 }
 ```
 
@@ -205,6 +209,8 @@ Create a new scheduled job.
 | `timeout_secs`   | integer (u64)                   | No       | `0`     | Maximum execution time in seconds. `0` means no timeout. |
 | `log_environment`| bool                            | No       | `false` | Whether to log environment variables in the run output. |
 | `allow_concurrent`| boolean                        | No       | `null`  | Allow concurrent runs. Null uses daemon default. |
+| `pre_hook`       | string                          | No       | `null`  | Shell command to execute before the job runs.        |
+| `post_hook`      | string                          | No       | `null`  | Shell command to execute after the job completes.    |
 
 **Response:**
 
@@ -232,6 +238,9 @@ Create a new scheduled job.
   "env_vars": { "BACKUP_DIR": "/mnt/backup" },
   "timeout_secs": 3600,
   "log_environment": false,
+  "allow_concurrent": false,
+  "pre_hook": null,
+  "post_hook": null,
   "created_at": "2025-01-15T10:30:00Z",
   "updated_at": "2025-01-15T10:30:00Z",
   "last_run_at": null,
@@ -298,6 +307,8 @@ The `next_run_at` field is computed at runtime for enabled jobs.
   "timeout_secs": 3600,
   "log_environment": false,
   "allow_concurrent": false,
+  "pre_hook": null,
+  "post_hook": null,
   "created_at": "2025-01-15T10:30:00Z",
   "updated_at": "2025-01-15T10:30:00Z",
   "last_run_at": "2025-01-16T02:00:00Z",
@@ -333,7 +344,10 @@ Partially update an existing job. Only the fields you include in the request bod
   "working_dir": "/opt",
   "env_vars": { "MODE": "full" },
   "timeout_secs": 7200,
-  "log_environment": true
+  "log_environment": true,
+  "allow_concurrent": true,
+  "pre_hook": "echo 'Starting backup'",
+  "post_hook": "echo 'Backup complete'"
 }
 ```
 
@@ -349,6 +363,8 @@ Partially update an existing job. Only the fields you include in the request bod
 | `timeout_secs`   | integer (u64)                   | No       | New timeout in seconds.                    |
 | `log_environment`| bool                            | No       | New log_environment setting.               |
 | `allow_concurrent`| boolean\|null                  | No       | Set to true/false to change concurrency behavior |
+| `pre_hook`       | string                          | No       | New pre-execution hook command.            |
+| `post_hook`      | string                          | No       | New post-execution hook command.           |
 
 **Response:**
 
@@ -366,7 +382,7 @@ Partially update an existing job. Only the fields you include in the request bod
 
 ### DELETE /api/jobs/{id}
 
-Delete a job and kill its active run (if any).
+Delete a job and kill all active runs (if any).
 
 **Path Parameters:**
 
@@ -544,7 +560,7 @@ List execution runs for a specific job, with pagination.
 |-----------|---------|----------|---------|-------------------------------------------------|
 | `limit`   | integer | No       | `20`    | Maximum number of runs to return.               |
 | `offset`  | integer | No       | `0`     | Number of runs to skip (for pagination).        |
-| `status`  | string  | No       | (none)  | Filter by run status. Case-insensitive. Accepted values: `running`, `completed`, `failed`, `killed`. **Note:** The status filter is applied *after* pagination (`limit`/`offset`), so the returned list may contain fewer items than `limit` even if more matching runs exist. The `total` field reflects the pre-filter count. |
+| `status`  | string  | No       | (none)  | Filter by run status. Case-insensitive. Accepted values: `running`, `completed`, `completed_with_warnings`, `failed`, `killed`. **Note:** The status filter is applied *after* pagination (`limit`/`offset`), so the returned list may contain fewer items than `limit` even if more matching runs exist. The `total` field reflects the pre-filter count. |
 
 **Response:**
 
@@ -783,7 +799,9 @@ The full job object returned by GET, POST, and PATCH endpoints.
 | `env_vars`       | object (string -> string)       | Yes      | Environment variables map, or `null`.                        |
 | `timeout_secs`   | integer (u64)                   | No       | Max execution time in seconds. `0` = no timeout.            |
 | `log_environment`| bool                            | No       | Whether to log environment variables in run output.          |
-| `allow_concurrent`| boolean                        | No       | Whether multiple instances of this job can run simultaneously |
+| `allow_concurrent`| boolean                        | No       | Whether multiple instances of this job can run simultaneously. |
+| `pre_hook`       | string                          | Yes      | Shell command to execute before the job runs, or `null`.     |
+| `post_hook`      | string                          | Yes      | Shell command to execute after the job completes, or `null`. |
 | `created_at`     | string (ISO 8601)               | No       | When the job was created.                                    |
 | `updated_at`     | string (ISO 8601)               | No       | When the job was last modified.                              |
 | `last_run_at`    | string (ISO 8601)               | Yes      | When the job last ran, or `null` if never.                   |
@@ -806,6 +824,8 @@ Request body for `POST /api/jobs`.
 | `timeout_secs`   | integer (u64)                   | No       | `0`     | Timeout in seconds (`0` = no timeout).   |
 | `log_environment`| bool                            | No       | `false` | Log environment variables.               |
 | `allow_concurrent`| boolean\|null                  | No       | `null`  | Allow concurrent runs. Null uses daemon default. |
+| `pre_hook`       | string                          | No       | `null`  | Shell command to execute before the job. |
+| `post_hook`      | string                          | No       | `null`  | Shell command to execute after the job.  |
 
 ### JobUpdate
 
@@ -822,7 +842,9 @@ Request body for `PATCH /api/jobs/{id}`. All fields are optional; only included 
 | `env_vars`       | object (string -> string)       | New environment variables (full replace).|
 | `timeout_secs`   | integer (u64)                   | New timeout in seconds.                  |
 | `log_environment`| bool                            | New log_environment flag.                |
-| `allow_concurrent`| boolean\|null                  | Set to true/false to change concurrency behavior |
+| `allow_concurrent`| boolean\|null                  | Set to true/false to change concurrency behavior. |
+| `pre_hook`       | string                          | New pre-execution hook command.          |
+| `post_hook`      | string                          | New post-execution hook command.         |
 
 Note: The `last_run_at` and `last_exit_code` fields cannot be set via the API. They are updated internally by the executor.
 
@@ -894,12 +916,13 @@ Represents a single execution of a job.
 
 A string enum representing the state of a job run.
 
-| Value       | Description                                     |
-|-------------|-------------------------------------------------|
-| `Running`   | The job is currently executing.                 |
-| `Completed` | The job finished with an exit code.             |
-| `Failed`    | The job failed to start or encountered an error.|
-| `Killed`    | The job was forcefully terminated (daemon shutdown, job deletion, or user-initiated kill). |
+| Value                   | Description                                     |
+|-------------------------|-------------------------------------------------|
+| `Running`               | The job is currently executing.                 |
+| `Completed`             | The job finished with an exit code.             |
+| `CompletedWithWarnings` | The job completed successfully but the post-hook failed. |
+| `Failed`                | The job failed to start or encountered an error.|
+| `Killed`                | The job was forcefully terminated (daemon shutdown, job deletion, or user-initiated kill). |
 
 ---
 

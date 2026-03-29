@@ -1779,6 +1779,8 @@ mod tests {
             updated_at: now,
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         }
     }
@@ -2149,6 +2151,8 @@ mod tests {
             updated_at: Utc::now(),
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         };
         job_store.add_job(test_job).await;

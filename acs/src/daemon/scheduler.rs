@@ -263,6 +263,8 @@ mod tests {
                 updated_at: now,
                 last_run_at: None,
                 last_exit_code: None,
+                pre_hook: None,
+                post_hook: None,
                 next_run_at: None,
             };
             self.jobs.write().await.push(job.clone());
@@ -317,6 +319,8 @@ mod tests {
             updated_at: now,
             last_run_at: None,
             last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
             next_run_at: None,
         }
     }

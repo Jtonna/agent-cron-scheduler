@@ -31,6 +31,8 @@ fn make_job(name: &str) -> Job {
         timeout_secs: 0,
         log_environment: false,
         allow_concurrent: false,
+        pre_hook: None,
+        post_hook: None,
         created_at: now,
         updated_at: now,
         last_run_at: None,
