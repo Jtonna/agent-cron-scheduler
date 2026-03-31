@@ -36,17 +36,32 @@ pub async fn cmd_start(
     // Register scheduled task for auto-start at logon (if not already)
     if !service::is_service_registered() {
         println!("Registering auto-start task...");
+        tracing::info!("Registering auto-start task...");
         if let Err(e) = service::install_service(&exe_path) {
             eprintln!("Warning: Could not register auto-start: {}", e);
             eprintln!("The daemon will start now but won't persist across reboots.");
             eprintln!("You may need elevated privileges to register the task.");
+            tracing::warn!("Could not register auto-start: {}", e);
+            tracing::warn!("The daemon will start now but won't persist across reboots.");
+            tracing::warn!("You may need elevated privileges to register the task.");
         } else {
             println!(
                 "Auto-start registered ({} on {}).",
                 service::service_name(),
                 service::platform_name()
             );
+            tracing::info!(
+                "Auto-start registered ({} on {}).",
+                service::service_name(),
+                service::platform_name()
+            );
         }
+    }
+
+    // Ensure the binary's directory is in the user's PATH regardless of whether
+    // service registration succeeded — PATH registration is independent.
+    if let Err(e) = service::ensure_path_entry(&exe_path) {
+        tracing::warn!("Could not add binary to PATH: {}", e);
     }
 
     // Quick check: is the daemon already running?
