@@ -1,6 +1,1 @@
-[
-  {
-    "issue": 67,
-    "body": "## Approved Implementation Plan\n\n**Sub-Task A (Standard):** Replace all schtasks functions in Windows `mod platform` block with `winreg` operations against `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run`. Covers: `install_service()`, `uninstall_service()`, `is_service_registered()`, `service_path()`, `start_service()` (error stub), `stop_service()` (error stub). Add constants `RUN_KEY_PATH` and `RUN_VALUE_NAME`. `service_name()`/`platform_name()` unchanged.\n\n**Sub-Task B (Standard):** Add `mod run_key_tests` (6 new tests with isolated temp registry keys). Update existing cross-platform test `test_uninstall_service_when_not_registered` assertion.\n\n**Sub-Task C (Standard):** Rewrite Windows section of `docs/service-registration.md` — replace all schtasks references with registry-based mechanism.\n\n**Execution order:** A → B → C (sequential)\n\n_Plan auto-approved via nightly autonomous run._"
-  }
-]
+[]
