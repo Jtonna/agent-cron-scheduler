@@ -709,14 +709,23 @@ mod tests {
 
     #[test]
     fn test_uninstall_service_when_not_registered() {
-        // If service is not registered, uninstall should fail gracefully
+        // If service is not registered, uninstall should behave gracefully.
         if !is_service_registered() {
             let result = uninstall_service();
-            // On Windows, this will fail to find the service
-            // On Unix, this will fail because the file doesn't exist
+            // On Windows the registry-based implementation is idempotent —
+            // deleting an absent value returns Ok(()).
+            #[cfg(target_os = "windows")]
             assert!(
-                result.is_err(),
-                "uninstall_service should fail when service is not registered"
+                result.is_ok(),
+                "uninstall_service should succeed (idempotent) when not registered on Windows"
+            );
+            // On macOS / Linux the plist / unit file simply doesn't exist,
+            // so the function returns Ok(()) as well (early return when path missing).
+            #[cfg(not(target_os = "windows"))]
+            assert!(
+                result.is_ok(),
+                "uninstall_service should return Ok(()) when not registered: {:?}",
+                result
             );
         }
     }
