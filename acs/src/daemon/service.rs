@@ -912,7 +912,10 @@ mod tests {
                 let stored: String = key
                     .get_value(RUN_VALUE_NAME)
                     .expect("value should still be present");
-                assert_eq!(stored, value, "value should be correct after idempotent write");
+                assert_eq!(
+                    stored, value,
+                    "value should be correct after idempotent write"
+                );
             });
         }
 
@@ -928,10 +931,7 @@ mod tests {
                     .expect("delete should succeed when value exists");
 
                 let check: Result<String, _> = key.get_value(RUN_VALUE_NAME);
-                assert!(
-                    check.is_err(),
-                    "value should be absent after deletion"
-                );
+                assert!(check.is_err(), "value should be absent after deletion");
             });
         }
 
@@ -960,8 +960,7 @@ mod tests {
         fn test_is_registered_true_when_present() {
             with_temp_key("is_registered_true", |key| {
                 let value = format!("\"{}\" start", r"C:\ACS\acs.exe");
-                key.set_value(RUN_VALUE_NAME, &value)
-                    .expect("set value");
+                key.set_value(RUN_VALUE_NAME, &value).expect("set value");
 
                 let registered = key.get_value::<String, _>(RUN_VALUE_NAME).is_ok();
                 assert!(registered, "should report registered when value is present");
