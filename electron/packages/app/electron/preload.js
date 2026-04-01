@@ -16,7 +16,7 @@ const acsBinaryPath = getArg('agentcronsystem-binary');
 function getDaemonPort() {
   if (!dataDir) return null;
   try {
-    return fs.readFileSync(path.join(dataDir, 'acs.port'), 'utf8').trim() || null;
+    return fs.readFileSync(path.join(dataDir, 'agentcronsystem.port'), 'utf8').trim() || null;
   } catch {
     return null;
   }
