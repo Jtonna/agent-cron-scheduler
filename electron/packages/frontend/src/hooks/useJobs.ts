@@ -12,7 +12,9 @@ export function useJobs() {
   const refresh = useCallback(async () => {
     try {
       const data = await api.listJobs();
-      setJobs(data);
+      if (Array.isArray(data)) {
+        setJobs(data);
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch jobs");

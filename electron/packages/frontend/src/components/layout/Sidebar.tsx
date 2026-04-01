@@ -129,7 +129,9 @@ export function Sidebar() {
   const fetchJobs = useCallback(async () => {
     try {
       const data = await api.listJobs();
-      setJobs(data);
+      if (Array.isArray(data)) {
+        setJobs(data);
+      }
     } catch {
       // Ignore errors silently in sidebar
     }
