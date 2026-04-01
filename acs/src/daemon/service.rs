@@ -73,6 +73,7 @@ mod platform {
         // so the task completes quickly while the daemon runs independently.
         let tr = format!("\"{}\" start", exe);
 
+        // First attempt: with /RL HIGHEST (requires elevation).
         let status = std::process::Command::new("schtasks")
             .args([
                 "/Create", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON", "/RL", "HIGHEST", "/F",
@@ -81,12 +82,30 @@ mod platform {
             .context("Failed to run schtasks")?;
 
         if status.success() {
-            if let Err(e) = ensure_path_entry(exe_path) {
-                tracing::warn!("Could not add binary to PATH: {}", e);
-            }
+            return Ok(());
+        }
+
+        // Fallback: retry without /RL HIGHEST so non-elevated users can still
+        // register the task (it will run at normal privilege level).
+        tracing::warn!(
+            "schtasks /Create with /RL HIGHEST failed (exit code {:?}), retrying without elevation",
+            status.code()
+        );
+
+        let status_fallback = std::process::Command::new("schtasks")
+            .args([
+                "/Create", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON", "/F",
+            ])
+            .status()
+            .context("Failed to run schtasks (fallback)")?;
+
+        if status_fallback.success() {
             Ok(())
         } else {
-            anyhow::bail!("schtasks /Create failed (exit code {:?})", status.code())
+            anyhow::bail!(
+                "schtasks /Create failed (exit code {:?})",
+                status_fallback.code()
+            )
         }
     }
 
@@ -248,7 +267,7 @@ mod platform {
     }
 
     /// Ensure the executable's directory is in the user's PATH by modifying shell config files.
-    fn ensure_path_entry(exe_path: &Path) -> anyhow::Result<()> {
+    pub fn ensure_path_entry(exe_path: &Path) -> anyhow::Result<()> {
         use std::io::{BufRead, BufReader};
 
         let exe_dir = exe_path
@@ -345,11 +364,6 @@ mod platform {
             .arg(plist_path())
             .status();
 
-        // Best-effort PATH modification
-        if let Err(e) = ensure_path_entry(exe_path) {
-            tracing::warn!("Failed to add PATH entry: {}", e);
-        }
-
         Ok(())
     }
 
@@ -424,7 +438,7 @@ mod platform {
     }
 
     /// Ensure the executable's directory is in the user's PATH by modifying shell config files.
-    fn ensure_path_entry(exe_path: &Path) -> anyhow::Result<()> {
+    pub fn ensure_path_entry(exe_path: &Path) -> anyhow::Result<()> {
         use std::io::{BufRead, BufReader};
 
         let exe_dir = exe_path
@@ -528,11 +542,6 @@ WantedBy=default.target
             .arg("enable-linger")
             .status();
 
-        // Best-effort PATH modification
-        if let Err(e) = ensure_path_entry(exe_path) {
-            tracing::warn!("Failed to add PATH entry: {}", e);
-        }
-
         Ok(())
     }
 
@@ -615,6 +624,11 @@ pub fn is_service_registered() -> bool {
 /// Install the system service for the current platform.
 pub fn install_service(exe_path: &Path) -> anyhow::Result<()> {
     platform::install_service(exe_path)
+}
+
+/// Ensure the binary's directory is in the user's PATH (independent of service registration).
+pub fn ensure_path_entry(exe_path: &Path) -> anyhow::Result<()> {
+    platform::ensure_path_entry(exe_path)
 }
 
 /// Uninstall the system service for the current platform.

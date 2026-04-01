@@ -6,6 +6,11 @@ interface CostTrendChartProps {
 }
 
 export function CostTrendChart({ runs }: CostTrendChartProps) {
+  // Guard against undefined/null or non-array runs
+  if (!runs || !Array.isArray(runs)) {
+    return null;
+  }
+
   // Filter to runs with actual cost data
   const qualifying = runs.filter(
     (r) => r.total_cost_usd != null && r.total_cost_usd > 0

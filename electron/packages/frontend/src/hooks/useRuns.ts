@@ -14,8 +14,10 @@ export function useRuns(jobId: string, limit: number = 20, offset: number = 0) {
     if (!jobId) return;
     try {
       const data = await api.listRuns(jobId, limit, offset);
-      setRuns(data.runs);
-      setTotal(data.total);
+      if (data && Array.isArray(data.runs)) {
+        setRuns(data.runs);
+        setTotal(data.total);
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch runs");

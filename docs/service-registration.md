@@ -2,7 +2,7 @@
 
 ## Overview
 
-ACS registers itself as a **user-level service** (not system-wide) so the daemon automatically starts at login. On macOS and Linux, this does not require root or administrator privileges. On Windows, the `schtasks /Create` command may require elevated permissions, and the task runs at the highest available privilege level (`/RL HIGHEST`).
+ACS registers itself as a **user-level service** (not system-wide) so the daemon automatically starts at login. On macOS and Linux, this does not require root or administrator privileges. On Windows, registration attempts to use the highest available privilege level (`/RL HIGHEST`), but gracefully degrades to normal privilege level if elevation is unavailable — the task is still registered and will run at login.
 
 Each platform uses its native service manager:
 
@@ -24,17 +24,27 @@ Windows uses **Task Scheduler** (`schtasks.exe`). The task is created for the cu
 
 - **Task name:** `AgentCronScheduler`
 - **Trigger:** `ONLOGON`
-- **Run level:** `HIGHEST`
+- **Run level:** `HIGHEST` (attempted first; falls back to normal privilege if elevation is unavailable)
 
 ### Install (Register)
+
+Registration uses a two-attempt strategy:
+
+1. **First attempt** — tries with `/RL HIGHEST` (elevated run level):
 
 ```
 schtasks /Create /TN AgentCronScheduler /TR "\"<exe_path>\" start" /SC ONLOGON /RL HIGHEST /F
 ```
 
+2. **Fallback attempt** — if the first attempt fails (e.g., the user is not running elevated), retries without `/RL HIGHEST`:
+
+```
+schtasks /Create /TN AgentCronScheduler /TR "\"<exe_path>\" start" /SC ONLOGON /F
+```
+
 The `/F` flag forces creation, overwriting any existing task with the same name. The quotes wrap only the executable path (to handle paths with spaces), not the entire command. The task runs `agentcronsystem start` (not `--foreground`), which means the task itself completes quickly: it spawns the daemon as a hidden background process and exits. The daemon then runs independently.
 
-**Note:** On first install or start, the binary is automatically added to the user's PATH (Windows: User Environment Variable; Unix: shell profile). This allows `agentcronsystem` to be invoked from any directory without specifying the full path.
+**Note:** On every background `start` invocation, the binary is automatically added to the user's PATH if not already present (Windows: User Environment Variable; Unix: shell profile). This PATH registration happens independently of service registration — it occurs regardless of whether `install_service()` succeeds or whether the service was already registered. This allows `agentcronsystem` to be invoked from any directory without specifying the full path.
 
 ### Detect Registration
 
