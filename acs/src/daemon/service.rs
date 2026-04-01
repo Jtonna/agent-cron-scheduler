@@ -1,6 +1,6 @@
 // Platform service registration for daemon persistence.
 //
-// - Windows: Task Scheduler (runs as current user, inherits user environment)
+// - Windows: Registry Run key (HKCU\Software\Microsoft\Windows\CurrentVersion\Run)
 // - macOS:   launchd plist to ~/Library/LaunchAgents/com.agentcronsystem.scheduler.plist
 // - Linux:   systemd user unit to ~/.config/systemd/user/agentcronsystem.service
 
@@ -40,130 +40,86 @@ pub fn service_name() -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Windows implementation — uses Task Scheduler (runs as the current user,
-// inheriting their full environment: PATH, USERPROFILE, APPDATA, etc.)
+// Windows implementation — uses Registry Run key
+// (HKCU\Software\Microsoft\Windows\CurrentVersion\Run) so the daemon starts
+// automatically at user logon without requiring elevation.
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "windows")]
 mod platform {
     use super::*;
 
-    const TASK_NAME: &str = "AgentCronScheduler";
+    const RUN_KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const RUN_VALUE_NAME: &str = "AgentCronScheduler";
 
-    /// Check if the scheduled task is registered.
+    /// Check if the Run key value is present in the registry.
     pub fn is_service_registered() -> bool {
-        std::process::Command::new("schtasks")
-            .args(["/Query", "/TN", TASK_NAME])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        match hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_READ) {
+            Ok(key) => key.get_value::<String, _>(RUN_VALUE_NAME).is_ok(),
+            Err(_) => false,
+        }
     }
 
-    /// Create a scheduled task that runs the daemon at user logon.
+    /// Write the Run key value so the daemon launches at user logon.
     pub fn install_service(exe_path: &Path) -> anyhow::Result<()> {
-        use anyhow::Context;
+        use winreg::enums::*;
+        use winreg::RegKey;
 
-        let exe = exe_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid executable path"))?;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_SET_VALUE)?;
 
-        // The task runs `acs start` (not --foreground) as the current user.
-        // `acs start` spawns the daemon as a hidden background process and exits,
-        // so the task completes quickly while the daemon runs independently.
-        let tr = format!("\"{}\" start", exe);
+        let value = format!("\"{}\" start", exe_path.display());
+        key.set_value(RUN_VALUE_NAME, &value)?;
 
-        // First attempt: with /RL HIGHEST (requires elevation).
-        let status = std::process::Command::new("schtasks")
-            .args([
-                "/Create", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON", "/RL", "HIGHEST", "/F",
-            ])
-            .status()
-            .context("Failed to run schtasks")?;
-
-        if status.success() {
-            return Ok(());
-        }
-
-        // Fallback: retry without /RL HIGHEST so non-elevated users can still
-        // register the task (it will run at normal privilege level).
-        tracing::warn!(
-            "schtasks /Create with /RL HIGHEST failed (exit code {:?}), retrying without elevation",
-            status.code()
-        );
-
-        let status_fallback = std::process::Command::new("schtasks")
-            .args([
-                "/Create", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON", "/F",
-            ])
-            .status()
-            .context("Failed to run schtasks (fallback)")?;
-
-        if status_fallback.success() {
-            Ok(())
-        } else {
-            anyhow::bail!(
-                "schtasks /Create failed (exit code {:?})",
-                status_fallback.code()
-            )
-        }
+        tracing::info!("Registered auto-start Run key: {}", value);
+        Ok(())
     }
 
-    /// Delete the scheduled task.
+    /// Remove the Run key value. Succeeds even if the value is absent (idempotent).
     pub fn uninstall_service() -> anyhow::Result<()> {
-        use anyhow::Context;
+        use winreg::enums::*;
+        use winreg::RegKey;
 
-        let status = std::process::Command::new("schtasks")
-            .args(["/Delete", "/TN", TASK_NAME, "/F"])
-            .status()
-            .context("Failed to run schtasks")?;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_SET_VALUE)?;
 
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("schtasks /Delete failed (exit code {:?})", status.code())
+        match key.delete_value(RUN_VALUE_NAME) {
+            Ok(()) => {
+                tracing::info!("Removed auto-start Run key value: {}", RUN_VALUE_NAME);
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(anyhow::anyhow!(e)),
         }
     }
 
-    /// Get a human-readable description of where the task is registered.
+    /// Get a human-readable description of where the Run entry is registered.
     pub fn service_path() -> Option<String> {
         if is_service_registered() {
-            Some(format!("Task Scheduler: {}", TASK_NAME))
+            Some(format!(
+                r"Registry: HKCU\{}\{}",
+                RUN_KEY_PATH, RUN_VALUE_NAME
+            ))
         } else {
             None
         }
     }
 
-    /// Start the scheduled task immediately.
+    /// Not supported with registry-based auto-start.
     pub fn start_service() -> anyhow::Result<()> {
-        use anyhow::Context;
-
-        let status = std::process::Command::new("schtasks")
-            .args(["/Run", "/TN", TASK_NAME])
-            .status()
-            .context("Failed to run schtasks")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("schtasks /Run failed (exit code {:?})", status.code())
-        }
+        Err(anyhow::anyhow!(
+            "start_service is not supported with registry-based auto-start on Windows"
+        ))
     }
 
-    /// End (hard-kill) the scheduled task.
+    /// Not supported with registry-based auto-start.
     pub fn stop_service() -> anyhow::Result<()> {
-        use anyhow::Context;
-
-        let status = std::process::Command::new("schtasks")
-            .args(["/End", "/TN", TASK_NAME])
-            .status()
-            .context("Failed to run schtasks")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("schtasks /End failed (exit code {:?})", status.code())
-        }
+        Err(anyhow::anyhow!(
+            "stop_service is not supported with registry-based auto-start on Windows"
+        ))
     }
 
     /// Ensure the binary's directory is in the user's PATH (HKCU\Environment).
