@@ -847,4 +847,137 @@ mod tests {
             let _ = result;
         }
     }
+
+    /// Tests for the Windows Registry Run key logic used by install_service /
+    /// uninstall_service / is_service_registered. All tests operate on unique
+    /// temporary keys under `HKCU\Software\AcsRunTest_*` and never touch the
+    /// real `HKCU\...\Run` key.
+    #[cfg(target_os = "windows")]
+    mod run_key_tests {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        const RUN_VALUE_NAME: &str = "AgentCronScheduler";
+
+        /// Create a uniquely-named temp key, execute the closure, then delete
+        /// the entire temp key tree. Returns whatever the closure returned.
+        fn with_temp_key<F, T>(test_name: &str, f: F) -> T
+        where
+            F: FnOnce(&RegKey) -> T,
+        {
+            let subkey = format!("Software\\AcsRunTest_{}", test_name);
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let (key, _) = hkcu.create_subkey(&subkey).expect("create temp run key");
+            let result = f(&key);
+            drop(key);
+            hkcu.delete_subkey_all(&subkey).ok();
+            result
+        }
+
+        /// Simulate the install_service write — sets `"<path>" start` — then
+        /// reads the value back and verifies the format.
+        #[test]
+        fn test_install_writes_run_value() {
+            with_temp_key("install_writes", |key| {
+                let exe_path = r"C:\Program Files\ACS\acs.exe";
+                let expected = format!("\"{}\" start", exe_path);
+
+                key.set_value(RUN_VALUE_NAME, &expected)
+                    .expect("set run value");
+
+                let stored: String = key
+                    .get_value(RUN_VALUE_NAME)
+                    .expect("value should be present after write");
+
+                assert_eq!(
+                    stored, expected,
+                    "stored value should match \"<path>\" start format"
+                );
+            });
+        }
+
+        /// Writing the value twice (simulating repeated install) should leave
+        /// the correct final value without error.
+        #[test]
+        fn test_install_is_idempotent() {
+            with_temp_key("install_idempotent", |key| {
+                let exe_path = r"C:\Tools\acs.exe";
+                let value = format!("\"{}\" start", exe_path);
+
+                key.set_value(RUN_VALUE_NAME, &value)
+                    .expect("first write should succeed");
+                key.set_value(RUN_VALUE_NAME, &value)
+                    .expect("second write should also succeed");
+
+                let stored: String = key
+                    .get_value(RUN_VALUE_NAME)
+                    .expect("value should still be present");
+                assert_eq!(stored, value, "value should be correct after idempotent write");
+            });
+        }
+
+        /// Writing then deleting a value should leave it absent.
+        #[test]
+        fn test_uninstall_removes_value() {
+            with_temp_key("uninstall_removes", |key| {
+                let value = format!("\"{}\" start", r"C:\Tools\acs.exe");
+                key.set_value(RUN_VALUE_NAME, &value)
+                    .expect("set value before uninstall");
+
+                key.delete_value(RUN_VALUE_NAME)
+                    .expect("delete should succeed when value exists");
+
+                let check: Result<String, _> = key.get_value(RUN_VALUE_NAME);
+                assert!(
+                    check.is_err(),
+                    "value should be absent after deletion"
+                );
+            });
+        }
+
+        /// Attempting to delete a value that does not exist should return
+        /// Ok(()) (idempotent), mirroring the production uninstall_service logic.
+        #[test]
+        fn test_uninstall_when_absent() {
+            with_temp_key("uninstall_absent", |key| {
+                // Value has never been set — mirror the production logic.
+                let result: anyhow::Result<()> = match key.delete_value(RUN_VALUE_NAME) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(anyhow::anyhow!("Failed to remove registry value: {}", e)),
+                };
+
+                assert!(
+                    result.is_ok(),
+                    "uninstall on absent value should be idempotent (Ok): {:?}",
+                    result
+                );
+            });
+        }
+
+        /// A value that is present should be detected as registered.
+        #[test]
+        fn test_is_registered_true_when_present() {
+            with_temp_key("is_registered_true", |key| {
+                let value = format!("\"{}\" start", r"C:\ACS\acs.exe");
+                key.set_value(RUN_VALUE_NAME, &value)
+                    .expect("set value");
+
+                let registered = key.get_value::<String, _>(RUN_VALUE_NAME).is_ok();
+                assert!(registered, "should report registered when value is present");
+            });
+        }
+
+        /// A value that has never been written should be detected as absent.
+        #[test]
+        fn test_is_registered_false_when_absent() {
+            with_temp_key("is_registered_false", |key| {
+                let registered = key.get_value::<String, _>(RUN_VALUE_NAME).is_ok();
+                assert!(
+                    !registered,
+                    "should report not-registered when value is absent"
+                );
+            });
+        }
+    }
 }
