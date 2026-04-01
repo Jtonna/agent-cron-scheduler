@@ -71,15 +71,15 @@ ACS searches for configuration in a 5-level priority order. See [Configuration](
 
 ACS registers itself as a user-level service for auto-start at login. See [Service Registration](service-registration.md) for full platform-specific details (service names, file locations, install/uninstall commands).
 
-### Windows (Task Scheduler)
+### Windows (Registry Run Key)
 
 **Symptom:** `Warning: Could not register auto-start` when running `agentcronsystem start`.
 
 **Possible causes:**
-- Insufficient permissions. Try running your terminal as Administrator.
-- The `schtasks` command is not available or is blocked by group policy.
+- Registry write failed. Check that `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` is writable.
+- Antivirus or group policy blocking registry writes to the Run key.
 
-**Quick check:** `schtasks /Query /TN AgentCronScheduler`
+**Quick check:** `reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v AgentCronScheduler`
 
 ### macOS (launchd)
 
