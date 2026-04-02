@@ -16,8 +16,8 @@ use crate::storage::LogStore;
 enum HookOutcome {
     /// Hook succeeded (exit code zero) with captured stdout.
     Success(Vec<u8>),
-    /// Hook failed: carries a human-readable description of the failure.
-    Failure(String),
+    /// Hook failed: carries a human-readable description of the failure and any captured stdout.
+    Failure(String, Vec<u8>),
 }
 
 /// Execute a hook command string using the platform shell.
@@ -69,7 +69,7 @@ async fn run_hook(
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            return HookOutcome::Failure(format!("{} spawn error: {}", label, e));
+            return HookOutcome::Failure(format!("{} spawn error: {}", label, e), Vec::new());
         }
     };
 
@@ -86,11 +86,13 @@ async fn run_hook(
                 } else {
                     format!("exited with code {}: {}", code, stderr.trim())
                 };
-                HookOutcome::Failure(format!("{} {}", label, detail))
+                HookOutcome::Failure(format!("{} {}", label, detail), output.stdout)
             }
         }
-        Ok(Err(e)) => HookOutcome::Failure(format!("{} wait error: {}", label, e)),
-        Err(_) => HookOutcome::Failure(format!("{} timed out after 30 seconds", label)),
+        Ok(Err(e)) => HookOutcome::Failure(format!("{} wait error: {}", label, e), Vec::new()),
+        Err(_) => {
+            HookOutcome::Failure(format!("{} timed out after 30 seconds", label), Vec::new())
+        }
     }
 }
 
@@ -3089,6 +3091,44 @@ mod tests {
             Some("claude-sonnet-4-20250514"),
             "model should be taken from the first system event"
         );
+    }
+
+    #[test]
+    fn test_extract_cost_piped_input_with_csv_data() {
+        // Simulate piped-input Claude invocation: cat data.csv | claude -p "summarize"
+        // The log contains CSV data lines, shell output, and Claude NDJSON events.
+        let log = concat!(
+            // CSV data (simulating piped input)
+            "name,age,city\n",
+            "Alice,30,NYC\n",
+            "Bob,25,LA\n",
+            // Shell output lines
+            "Processing 3 rows...\n",
+            // Claude NDJSON system event
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            // Claude NDJSON result event with cost and usage
+            r#"{"type":"result","total_cost_usd":0.0123,"duration_ms":850,"num_turns":1,"usage":{"input_tokens":156,"output_tokens":42}}"#,
+            "\n",
+            // More shell output
+            "Summary complete.\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // CSV and shell output lines must be silently ignored.
+        // Cost, model, duration, and usage must be correctly extracted.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.0123).abs() < 1e-10,
+            "expected total_cost_usd ~0.0123, got {:?}",
+            summary.total_cost_usd
+        );
+        assert_eq!(summary.duration_ms, Some(850));
+        assert_eq!(summary.num_turns, Some(1));
+        assert_eq!(summary.model.as_deref(), Some("claude-sonnet-4-20250514"));
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 156);
+        assert_eq!(usage["output_tokens"], 42);
     }
 
     // --- Hook cost capture integration tests ---
