@@ -9,7 +9,7 @@ Supports Windows, macOS, and Linux.
 - **Cron scheduling** -- standard 5-field cron expressions with timezone support
 - **REST API** -- full CRUD for jobs, paginated run history, real-time SSE streaming
 - **CLI** -- manage jobs, view logs, trigger runs from the terminal
-- **Cross-platform** -- Windows (Task Scheduler), macOS (launchd), Linux (systemd) service integration
+- **Cross-platform** -- Windows (Registry Run key), macOS (launchd), Linux (systemd) service integration
 - **Persistent storage** -- JSON-backed job store with atomic writes and corruption recovery
 - **Run capture** -- stdout/stderr captured and stored per-run with automatic log rotation
 

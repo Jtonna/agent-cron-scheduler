@@ -1,6 +1,6 @@
 // Platform service registration for daemon persistence.
 //
-// - Windows: Task Scheduler (runs as current user, inherits user environment)
+// - Windows: Registry Run key (HKCU\Software\Microsoft\Windows\CurrentVersion\Run)
 // - macOS:   launchd plist to ~/Library/LaunchAgents/com.agentcronsystem.scheduler.plist
 // - Linux:   systemd user unit to ~/.config/systemd/user/agentcronsystem.service
 
@@ -40,130 +40,88 @@ pub fn service_name() -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Windows implementation — uses Task Scheduler (runs as the current user,
-// inheriting their full environment: PATH, USERPROFILE, APPDATA, etc.)
+// Windows implementation — uses Registry Run key
+// (HKCU\Software\Microsoft\Windows\CurrentVersion\Run) so the daemon starts
+// automatically at user logon without requiring elevation.
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "windows")]
 mod platform {
     use super::*;
 
-    const TASK_NAME: &str = "AgentCronScheduler";
+    const RUN_KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const RUN_VALUE_NAME: &str = "AgentCronScheduler";
 
-    /// Check if the scheduled task is registered.
+    /// Check if the Run key value is present in the registry.
     pub fn is_service_registered() -> bool {
-        std::process::Command::new("schtasks")
-            .args(["/Query", "/TN", TASK_NAME])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        match hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_READ) {
+            Ok(key) => key.get_value::<String, _>(RUN_VALUE_NAME).is_ok(),
+            Err(_) => false,
+        }
     }
 
-    /// Create a scheduled task that runs the daemon at user logon.
+    /// Write the Run key value so the daemon launches at user logon.
     pub fn install_service(exe_path: &Path) -> anyhow::Result<()> {
-        use anyhow::Context;
+        use winreg::enums::*;
+        use winreg::RegKey;
 
-        let exe = exe_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid executable path"))?;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_SET_VALUE)?;
 
-        // The task runs `acs start` (not --foreground) as the current user.
-        // `acs start` spawns the daemon as a hidden background process and exits,
-        // so the task completes quickly while the daemon runs independently.
-        let tr = format!("\"{}\" start", exe);
+        let value = format!("\"{}\" start", exe_path.display());
+        key.set_value(RUN_VALUE_NAME, &value)?;
 
-        // First attempt: with /RL HIGHEST (requires elevation).
-        let status = std::process::Command::new("schtasks")
-            .args([
-                "/Create", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON", "/RL", "HIGHEST", "/F",
-            ])
-            .status()
-            .context("Failed to run schtasks")?;
-
-        if status.success() {
-            return Ok(());
-        }
-
-        // Fallback: retry without /RL HIGHEST so non-elevated users can still
-        // register the task (it will run at normal privilege level).
-        tracing::warn!(
-            "schtasks /Create with /RL HIGHEST failed (exit code {:?}), retrying without elevation",
-            status.code()
-        );
-
-        let status_fallback = std::process::Command::new("schtasks")
-            .args([
-                "/Create", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON", "/F",
-            ])
-            .status()
-            .context("Failed to run schtasks (fallback)")?;
-
-        if status_fallback.success() {
-            Ok(())
-        } else {
-            anyhow::bail!(
-                "schtasks /Create failed (exit code {:?})",
-                status_fallback.code()
-            )
-        }
+        tracing::info!("Registered auto-start Run key: {}", value);
+        Ok(())
     }
 
-    /// Delete the scheduled task.
+    /// Remove the Run key value. Succeeds even if the value is absent (idempotent).
     pub fn uninstall_service() -> anyhow::Result<()> {
-        use anyhow::Context;
+        use winreg::enums::*;
+        use winreg::RegKey;
 
-        let status = std::process::Command::new("schtasks")
-            .args(["/Delete", "/TN", TASK_NAME, "/F"])
-            .status()
-            .context("Failed to run schtasks")?;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_SET_VALUE)?;
 
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("schtasks /Delete failed (exit code {:?})", status.code())
+        match key.delete_value(RUN_VALUE_NAME) {
+            Ok(()) => {
+                tracing::info!("Removed auto-start Run key value: {}", RUN_VALUE_NAME);
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(2) => {
+                Ok(())
+            }
+            Err(e) => Err(anyhow::anyhow!(e)),
         }
     }
 
-    /// Get a human-readable description of where the task is registered.
+    /// Get a human-readable description of where the Run entry is registered.
     pub fn service_path() -> Option<String> {
         if is_service_registered() {
-            Some(format!("Task Scheduler: {}", TASK_NAME))
+            Some(format!(
+                r"Registry: HKCU\{}\{}",
+                RUN_KEY_PATH, RUN_VALUE_NAME
+            ))
         } else {
             None
         }
     }
 
-    /// Start the scheduled task immediately.
+    /// Not supported with registry-based auto-start.
     pub fn start_service() -> anyhow::Result<()> {
-        use anyhow::Context;
-
-        let status = std::process::Command::new("schtasks")
-            .args(["/Run", "/TN", TASK_NAME])
-            .status()
-            .context("Failed to run schtasks")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("schtasks /Run failed (exit code {:?})", status.code())
-        }
+        Err(anyhow::anyhow!(
+            "start_service is not supported with registry-based auto-start on Windows"
+        ))
     }
 
-    /// End (hard-kill) the scheduled task.
+    /// Not supported with registry-based auto-start.
     pub fn stop_service() -> anyhow::Result<()> {
-        use anyhow::Context;
-
-        let status = std::process::Command::new("schtasks")
-            .args(["/End", "/TN", TASK_NAME])
-            .status()
-            .context("Failed to run schtasks")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("schtasks /End failed (exit code {:?})", status.code())
-        }
+        Err(anyhow::anyhow!(
+            "stop_service is not supported with registry-based auto-start on Windows"
+        ))
     }
 
     /// Ensure the binary's directory is in the user's PATH (HKCU\Environment).
@@ -753,14 +711,23 @@ mod tests {
 
     #[test]
     fn test_uninstall_service_when_not_registered() {
-        // If service is not registered, uninstall should fail gracefully
+        // If service is not registered, uninstall should behave gracefully.
         if !is_service_registered() {
             let result = uninstall_service();
-            // On Windows, this will fail to find the service
-            // On Unix, this will fail because the file doesn't exist
+            // On Windows the registry-based implementation is idempotent —
+            // deleting an absent value returns Ok(()).
+            #[cfg(target_os = "windows")]
             assert!(
-                result.is_err(),
-                "uninstall_service should fail when service is not registered"
+                result.is_ok(),
+                "uninstall_service should succeed (idempotent) when not registered on Windows"
+            );
+            // On macOS / Linux the plist / unit file simply doesn't exist,
+            // so the function returns Ok(()) as well (early return when path missing).
+            #[cfg(not(target_os = "windows"))]
+            assert!(
+                result.is_ok(),
+                "uninstall_service should return Ok(()) when not registered: {:?}",
+                result
             );
         }
     }
@@ -880,6 +847,138 @@ mod tests {
             let result =
                 super::super::platform::ensure_path_entry(std::path::Path::new("justfilename"));
             let _ = result;
+        }
+    }
+
+    /// Tests for the Windows Registry Run key logic used by install_service /
+    /// uninstall_service / is_service_registered. All tests operate on unique
+    /// temporary keys under `HKCU\Software\AcsRunTest_*` and never touch the
+    /// real `HKCU\...\Run` key.
+    #[cfg(target_os = "windows")]
+    mod run_key_tests {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        const RUN_VALUE_NAME: &str = "AgentCronScheduler";
+
+        /// Create a uniquely-named temp key, execute the closure, then delete
+        /// the entire temp key tree. Returns whatever the closure returned.
+        fn with_temp_key<F, T>(test_name: &str, f: F) -> T
+        where
+            F: FnOnce(&RegKey) -> T,
+        {
+            let subkey = format!("Software\\AcsRunTest_{}", test_name);
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let (key, _) = hkcu.create_subkey(&subkey).expect("create temp run key");
+            let result = f(&key);
+            drop(key);
+            hkcu.delete_subkey_all(&subkey).ok();
+            result
+        }
+
+        /// Simulate the install_service write — sets `"<path>" start` — then
+        /// reads the value back and verifies the format.
+        #[test]
+        fn test_install_writes_run_value() {
+            with_temp_key("install_writes", |key| {
+                let exe_path = r"C:\Program Files\ACS\acs.exe";
+                let expected = format!("\"{}\" start", exe_path);
+
+                key.set_value(RUN_VALUE_NAME, &expected)
+                    .expect("set run value");
+
+                let stored: String = key
+                    .get_value(RUN_VALUE_NAME)
+                    .expect("value should be present after write");
+
+                assert_eq!(
+                    stored, expected,
+                    "stored value should match \"<path>\" start format"
+                );
+            });
+        }
+
+        /// Writing the value twice (simulating repeated install) should leave
+        /// the correct final value without error.
+        #[test]
+        fn test_install_is_idempotent() {
+            with_temp_key("install_idempotent", |key| {
+                let exe_path = r"C:\Tools\acs.exe";
+                let value = format!("\"{}\" start", exe_path);
+
+                key.set_value(RUN_VALUE_NAME, &value)
+                    .expect("first write should succeed");
+                key.set_value(RUN_VALUE_NAME, &value)
+                    .expect("second write should also succeed");
+
+                let stored: String = key
+                    .get_value(RUN_VALUE_NAME)
+                    .expect("value should still be present");
+                assert_eq!(
+                    stored, value,
+                    "value should be correct after idempotent write"
+                );
+            });
+        }
+
+        /// Writing then deleting a value should leave it absent.
+        #[test]
+        fn test_uninstall_removes_value() {
+            with_temp_key("uninstall_removes", |key| {
+                let value = format!("\"{}\" start", r"C:\Tools\acs.exe");
+                key.set_value(RUN_VALUE_NAME, &value)
+                    .expect("set value before uninstall");
+
+                key.delete_value(RUN_VALUE_NAME)
+                    .expect("delete should succeed when value exists");
+
+                let check: Result<String, _> = key.get_value(RUN_VALUE_NAME);
+                assert!(check.is_err(), "value should be absent after deletion");
+            });
+        }
+
+        /// Attempting to delete a value that does not exist should return
+        /// Ok(()) (idempotent), mirroring the production uninstall_service logic.
+        #[test]
+        fn test_uninstall_when_absent() {
+            with_temp_key("uninstall_absent", |key| {
+                // Value has never been set — mirror the production logic.
+                let result: anyhow::Result<()> = match key.delete_value(RUN_VALUE_NAME) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(anyhow::anyhow!("Failed to remove registry value: {}", e)),
+                };
+
+                assert!(
+                    result.is_ok(),
+                    "uninstall on absent value should be idempotent (Ok): {:?}",
+                    result
+                );
+            });
+        }
+
+        /// A value that is present should be detected as registered.
+        #[test]
+        fn test_is_registered_true_when_present() {
+            with_temp_key("is_registered_true", |key| {
+                let value = format!("\"{}\" start", r"C:\ACS\acs.exe");
+                key.set_value(RUN_VALUE_NAME, &value).expect("set value");
+
+                let registered = key.get_value::<String, _>(RUN_VALUE_NAME).is_ok();
+                assert!(registered, "should report registered when value is present");
+            });
+        }
+
+        /// A value that has never been written should be detected as absent.
+        #[test]
+        fn test_is_registered_false_when_absent() {
+            with_temp_key("is_registered_false", |key| {
+                let registered = key.get_value::<String, _>(RUN_VALUE_NAME).is_ok();
+                assert!(
+                    !registered,
+                    "should report not-registered when value is absent"
+                );
+            });
         }
     }
 }
