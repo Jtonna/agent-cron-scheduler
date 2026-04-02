@@ -1,6 +1,1 @@
-[
-  {
-    "issue": 71,
-    "body": "## Approved Implementation Plan\n\n### Sub-tasks\n\n| # | Description | Complexity | Dependencies |\n|---|------------|------------|-------------|\n| 1 | Define `JobManifest` model structs + `merge_run` method | Standard | None |\n| 2 | Add manifest methods to `LogStore` trait + `FsLogStore` impl | Complex | 1 |\n| 3 | Call `update_manifest` after run completion in executor | Light | 2 |\n| 4 | Unit tests for aggregation, bucketing, serialization | Standard | 1 |\n| 5 | Integration tests for FsLogStore manifest operations | Standard | 1, 2 |\n\n### Execution Order\n- Phase 1: Sub-task 1\n- Phase 2 (parallel): Sub-tasks 2, 4\n- Phase 3 (parallel): Sub-tasks 3, 5\n\n### Key Design Decisions\n- Per-model: Use `run.model` as single model key per run (pragmatic, matches current data fidelity)\n- Cleanup ordering: `update_manifest` called BEFORE `cleanup` at convergence point\n- Weekly/monthly buckets: Independently maintained in `merge_run`\n- Windows atomic write: Remove target before rename\n- Executor: Single `update_manifest` call at convergence point, not per-branch\n\n🤖 Plan auto-approved (autonomous nightly run)"
-  }
-]
+[]
