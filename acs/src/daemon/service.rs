@@ -91,7 +91,9 @@ mod platform {
                 tracing::info!("Removed auto-start Run key value: {}", RUN_VALUE_NAME);
                 Ok(())
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(2) => {
+                Ok(())
+            }
             Err(e) => Err(anyhow::anyhow!(e)),
         }
     }
