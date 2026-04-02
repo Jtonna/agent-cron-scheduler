@@ -698,22 +698,10 @@ mod tests {
 
         let dt = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 0).unwrap();
 
-        let run_completed = make_test_run_with_status(
-            job_id,
-            dt,
-            Some(0.10),
-            None,
-            None,
-            RunStatus::Completed,
-        );
-        let run_failed = make_test_run_with_status(
-            job_id,
-            dt,
-            Some(0.05),
-            None,
-            None,
-            RunStatus::Failed,
-        );
+        let run_completed =
+            make_test_run_with_status(job_id, dt, Some(0.10), None, None, RunStatus::Completed);
+        let run_failed =
+            make_test_run_with_status(job_id, dt, Some(0.05), None, None, RunStatus::Failed);
         let run_completed_with_warnings = make_test_run_with_status(
             job_id,
             dt,
@@ -722,14 +710,8 @@ mod tests {
             None,
             RunStatus::CompletedWithWarnings,
         );
-        let run_killed = make_test_run_with_status(
-            job_id,
-            dt,
-            Some(0.02),
-            None,
-            None,
-            RunStatus::Killed,
-        );
+        let run_killed =
+            make_test_run_with_status(job_id, dt, Some(0.02), None, None, RunStatus::Killed);
 
         manifest.merge_run(&run_completed);
         manifest.merge_run(&run_failed);
@@ -763,7 +745,10 @@ mod tests {
             .expect("monthly bucket");
         assert_eq!(monthly.runs_by_status.get("Completed"), Some(&1));
         assert_eq!(monthly.runs_by_status.get("Failed"), Some(&1));
-        assert_eq!(monthly.runs_by_status.get("CompletedWithWarnings"), Some(&1));
+        assert_eq!(
+            monthly.runs_by_status.get("CompletedWithWarnings"),
+            Some(&1)
+        );
         assert_eq!(monthly.runs_by_status.get("Killed"), Some(&1));
     }
 

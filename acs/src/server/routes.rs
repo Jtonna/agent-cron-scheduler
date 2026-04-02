@@ -147,23 +147,25 @@ fn parse_cost_summary_params(
 ) -> Result<(chrono::NaiveDate, chrono::NaiveDate, String), Response> {
     // Parse timeframe string (default to Last30d)
     let timeframe = match &params.timeframe {
-        Some(s) => match s.as_str() {
-            "24h" => Timeframe::Last24h,
-            "7d" => Timeframe::Last7d,
-            "30d" => Timeframe::Last30d,
-            "90d" => Timeframe::Last90d,
-            "180d" => Timeframe::Last180d,
-            "365d" => Timeframe::Last365d,
-            "all" => Timeframe::All,
-            other => {
-                return Err(error_response(
+        Some(s) => {
+            match s.as_str() {
+                "24h" => Timeframe::Last24h,
+                "7d" => Timeframe::Last7d,
+                "30d" => Timeframe::Last30d,
+                "90d" => Timeframe::Last90d,
+                "180d" => Timeframe::Last180d,
+                "365d" => Timeframe::Last365d,
+                "all" => Timeframe::All,
+                other => {
+                    return Err(error_response(
                     StatusCode::BAD_REQUEST,
                     "bad_request",
                     &format!("Unknown timeframe '{}'. Valid values: 24h, 7d, 30d, 90d, 180d, 365d, all", other),
                 )
                 .into_response());
+                }
             }
-        },
+        }
         None => Timeframe::Last30d,
     };
 
@@ -859,18 +861,24 @@ pub async fn get_global_cost_summary(
     }
 
     // Sort top_jobs descending by total_cost, take top 5
-    top_jobs_raw.sort_by(|a, b| b.total_cost.partial_cmp(&a.total_cost).unwrap_or(std::cmp::Ordering::Equal));
+    top_jobs_raw.sort_by(|a, b| {
+        b.total_cost
+            .partial_cmp(&a.total_cost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     top_jobs_raw.truncate(5);
 
     // Build daily trend sorted by date ascending
     let daily_trend: Vec<DailyTrendPoint> = trend_map
         .into_iter()
-        .map(|(date, (cost_usd, input_tokens, output_tokens))| DailyTrendPoint {
-            date,
-            cost_usd,
-            input_tokens,
-            output_tokens,
-        })
+        .map(
+            |(date, (cost_usd, input_tokens, output_tokens))| DailyTrendPoint {
+                date,
+                cost_usd,
+                input_tokens,
+                output_tokens,
+            },
+        )
         .collect();
 
     let response = GlobalCostResponse {
@@ -902,7 +910,10 @@ pub async fn get_job_manifest(
 
     // Read manifest from log store; return default manifest (with job ID) if none exists
     match state.log_store.read_manifest(job.id).await {
-        Ok(Some(manifest)) => (StatusCode::OK, Json(serde_json::to_value(&manifest).unwrap()))
+        Ok(Some(manifest)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(&manifest).unwrap()),
+        )
             .into_response(),
         Ok(None) => {
             let default_manifest = JobManifest::new(job.id);

@@ -764,8 +764,8 @@ fn make_manifest_with_daily_bucket(
     runs: u64,
     cost_usd: f64,
 ) -> JobManifest {
-    use std::collections::BTreeMap;
     use agent_cron_scheduler::models::manifest::TimeBucket;
+    use std::collections::BTreeMap;
 
     let mut daily_buckets = BTreeMap::new();
     daily_buckets.insert(
@@ -806,9 +806,7 @@ async fn test_job_cost_summary_happy_path() {
         .create_job(NewJob {
             name: "cost-summary-job".to_string(),
             schedule: "*/5 * * * *".to_string(),
-            execution: ExecutionType::ShellCommand(
-                "echo test".to_string(),
-            ),
+            execution: ExecutionType::ShellCommand("echo test".to_string()),
             enabled: true,
             timezone: None,
             working_dir: None,
@@ -828,10 +826,7 @@ async fn test_job_cost_summary_happy_path() {
     log_store.seed_manifest(job.id, manifest).await;
 
     let resp = client
-        .get(format!(
-            "{}/api/jobs/{}/cost-summary",
-            base_url, job.id
-        ))
+        .get(format!("{}/api/jobs/{}/cost-summary", base_url, job.id))
         .send()
         .await
         .unwrap();
@@ -857,9 +852,7 @@ async fn test_job_cost_summary_no_manifest_returns_zeroed() {
         .create_job(NewJob {
             name: "no-manifest-job".to_string(),
             schedule: "*/5 * * * *".to_string(),
-            execution: ExecutionType::ShellCommand(
-                "echo test".to_string(),
-            ),
+            execution: ExecutionType::ShellCommand("echo test".to_string()),
             enabled: true,
             timezone: None,
             working_dir: None,
@@ -874,10 +867,7 @@ async fn test_job_cost_summary_no_manifest_returns_zeroed() {
         .unwrap();
 
     let resp = client
-        .get(format!(
-            "{}/api/jobs/{}/cost-summary",
-            base_url, job.id
-        ))
+        .get(format!("{}/api/jobs/{}/cost-summary", base_url, job.id))
         .send()
         .await
         .unwrap();
@@ -922,9 +912,7 @@ async fn test_job_cost_summary_invalid_timeframe_returns_400() {
         .create_job(NewJob {
             name: "timeframe-test-job".to_string(),
             schedule: "*/5 * * * *".to_string(),
-            execution: ExecutionType::ShellCommand(
-                "echo test".to_string(),
-            ),
+            execution: ExecutionType::ShellCommand("echo test".to_string()),
             enabled: true,
             timezone: None,
             working_dir: None,
@@ -970,9 +958,7 @@ async fn test_global_cost_summary_happy_path_aggregates_multiple_jobs() {
             .create_job(NewJob {
                 name: name.to_string(),
                 schedule: "*/5 * * * *".to_string(),
-                execution: ExecutionType::ShellCommand(
-                    "echo test".to_string(),
-                ),
+                execution: ExecutionType::ShellCommand("echo test".to_string()),
                 enabled: true,
                 timezone: None,
                 working_dir: None,
@@ -1050,9 +1036,7 @@ async fn test_get_job_manifest_happy_path() {
         .create_job(NewJob {
             name: "manifest-happy-job".to_string(),
             schedule: "*/5 * * * *".to_string(),
-            execution: ExecutionType::ShellCommand(
-                "echo test".to_string(),
-            ),
+            execution: ExecutionType::ShellCommand("echo test".to_string()),
             enabled: true,
             timezone: None,
             working_dir: None,
@@ -1099,9 +1083,7 @@ async fn test_get_job_manifest_no_manifest_returns_default() {
         .create_job(NewJob {
             name: "manifest-empty-job".to_string(),
             schedule: "*/5 * * * *".to_string(),
-            execution: ExecutionType::ShellCommand(
-                "echo test".to_string(),
-            ),
+            execution: ExecutionType::ShellCommand("echo test".to_string()),
             enabled: true,
             timezone: None,
             working_dir: None,
@@ -1137,10 +1119,7 @@ async fn test_get_job_manifest_job_not_found_returns_404() {
 
     let nonexistent_id = Uuid::now_v7();
     let resp = client
-        .get(format!(
-            "{}/api/jobs/{}/manifest",
-            base_url, nonexistent_id
-        ))
+        .get(format!("{}/api/jobs/{}/manifest", base_url, nonexistent_id))
         .send()
         .await
         .unwrap();
