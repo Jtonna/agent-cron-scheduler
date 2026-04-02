@@ -1,1 +1,6 @@
-[]
+[
+  {
+    "issue": 70,
+    "body": "## Implementation Plan (Approved)\n\n### Sub-task 1: Fix hook failure losing stdout cost data [standard]\n- Modify `HookOutcome::Failure` to carry stdout bytes alongside the error string\n- In both pre-hook and post-hook failure paths, append captured stdout to the log\n- Trigger cost re-extraction after appending\n- File: `acs/src/daemon/executor.rs`\n- No dependencies\n\n### Sub-task 2: Add test for piped-input cost extraction [light]\n- Unit test on `extract_cost_from_log` with CSV + NDJSON interleaved output\n- File: `acs/src/daemon/executor.rs`\n- No dependencies\n\n### Sub-task 3: Add test for pre-hook + main command cost summing [standard]\n- Integration test verifying costs from pre-hook Claude + main Claude are summed\n- File: `acs/src/daemon/executor.rs`\n- No dependencies\n\n### Sub-task 4: Add test for hook failure still capturing costs [standard]\n- Integration test validating the bug fix from sub-task 1\n- File: `acs/src/daemon/executor.rs`\n- Depends on: Sub-task 1\n\nExecution order: Sub-tasks 1, 2, 3 in parallel → Sub-task 4 after sub-task 1."
+  }
+]
