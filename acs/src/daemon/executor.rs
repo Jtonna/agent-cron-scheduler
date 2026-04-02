@@ -106,11 +106,14 @@ struct CostSummary {
 /// Extract cost data from a Claude CLI NDJSON log.
 ///
 /// Claude CLI emits newline-delimited JSON events. The relevant events are:
-/// - `{"type":"system","subtype":"init",...,"model":"<model>"}` — always near the start
-/// - `{"type":"result",...,"total_cost_usd":...}` — always the last line
+/// - `{"type":"system","subtype":"init",...,"model":"<model>"}` — emitted at session start
+/// - `{"type":"result",...,"total_cost_usd":...}` — emitted at session end
 ///
-/// For performance, only the first 4 KB and last 8 KB of the log are scanned.
-/// Non-NDJSON content (plain shell output, etc.) results in all fields being `None`.
+/// The entire log is scanned to support jobs with multiple Claude invocations.
+/// Costs from all `"type":"result"` events are summed. The `model` field is taken
+/// from the first `"type":"system"` event. Non-NDJSON lines are silently skipped.
+/// As a performance optimisation, `serde_json::from_str` is only called on lines
+/// that contain the substring `"type"`.
 fn extract_cost_from_log(log_content: &[u8]) -> CostSummary {
     let mut summary = CostSummary {
         total_cost_usd: None,
@@ -124,49 +127,65 @@ fn extract_cost_from_log(log_content: &[u8]) -> CostSummary {
         return summary;
     }
 
-    // Scan the first ~4KB for the system event (model info is at the start)
-    let head_window = &log_content[..log_content.len().min(4096)];
-    let head_str = String::from_utf8_lossy(head_window);
-    for line in head_str.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-            if val.get("type").and_then(|t| t.as_str()) == Some("system") {
-                if let Some(model) = val.get("model").and_then(|m| m.as_str()) {
-                    summary.model = Some(model.to_string());
-                }
-                break;
-            }
-        }
-    }
+    let content_str = String::from_utf8_lossy(log_content);
 
-    // Scan the last ~8KB for the result event (always the final NDJSON line)
-    let tail_start = log_content.len().saturating_sub(8192);
-    let tail_window = &log_content[tail_start..];
-    let tail_str = String::from_utf8_lossy(tail_window);
-    for line in tail_str.lines() {
+    for line in content_str.lines() {
         let line = line.trim();
-        if line.is_empty() {
+        if line.is_empty() || !line.contains("\"type\"") {
             continue;
         }
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-            if val.get("type").and_then(|t| t.as_str()) == Some("result") {
+
+        let val = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        match val.get("type").and_then(|t| t.as_str()) {
+            Some("system") => {
+                // Keep the first model seen; continue scanning for result events.
+                if summary.model.is_none() {
+                    if let Some(model) = val.get("model").and_then(|m| m.as_str()) {
+                        summary.model = Some(model.to_string());
+                    }
+                }
+            }
+            Some("result") => {
                 if let Some(cost) = val.get("total_cost_usd").and_then(|v| v.as_f64()) {
-                    summary.total_cost_usd = Some(cost);
+                    *summary.total_cost_usd.get_or_insert(0.0) += cost;
                 }
                 if let Some(ms) = val.get("duration_ms").and_then(|v| v.as_u64()) {
-                    summary.duration_ms = Some(ms);
+                    *summary.duration_ms.get_or_insert(0) += ms;
                 }
                 if let Some(turns) = val.get("num_turns").and_then(|v| v.as_u64()) {
-                    summary.num_turns = Some(turns as u32);
+                    *summary.num_turns.get_or_insert(0) += turns as u32;
                 }
-                if let Some(usage) = val.get("usage").cloned() {
-                    summary.usage = Some(usage);
+                if let Some(serde_json::Value::Object(new_usage)) = val.get("usage").cloned() {
+                    let merged = summary
+                        .usage
+                        .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                    if let serde_json::Value::Object(ref mut acc) = merged {
+                        for (k, v) in new_usage {
+                            if let Some(n) = v.as_f64() {
+                                let entry = acc.entry(k).or_insert(serde_json::Value::Number(
+                                    serde_json::Number::from(0u64),
+                                ));
+                                let existing = entry.as_f64().unwrap_or(0.0);
+                                // Preserve integer representation where possible.
+                                let sum = existing + n;
+                                *entry = if sum.fract() == 0.0 && sum >= 0.0 {
+                                    serde_json::Value::Number(serde_json::Number::from(sum as u64))
+                                } else {
+                                    serde_json::Value::Number(
+                                        serde_json::Number::from_f64(sum)
+                                            .unwrap_or(serde_json::Number::from(0u64)),
+                                    )
+                                };
+                            }
+                        }
+                    }
                 }
-                break;
             }
+            _ => {}
         }
     }
 
@@ -2779,11 +2798,11 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_cost_large_log_uses_tail_window() {
-        // Build a log that is larger than 8KB, with the result event at the very end
+    fn test_extract_cost_large_log_full_scan() {
+        // Build a log larger than 8KB with filler between system and result events to
+        // verify that the full-scan approach finds both regardless of their position.
         let system_line = r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#
             .to_string() + "\n";
-        // Fill with non-NDJSON lines to push the result event past the 8KB head/tail boundary
         let filler: String = (0..500)
             .map(|i| format!("plain output line {}\n", i))
             .collect();
@@ -2792,7 +2811,7 @@ mod tests {
         let log = format!("{}{}{}", system_line, filler, result_line);
         let bytes = log.as_bytes();
 
-        // Confirm log is indeed larger than 8KB
+        // Confirm log is indeed larger than 8KB so this is a meaningful regression guard.
         assert!(
             bytes.len() > 8192,
             "Log should be > 8KB for this test, got {} bytes",
@@ -2803,7 +2822,6 @@ mod tests {
         assert_eq!(summary.total_cost_usd, Some(1.23));
         assert_eq!(summary.duration_ms, Some(99999));
         assert_eq!(summary.num_turns, Some(7));
-        // model is in the first 4KB (system line is small) so it should be found
         assert_eq!(summary.model.as_deref(), Some("claude-sonnet-4-20250514"));
     }
 }
