@@ -47,6 +47,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/jobs/{id}/trigger", post(routes::trigger_job))
         .route("/api/jobs/{id}/runs", get(routes::list_runs))
         .route("/api/jobs/{id}/manifest", get(routes::get_job_manifest))
+        .route(
+            "/api/jobs/{id}/cost-summary",
+            get(routes::get_job_cost_summary),
+        )
+        .route("/api/costs/summary", get(routes::get_global_cost_summary))
         .route("/api/runs/{run_id}/log", get(routes::get_log))
         .route("/api/events", get(sse::sse_handler))
         .route("/api/shutdown", post(routes::shutdown))
