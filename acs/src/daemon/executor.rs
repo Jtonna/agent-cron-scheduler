@@ -14,8 +14,8 @@ use crate::storage::LogStore;
 
 /// Result of executing a hook command.
 enum HookOutcome {
-    /// Hook succeeded (exit code zero).
-    Success,
+    /// Hook succeeded (exit code zero) with captured stdout.
+    Success(Vec<u8>),
     /// Hook failed: carries a human-readable description of the failure.
     Failure(String),
 }
@@ -77,7 +77,7 @@ async fn run_hook(
     match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await {
         Ok(Ok(output)) => {
             if output.status.success() {
-                HookOutcome::Success
+                HookOutcome::Success(output.stdout)
             } else {
                 let code = output.status.code().unwrap_or(-1);
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -95,6 +95,9 @@ async fn run_hook(
 }
 
 /// Extracted cost/usage summary from a Claude CLI NDJSON log.
+///
+/// All fields represent aggregates summed across all Claude CLI invocations in the log,
+/// not a single invocation.
 struct CostSummary {
     total_cost_usd: Option<f64>,
     duration_ms: Option<u64>,
@@ -106,11 +109,21 @@ struct CostSummary {
 /// Extract cost data from a Claude CLI NDJSON log.
 ///
 /// Claude CLI emits newline-delimited JSON events. The relevant events are:
-/// - `{"type":"system","subtype":"init",...,"model":"<model>"}` — always near the start
-/// - `{"type":"result",...,"total_cost_usd":...}` — always the last line
+/// - `{"type":"system","subtype":"init",...,"model":"<model>"}` — emitted at session start
+/// - `{"type":"result",...,"total_cost_usd":...}` — emitted at session end
 ///
-/// For performance, only the first 4 KB and last 8 KB of the log are scanned.
-/// Non-NDJSON content (plain shell output, etc.) results in all fields being `None`.
+/// The entire log content is scanned in a single pass to support jobs with multiple Claude invocations.
+///
+/// Aggregation behavior:
+/// - `total_cost_usd`, `duration_ms`, and `num_turns` are summed across all `"type":"result"` events.
+/// - `usage` token fields are merged (summed) across all invocations.
+/// - `model` is set to the first model found from `"type":"system"` events.
+///
+/// Known limitation: If different models are used across invocations in the same log, only the
+/// first model encountered is reported.
+///
+/// Non-NDJSON lines are silently skipped. As a performance optimisation, `serde_json::from_str`
+/// is only called on lines that contain the substring `"type"`.
 fn extract_cost_from_log(log_content: &[u8]) -> CostSummary {
     let mut summary = CostSummary {
         total_cost_usd: None,
@@ -124,49 +137,65 @@ fn extract_cost_from_log(log_content: &[u8]) -> CostSummary {
         return summary;
     }
 
-    // Scan the first ~4KB for the system event (model info is at the start)
-    let head_window = &log_content[..log_content.len().min(4096)];
-    let head_str = String::from_utf8_lossy(head_window);
-    for line in head_str.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-            if val.get("type").and_then(|t| t.as_str()) == Some("system") {
-                if let Some(model) = val.get("model").and_then(|m| m.as_str()) {
-                    summary.model = Some(model.to_string());
-                }
-                break;
-            }
-        }
-    }
+    let content_str = String::from_utf8_lossy(log_content);
 
-    // Scan the last ~8KB for the result event (always the final NDJSON line)
-    let tail_start = log_content.len().saturating_sub(8192);
-    let tail_window = &log_content[tail_start..];
-    let tail_str = String::from_utf8_lossy(tail_window);
-    for line in tail_str.lines() {
+    for line in content_str.lines() {
         let line = line.trim();
-        if line.is_empty() {
+        if line.is_empty() || !line.contains("\"type\"") {
             continue;
         }
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-            if val.get("type").and_then(|t| t.as_str()) == Some("result") {
+
+        let val = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        match val.get("type").and_then(|t| t.as_str()) {
+            Some("system") => {
+                // Keep the first model seen; continue scanning for result events.
+                if summary.model.is_none() {
+                    if let Some(model) = val.get("model").and_then(|m| m.as_str()) {
+                        summary.model = Some(model.to_string());
+                    }
+                }
+            }
+            Some("result") => {
                 if let Some(cost) = val.get("total_cost_usd").and_then(|v| v.as_f64()) {
-                    summary.total_cost_usd = Some(cost);
+                    *summary.total_cost_usd.get_or_insert(0.0) += cost;
                 }
                 if let Some(ms) = val.get("duration_ms").and_then(|v| v.as_u64()) {
-                    summary.duration_ms = Some(ms);
+                    *summary.duration_ms.get_or_insert(0) += ms;
                 }
                 if let Some(turns) = val.get("num_turns").and_then(|v| v.as_u64()) {
-                    summary.num_turns = Some(turns as u32);
+                    *summary.num_turns.get_or_insert(0) += turns as u32;
                 }
-                if let Some(usage) = val.get("usage").cloned() {
-                    summary.usage = Some(usage);
+                if let Some(serde_json::Value::Object(new_usage)) = val.get("usage").cloned() {
+                    let merged = summary
+                        .usage
+                        .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                    if let serde_json::Value::Object(ref mut acc) = merged {
+                        for (k, v) in new_usage {
+                            if let Some(n) = v.as_f64() {
+                                let entry = acc.entry(k).or_insert(serde_json::Value::Number(
+                                    serde_json::Number::from(0u64),
+                                ));
+                                let existing = entry.as_f64().unwrap_or(0.0);
+                                // Preserve integer representation where possible.
+                                let sum = existing + n;
+                                *entry = if sum.fract() == 0.0 && sum >= 0.0 {
+                                    serde_json::Value::Number(serde_json::Number::from(sum as u64))
+                                } else {
+                                    serde_json::Value::Number(
+                                        serde_json::Number::from_f64(sum)
+                                            .unwrap_or(serde_json::Number::from(0u64)),
+                                    )
+                                };
+                            }
+                        }
+                    }
                 }
-                break;
             }
+            _ => {}
         }
     }
 
@@ -388,6 +417,10 @@ impl Executor {
 
         // Spawn the execution task
         let join_handle = tokio::spawn(async move {
+            // Track bytes written by hooks (outside the PTY log writer) so they
+            // can be added to total_bytes after the log writer finishes.
+            let mut pre_hook_stdout_len: u64 = 0;
+
             // Run pre-hook if configured (before PTY spawn)
             if let Some(ref hook_cmd) = effective_pre_hook {
                 tracing::debug!("Running pre-hook for job {}: {}", job_id, hook_cmd);
@@ -400,8 +433,12 @@ impl Executor {
                 )
                 .await
                 {
-                    HookOutcome::Success => {
+                    HookOutcome::Success(stdout) => {
                         tracing::debug!("Pre-hook succeeded for job {}", job_id);
+                        if !stdout.is_empty() {
+                            pre_hook_stdout_len = stdout.len() as u64;
+                            log_store.append_log(job_id, run_id, &stdout).await.ok();
+                        }
                     }
                     HookOutcome::Failure(detail) => {
                         let error_msg = format!("Pre-hook failed: {}", detail);
@@ -425,6 +462,9 @@ impl Executor {
                         };
                         if let Err(e) = log_store.update_run(&failed_run).await {
                             tracing::error!("Failed to save run on pre-hook failure: {}", e);
+                        }
+                        if let Err(e) = log_store.update_manifest(job_id, &failed_run).await {
+                            tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
                         }
                         let _ = event_tx.send(JobEvent::Completed {
                             job_id,
@@ -481,6 +521,9 @@ impl Executor {
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on spawn failure: {}", e);
+                    }
+                    if let Err(e) = log_store.update_manifest(job_id, &failed_run).await {
+                        tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
                     }
 
                     // Cleanup old log files
@@ -659,7 +702,9 @@ impl Executor {
             let exit_result = read_handle.await;
 
             // Wait for log writer to finish and get total bytes
-            let total_bytes: u64 = (log_writer_handle.await).unwrap_or_default();
+            let mut total_bytes: u64 = (log_writer_handle.await).unwrap_or_default();
+            // Include bytes written directly by the pre-hook (outside the log writer)
+            total_bytes += pre_hook_stdout_len;
 
             let finished_at = Utc::now();
 
@@ -702,6 +747,9 @@ impl Executor {
                 if let Err(e) = log_store.update_run(&timeout_run).await {
                     tracing::error!("Failed to update run on timeout: {}", e);
                 }
+                if let Err(e) = log_store.update_manifest(job_id, &timeout_run).await {
+                    tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
+                }
                 let _ = event_tx.send(JobEvent::Failed {
                     job_id,
                     run_id,
@@ -737,6 +785,9 @@ impl Executor {
                 if let Err(e) = log_store.update_run(&killed_run).await {
                     tracing::error!("Failed to update run on kill: {}", e);
                 }
+                if let Err(e) = log_store.update_manifest(job_id, &killed_run).await {
+                    tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
+                }
                 let _ = event_tx.send(JobEvent::Failed {
                     job_id,
                     run_id,
@@ -758,6 +809,7 @@ impl Executor {
                     let exit_code = status.code().unwrap_or(-1);
 
                     // Run post-hook if configured
+                    let mut post_hook_stdout_len: u64 = 0;
                     let (final_status, hook_error) = if let Some(ref hook_cmd) = effective_post_hook
                     {
                         tracing::debug!("Running post-hook for job {}: {}", job_id, hook_cmd);
@@ -771,8 +823,12 @@ impl Executor {
                         )
                         .await
                         {
-                            HookOutcome::Success => {
+                            HookOutcome::Success(stdout) => {
                                 tracing::debug!("Post-hook succeeded for job {}", job_id);
+                                if !stdout.is_empty() {
+                                    post_hook_stdout_len = stdout.len() as u64;
+                                    log_store.append_log(job_id, run_id, &stdout).await.ok();
+                                }
                                 (RunStatus::Completed, None)
                             }
                             HookOutcome::Failure(detail) => {
@@ -784,6 +840,34 @@ impl Executor {
                     } else {
                         (RunStatus::Completed, None)
                     };
+
+                    // Add post-hook stdout bytes to total log size
+                    total_bytes += post_hook_stdout_len;
+
+                    // Re-extract cost to include any hook costs appended to the log
+                    let (cost_total_usd, cost_duration_ms, cost_num_turns, cost_model, cost_usage) =
+                        if post_hook_stdout_len > 0 {
+                            let raw = log_store
+                                .read_log(job_id, run_id, None)
+                                .await
+                                .unwrap_or_default();
+                            let c = extract_cost_from_log(raw.as_bytes());
+                            (
+                                c.total_cost_usd,
+                                c.duration_ms,
+                                c.num_turns,
+                                c.model,
+                                c.usage,
+                            )
+                        } else {
+                            (
+                                cost_total_usd,
+                                cost_duration_ms,
+                                cost_num_turns,
+                                cost_model,
+                                cost_usage,
+                            )
+                        };
 
                     // Per SPEC: non-zero exit is Completed (not Failed).
                     // Failed = infrastructure error only.
@@ -805,6 +889,9 @@ impl Executor {
                     };
                     if let Err(e) = log_store.update_run(&completed_run).await {
                         tracing::error!("Failed to update run on completion: {}", e);
+                    }
+                    if let Err(e) = log_store.update_manifest(job_id, &completed_run).await {
+                        tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
                     }
 
                     let _ = event_tx.send(JobEvent::Completed {
@@ -836,6 +923,9 @@ impl Executor {
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on wait failure: {}", e);
                     }
+                    if let Err(e) = log_store.update_manifest(job_id, &failed_run).await {
+                        tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
+                    }
 
                     let _ = event_tx.send(JobEvent::Failed {
                         job_id,
@@ -865,6 +955,9 @@ impl Executor {
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on join error: {}", e);
+                    }
+                    if let Err(e) = log_store.update_manifest(job_id, &failed_run).await {
+                        tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
                     }
 
                     let _ = event_tx.send(JobEvent::Failed {
@@ -975,6 +1068,24 @@ mod tests {
         async fn cleanup(&self, job_id: Uuid, max_files: usize) -> anyhow::Result<()> {
             self.cleanup_calls.write().await.push((job_id, max_files));
             Ok(())
+        }
+
+        async fn read_manifest(
+            &self,
+            _job_id: Uuid,
+        ) -> anyhow::Result<Option<crate::models::JobManifest>> {
+            Ok(None)
+        }
+
+        async fn update_manifest(&self, _job_id: Uuid, _run: &JobRun) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn rebuild_manifest(
+            &self,
+            _job_id: Uuid,
+        ) -> anyhow::Result<crate::models::JobManifest> {
+            Ok(crate::models::JobManifest::new(_job_id))
         }
     }
 
@@ -2779,11 +2890,11 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_cost_large_log_uses_tail_window() {
-        // Build a log that is larger than 8KB, with the result event at the very end
+    fn test_extract_cost_large_log_full_scan() {
+        // Build a log larger than 8KB with filler between system and result events to
+        // verify that the full-scan approach finds both regardless of their position.
         let system_line = r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#
             .to_string() + "\n";
-        // Fill with non-NDJSON lines to push the result event past the 8KB head/tail boundary
         let filler: String = (0..500)
             .map(|i| format!("plain output line {}\n", i))
             .collect();
@@ -2792,7 +2903,7 @@ mod tests {
         let log = format!("{}{}{}", system_line, filler, result_line);
         let bytes = log.as_bytes();
 
-        // Confirm log is indeed larger than 8KB
+        // Confirm log is indeed larger than 8KB so this is a meaningful regression guard.
         assert!(
             bytes.len() > 8192,
             "Log should be > 8KB for this test, got {} bytes",
@@ -2803,7 +2914,387 @@ mod tests {
         assert_eq!(summary.total_cost_usd, Some(1.23));
         assert_eq!(summary.duration_ms, Some(99999));
         assert_eq!(summary.num_turns, Some(7));
-        // model is in the first 4KB (system line is small) so it should be found
         assert_eq!(summary.model.as_deref(), Some("claude-sonnet-4-20250514"));
+    }
+
+    #[test]
+    fn test_extract_cost_two_sequential_invocations() {
+        // Two complete Claude NDJSON blocks back-to-back in the same log.
+        let log = concat!(
+            // First invocation
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"First"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.05,"duration_ms":1000,"num_turns":3,"usage":{"input_tokens":100,"output_tokens":50}}"#,
+            "\n",
+            // Second invocation
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Second"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.08,"duration_ms":2000,"num_turns":5,"usage":{"input_tokens":200,"output_tokens":80}}"#,
+            "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // Costs should be summed across both invocations.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.13).abs() < 1e-10,
+            "expected total_cost_usd ~0.13, got {:?}",
+            summary.total_cost_usd
+        );
+        assert_eq!(summary.duration_ms, Some(3000));
+        assert_eq!(summary.num_turns, Some(8));
+        // Model comes from the first system event.
+        assert_eq!(summary.model.as_deref(), Some("claude-sonnet-4-20250514"));
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 300);
+        assert_eq!(usage["output_tokens"], 130);
+    }
+
+    #[test]
+    fn test_extract_cost_mixed_shell_and_claude_output() {
+        // Shell output lines surrounding two Claude NDJSON blocks.
+        let log = concat!(
+            "Starting backup...\n",
+            "Connecting to remote host...\n",
+            // First Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.03,"duration_ms":500,"num_turns":2,"usage":{"input_tokens":60,"output_tokens":20}}"#,
+            "\n",
+            "Backup complete.\n",
+            "Verifying checksums...\n",
+            // Second Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.07,"duration_ms":1500,"num_turns":4,"usage":{"input_tokens":140,"output_tokens":60}}"#,
+            "\n",
+            "All done.\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // Shell output lines must be silently ignored; costs from both Claude blocks summed.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.10).abs() < 1e-10,
+            "expected total_cost_usd ~0.10, got {:?}",
+            summary.total_cost_usd
+        );
+        assert_eq!(summary.duration_ms, Some(2000));
+        assert_eq!(summary.num_turns, Some(6));
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 200);
+        assert_eq!(usage["output_tokens"], 80);
+    }
+
+    #[test]
+    fn test_extract_cost_large_env_dump_before_system_event() {
+        // Simulate a 6KB+ environment variable dump that precedes the Claude NDJSON block.
+        // This was the old head-window bug: the system event was beyond the first ~4KB window
+        // so the model was never extracted. The full-scan approach must handle it correctly.
+        let env_dump: String = (0..200)
+            .map(|i| format!("ENV_VAR_NUMBER_{}=some_value_that_is_quite_long_{}\n", i, i))
+            .collect();
+        let claude_block = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.05,"duration_ms":2000,"num_turns":2,"usage":{"input_tokens":100,"output_tokens":40}}"#,
+            "\n"
+        );
+
+        let log = format!("{}{}", env_dump, claude_block);
+        let bytes = log.as_bytes();
+
+        // Confirm the env dump is genuinely large enough to trigger the old bug.
+        assert!(
+            bytes.len() > 6144,
+            "env dump should be > 6KB for this test, got {} bytes",
+            bytes.len()
+        );
+
+        let summary = extract_cost_from_log(bytes);
+        assert_eq!(summary.total_cost_usd, Some(0.05));
+        // Model must be found even though it appears far into the log.
+        assert_eq!(
+            summary.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "model should be extracted correctly despite large env dump prefix"
+        );
+    }
+
+    #[test]
+    fn test_extract_cost_hook_output_appended_to_main_log() {
+        // Simulates a post-hook whose NDJSON output is appended to the main command log,
+        // separated by a plain-text comment line.
+        let log = concat!(
+            // Main command Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.04,"duration_ms":800,"num_turns":2,"usage":{"input_tokens":80,"output_tokens":30}}"#,
+            "\n",
+            // Plain separator (not JSON)
+            "--- post-hook ---\n",
+            // Post-hook Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.02,"duration_ms":400,"num_turns":1,"usage":{"input_tokens":40,"output_tokens":15}}"#,
+            "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // Costs from both blocks must be summed; separator line must be ignored.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.06).abs() < 1e-10,
+            "expected total_cost_usd ~0.06, got {:?}",
+            summary.total_cost_usd
+        );
+        assert_eq!(summary.duration_ms, Some(1200));
+        assert_eq!(summary.num_turns, Some(3));
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 120);
+        assert_eq!(usage["output_tokens"], 45);
+    }
+
+    #[test]
+    fn test_extract_cost_different_models_across_invocations() {
+        // When two invocations use different models, the model field should contain
+        // only the FIRST model seen (from the first system event).
+        let log = concat!(
+            // First invocation — sonnet
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.05,"duration_ms":1000,"num_turns":2,"usage":{"input_tokens":100,"output_tokens":40}}"#,
+            "\n",
+            // Second invocation — opus
+            r#"{"type":"system","subtype":"init","model":"claude-opus-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.20,"duration_ms":3000,"num_turns":4,"usage":{"input_tokens":400,"output_tokens":160}}"#,
+            "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // Costs are still summed across both invocations.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.25).abs() < 1e-10,
+            "expected total_cost_usd ~0.25, got {:?}",
+            summary.total_cost_usd
+        );
+        // Model must be the FIRST one encountered.
+        assert_eq!(
+            summary.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "model should be taken from the first system event"
+        );
+    }
+
+    // --- Hook cost capture integration tests ---
+
+    /// Write NDJSON content to a temp file and return a shell command that cats it.
+    /// Works cross-platform (type on Windows, cat on Unix).
+    fn ndjson_hook_command(dir: &std::path::Path, filename: &str, content: &str) -> String {
+        let file_path = dir.join(filename);
+        std::fs::write(&file_path, content).expect("write ndjson file");
+        let path_str = file_path.to_string_lossy().to_string();
+        if cfg!(target_os = "windows") {
+            // cmd.exe /C passes the command as a single argument; avoid extra
+            // quotes around the path (temp paths never contain spaces).
+            format!("type {}", path_str)
+        } else {
+            format!("cat \"{}\"", path_str)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pre_hook_claude_cost_captured() {
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+
+        let ndjson = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n",
+            "{\"type\":\"result\",\"total_cost_usd\":0.05,\"duration_ms\":2000,\"num_turns\":2,\"usage\":{\"input_tokens\":500,\"output_tokens\":200}}\n"
+        );
+        let hook_cmd = ndjson_hook_command(tmp_dir.path(), "pre_hook_ndjson.txt", ndjson);
+
+        // Main command produces plain output (no Claude NDJSON)
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"done\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.pre_hook = Some(hook_cmd);
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::Completed,
+            "Job should complete successfully"
+        );
+        assert_eq!(
+            run.total_cost_usd,
+            Some(0.05),
+            "Pre-hook cost should be captured. Run: {:?}",
+            run
+        );
+        assert_eq!(run.duration_ms, Some(2000));
+        assert_eq!(run.num_turns, Some(2));
+        assert_eq!(
+            run.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "Model should be captured from pre-hook NDJSON"
+        );
+        assert!(
+            run.usage.is_some(),
+            "Usage should be captured from pre-hook"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_post_hook_claude_cost_captured() {
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+
+        let ndjson = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n",
+            "{\"type\":\"result\",\"total_cost_usd\":0.08,\"duration_ms\":3000,\"num_turns\":4,\"usage\":{\"input_tokens\":800,\"output_tokens\":300}}\n"
+        );
+        let hook_cmd = ndjson_hook_command(tmp_dir.path(), "post_hook_ndjson.txt", ndjson);
+
+        // Main command produces plain output (no Claude NDJSON)
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"done\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.post_hook = Some(hook_cmd);
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::Completed,
+            "Job should complete successfully"
+        );
+        // Post-hook output triggers re-extraction, so cost should be present
+        assert_eq!(
+            run.total_cost_usd,
+            Some(0.08),
+            "Post-hook cost should be captured via re-extraction. Run: {:?}",
+            run
+        );
+        assert_eq!(run.duration_ms, Some(3000));
+        assert_eq!(run.num_turns, Some(4));
+        assert_eq!(
+            run.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "Model should be captured from post-hook NDJSON"
+        );
+        assert!(
+            run.usage.is_some(),
+            "Usage should be captured from post-hook"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_main_and_post_hook_costs_summed() {
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+
+        // Post-hook NDJSON (cost = 0.03)
+        let post_ndjson = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n",
+            "{\"type\":\"result\",\"total_cost_usd\":0.03,\"duration_ms\":1500,\"num_turns\":1,\"usage\":{\"input_tokens\":200,\"output_tokens\":100}}\n"
+        );
+        let hook_cmd = ndjson_hook_command(tmp_dir.path(), "post_hook_sum.txt", post_ndjson);
+
+        // Main command produces Claude NDJSON via the mock PTY (cost = 0.07)
+        let main_ndjson_system =
+            b"{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n"
+                .to_vec();
+        let main_ndjson_result =
+            b"{\"type\":\"result\",\"total_cost_usd\":0.07,\"duration_ms\":5000,\"num_turns\":3,\"usage\":{\"input_tokens\":600,\"output_tokens\":400}}\n"
+                .to_vec();
+
+        let spawner =
+            MockPtySpawner::with_output_and_exit(vec![main_ndjson_system, main_ndjson_result], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.post_hook = Some(hook_cmd);
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::Completed,
+            "Job should complete successfully"
+        );
+        // Costs should be summed: 0.07 (main) + 0.03 (post-hook) = 0.10
+        let total = run.total_cost_usd.expect("total_cost_usd should be Some");
+        assert!(
+            (total - 0.10).abs() < 1e-9,
+            "Costs should be summed: expected 0.10, got {}",
+            total
+        );
+        // duration_ms should be summed: 5000 + 1500 = 6500
+        assert_eq!(
+            run.duration_ms,
+            Some(6500),
+            "Duration ms should be summed from main and post-hook"
+        );
+        // num_turns should be summed: 3 + 1 = 4
+        assert_eq!(
+            run.num_turns,
+            Some(4),
+            "Num turns should be summed from main and post-hook"
+        );
+        // Usage tokens should be summed
+        let usage = run.usage.as_ref().expect("usage should be Some");
+        assert_eq!(
+            usage["input_tokens"], 800,
+            "Input tokens should be summed: 600 + 200"
+        );
+        assert_eq!(
+            usage["output_tokens"], 500,
+            "Output tokens should be summed: 400 + 100"
+        );
     }
 }

@@ -84,7 +84,11 @@ mod platform {
         use winreg::RegKey;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let key = hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_SET_VALUE)?;
+        let key = match hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_SET_VALUE) {
+            Ok(k) => k,
+            Err(_) if !is_service_registered() => return Ok(()),
+            Err(e) => return Err(anyhow::anyhow!(e)),
+        };
 
         match key.delete_value(RUN_VALUE_NAME) {
             Ok(()) => {
