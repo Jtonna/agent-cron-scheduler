@@ -220,10 +220,11 @@ pub fn resolve_timeframe(
 
 // ── Timeframe ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub enum Timeframe {
     Last24h,
     Last7d,
+    #[default]
     Last30d,
     Last90d,
     Last180d,
@@ -242,12 +243,6 @@ impl Timeframe {
             Timeframe::Last365d => Some(365),
             Timeframe::All => None,
         }
-    }
-}
-
-impl Default for Timeframe {
-    fn default() -> Self {
-        Timeframe::Last30d
     }
 }
 

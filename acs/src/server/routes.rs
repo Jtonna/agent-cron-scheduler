@@ -138,6 +138,7 @@ pub struct CostSummaryParams {
 // ---------------------------------------------------------------------------
 
 /// Parse CostSummaryParams into (start, end, timeframe_display_string).
+#[allow(clippy::result_large_err)]
 fn parse_cost_summary_params(
     params: &CostSummaryParams,
 ) -> Result<(chrono::NaiveDate, chrono::NaiveDate, String), Response> {
