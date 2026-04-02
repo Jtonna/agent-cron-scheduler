@@ -294,11 +294,7 @@ impl LogStore for FsLogStore {
                         match serde_json::from_str::<JobRun>(&content) {
                             Ok(run) => runs.push(run),
                             Err(e) => {
-                                tracing::warn!(
-                                    "Skipping malformed meta file {:?}: {}",
-                                    path,
-                                    e
-                                );
+                                tracing::warn!("Skipping malformed meta file {:?}: {}", path, e);
                             }
                         }
                     }
@@ -670,7 +666,10 @@ mod tests {
     async fn test_read_manifest_returns_none_when_no_manifest() {
         let (store, _tmp, job_id) = setup_store().await;
         let result = store.read_manifest(job_id).await.expect("read_manifest");
-        assert!(result.is_none(), "Expected None when no manifest file exists");
+        assert!(
+            result.is_none(),
+            "Expected None when no manifest file exists"
+        );
     }
 
     #[tokio::test]
@@ -680,7 +679,10 @@ mod tests {
         let run = make_job_run_with_cost(job_id, 0.50, "claude-sonnet-4-20250514", dt);
 
         store.create_run(&run).await.expect("create_run");
-        store.update_manifest(job_id, &run).await.expect("update_manifest");
+        store
+            .update_manifest(job_id, &run)
+            .await
+            .expect("update_manifest");
 
         let manifest = store
             .read_manifest(job_id)
@@ -701,7 +703,10 @@ mod tests {
         for cost in costs {
             let run = make_job_run_with_cost(job_id, cost, "claude-sonnet-4-20250514", dt);
             store.create_run(&run).await.expect("create_run");
-            store.update_manifest(job_id, &run).await.expect("update_manifest");
+            store
+                .update_manifest(job_id, &run)
+                .await
+                .expect("update_manifest");
         }
 
         let manifest = store
@@ -733,7 +738,10 @@ mod tests {
             store.create_run(&run).await.expect("create_run");
         }
 
-        let manifest = store.rebuild_manifest(job_id).await.expect("rebuild_manifest");
+        let manifest = store
+            .rebuild_manifest(job_id)
+            .await
+            .expect("rebuild_manifest");
 
         assert_eq!(manifest.total_runs, 5);
         assert!((manifest.total_cost_usd - expected_total).abs() < 1e-10);
@@ -765,7 +773,10 @@ mod tests {
             .expect("write corrupt file");
 
         // rebuild_manifest should succeed, skipping the corrupt file
-        let manifest = store.rebuild_manifest(job_id).await.expect("rebuild_manifest");
+        let manifest = store
+            .rebuild_manifest(job_id)
+            .await
+            .expect("rebuild_manifest");
 
         assert_eq!(manifest.total_runs, 2, "Corrupt file should be skipped");
     }
@@ -783,7 +794,10 @@ mod tests {
         for dt in dates {
             let run = make_job_run_with_cost(job_id, 0.10, "claude-sonnet-4-20250514", dt);
             store.create_run(&run).await.expect("create_run");
-            store.update_manifest(job_id, &run).await.expect("update_manifest");
+            store
+                .update_manifest(job_id, &run)
+                .await
+                .expect("update_manifest");
         }
 
         let manifest = store
@@ -809,7 +823,10 @@ mod tests {
         let run = make_job_run_with_cost(job_id, 0.50, "claude-sonnet-4-20250514", dt);
 
         store.create_run(&run).await.expect("create_run");
-        store.update_manifest(job_id, &run).await.expect("update_manifest");
+        store
+            .update_manifest(job_id, &run)
+            .await
+            .expect("update_manifest");
 
         let job_dir = tmp.path().join("logs").join(job_id.to_string());
         let manifest_path = job_dir.join("manifest.json");

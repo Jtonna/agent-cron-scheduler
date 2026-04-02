@@ -281,11 +281,7 @@ mod tests {
             Ok(None)
         }
 
-        async fn update_manifest(
-            &self,
-            _job_id: Uuid,
-            _run: &JobRun,
-        ) -> anyhow::Result<()> {
+        async fn update_manifest(&self, _job_id: Uuid, _run: &JobRun) -> anyhow::Result<()> {
             Ok(())
         }
 
