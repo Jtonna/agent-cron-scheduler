@@ -3410,4 +3410,88 @@ mod tests {
             "Output tokens should be summed: 400 + 100"
         );
     }
+
+    #[tokio::test]
+    async fn test_posthook_failure_still_captures_cost() {
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+
+        let ndjson = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n",
+            "{\"type\":\"result\",\"total_cost_usd\":0.04,\"duration_ms\":1200,\"num_turns\":2,\"usage\":{\"input_tokens\":300,\"output_tokens\":150}}\n"
+        );
+
+        // Build a hook command that emits NDJSON to stdout and then exits with code 1.
+        // run_hook wraps this with `cmd /C` (Windows) or `sh -c` (Unix), so inline
+        // shell syntax works on both platforms.
+        let file_path = tmp_dir.path().join("failing_hook_ndjson.txt");
+        std::fs::write(&file_path, ndjson).expect("write ndjson file");
+        let path_str = file_path.to_string_lossy().to_string();
+        let hook_cmd = if cfg!(target_os = "windows") {
+            // cmd.exe: type prints the file, then `& exit /b 1` sets exit code 1
+            format!("type {} & exit /b 1", path_str)
+        } else {
+            // sh: cat prints the file, then `; exit 1` sets exit code 1
+            format!("cat \"{}\"; exit 1", path_str)
+        };
+
+        // Main command produces plain output (no NDJSON)
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"main done\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.post_hook = Some(hook_cmd);
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        // Post-hook failure → CompletedWithWarnings, not Failed
+        assert_eq!(
+            run.status,
+            RunStatus::CompletedWithWarnings,
+            "Job should be CompletedWithWarnings when post-hook fails"
+        );
+
+        // Even though the post-hook failed, its stdout (NDJSON) was captured and
+        // cost fields should still be extracted.
+        assert_eq!(
+            run.total_cost_usd,
+            Some(0.04),
+            "Cost should be captured from failing post-hook stdout. Run: {:?}",
+            run
+        );
+        assert_eq!(
+            run.duration_ms,
+            Some(1200),
+            "Duration should be captured from failing post-hook stdout"
+        );
+        assert_eq!(
+            run.num_turns,
+            Some(2),
+            "num_turns should be captured from failing post-hook stdout"
+        );
+        assert_eq!(
+            run.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "Model should be captured from failing post-hook NDJSON"
+        );
+        assert!(
+            run.usage.is_some(),
+            "Usage should be captured from failing post-hook stdout"
+        );
+        let usage = run.usage.as_ref().unwrap();
+        assert_eq!(usage["input_tokens"], 300);
+        assert_eq!(usage["output_tokens"], 150);
+    }
 }
