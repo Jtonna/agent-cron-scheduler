@@ -16,8 +16,8 @@ use crate::storage::LogStore;
 enum HookOutcome {
     /// Hook succeeded (exit code zero) with captured stdout.
     Success(Vec<u8>),
-    /// Hook failed: carries a human-readable description of the failure.
-    Failure(String),
+    /// Hook failed: carries a human-readable description of the failure and any captured stdout.
+    Failure(String, Vec<u8>),
 }
 
 /// Execute a hook command string using the platform shell.
@@ -69,7 +69,7 @@ async fn run_hook(
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            return HookOutcome::Failure(format!("{} spawn error: {}", label, e));
+            return HookOutcome::Failure(format!("{} spawn error: {}", label, e), Vec::new());
         }
     };
 
@@ -86,11 +86,11 @@ async fn run_hook(
                 } else {
                     format!("exited with code {}: {}", code, stderr.trim())
                 };
-                HookOutcome::Failure(format!("{} {}", label, detail))
+                HookOutcome::Failure(format!("{} {}", label, detail), output.stdout)
             }
         }
-        Ok(Err(e)) => HookOutcome::Failure(format!("{} wait error: {}", label, e)),
-        Err(_) => HookOutcome::Failure(format!("{} timed out after 30 seconds", label)),
+        Ok(Err(e)) => HookOutcome::Failure(format!("{} wait error: {}", label, e), Vec::new()),
+        Err(_) => HookOutcome::Failure(format!("{} timed out after 30 seconds", label), Vec::new()),
     }
 }
 
@@ -440,9 +440,42 @@ impl Executor {
                             log_store.append_log(job_id, run_id, &stdout).await.ok();
                         }
                     }
-                    HookOutcome::Failure(detail) => {
+                    HookOutcome::Failure(detail, stdout) => {
                         let error_msg = format!("Pre-hook failed: {}", detail);
                         tracing::warn!("{} for job {}", error_msg, job_id);
+
+                        // Append any stdout from the failing pre-hook before building failed_run
+                        let pre_hook_fail_stdout_len: u64 = if !stdout.is_empty() {
+                            let len = stdout.len() as u64;
+                            log_store.append_log(job_id, run_id, &stdout).await.ok();
+                            len
+                        } else {
+                            0
+                        };
+
+                        // Extract cost data from whatever was appended (best-effort)
+                        let (
+                            fail_cost_usd,
+                            fail_duration_ms,
+                            fail_num_turns,
+                            fail_model,
+                            fail_usage,
+                        ) = if pre_hook_fail_stdout_len > 0 {
+                            let raw = log_store
+                                .read_log(job_id, run_id, None)
+                                .await
+                                .unwrap_or_default();
+                            let c = extract_cost_from_log(raw.as_bytes());
+                            (
+                                c.total_cost_usd,
+                                c.duration_ms,
+                                c.num_turns,
+                                c.model,
+                                c.usage,
+                            )
+                        } else {
+                            (None, None, None, None, None)
+                        };
 
                         let failed_run = JobRun {
                             run_id,
@@ -451,14 +484,14 @@ impl Executor {
                             finished_at: Some(Utc::now()),
                             status: RunStatus::Failed,
                             exit_code: None,
-                            log_size_bytes: 0,
+                            log_size_bytes: pre_hook_fail_stdout_len,
                             error: Some(error_msg.clone()),
                             trigger_params: trigger_params_owned.clone(),
-                            total_cost_usd: None,
-                            duration_ms: None,
-                            num_turns: None,
-                            model: None,
-                            usage: None,
+                            total_cost_usd: fail_cost_usd,
+                            duration_ms: fail_duration_ms,
+                            num_turns: fail_num_turns,
+                            model: fail_model,
+                            usage: fail_usage,
                         };
                         if let Err(e) = log_store.update_run(&failed_run).await {
                             tracing::error!("Failed to save run on pre-hook failure: {}", e);
@@ -831,9 +864,13 @@ impl Executor {
                                 }
                                 (RunStatus::Completed, None)
                             }
-                            HookOutcome::Failure(detail) => {
+                            HookOutcome::Failure(detail, stdout) => {
                                 let error_msg = format!("Post-hook failed: {}", detail);
                                 tracing::warn!("{} for job {}", error_msg, job_id);
+                                if !stdout.is_empty() {
+                                    post_hook_stdout_len = stdout.len() as u64;
+                                    log_store.append_log(job_id, run_id, &stdout).await.ok();
+                                }
                                 (RunStatus::CompletedWithWarnings, Some(error_msg))
                             }
                         }
@@ -3060,6 +3097,44 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_cost_prehook_plus_main_summed() {
+        // Simulates a pre-hook Claude invocation followed by the main Claude command,
+        // separated by a PTY header / plain-text line. Costs must be summed.
+        let log = concat!(
+            // Pre-hook Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.05,"duration_ms":2000,"num_turns":2,"usage":{"input_tokens":5000,"output_tokens":1000}}"#,
+            "\n",
+            // PTY header / separator (not JSON)
+            "--- main command ---\n",
+            // Main command Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.15,"duration_ms":6000,"num_turns":5,"usage":{"input_tokens":15000,"output_tokens":4000}}"#,
+            "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // Costs from pre-hook and main command must be summed.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.20).abs() < 1e-10,
+            "expected total_cost_usd ~0.20, got {:?}",
+            summary.total_cost_usd
+        );
+        // Model comes from the first system event (pre-hook).
+        assert_eq!(
+            summary.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "model should be taken from the first system event"
+        );
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 20000);
+        assert_eq!(usage["output_tokens"], 5000);
+    }
+
+    #[test]
     fn test_extract_cost_different_models_across_invocations() {
         // When two invocations use different models, the model field should contain
         // only the FIRST model seen (from the first system event).
@@ -3089,6 +3164,44 @@ mod tests {
             Some("claude-sonnet-4-20250514"),
             "model should be taken from the first system event"
         );
+    }
+
+    #[test]
+    fn test_extract_cost_piped_input_with_csv_data() {
+        // Simulate piped-input Claude invocation: cat data.csv | claude -p "summarize"
+        // The log contains CSV data lines, shell output, and Claude NDJSON events.
+        let log = concat!(
+            // CSV data (simulating piped input)
+            "name,age,city\n",
+            "Alice,30,NYC\n",
+            "Bob,25,LA\n",
+            // Shell output lines
+            "Processing 3 rows...\n",
+            // Claude NDJSON system event
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            // Claude NDJSON result event with cost and usage
+            r#"{"type":"result","total_cost_usd":0.0123,"duration_ms":850,"num_turns":1,"usage":{"input_tokens":156,"output_tokens":42}}"#,
+            "\n",
+            // More shell output
+            "Summary complete.\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // CSV and shell output lines must be silently ignored.
+        // Cost, model, duration, and usage must be correctly extracted.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.0123).abs() < 1e-10,
+            "expected total_cost_usd ~0.0123, got {:?}",
+            summary.total_cost_usd
+        );
+        assert_eq!(summary.duration_ms, Some(850));
+        assert_eq!(summary.num_turns, Some(1));
+        assert_eq!(summary.model.as_deref(), Some("claude-sonnet-4-20250514"));
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 156);
+        assert_eq!(usage["output_tokens"], 42);
     }
 
     // --- Hook cost capture integration tests ---
@@ -3296,5 +3409,89 @@ mod tests {
             usage["output_tokens"], 500,
             "Output tokens should be summed: 400 + 100"
         );
+    }
+
+    #[tokio::test]
+    async fn test_posthook_failure_still_captures_cost() {
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+
+        let ndjson = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n",
+            "{\"type\":\"result\",\"total_cost_usd\":0.04,\"duration_ms\":1200,\"num_turns\":2,\"usage\":{\"input_tokens\":300,\"output_tokens\":150}}\n"
+        );
+
+        // Build a hook command that emits NDJSON to stdout and then exits with code 1.
+        // run_hook wraps this with `cmd /C` (Windows) or `sh -c` (Unix), so inline
+        // shell syntax works on both platforms.
+        let file_path = tmp_dir.path().join("failing_hook_ndjson.txt");
+        std::fs::write(&file_path, ndjson).expect("write ndjson file");
+        let path_str = file_path.to_string_lossy().to_string();
+        let hook_cmd = if cfg!(target_os = "windows") {
+            // cmd.exe: type prints the file, then `& exit /b 1` sets exit code 1
+            format!("type {} & exit /b 1", path_str)
+        } else {
+            // sh: cat prints the file, then `; exit 1` sets exit code 1
+            format!("cat \"{}\"; exit 1", path_str)
+        };
+
+        // Main command produces plain output (no NDJSON)
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"main done\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.post_hook = Some(hook_cmd);
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        // Post-hook failure → CompletedWithWarnings, not Failed
+        assert_eq!(
+            run.status,
+            RunStatus::CompletedWithWarnings,
+            "Job should be CompletedWithWarnings when post-hook fails"
+        );
+
+        // Even though the post-hook failed, its stdout (NDJSON) was captured and
+        // cost fields should still be extracted.
+        assert_eq!(
+            run.total_cost_usd,
+            Some(0.04),
+            "Cost should be captured from failing post-hook stdout. Run: {:?}",
+            run
+        );
+        assert_eq!(
+            run.duration_ms,
+            Some(1200),
+            "Duration should be captured from failing post-hook stdout"
+        );
+        assert_eq!(
+            run.num_turns,
+            Some(2),
+            "num_turns should be captured from failing post-hook stdout"
+        );
+        assert_eq!(
+            run.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "Model should be captured from failing post-hook NDJSON"
+        );
+        assert!(
+            run.usage.is_some(),
+            "Usage should be captured from failing post-hook stdout"
+        );
+        let usage = run.usage.as_ref().unwrap();
+        assert_eq!(usage["input_tokens"], 300);
+        assert_eq!(usage["output_tokens"], 150);
     }
 }
