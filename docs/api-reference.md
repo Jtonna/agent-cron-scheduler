@@ -920,7 +920,7 @@ Represents a single execution of a job.
 | `log_size_bytes` | integer (u64)     | No       | Size of the log output in bytes.               |
 | `error`          | string            | Yes      | Error message if the run failed to start (e.g., PTY spawn failure), or `null`. |
 | `trigger_params` | [TriggerParams](#triggerparams) | Yes | Trigger-time parameter overrides used for this run. Absent from the JSON response when `null` (omitted via `skip_serializing_if`). Only present when the run was triggered with per-invocation parameters. |
-| `total_cost_usd` | number (f64) | Yes | Total cost in USD reported by the Claude CLI, or absent when null. |
+| `total_cost_usd` | number (f64) | Yes | Total cost in USD aggregated across the main command and any pre/post hooks that produce NDJSON output, or absent when null. |
 | `duration_ms` | integer (u64) | Yes | CLI-reported execution duration in milliseconds, or absent when null. |
 | `num_turns` | integer (u32) | Yes | Number of conversation turns reported by the Claude CLI, or absent when null. |
 | `model` | string | Yes | Primary model used during the run, as reported by the Claude CLI, or absent when null. |
