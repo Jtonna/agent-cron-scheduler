@@ -25,6 +25,8 @@ pub struct TimeBucket {
     pub duration_ms: u64,
     pub num_turns: u64,
     pub models: BTreeMap<String, ModelUsageBucket>,
+    #[serde(default)]
+    pub runs_by_status: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -95,6 +97,9 @@ impl JobManifest {
             bucket.duration_ms += duration;
             bucket.num_turns += turns;
 
+            let status_key = format!("{:?}", run.status);
+            *bucket.runs_by_status.entry(status_key).or_insert(0) += 1;
+
             if let Some(model_name) = &run.model {
                 let model_entry = bucket.models.entry(model_name.clone()).or_default();
                 model_entry.runs += 1;
@@ -138,12 +143,23 @@ mod tests {
         model: Option<&str>,
         usage: Option<serde_json::Value>,
     ) -> JobRun {
+        make_test_run_with_status(job_id, started_at, cost, model, usage, RunStatus::Completed)
+    }
+
+    fn make_test_run_with_status(
+        job_id: Uuid,
+        started_at: DateTime<Utc>,
+        cost: Option<f64>,
+        model: Option<&str>,
+        usage: Option<serde_json::Value>,
+        status: RunStatus,
+    ) -> JobRun {
         crate::models::JobRun {
             run_id: Uuid::now_v7(),
             job_id,
             started_at,
             finished_at: Some(started_at + chrono::Duration::seconds(60)),
-            status: RunStatus::Completed,
+            status,
             exit_code: Some(0),
             log_size_bytes: 512,
             error: None,
@@ -467,5 +483,81 @@ mod tests {
         assert!(manifest.daily_buckets.is_empty());
         assert!(manifest.weekly_buckets.is_empty());
         assert!(manifest.monthly_buckets.is_empty());
+    }
+
+    #[test]
+    fn test_runs_by_status() {
+        let job_id = Uuid::now_v7();
+        let mut manifest = JobManifest::new(job_id);
+
+        let dt = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 0).unwrap();
+
+        let run_completed = make_test_run_with_status(
+            job_id,
+            dt,
+            Some(0.10),
+            None,
+            None,
+            RunStatus::Completed,
+        );
+        let run_failed = make_test_run_with_status(
+            job_id,
+            dt,
+            Some(0.05),
+            None,
+            None,
+            RunStatus::Failed,
+        );
+        let run_completed_with_warnings = make_test_run_with_status(
+            job_id,
+            dt,
+            Some(0.08),
+            None,
+            None,
+            RunStatus::CompletedWithWarnings,
+        );
+        let run_killed = make_test_run_with_status(
+            job_id,
+            dt,
+            Some(0.02),
+            None,
+            None,
+            RunStatus::Killed,
+        );
+
+        manifest.merge_run(&run_completed);
+        manifest.merge_run(&run_failed);
+        manifest.merge_run(&run_completed_with_warnings);
+        manifest.merge_run(&run_killed);
+
+        let daily = manifest
+            .daily_buckets
+            .get("2025-06-15")
+            .expect("daily bucket");
+
+        assert_eq!(daily.runs, 4);
+        assert_eq!(daily.runs_by_status.get("Completed"), Some(&1));
+        assert_eq!(daily.runs_by_status.get("Failed"), Some(&1));
+        assert_eq!(daily.runs_by_status.get("CompletedWithWarnings"), Some(&1));
+        assert_eq!(daily.runs_by_status.get("Killed"), Some(&1));
+
+        // Verify the same for weekly and monthly buckets
+        let weekly = manifest
+            .weekly_buckets
+            .get("2025-W24")
+            .expect("weekly bucket");
+        assert_eq!(weekly.runs_by_status.get("Completed"), Some(&1));
+        assert_eq!(weekly.runs_by_status.get("Failed"), Some(&1));
+        assert_eq!(weekly.runs_by_status.get("CompletedWithWarnings"), Some(&1));
+        assert_eq!(weekly.runs_by_status.get("Killed"), Some(&1));
+
+        let monthly = manifest
+            .monthly_buckets
+            .get("2025-06")
+            .expect("monthly bucket");
+        assert_eq!(monthly.runs_by_status.get("Completed"), Some(&1));
+        assert_eq!(monthly.runs_by_status.get("Failed"), Some(&1));
+        assert_eq!(monthly.runs_by_status.get("CompletedWithWarnings"), Some(&1));
+        assert_eq!(monthly.runs_by_status.get("Killed"), Some(&1));
     }
 }
