@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use uuid::Uuid;
 
+use crate::models::manifest::JobManifest;
 use crate::models::JobRun;
 use crate::storage::LogStore;
 
@@ -34,6 +35,11 @@ impl FsLogStore {
     /// Get the path to a run's log file.
     fn log_path(&self, job_id: Uuid, run_id: Uuid) -> PathBuf {
         self.job_dir(job_id).join(format!("{}.log", run_id))
+    }
+
+    /// Get the path to a job's manifest file.
+    fn manifest_path(&self, job_id: Uuid) -> PathBuf {
+        self.job_dir(job_id).join("manifest.json")
     }
 }
 
@@ -211,13 +217,133 @@ impl LogStore for FsLogStore {
 
         Ok(())
     }
+
+    async fn read_manifest(&self, job_id: Uuid) -> Result<Option<JobManifest>> {
+        let path = self.manifest_path(job_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .context("Failed to read manifest file")?;
+
+        match serde_json::from_str::<JobManifest>(&content) {
+            Ok(manifest) => Ok(Some(manifest)),
+            Err(e) => {
+                tracing::warn!("Corrupt manifest file {:?}: {}", path, e);
+                Ok(None)
+            }
+        }
+    }
+
+    async fn update_manifest(&self, job_id: Uuid, run: &JobRun) -> Result<()> {
+        let mut manifest = self
+            .read_manifest(job_id)
+            .await?
+            .unwrap_or_else(|| JobManifest::new(job_id));
+
+        manifest.merge_run(run);
+
+        let json =
+            serde_json::to_string_pretty(&manifest).context("Failed to serialize manifest")?;
+
+        let job_dir = self.job_dir(job_id);
+        tokio::fs::create_dir_all(&job_dir)
+            .await
+            .context("Failed to create job directory")?;
+
+        let manifest_path = self.manifest_path(job_id);
+        let tmp_path = job_dir.join("manifest.json.tmp");
+
+        tokio::fs::write(&tmp_path, json.as_bytes())
+            .await
+            .context("Failed to write temporary manifest file")?;
+
+        // On Windows, rename fails if the target exists, so remove it first
+        if manifest_path.exists() {
+            tokio::fs::remove_file(&manifest_path)
+                .await
+                .context("Failed to remove existing manifest file")?;
+        }
+
+        tokio::fs::rename(&tmp_path, &manifest_path)
+            .await
+            .context("Failed to rename temporary manifest file")?;
+
+        Ok(())
+    }
+
+    async fn rebuild_manifest(&self, job_id: Uuid) -> Result<JobManifest> {
+        let mut manifest = JobManifest::new(job_id);
+        let job_dir = self.job_dir(job_id);
+
+        if job_dir.exists() {
+            let mut runs = Vec::new();
+            let mut entries = tokio::fs::read_dir(&job_dir)
+                .await
+                .context("Failed to read job log directory")?;
+
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.ends_with(".meta.json") {
+                        let content = tokio::fs::read_to_string(&path)
+                            .await
+                            .context("Failed to read run metadata")?;
+                        match serde_json::from_str::<JobRun>(&content) {
+                            Ok(run) => runs.push(run),
+                            Err(e) => {
+                                tracing::warn!("Skipping malformed meta file {:?}: {}", path, e);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Sort by started_at ascending for deterministic bucket ordering
+            runs.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+
+            for run in &runs {
+                manifest.merge_run(run);
+            }
+        }
+
+        // Write atomically
+        let json =
+            serde_json::to_string_pretty(&manifest).context("Failed to serialize manifest")?;
+
+        tokio::fs::create_dir_all(&job_dir)
+            .await
+            .context("Failed to create job directory")?;
+
+        let manifest_path = self.manifest_path(job_id);
+        let tmp_path = job_dir.join("manifest.json.tmp");
+
+        tokio::fs::write(&tmp_path, json.as_bytes())
+            .await
+            .context("Failed to write temporary manifest file")?;
+
+        // On Windows, rename fails if the target exists, so remove it first
+        if manifest_path.exists() {
+            tokio::fs::remove_file(&manifest_path)
+                .await
+                .context("Failed to remove existing manifest file")?;
+        }
+
+        tokio::fs::rename(&tmp_path, &manifest_path)
+            .await
+            .context("Failed to rename temporary manifest file")?;
+
+        Ok(manifest)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::RunStatus;
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
     use tempfile::TempDir;
 
     fn make_job_run(job_id: Uuid) -> JobRun {
@@ -235,6 +361,30 @@ mod tests {
             duration_ms: None,
             num_turns: None,
             model: None,
+            usage: None,
+        }
+    }
+
+    fn make_job_run_with_cost(
+        job_id: Uuid,
+        cost: f64,
+        model: &str,
+        started_at: chrono::DateTime<Utc>,
+    ) -> JobRun {
+        JobRun {
+            run_id: Uuid::now_v7(),
+            job_id,
+            started_at,
+            finished_at: Some(started_at + chrono::Duration::seconds(60)),
+            status: RunStatus::Completed,
+            exit_code: Some(0),
+            log_size_bytes: 0,
+            error: None,
+            trigger_params: None,
+            total_cost_usd: Some(cost),
+            duration_ms: Some(1000),
+            num_turns: Some(3),
+            model: Some(model.to_string()),
             usage: None,
         }
     }
@@ -508,5 +658,184 @@ mod tests {
         // Cleanup on a job that has no log directory should succeed silently
         let result = store.cleanup(Uuid::now_v7(), 5).await;
         assert!(result.is_ok());
+    }
+
+    // --- Manifest integration tests ---
+
+    #[tokio::test]
+    async fn test_read_manifest_returns_none_when_no_manifest() {
+        let (store, _tmp, job_id) = setup_store().await;
+        let result = store.read_manifest(job_id).await.expect("read_manifest");
+        assert!(
+            result.is_none(),
+            "Expected None when no manifest file exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_manifest_creates_on_first_run() {
+        let (store, _tmp, job_id) = setup_store().await;
+        let dt = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 0).unwrap();
+        let run = make_job_run_with_cost(job_id, 0.50, "claude-sonnet-4-20250514", dt);
+
+        store.create_run(&run).await.expect("create_run");
+        store
+            .update_manifest(job_id, &run)
+            .await
+            .expect("update_manifest");
+
+        let manifest = store
+            .read_manifest(job_id)
+            .await
+            .expect("read_manifest")
+            .expect("manifest should exist");
+
+        assert_eq!(manifest.total_runs, 1);
+        assert!((manifest.total_cost_usd - 0.50).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_update_manifest_accumulates_multiple_runs() {
+        let (store, _tmp, job_id) = setup_store().await;
+        let dt = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 0).unwrap();
+
+        let costs = [0.50, 0.75, 1.25];
+        for cost in costs {
+            let run = make_job_run_with_cost(job_id, cost, "claude-sonnet-4-20250514", dt);
+            store.create_run(&run).await.expect("create_run");
+            store
+                .update_manifest(job_id, &run)
+                .await
+                .expect("update_manifest");
+        }
+
+        let manifest = store
+            .read_manifest(job_id)
+            .await
+            .expect("read_manifest")
+            .expect("manifest should exist");
+
+        assert_eq!(manifest.total_runs, 3);
+        assert!((manifest.total_cost_usd - 2.50).abs() < 1e-10);
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_manifest_reconstructs_from_meta_files() {
+        let (store, _tmp, job_id) = setup_store().await;
+
+        let dates = [
+            Utc.with_ymd_and_hms(2025, 6, 10, 10, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2025, 6, 11, 10, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2025, 6, 12, 10, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2025, 6, 13, 10, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2025, 6, 14, 10, 0, 0).unwrap(),
+        ];
+        let costs = [0.10, 0.20, 0.30, 0.40, 0.50];
+        let expected_total: f64 = costs.iter().sum();
+
+        for (dt, cost) in dates.iter().zip(costs.iter()) {
+            let run = make_job_run_with_cost(job_id, *cost, "claude-sonnet-4-20250514", *dt);
+            store.create_run(&run).await.expect("create_run");
+        }
+
+        let manifest = store
+            .rebuild_manifest(job_id)
+            .await
+            .expect("rebuild_manifest");
+
+        assert_eq!(manifest.total_runs, 5);
+        assert!((manifest.total_cost_usd - expected_total).abs() < 1e-10);
+
+        // Each date should have a daily bucket
+        assert!(manifest.daily_buckets.contains_key("2025-06-10"));
+        assert!(manifest.daily_buckets.contains_key("2025-06-11"));
+        assert!(manifest.daily_buckets.contains_key("2025-06-12"));
+        assert!(manifest.daily_buckets.contains_key("2025-06-13"));
+        assert!(manifest.daily_buckets.contains_key("2025-06-14"));
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_manifest_handles_malformed_meta_files() {
+        let (store, tmp, job_id) = setup_store().await;
+        let dt = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 0).unwrap();
+
+        // Create 2 valid runs
+        for cost in [0.30, 0.40] {
+            let run = make_job_run_with_cost(job_id, cost, "claude-sonnet-4-20250514", dt);
+            store.create_run(&run).await.expect("create_run");
+        }
+
+        // Write a corrupt .meta.json file into the job directory
+        let job_dir = tmp.path().join("logs").join(job_id.to_string());
+        let corrupt_path = job_dir.join("corrupt-run-id.meta.json");
+        tokio::fs::write(&corrupt_path, b"{ this is not valid json !!!")
+            .await
+            .expect("write corrupt file");
+
+        // rebuild_manifest should succeed, skipping the corrupt file
+        let manifest = store
+            .rebuild_manifest(job_id)
+            .await
+            .expect("rebuild_manifest");
+
+        assert_eq!(manifest.total_runs, 2, "Corrupt file should be skipped");
+    }
+
+    #[tokio::test]
+    async fn test_manifest_multiple_days_buckets() {
+        let (store, _tmp, job_id) = setup_store().await;
+
+        let dates = [
+            Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2025, 6, 16, 10, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2025, 6, 17, 10, 0, 0).unwrap(),
+        ];
+
+        for dt in dates {
+            let run = make_job_run_with_cost(job_id, 0.10, "claude-sonnet-4-20250514", dt);
+            store.create_run(&run).await.expect("create_run");
+            store
+                .update_manifest(job_id, &run)
+                .await
+                .expect("update_manifest");
+        }
+
+        let manifest = store
+            .read_manifest(job_id)
+            .await
+            .expect("read_manifest")
+            .expect("manifest should exist");
+
+        assert_eq!(manifest.daily_buckets.len(), 3);
+        assert!(manifest.daily_buckets.contains_key("2025-06-15"));
+        assert!(manifest.daily_buckets.contains_key("2025-06-16"));
+        assert!(manifest.daily_buckets.contains_key("2025-06-17"));
+
+        for (key, bucket) in &manifest.daily_buckets {
+            assert_eq!(bucket.runs, 1, "Daily bucket {} should have 1 run", key);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_atomic_write_no_tmp_file_left() {
+        let (store, tmp, job_id) = setup_store().await;
+        let dt = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 0).unwrap();
+        let run = make_job_run_with_cost(job_id, 0.50, "claude-sonnet-4-20250514", dt);
+
+        store.create_run(&run).await.expect("create_run");
+        store
+            .update_manifest(job_id, &run)
+            .await
+            .expect("update_manifest");
+
+        let job_dir = tmp.path().join("logs").join(job_id.to_string());
+        let manifest_path = job_dir.join("manifest.json");
+        let tmp_path = job_dir.join("manifest.json.tmp");
+
+        assert!(manifest_path.exists(), "manifest.json should exist");
+        assert!(
+            !tmp_path.exists(),
+            "manifest.json.tmp should not exist after atomic write"
+        );
     }
 }

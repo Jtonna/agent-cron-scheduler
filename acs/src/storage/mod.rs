@@ -5,7 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::models::{Job, JobRun, JobUpdate, NewJob};
+use crate::models::{Job, JobManifest, JobRun, JobUpdate, NewJob};
 
 #[async_trait]
 pub trait JobStore: Send + Sync {
@@ -30,4 +30,7 @@ pub trait LogStore: Send + Sync {
         offset: usize,
     ) -> Result<(Vec<JobRun>, usize)>;
     async fn cleanup(&self, job_id: Uuid, max_files: usize) -> Result<()>;
+    async fn read_manifest(&self, job_id: Uuid) -> Result<Option<JobManifest>>;
+    async fn update_manifest(&self, job_id: Uuid, run: &JobRun) -> Result<()>;
+    async fn rebuild_manifest(&self, job_id: Uuid) -> Result<JobManifest>;
 }

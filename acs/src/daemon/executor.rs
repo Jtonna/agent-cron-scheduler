@@ -463,6 +463,9 @@ impl Executor {
                         if let Err(e) = log_store.update_run(&failed_run).await {
                             tracing::error!("Failed to save run on pre-hook failure: {}", e);
                         }
+                        if let Err(e) = log_store.update_manifest(job_id, &failed_run).await {
+                            tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
+                        }
                         let _ = event_tx.send(JobEvent::Completed {
                             job_id,
                             run_id,
@@ -518,6 +521,9 @@ impl Executor {
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on spawn failure: {}", e);
+                    }
+                    if let Err(e) = log_store.update_manifest(job_id, &failed_run).await {
+                        tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
                     }
 
                     // Cleanup old log files
@@ -741,6 +747,9 @@ impl Executor {
                 if let Err(e) = log_store.update_run(&timeout_run).await {
                     tracing::error!("Failed to update run on timeout: {}", e);
                 }
+                if let Err(e) = log_store.update_manifest(job_id, &timeout_run).await {
+                    tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
+                }
                 let _ = event_tx.send(JobEvent::Failed {
                     job_id,
                     run_id,
@@ -775,6 +784,9 @@ impl Executor {
                 };
                 if let Err(e) = log_store.update_run(&killed_run).await {
                     tracing::error!("Failed to update run on kill: {}", e);
+                }
+                if let Err(e) = log_store.update_manifest(job_id, &killed_run).await {
+                    tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
                 }
                 let _ = event_tx.send(JobEvent::Failed {
                     job_id,
@@ -878,6 +890,9 @@ impl Executor {
                     if let Err(e) = log_store.update_run(&completed_run).await {
                         tracing::error!("Failed to update run on completion: {}", e);
                     }
+                    if let Err(e) = log_store.update_manifest(job_id, &completed_run).await {
+                        tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
+                    }
 
                     let _ = event_tx.send(JobEvent::Completed {
                         job_id,
@@ -908,6 +923,9 @@ impl Executor {
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on wait failure: {}", e);
                     }
+                    if let Err(e) = log_store.update_manifest(job_id, &failed_run).await {
+                        tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
+                    }
 
                     let _ = event_tx.send(JobEvent::Failed {
                         job_id,
@@ -937,6 +955,9 @@ impl Executor {
                     };
                     if let Err(e) = log_store.update_run(&failed_run).await {
                         tracing::error!("Failed to update run on join error: {}", e);
+                    }
+                    if let Err(e) = log_store.update_manifest(job_id, &failed_run).await {
+                        tracing::warn!("Failed to update manifest for job {}: {}", job_id, e);
                     }
 
                     let _ = event_tx.send(JobEvent::Failed {
@@ -1047,6 +1068,24 @@ mod tests {
         async fn cleanup(&self, job_id: Uuid, max_files: usize) -> anyhow::Result<()> {
             self.cleanup_calls.write().await.push((job_id, max_files));
             Ok(())
+        }
+
+        async fn read_manifest(
+            &self,
+            _job_id: Uuid,
+        ) -> anyhow::Result<Option<crate::models::JobManifest>> {
+            Ok(None)
+        }
+
+        async fn update_manifest(&self, _job_id: Uuid, _run: &JobRun) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn rebuild_manifest(
+            &self,
+            _job_id: Uuid,
+        ) -> anyhow::Result<crate::models::JobManifest> {
+            Ok(crate::models::JobManifest::new(_job_id))
         }
     }
 

@@ -18,6 +18,7 @@ the **data directory** (`{data_dir}`).
 ├── scripts/             # Reserved directory (created on startup; not currently used for ScriptFile path resolution)
 └── logs/
     └── {job_id}/        # One directory per job, named by UUID
+        ├── manifest.json         # Aggregated cost/token/runtime statistics across all runs
         ├── {run_id}.log          # Combined process output for a single run
         └── {run_id}.meta.json    # Structured metadata for a single run
 ```
@@ -396,6 +397,9 @@ pub trait LogStore: Send + Sync {
         offset: usize,
     ) -> Result<(Vec<JobRun>, usize)>;
     async fn cleanup(&self, job_id: Uuid, max_files: usize) -> Result<()>;
+    async fn read_manifest(&self, job_id: Uuid) -> Result<Option<JobManifest>>;
+    async fn update_manifest(&self, job_id: Uuid, run: &JobRun) -> Result<()>;
+    async fn rebuild_manifest(&self, job_id: Uuid) -> Result<JobManifest>;
 }
 ```
 
@@ -407,4 +411,68 @@ pub trait LogStore: Send + Sync {
 | `read_log` | Reads the full log or the last `tail` lines. Returns an empty string if the file is missing. |
 | `list_runs` | Lists all runs for a job with pagination; returns `(paginated_runs, total_count)`. |
 | `cleanup` | Removes the oldest runs beyond `max_files`, deleting both `.log` and `.meta.json` for each. |
+| `read_manifest` | Reads `manifest.json` for a job; returns `None` if the file is missing or cannot be parsed. |
+| `update_manifest` | Merges a completed run's data into the manifest, creating it if it does not exist. |
+| `rebuild_manifest` | Reconstructs the manifest by replaying all `.meta.json` files in the job's log directory. |
+
+---
+
+## 8. Per-Job Manifest Files
+
+**Source:** `acs/src/storage/logs.rs`, `acs/src/models/manifest.rs`
+
+Each job maintains a `manifest.json` file that aggregates cost, token usage, and runtime statistics across all of its runs.
+
+### Location
+
+```
+{data_dir}/logs/{job_id}/manifest.json
+```
+
+### When updated
+
+`update_manifest` is called automatically after every run completes, regardless of outcome (success, failure, timeout, or kill). It reads the existing manifest (creating a new one if absent), merges the completed run via `JobManifest::merge_run`, and writes the result back atomically using a temp-file-then-rename pattern.
+
+If the manifest is missing or corrupt, `rebuild_manifest` reconstructs it by iterating all `.meta.json` files in the job's log directory and replaying each run through `merge_run`. This makes the manifest self-healing — it can always be regenerated from the source-of-truth run files.
+
+### Data structures
+
+```rust
+pub struct JobManifest {
+    pub job_id: Uuid,
+    pub version: u32,
+    pub updated_at: DateTime<Utc>,
+    pub total_runs: u64,
+    pub total_cost_usd: f64,
+    pub total_duration_ms: u64,
+    pub daily_buckets: BTreeMap<String, TimeBucket>,   // key: "YYYY-MM-DD"
+    pub weekly_buckets: BTreeMap<String, TimeBucket>,  // key: "YYYY-WNN" (ISO week)
+    pub monthly_buckets: BTreeMap<String, TimeBucket>, // key: "YYYY-MM"
+}
+
+pub struct TimeBucket {
+    pub runs: u64,
+    pub cost_usd: f64,
+    pub duration_ms: u64,
+    pub num_turns: u64,
+    pub models: BTreeMap<String, ModelUsageBucket>,
+}
+
+pub struct ModelUsageBucket {
+    pub runs: u64,
+    pub cost_usd: f64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+}
+```
+
+`JobManifest` holds lifetime totals at the top level, plus three sets of time-bucketed `TimeBucket`s. Each `TimeBucket` further breaks down token usage per model via `ModelUsageBucket`. Runs that have no cost or usage data (e.g., non-Claude shell commands) are still counted in `runs` with zero values for the cost/token fields.
+
+All three struct types use `#[serde(default)]`, so older manifest files missing newer fields will deserialize safely with zero values rather than failing.
+
+### Atomic writes
+
+Manifests are written using the same temp-file-then-rename strategy as `jobs.json`: the updated manifest is serialized to `manifest.json.tmp`, then renamed over `manifest.json`. This ensures no partial writes are visible even if the process is interrupted mid-write.
 

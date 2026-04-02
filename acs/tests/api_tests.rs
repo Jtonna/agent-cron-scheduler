@@ -9,7 +9,9 @@ use std::time::Instant;
 
 use agent_cron_scheduler::daemon::events::JobEvent;
 use agent_cron_scheduler::daemon::executor::Executor;
-use agent_cron_scheduler::models::{DaemonConfig, DispatchRequest, Job, JobRun, JobUpdate, NewJob};
+use agent_cron_scheduler::models::{
+    DaemonConfig, DispatchRequest, Job, JobManifest, JobRun, JobUpdate, NewJob,
+};
 use agent_cron_scheduler::pty::MockPtySpawner;
 use agent_cron_scheduler::server::{self, AppState};
 use agent_cron_scheduler::storage::{JobStore, LogStore};
@@ -169,6 +171,15 @@ impl LogStore for InMemoryLogStore {
     async fn cleanup(&self, _job_id: Uuid, _max_files: usize) -> anyhow::Result<()> {
         Ok(())
     }
+    async fn read_manifest(&self, _job_id: Uuid) -> anyhow::Result<Option<JobManifest>> {
+        Ok(None)
+    }
+    async fn update_manifest(&self, _job_id: Uuid, _run: &JobRun) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn rebuild_manifest(&self, _job_id: Uuid) -> anyhow::Result<JobManifest> {
+        Ok(JobManifest::new(_job_id))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +240,15 @@ impl LogStore for StoringLogStore {
     }
     async fn cleanup(&self, _job_id: Uuid, _max_files: usize) -> anyhow::Result<()> {
         Ok(())
+    }
+    async fn read_manifest(&self, _job_id: Uuid) -> anyhow::Result<Option<JobManifest>> {
+        Ok(None)
+    }
+    async fn update_manifest(&self, _job_id: Uuid, _run: &JobRun) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn rebuild_manifest(&self, _job_id: Uuid) -> anyhow::Result<JobManifest> {
+        Ok(JobManifest::new(_job_id))
     }
 }
 
