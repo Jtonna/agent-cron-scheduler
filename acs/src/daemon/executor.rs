@@ -95,6 +95,9 @@ async fn run_hook(
 }
 
 /// Extracted cost/usage summary from a Claude CLI NDJSON log.
+///
+/// All fields represent aggregates summed across all Claude CLI invocations in the log,
+/// not a single invocation.
 struct CostSummary {
     total_cost_usd: Option<f64>,
     duration_ms: Option<u64>,
@@ -109,11 +112,18 @@ struct CostSummary {
 /// - `{"type":"system","subtype":"init",...,"model":"<model>"}` — emitted at session start
 /// - `{"type":"result",...,"total_cost_usd":...}` — emitted at session end
 ///
-/// The entire log is scanned to support jobs with multiple Claude invocations.
-/// Costs from all `"type":"result"` events are summed. The `model` field is taken
-/// from the first `"type":"system"` event. Non-NDJSON lines are silently skipped.
-/// As a performance optimisation, `serde_json::from_str` is only called on lines
-/// that contain the substring `"type"`.
+/// The entire log content is scanned in a single pass to support jobs with multiple Claude invocations.
+///
+/// Aggregation behavior:
+/// - `total_cost_usd`, `duration_ms`, and `num_turns` are summed across all `"type":"result"` events.
+/// - `usage` token fields are merged (summed) across all invocations.
+/// - `model` is set to the first model found from `"type":"system"` events.
+///
+/// Known limitation: If different models are used across invocations in the same log, only the
+/// first model encountered is reported.
+///
+/// Non-NDJSON lines are silently skipped. As a performance optimisation, `serde_json::from_str`
+/// is only called on lines that contain the substring `"type"`.
 fn extract_cost_from_log(log_content: &[u8]) -> CostSummary {
     let mut summary = CostSummary {
         total_cost_usd: None,
