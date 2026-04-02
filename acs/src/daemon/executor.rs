@@ -14,8 +14,8 @@ use crate::storage::LogStore;
 
 /// Result of executing a hook command.
 enum HookOutcome {
-    /// Hook succeeded (exit code zero).
-    Success,
+    /// Hook succeeded (exit code zero) with captured stdout.
+    Success(Vec<u8>),
     /// Hook failed: carries a human-readable description of the failure.
     Failure(String),
 }
@@ -77,7 +77,7 @@ async fn run_hook(
     match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await {
         Ok(Ok(output)) => {
             if output.status.success() {
-                HookOutcome::Success
+                HookOutcome::Success(output.stdout)
             } else {
                 let code = output.status.code().unwrap_or(-1);
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -400,7 +400,7 @@ impl Executor {
                 )
                 .await
                 {
-                    HookOutcome::Success => {
+                    HookOutcome::Success(_stdout) => {
                         tracing::debug!("Pre-hook succeeded for job {}", job_id);
                     }
                     HookOutcome::Failure(detail) => {
@@ -771,7 +771,7 @@ impl Executor {
                         )
                         .await
                         {
-                            HookOutcome::Success => {
+                            HookOutcome::Success(_stdout) => {
                                 tracing::debug!("Post-hook succeeded for job {}", job_id);
                                 (RunStatus::Completed, None)
                             }
