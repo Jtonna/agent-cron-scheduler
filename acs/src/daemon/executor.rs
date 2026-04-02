@@ -833,13 +833,29 @@ impl Executor {
                     total_bytes += post_hook_stdout_len;
 
                     // Re-extract cost to include any hook costs appended to the log
-                    let (cost_total_usd, cost_duration_ms, cost_num_turns, cost_model, cost_usage) = if post_hook_stdout_len > 0 {
-                        let raw = log_store.read_log(job_id, run_id, None).await.unwrap_or_default();
-                        let c = extract_cost_from_log(raw.as_bytes());
-                        (c.total_cost_usd, c.duration_ms, c.num_turns, c.model, c.usage)
-                    } else {
-                        (cost_total_usd, cost_duration_ms, cost_num_turns, cost_model, cost_usage)
-                    };
+                    let (cost_total_usd, cost_duration_ms, cost_num_turns, cost_model, cost_usage) =
+                        if post_hook_stdout_len > 0 {
+                            let raw = log_store
+                                .read_log(job_id, run_id, None)
+                                .await
+                                .unwrap_or_default();
+                            let c = extract_cost_from_log(raw.as_bytes());
+                            (
+                                c.total_cost_usd,
+                                c.duration_ms,
+                                c.num_turns,
+                                c.model,
+                                c.usage,
+                            )
+                        } else {
+                            (
+                                cost_total_usd,
+                                cost_duration_ms,
+                                cost_num_turns,
+                                cost_model,
+                                cost_usage,
+                            )
+                        };
 
                     // Per SPEC: non-zero exit is Completed (not Failed).
                     // Failed = infrastructure error only.
@@ -3033,6 +3049,213 @@ mod tests {
             summary.model.as_deref(),
             Some("claude-sonnet-4-20250514"),
             "model should be taken from the first system event"
+        );
+    }
+
+    // --- Hook cost capture integration tests ---
+
+    /// Write NDJSON content to a temp file and return a shell command that cats it.
+    /// Works cross-platform (type on Windows, cat on Unix).
+    fn ndjson_hook_command(dir: &std::path::Path, filename: &str, content: &str) -> String {
+        let file_path = dir.join(filename);
+        std::fs::write(&file_path, content).expect("write ndjson file");
+        let path_str = file_path.to_string_lossy().to_string();
+        if cfg!(target_os = "windows") {
+            // cmd.exe /C passes the command as a single argument; avoid extra
+            // quotes around the path (temp paths never contain spaces).
+            format!("type {}", path_str)
+        } else {
+            format!("cat \"{}\"", path_str)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pre_hook_claude_cost_captured() {
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+
+        let ndjson = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n",
+            "{\"type\":\"result\",\"total_cost_usd\":0.05,\"duration_ms\":2000,\"num_turns\":2,\"usage\":{\"input_tokens\":500,\"output_tokens\":200}}\n"
+        );
+        let hook_cmd = ndjson_hook_command(tmp_dir.path(), "pre_hook_ndjson.txt", ndjson);
+
+        // Main command produces plain output (no Claude NDJSON)
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"done\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.pre_hook = Some(hook_cmd);
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::Completed,
+            "Job should complete successfully"
+        );
+        assert_eq!(
+            run.total_cost_usd,
+            Some(0.05),
+            "Pre-hook cost should be captured. Run: {:?}",
+            run
+        );
+        assert_eq!(run.duration_ms, Some(2000));
+        assert_eq!(run.num_turns, Some(2));
+        assert_eq!(
+            run.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "Model should be captured from pre-hook NDJSON"
+        );
+        assert!(
+            run.usage.is_some(),
+            "Usage should be captured from pre-hook"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_post_hook_claude_cost_captured() {
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+
+        let ndjson = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n",
+            "{\"type\":\"result\",\"total_cost_usd\":0.08,\"duration_ms\":3000,\"num_turns\":4,\"usage\":{\"input_tokens\":800,\"output_tokens\":300}}\n"
+        );
+        let hook_cmd = ndjson_hook_command(tmp_dir.path(), "post_hook_ndjson.txt", ndjson);
+
+        // Main command produces plain output (no Claude NDJSON)
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"done\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.post_hook = Some(hook_cmd);
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::Completed,
+            "Job should complete successfully"
+        );
+        // Post-hook output triggers re-extraction, so cost should be present
+        assert_eq!(
+            run.total_cost_usd,
+            Some(0.08),
+            "Post-hook cost should be captured via re-extraction. Run: {:?}",
+            run
+        );
+        assert_eq!(run.duration_ms, Some(3000));
+        assert_eq!(run.num_turns, Some(4));
+        assert_eq!(
+            run.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "Model should be captured from post-hook NDJSON"
+        );
+        assert!(
+            run.usage.is_some(),
+            "Usage should be captured from post-hook"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_main_and_post_hook_costs_summed() {
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+
+        // Post-hook NDJSON (cost = 0.03)
+        let post_ndjson = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n",
+            "{\"type\":\"result\",\"total_cost_usd\":0.03,\"duration_ms\":1500,\"num_turns\":1,\"usage\":{\"input_tokens\":200,\"output_tokens\":100}}\n"
+        );
+        let hook_cmd = ndjson_hook_command(tmp_dir.path(), "post_hook_sum.txt", post_ndjson);
+
+        // Main command produces Claude NDJSON via the mock PTY (cost = 0.07)
+        let main_ndjson_system =
+            b"{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n"
+                .to_vec();
+        let main_ndjson_result =
+            b"{\"type\":\"result\",\"total_cost_usd\":0.07,\"duration_ms\":5000,\"num_turns\":3,\"usage\":{\"input_tokens\":600,\"output_tokens\":400}}\n"
+                .to_vec();
+
+        let spawner =
+            MockPtySpawner::with_output_and_exit(vec![main_ndjson_system, main_ndjson_result], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.post_hook = Some(hook_cmd);
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            run.status,
+            RunStatus::Completed,
+            "Job should complete successfully"
+        );
+        // Costs should be summed: 0.07 (main) + 0.03 (post-hook) = 0.10
+        let total = run.total_cost_usd.expect("total_cost_usd should be Some");
+        assert!(
+            (total - 0.10).abs() < 1e-9,
+            "Costs should be summed: expected 0.10, got {}",
+            total
+        );
+        // duration_ms should be summed: 5000 + 1500 = 6500
+        assert_eq!(
+            run.duration_ms,
+            Some(6500),
+            "Duration ms should be summed from main and post-hook"
+        );
+        // num_turns should be summed: 3 + 1 = 4
+        assert_eq!(
+            run.num_turns,
+            Some(4),
+            "Num turns should be summed from main and post-hook"
+        );
+        // Usage tokens should be summed
+        let usage = run.usage.as_ref().expect("usage should be Some");
+        assert_eq!(
+            usage["input_tokens"], 800,
+            "Input tokens should be summed: 600 + 200"
+        );
+        assert_eq!(
+            usage["output_tokens"], 500,
+            "Output tokens should be summed: 400 + 100"
         );
     }
 }
