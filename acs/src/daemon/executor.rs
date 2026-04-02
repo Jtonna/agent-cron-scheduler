@@ -2861,4 +2861,178 @@ mod tests {
         assert_eq!(summary.num_turns, Some(7));
         assert_eq!(summary.model.as_deref(), Some("claude-sonnet-4-20250514"));
     }
+
+    #[test]
+    fn test_extract_cost_two_sequential_invocations() {
+        // Two complete Claude NDJSON blocks back-to-back in the same log.
+        let log = concat!(
+            // First invocation
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"First"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.05,"duration_ms":1000,"num_turns":3,"usage":{"input_tokens":100,"output_tokens":50}}"#,
+            "\n",
+            // Second invocation
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Second"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.08,"duration_ms":2000,"num_turns":5,"usage":{"input_tokens":200,"output_tokens":80}}"#,
+            "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // Costs should be summed across both invocations.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.13).abs() < 1e-10,
+            "expected total_cost_usd ~0.13, got {:?}",
+            summary.total_cost_usd
+        );
+        assert_eq!(summary.duration_ms, Some(3000));
+        assert_eq!(summary.num_turns, Some(8));
+        // Model comes from the first system event.
+        assert_eq!(summary.model.as_deref(), Some("claude-sonnet-4-20250514"));
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 300);
+        assert_eq!(usage["output_tokens"], 130);
+    }
+
+    #[test]
+    fn test_extract_cost_mixed_shell_and_claude_output() {
+        // Shell output lines surrounding two Claude NDJSON blocks.
+        let log = concat!(
+            "Starting backup...\n",
+            "Connecting to remote host...\n",
+            // First Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.03,"duration_ms":500,"num_turns":2,"usage":{"input_tokens":60,"output_tokens":20}}"#,
+            "\n",
+            "Backup complete.\n",
+            "Verifying checksums...\n",
+            // Second Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.07,"duration_ms":1500,"num_turns":4,"usage":{"input_tokens":140,"output_tokens":60}}"#,
+            "\n",
+            "All done.\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // Shell output lines must be silently ignored; costs from both Claude blocks summed.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.10).abs() < 1e-10,
+            "expected total_cost_usd ~0.10, got {:?}",
+            summary.total_cost_usd
+        );
+        assert_eq!(summary.duration_ms, Some(2000));
+        assert_eq!(summary.num_turns, Some(6));
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 200);
+        assert_eq!(usage["output_tokens"], 80);
+    }
+
+    #[test]
+    fn test_extract_cost_large_env_dump_before_system_event() {
+        // Simulate a 6KB+ environment variable dump that precedes the Claude NDJSON block.
+        // This was the old head-window bug: the system event was beyond the first ~4KB window
+        // so the model was never extracted. The full-scan approach must handle it correctly.
+        let env_dump: String = (0..200)
+            .map(|i| format!("ENV_VAR_NUMBER_{}=some_value_that_is_quite_long_{}\n", i, i))
+            .collect();
+        let claude_block = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.05,"duration_ms":2000,"num_turns":2,"usage":{"input_tokens":100,"output_tokens":40}}"#,
+            "\n"
+        );
+
+        let log = format!("{}{}", env_dump, claude_block);
+        let bytes = log.as_bytes();
+
+        // Confirm the env dump is genuinely large enough to trigger the old bug.
+        assert!(
+            bytes.len() > 6144,
+            "env dump should be > 6KB for this test, got {} bytes",
+            bytes.len()
+        );
+
+        let summary = extract_cost_from_log(bytes);
+        assert_eq!(summary.total_cost_usd, Some(0.05));
+        // Model must be found even though it appears far into the log.
+        assert_eq!(
+            summary.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "model should be extracted correctly despite large env dump prefix"
+        );
+    }
+
+    #[test]
+    fn test_extract_cost_hook_output_appended_to_main_log() {
+        // Simulates a post-hook whose NDJSON output is appended to the main command log,
+        // separated by a plain-text comment line.
+        let log = concat!(
+            // Main command Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.04,"duration_ms":800,"num_turns":2,"usage":{"input_tokens":80,"output_tokens":30}}"#,
+            "\n",
+            // Plain separator (not JSON)
+            "--- post-hook ---\n",
+            // Post-hook Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.02,"duration_ms":400,"num_turns":1,"usage":{"input_tokens":40,"output_tokens":15}}"#,
+            "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // Costs from both blocks must be summed; separator line must be ignored.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.06).abs() < 1e-10,
+            "expected total_cost_usd ~0.06, got {:?}",
+            summary.total_cost_usd
+        );
+        assert_eq!(summary.duration_ms, Some(1200));
+        assert_eq!(summary.num_turns, Some(3));
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 120);
+        assert_eq!(usage["output_tokens"], 45);
+    }
+
+    #[test]
+    fn test_extract_cost_different_models_across_invocations() {
+        // When two invocations use different models, the model field should contain
+        // only the FIRST model seen (from the first system event).
+        let log = concat!(
+            // First invocation — sonnet
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.05,"duration_ms":1000,"num_turns":2,"usage":{"input_tokens":100,"output_tokens":40}}"#,
+            "\n",
+            // Second invocation — opus
+            r#"{"type":"system","subtype":"init","model":"claude-opus-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.20,"duration_ms":3000,"num_turns":4,"usage":{"input_tokens":400,"output_tokens":160}}"#,
+            "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // Costs are still summed across both invocations.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.25).abs() < 1e-10,
+            "expected total_cost_usd ~0.25, got {:?}",
+            summary.total_cost_usd
+        );
+        // Model must be the FIRST one encountered.
+        assert_eq!(
+            summary.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "model should be taken from the first system event"
+        );
+    }
 }
