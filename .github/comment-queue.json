@@ -1,1 +1,6 @@
-[]
+[
+  {
+    "issue": 70,
+    "body": "## Approved Implementation Plan\n\n### Sub-tasks\n\n| # | Description | Complexity | Dependencies |\n|---|------------|------------|-------------|\n| 1 | Fix `extract_cost_from_log()` — full scan + sum all result events, merge usage (missing fields = 0, union of all fields), keep first model | Standard | None |\n| 2 | Modify `run_hook()` to return stdout in `HookOutcome::Success(Vec<u8>)` | Light | None |\n| 3 | Append pre-hook and post-hook stdout to log store; re-extract cost after post-hook; update `log_size_bytes` | Standard | 1, 2 |\n| 4 | Unit tests: multi-invocation summing, mixed output, large env dump, hook output; rename `test_extract_cost_large_log_uses_tail_window` | Standard | 1 |\n| 5 | Integration tests for hook cost capture (mock-based) | Complex | 1, 2, 3 |\n| 6 | Update doc comments on `extract_cost_from_log` and `CostSummary` | Light | 1 |\n\n### Execution Order\n- Phase 1 (parallel): Sub-tasks 1, 2\n- Phase 2: Sub-task 3\n- Phase 3 (parallel): Sub-tasks 4, 5, 6\n\n🤖 Plan auto-approved (autonomous nightly run)"
+  }
+]
