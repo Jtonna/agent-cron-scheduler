@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use uuid::Uuid;
 
+use crate::models::manifest::JobManifest;
 use crate::models::JobRun;
 use crate::storage::LogStore;
 
@@ -34,6 +35,11 @@ impl FsLogStore {
     /// Get the path to a run's log file.
     fn log_path(&self, job_id: Uuid, run_id: Uuid) -> PathBuf {
         self.job_dir(job_id).join(format!("{}.log", run_id))
+    }
+
+    /// Get the path to a job's manifest file.
+    fn manifest_path(&self, job_id: Uuid) -> PathBuf {
+        self.job_dir(job_id).join("manifest.json")
     }
 }
 
@@ -210,6 +216,130 @@ impl LogStore for FsLogStore {
         }
 
         Ok(())
+    }
+
+    async fn read_manifest(&self, job_id: Uuid) -> Result<Option<JobManifest>> {
+        let path = self.manifest_path(job_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .context("Failed to read manifest file")?;
+
+        match serde_json::from_str::<JobManifest>(&content) {
+            Ok(manifest) => Ok(Some(manifest)),
+            Err(e) => {
+                tracing::warn!("Corrupt manifest file {:?}: {}", path, e);
+                Ok(None)
+            }
+        }
+    }
+
+    async fn update_manifest(&self, job_id: Uuid, run: &JobRun) -> Result<()> {
+        let mut manifest = self
+            .read_manifest(job_id)
+            .await?
+            .unwrap_or_else(|| JobManifest::new(job_id));
+
+        manifest.merge_run(run);
+
+        let json =
+            serde_json::to_string_pretty(&manifest).context("Failed to serialize manifest")?;
+
+        let job_dir = self.job_dir(job_id);
+        tokio::fs::create_dir_all(&job_dir)
+            .await
+            .context("Failed to create job directory")?;
+
+        let manifest_path = self.manifest_path(job_id);
+        let tmp_path = job_dir.join("manifest.json.tmp");
+
+        tokio::fs::write(&tmp_path, json.as_bytes())
+            .await
+            .context("Failed to write temporary manifest file")?;
+
+        // On Windows, rename fails if the target exists, so remove it first
+        if manifest_path.exists() {
+            tokio::fs::remove_file(&manifest_path)
+                .await
+                .context("Failed to remove existing manifest file")?;
+        }
+
+        tokio::fs::rename(&tmp_path, &manifest_path)
+            .await
+            .context("Failed to rename temporary manifest file")?;
+
+        Ok(())
+    }
+
+    async fn rebuild_manifest(&self, job_id: Uuid) -> Result<JobManifest> {
+        let mut manifest = JobManifest::new(job_id);
+        let job_dir = self.job_dir(job_id);
+
+        if job_dir.exists() {
+            let mut runs = Vec::new();
+            let mut entries = tokio::fs::read_dir(&job_dir)
+                .await
+                .context("Failed to read job log directory")?;
+
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.ends_with(".meta.json") {
+                        let content = tokio::fs::read_to_string(&path)
+                            .await
+                            .context("Failed to read run metadata")?;
+                        match serde_json::from_str::<JobRun>(&content) {
+                            Ok(run) => runs.push(run),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Skipping malformed meta file {:?}: {}",
+                                    path,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Sort by started_at ascending for deterministic bucket ordering
+            runs.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+
+            for run in &runs {
+                manifest.merge_run(run);
+            }
+        }
+
+        // Write atomically
+        let json =
+            serde_json::to_string_pretty(&manifest).context("Failed to serialize manifest")?;
+
+        tokio::fs::create_dir_all(&job_dir)
+            .await
+            .context("Failed to create job directory")?;
+
+        let manifest_path = self.manifest_path(job_id);
+        let tmp_path = job_dir.join("manifest.json.tmp");
+
+        tokio::fs::write(&tmp_path, json.as_bytes())
+            .await
+            .context("Failed to write temporary manifest file")?;
+
+        // On Windows, rename fails if the target exists, so remove it first
+        if manifest_path.exists() {
+            tokio::fs::remove_file(&manifest_path)
+                .await
+                .context("Failed to remove existing manifest file")?;
+        }
+
+        tokio::fs::rename(&tmp_path, &manifest_path)
+            .await
+            .context("Failed to rename temporary manifest file")?;
+
+        Ok(manifest)
     }
 }
 
