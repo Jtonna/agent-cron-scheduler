@@ -1116,6 +1116,28 @@ mod tests {
         async fn cleanup(&self, _job_id: Uuid, _max_files: usize) -> anyhow::Result<()> {
             Ok(())
         }
+
+        async fn read_manifest(
+            &self,
+            _job_id: Uuid,
+        ) -> anyhow::Result<Option<crate::models::JobManifest>> {
+            Ok(None)
+        }
+
+        async fn update_manifest(
+            &self,
+            _job_id: Uuid,
+            _run: &JobRun,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn rebuild_manifest(
+            &self,
+            job_id: Uuid,
+        ) -> anyhow::Result<crate::models::JobManifest> {
+            Ok(crate::models::JobManifest::new(job_id))
+        }
     }
 
     // =======================================================================
