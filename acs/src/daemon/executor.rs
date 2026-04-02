@@ -407,6 +407,10 @@ impl Executor {
 
         // Spawn the execution task
         let join_handle = tokio::spawn(async move {
+            // Track bytes written by hooks (outside the PTY log writer) so they
+            // can be added to total_bytes after the log writer finishes.
+            let mut pre_hook_stdout_len: u64 = 0;
+
             // Run pre-hook if configured (before PTY spawn)
             if let Some(ref hook_cmd) = effective_pre_hook {
                 tracing::debug!("Running pre-hook for job {}: {}", job_id, hook_cmd);
@@ -419,8 +423,12 @@ impl Executor {
                 )
                 .await
                 {
-                    HookOutcome::Success(_stdout) => {
+                    HookOutcome::Success(stdout) => {
                         tracing::debug!("Pre-hook succeeded for job {}", job_id);
+                        if !stdout.is_empty() {
+                            pre_hook_stdout_len = stdout.len() as u64;
+                            log_store.append_log(job_id, run_id, &stdout).await.ok();
+                        }
                     }
                     HookOutcome::Failure(detail) => {
                         let error_msg = format!("Pre-hook failed: {}", detail);
@@ -678,7 +686,9 @@ impl Executor {
             let exit_result = read_handle.await;
 
             // Wait for log writer to finish and get total bytes
-            let total_bytes: u64 = (log_writer_handle.await).unwrap_or_default();
+            let mut total_bytes: u64 = (log_writer_handle.await).unwrap_or_default();
+            // Include bytes written directly by the pre-hook (outside the log writer)
+            total_bytes += pre_hook_stdout_len;
 
             let finished_at = Utc::now();
 
@@ -777,6 +787,7 @@ impl Executor {
                     let exit_code = status.code().unwrap_or(-1);
 
                     // Run post-hook if configured
+                    let mut post_hook_stdout_len: u64 = 0;
                     let (final_status, hook_error) = if let Some(ref hook_cmd) = effective_post_hook
                     {
                         tracing::debug!("Running post-hook for job {}: {}", job_id, hook_cmd);
@@ -790,8 +801,12 @@ impl Executor {
                         )
                         .await
                         {
-                            HookOutcome::Success(_stdout) => {
+                            HookOutcome::Success(stdout) => {
                                 tracing::debug!("Post-hook succeeded for job {}", job_id);
+                                if !stdout.is_empty() {
+                                    post_hook_stdout_len = stdout.len() as u64;
+                                    log_store.append_log(job_id, run_id, &stdout).await.ok();
+                                }
                                 (RunStatus::Completed, None)
                             }
                             HookOutcome::Failure(detail) => {
@@ -802,6 +817,18 @@ impl Executor {
                         }
                     } else {
                         (RunStatus::Completed, None)
+                    };
+
+                    // Add post-hook stdout bytes to total log size
+                    total_bytes += post_hook_stdout_len;
+
+                    // Re-extract cost to include any hook costs appended to the log
+                    let (cost_total_usd, cost_duration_ms, cost_num_turns, cost_model, cost_usage) = if post_hook_stdout_len > 0 {
+                        let raw = log_store.read_log(job_id, run_id, None).await.unwrap_or_default();
+                        let c = extract_cost_from_log(raw.as_bytes());
+                        (c.total_cost_usd, c.duration_ms, c.num_turns, c.model, c.usage)
+                    } else {
+                        (cost_total_usd, cost_duration_ms, cost_num_turns, cost_model, cost_usage)
                     };
 
                     // Per SPEC: non-zero exit is Completed (not Failed).
