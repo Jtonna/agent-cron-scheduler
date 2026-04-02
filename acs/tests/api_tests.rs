@@ -139,7 +139,21 @@ impl JobStore for InMemoryJobStore {
     }
 }
 
-struct InMemoryLogStore;
+struct InMemoryLogStore {
+    manifests: RwLock<HashMap<Uuid, JobManifest>>,
+}
+
+impl InMemoryLogStore {
+    fn new() -> Self {
+        Self {
+            manifests: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub async fn seed_manifest(&self, job_id: Uuid, manifest: JobManifest) {
+        self.manifests.write().await.insert(job_id, manifest);
+    }
+}
 
 #[async_trait]
 impl LogStore for InMemoryLogStore {
@@ -171,10 +185,15 @@ impl LogStore for InMemoryLogStore {
     async fn cleanup(&self, _job_id: Uuid, _max_files: usize) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn read_manifest(&self, _job_id: Uuid) -> anyhow::Result<Option<JobManifest>> {
-        Ok(None)
+    async fn read_manifest(&self, job_id: Uuid) -> anyhow::Result<Option<JobManifest>> {
+        Ok(self.manifests.read().await.get(&job_id).cloned())
     }
-    async fn update_manifest(&self, _job_id: Uuid, _run: &JobRun) -> anyhow::Result<()> {
+    async fn update_manifest(&self, job_id: Uuid, run: &JobRun) -> anyhow::Result<()> {
+        let mut manifests = self.manifests.write().await;
+        let manifest = manifests
+            .entry(job_id)
+            .or_insert_with(|| JobManifest::new(job_id));
+        manifest.merge_run(run);
         Ok(())
     }
     async fn rebuild_manifest(&self, _job_id: Uuid) -> anyhow::Result<JobManifest> {
@@ -188,13 +207,19 @@ impl LogStore for InMemoryLogStore {
 
 struct StoringLogStore {
     runs: RwLock<Vec<JobRun>>,
+    manifests: RwLock<HashMap<Uuid, JobManifest>>,
 }
 
 impl StoringLogStore {
     fn new() -> Self {
         Self {
             runs: RwLock::new(Vec::new()),
+            manifests: RwLock::new(HashMap::new()),
         }
+    }
+
+    pub async fn seed_manifest(&self, job_id: Uuid, manifest: JobManifest) {
+        self.manifests.write().await.insert(job_id, manifest);
     }
 }
 
@@ -241,10 +266,15 @@ impl LogStore for StoringLogStore {
     async fn cleanup(&self, _job_id: Uuid, _max_files: usize) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn read_manifest(&self, _job_id: Uuid) -> anyhow::Result<Option<JobManifest>> {
-        Ok(None)
+    async fn read_manifest(&self, job_id: Uuid) -> anyhow::Result<Option<JobManifest>> {
+        Ok(self.manifests.read().await.get(&job_id).cloned())
     }
-    async fn update_manifest(&self, _job_id: Uuid, _run: &JobRun) -> anyhow::Result<()> {
+    async fn update_manifest(&self, job_id: Uuid, run: &JobRun) -> anyhow::Result<()> {
+        let mut manifests = self.manifests.write().await;
+        let manifest = manifests
+            .entry(job_id)
+            .or_insert_with(|| JobManifest::new(job_id));
+        manifest.merge_run(run);
         Ok(())
     }
     async fn rebuild_manifest(&self, _job_id: Uuid) -> anyhow::Result<JobManifest> {
@@ -260,7 +290,7 @@ async fn spawn_test_server() -> (String, tokio::task::JoinHandle<()>) {
     let (event_tx, _) = broadcast::channel::<JobEvent>(4096);
     let state = Arc::new(AppState {
         job_store: Arc::new(InMemoryJobStore::new()),
-        log_store: Arc::new(InMemoryLogStore),
+        log_store: Arc::new(InMemoryLogStore::new()),
         event_tx,
         scheduler_notify: Arc::new(Notify::new()),
         config: Arc::new(DaemonConfig::default()),
