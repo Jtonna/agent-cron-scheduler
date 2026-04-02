@@ -10,7 +10,7 @@ use std::time::Instant;
 use agent_cron_scheduler::daemon::events::JobEvent;
 use agent_cron_scheduler::daemon::executor::Executor;
 use agent_cron_scheduler::models::{
-    DaemonConfig, DispatchRequest, Job, JobManifest, JobRun, JobUpdate, NewJob,
+    DaemonConfig, DispatchRequest, ExecutionType, Job, JobManifest, JobRun, JobUpdate, NewJob,
 };
 use agent_cron_scheduler::pty::MockPtySpawner;
 use agent_cron_scheduler::server::{self, AppState};
@@ -711,6 +711,444 @@ async fn test_sse_connection() {
         Ok(r) => assert_eq!(r.status(), 200),
         Err(e) => assert!(e.is_timeout(), "Expected timeout, got: {}", e),
     }
+}
+
+/// Spawn a test server that exposes the InMemoryJobStore and InMemoryLogStore
+/// so tests can seed data before making HTTP requests.
+/// Returns (base_url, Arc<InMemoryJobStore>, Arc<InMemoryLogStore>, handle).
+async fn spawn_test_server_with_stores() -> (
+    String,
+    Arc<InMemoryJobStore>,
+    Arc<InMemoryLogStore>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (event_tx, _) = broadcast::channel::<JobEvent>(4096);
+    let job_store = Arc::new(InMemoryJobStore::new());
+    let log_store = Arc::new(InMemoryLogStore::new());
+
+    let state = Arc::new(AppState {
+        job_store: Arc::clone(&job_store) as Arc<dyn JobStore>,
+        log_store: Arc::clone(&log_store) as Arc<dyn LogStore>,
+        event_tx,
+        scheduler_notify: Arc::new(Notify::new()),
+        config: Arc::new(DaemonConfig::default()),
+        start_time: Instant::now(),
+        active_runs: Arc::new(RwLock::new(HashMap::new())),
+        shutdown_tx: None,
+        dispatch_tx: None,
+    });
+
+    let router = server::create_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind to random port");
+    let addr = listener.local_addr().expect("get local addr");
+    let base_url = format!("http://{}", addr);
+
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, router).await.ok();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    (base_url, job_store, log_store, handle)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for building test manifests
+// ---------------------------------------------------------------------------
+
+fn make_manifest_with_daily_bucket(
+    job_id: Uuid,
+    date_key: &str,
+    runs: u64,
+    cost_usd: f64,
+) -> JobManifest {
+    use std::collections::BTreeMap;
+    use agent_cron_scheduler::models::manifest::TimeBucket;
+
+    let mut daily_buckets = BTreeMap::new();
+    daily_buckets.insert(
+        date_key.to_string(),
+        TimeBucket {
+            runs,
+            cost_usd,
+            duration_ms: 1000 * runs,
+            num_turns: runs,
+            ..Default::default()
+        },
+    );
+
+    JobManifest {
+        job_id,
+        version: 1,
+        updated_at: chrono::Utc::now(),
+        total_runs: runs,
+        total_cost_usd: cost_usd,
+        total_duration_ms: 1000 * runs,
+        daily_buckets,
+        weekly_buckets: BTreeMap::new(),
+        monthly_buckets: BTreeMap::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Integration tests: GET /api/jobs/{id}/cost-summary
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_job_cost_summary_happy_path() {
+    let (base_url, job_store, log_store, _handle) = spawn_test_server_with_stores().await;
+    let client = reqwest::Client::new();
+
+    // Create a job
+    let job = job_store
+        .create_job(NewJob {
+            name: "cost-summary-job".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ShellCommand(
+                "echo test".to_string(),
+            ),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            allow_concurrent: None,
+            pre_hook: None,
+            post_hook: None,
+        })
+        .await
+        .unwrap();
+
+    // Seed a manifest with known data using today's date so it falls within any default window
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let manifest = make_manifest_with_daily_bucket(job.id, &today, 3, 0.75);
+    log_store.seed_manifest(job.id, manifest).await;
+
+    let resp = client
+        .get(format!(
+            "{}/api/jobs/{}/cost-summary",
+            base_url, job.id
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+
+    assert_eq!(json["job_id"], job.id.to_string());
+    assert!(json["timeframe"].is_string());
+    assert!(json["summary"].is_object());
+    assert_eq!(json["summary"]["total_runs"], 3);
+    assert!((json["summary"]["total_cost_usd"].as_f64().unwrap() - 0.75).abs() < 1e-9);
+    assert!(json["data"].is_array());
+}
+
+#[tokio::test]
+async fn test_job_cost_summary_no_manifest_returns_zeroed() {
+    let (base_url, job_store, _log_store, _handle) = spawn_test_server_with_stores().await;
+    let client = reqwest::Client::new();
+
+    // Create a job but do NOT seed any manifest
+    let job = job_store
+        .create_job(NewJob {
+            name: "no-manifest-job".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ShellCommand(
+                "echo test".to_string(),
+            ),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            allow_concurrent: None,
+            pre_hook: None,
+            post_hook: None,
+        })
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!(
+            "{}/api/jobs/{}/cost-summary",
+            base_url, job.id
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+
+    assert_eq!(json["job_id"], job.id.to_string());
+    assert_eq!(json["summary"]["total_runs"], 0);
+    assert_eq!(json["summary"]["total_cost_usd"], 0.0);
+    assert_eq!(json["data"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_job_cost_summary_job_not_found_returns_404() {
+    let (base_url, _handle) = spawn_test_server().await;
+    let client = reqwest::Client::new();
+
+    let nonexistent_id = Uuid::now_v7();
+    let resp = client
+        .get(format!(
+            "{}/api/jobs/{}/cost-summary",
+            base_url, nonexistent_id
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 404);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert!(json["error"].is_string());
+    assert!(json["message"].is_string());
+}
+
+#[tokio::test]
+async fn test_job_cost_summary_invalid_timeframe_returns_400() {
+    let (base_url, job_store, _log_store, _handle) = spawn_test_server_with_stores().await;
+    let client = reqwest::Client::new();
+
+    // Create a job so the route can find it
+    let job = job_store
+        .create_job(NewJob {
+            name: "timeframe-test-job".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ShellCommand(
+                "echo test".to_string(),
+            ),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            allow_concurrent: None,
+            pre_hook: None,
+            post_hook: None,
+        })
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!(
+            "{}/api/jobs/{}/cost-summary?timeframe=invalid_value",
+            base_url, job.id
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert!(json["error"].is_string());
+    assert!(json["message"].is_string());
+}
+
+// ---------------------------------------------------------------------------
+// Integration tests: GET /api/costs/summary
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_global_cost_summary_happy_path_aggregates_multiple_jobs() {
+    let (base_url, job_store, log_store, _handle) = spawn_test_server_with_stores().await;
+    let client = reqwest::Client::new();
+
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+    // Create two jobs and seed manifests for each
+    for (name, cost) in [("global-cost-job-a", 0.50), ("global-cost-job-b", 0.25)] {
+        let job = job_store
+            .create_job(NewJob {
+                name: name.to_string(),
+                schedule: "*/5 * * * *".to_string(),
+                execution: ExecutionType::ShellCommand(
+                    "echo test".to_string(),
+                ),
+                enabled: true,
+                timezone: None,
+                working_dir: None,
+                env_vars: None,
+                timeout_secs: 0,
+                log_environment: false,
+                allow_concurrent: None,
+                pre_hook: None,
+                post_hook: None,
+            })
+            .await
+            .unwrap();
+        let manifest = make_manifest_with_daily_bucket(job.id, &today, 2, cost);
+        log_store.seed_manifest(job.id, manifest).await;
+    }
+
+    let resp = client
+        .get(format!("{}/api/costs/summary", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+
+    assert!(json["timeframe"].is_string());
+    assert!(json["today_usd"].is_number());
+    // Both jobs contributed today_usd; total must be >= 0.75
+    let today_usd = json["today_usd"].as_f64().unwrap();
+    assert!(
+        today_usd >= 0.74,
+        "expected today_usd >= 0.75, got {}",
+        today_usd
+    );
+    assert!(json["week_usd"].is_number());
+    assert!(json["month_usd"].is_number());
+    assert!(json["today_tokens"].is_object());
+    assert!(json["top_jobs"].is_array());
+    assert!(json["daily_trend"].is_array());
+}
+
+#[tokio::test]
+async fn test_global_cost_summary_no_jobs_returns_zeroed() {
+    let (base_url, _handle) = spawn_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/costs/summary", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+
+    assert!(json["timeframe"].is_string());
+    assert_eq!(json["today_usd"], 0.0);
+    assert_eq!(json["week_usd"], 0.0);
+    assert_eq!(json["month_usd"], 0.0);
+    assert_eq!(json["top_jobs"].as_array().unwrap().len(), 0);
+    assert_eq!(json["daily_trend"].as_array().unwrap().len(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Integration tests: GET /api/jobs/{id}/manifest
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_job_manifest_happy_path() {
+    let (base_url, job_store, log_store, _handle) = spawn_test_server_with_stores().await;
+    let client = reqwest::Client::new();
+
+    // Create a job
+    let job = job_store
+        .create_job(NewJob {
+            name: "manifest-happy-job".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ShellCommand(
+                "echo test".to_string(),
+            ),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            allow_concurrent: None,
+            pre_hook: None,
+            post_hook: None,
+        })
+        .await
+        .unwrap();
+
+    // Seed manifest with known data
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let manifest = make_manifest_with_daily_bucket(job.id, &today, 5, 1.25);
+    log_store.seed_manifest(job.id, manifest).await;
+
+    let resp = client
+        .get(format!("{}/api/jobs/{}/manifest", base_url, job.id))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+
+    assert_eq!(json["job_id"], job.id.to_string());
+    assert_eq!(json["total_runs"], 5);
+    assert!((json["total_cost_usd"].as_f64().unwrap() - 1.25).abs() < 1e-9);
+    assert!(json["daily_buckets"].is_object());
+    // Should have our seeded daily bucket
+    assert!(json["daily_buckets"][&today].is_object());
+    assert_eq!(json["daily_buckets"][&today]["runs"], 5);
+}
+
+#[tokio::test]
+async fn test_get_job_manifest_no_manifest_returns_default() {
+    let (base_url, job_store, _log_store, _handle) = spawn_test_server_with_stores().await;
+    let client = reqwest::Client::new();
+
+    // Create a job but do NOT seed any manifest
+    let job = job_store
+        .create_job(NewJob {
+            name: "manifest-empty-job".to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            execution: ExecutionType::ShellCommand(
+                "echo test".to_string(),
+            ),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            allow_concurrent: None,
+            pre_hook: None,
+            post_hook: None,
+        })
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!("{}/api/jobs/{}/manifest", base_url, job.id))
+        .send()
+        .await
+        .unwrap();
+
+    // Per the route implementation, no manifest returns a default manifest (200, not 404)
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+
+    assert_eq!(json["job_id"], job.id.to_string());
+    assert_eq!(json["total_runs"], 0);
+    assert_eq!(json["total_cost_usd"], 0.0);
+}
+
+#[tokio::test]
+async fn test_get_job_manifest_job_not_found_returns_404() {
+    let (base_url, _handle) = spawn_test_server().await;
+    let client = reqwest::Client::new();
+
+    let nonexistent_id = Uuid::now_v7();
+    let resp = client
+        .get(format!(
+            "{}/api/jobs/{}/manifest",
+            base_url, nonexistent_id
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 404);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert!(json["error"].is_string());
+    assert!(json["message"].is_string());
 }
 
 /// Verify that a job created with `allow_concurrent: true` can be triggered
