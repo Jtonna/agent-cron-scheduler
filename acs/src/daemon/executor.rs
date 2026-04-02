@@ -90,9 +90,7 @@ async fn run_hook(
             }
         }
         Ok(Err(e)) => HookOutcome::Failure(format!("{} wait error: {}", label, e), Vec::new()),
-        Err(_) => {
-            HookOutcome::Failure(format!("{} timed out after 30 seconds", label), Vec::new())
-        }
+        Err(_) => HookOutcome::Failure(format!("{} timed out after 30 seconds", label), Vec::new()),
     }
 }
 
@@ -442,9 +440,42 @@ impl Executor {
                             log_store.append_log(job_id, run_id, &stdout).await.ok();
                         }
                     }
-                    HookOutcome::Failure(detail) => {
+                    HookOutcome::Failure(detail, stdout) => {
                         let error_msg = format!("Pre-hook failed: {}", detail);
                         tracing::warn!("{} for job {}", error_msg, job_id);
+
+                        // Append any stdout from the failing pre-hook before building failed_run
+                        let pre_hook_fail_stdout_len: u64 = if !stdout.is_empty() {
+                            let len = stdout.len() as u64;
+                            log_store.append_log(job_id, run_id, &stdout).await.ok();
+                            len
+                        } else {
+                            0
+                        };
+
+                        // Extract cost data from whatever was appended (best-effort)
+                        let (
+                            fail_cost_usd,
+                            fail_duration_ms,
+                            fail_num_turns,
+                            fail_model,
+                            fail_usage,
+                        ) = if pre_hook_fail_stdout_len > 0 {
+                            let raw = log_store
+                                .read_log(job_id, run_id, None)
+                                .await
+                                .unwrap_or_default();
+                            let c = extract_cost_from_log(raw.as_bytes());
+                            (
+                                c.total_cost_usd,
+                                c.duration_ms,
+                                c.num_turns,
+                                c.model,
+                                c.usage,
+                            )
+                        } else {
+                            (None, None, None, None, None)
+                        };
 
                         let failed_run = JobRun {
                             run_id,
@@ -453,14 +484,14 @@ impl Executor {
                             finished_at: Some(Utc::now()),
                             status: RunStatus::Failed,
                             exit_code: None,
-                            log_size_bytes: 0,
+                            log_size_bytes: pre_hook_fail_stdout_len,
                             error: Some(error_msg.clone()),
                             trigger_params: trigger_params_owned.clone(),
-                            total_cost_usd: None,
-                            duration_ms: None,
-                            num_turns: None,
-                            model: None,
-                            usage: None,
+                            total_cost_usd: fail_cost_usd,
+                            duration_ms: fail_duration_ms,
+                            num_turns: fail_num_turns,
+                            model: fail_model,
+                            usage: fail_usage,
                         };
                         if let Err(e) = log_store.update_run(&failed_run).await {
                             tracing::error!("Failed to save run on pre-hook failure: {}", e);
@@ -833,9 +864,13 @@ impl Executor {
                                 }
                                 (RunStatus::Completed, None)
                             }
-                            HookOutcome::Failure(detail) => {
+                            HookOutcome::Failure(detail, stdout) => {
                                 let error_msg = format!("Post-hook failed: {}", detail);
                                 tracing::warn!("{} for job {}", error_msg, job_id);
+                                if !stdout.is_empty() {
+                                    post_hook_stdout_len = stdout.len() as u64;
+                                    log_store.append_log(job_id, run_id, &stdout).await.ok();
+                                }
                                 (RunStatus::CompletedWithWarnings, Some(error_msg))
                             }
                         }
@@ -3059,6 +3094,44 @@ mod tests {
         let usage = summary.usage.expect("usage should be Some");
         assert_eq!(usage["input_tokens"], 120);
         assert_eq!(usage["output_tokens"], 45);
+    }
+
+    #[test]
+    fn test_extract_cost_prehook_plus_main_summed() {
+        // Simulates a pre-hook Claude invocation followed by the main Claude command,
+        // separated by a PTY header / plain-text line. Costs must be summed.
+        let log = concat!(
+            // Pre-hook Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.05,"duration_ms":2000,"num_turns":2,"usage":{"input_tokens":5000,"output_tokens":1000}}"#,
+            "\n",
+            // PTY header / separator (not JSON)
+            "--- main command ---\n",
+            // Main command Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.15,"duration_ms":6000,"num_turns":5,"usage":{"input_tokens":15000,"output_tokens":4000}}"#,
+            "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // Costs from pre-hook and main command must be summed.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.20).abs() < 1e-10,
+            "expected total_cost_usd ~0.20, got {:?}",
+            summary.total_cost_usd
+        );
+        // Model comes from the first system event (pre-hook).
+        assert_eq!(
+            summary.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "model should be taken from the first system event"
+        );
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 20000);
+        assert_eq!(usage["output_tokens"], 5000);
     }
 
     #[test]
