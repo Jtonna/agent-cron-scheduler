@@ -11,7 +11,7 @@ use uuid::Uuid;
 use super::AppState;
 use crate::daemon::events::{JobChangeKind, JobEvent};
 use crate::models::job::{validate_job_update, validate_new_job};
-use crate::models::{DispatchRequest, Job, JobUpdate, NewJob, TriggerParams};
+use crate::models::{DispatchRequest, Job, JobManifest, JobUpdate, NewJob, TriggerParams};
 
 // ---------------------------------------------------------------------------
 // Error response
@@ -593,6 +593,39 @@ pub async fn list_runs(
             &format!("Failed to list runs: {}", e),
         )
         .into_response(),
+    }
+}
+
+/// GET /api/jobs/{id}/manifest
+pub async fn get_job_manifest(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Resolve the job first
+    let job = match resolve_job(&state, &id).await {
+        Ok(j) => j,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // Read manifest from log store
+    match state.log_store.read_manifest(job.id).await {
+        Ok(Some(manifest)) => (StatusCode::OK, Json(serde_json::to_value(&manifest).unwrap()))
+            .into_response(),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "No manifest found for this job",
+        )
+        .into_response(),
+        Err(e) => {
+            tracing::warn!("Failed to read manifest for job '{}': {}", id, e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to read manifest: {}", e),
+            )
+            .into_response()
+        }
     }
 }
 

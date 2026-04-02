@@ -46,6 +46,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/jobs/{id}/disable", post(routes::disable_job))
         .route("/api/jobs/{id}/trigger", post(routes::trigger_job))
         .route("/api/jobs/{id}/runs", get(routes::list_runs))
+        .route("/api/jobs/{id}/manifest", get(routes::get_job_manifest))
         .route("/api/runs/{run_id}/log", get(routes::get_log))
         .route("/api/events", get(sse::sse_handler))
         .route("/api/shutdown", post(routes::shutdown))
@@ -197,6 +198,7 @@ mod tests {
     struct InMemoryLogStore {
         runs: RwLock<Vec<JobRun>>,
         logs: RwLock<HashMap<(Uuid, Uuid), Vec<u8>>>,
+        manifests: std::sync::RwLock<HashMap<Uuid, crate::models::JobManifest>>,
     }
 
     impl InMemoryLogStore {
@@ -204,7 +206,12 @@ mod tests {
             Self {
                 runs: RwLock::new(Vec::new()),
                 logs: RwLock::new(HashMap::new()),
+                manifests: std::sync::RwLock::new(HashMap::new()),
             }
+        }
+
+        pub fn seed_manifest(&self, job_id: Uuid, manifest: crate::models::JobManifest) {
+            self.manifests.write().unwrap().insert(job_id, manifest);
         }
     }
 
@@ -276,12 +283,17 @@ mod tests {
 
         async fn read_manifest(
             &self,
-            _job_id: Uuid,
+            job_id: Uuid,
         ) -> anyhow::Result<Option<crate::models::JobManifest>> {
-            Ok(None)
+            Ok(self.manifests.read().unwrap().get(&job_id).cloned())
         }
 
-        async fn update_manifest(&self, _job_id: Uuid, _run: &JobRun) -> anyhow::Result<()> {
+        async fn update_manifest(&self, job_id: Uuid, run: &JobRun) -> anyhow::Result<()> {
+            let mut manifests = self.manifests.write().unwrap();
+            let manifest = manifests
+                .entry(job_id)
+                .or_insert_with(|| crate::models::JobManifest::new(job_id));
+            manifest.merge_run(run);
             Ok(())
         }
 
