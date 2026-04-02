@@ -2,6 +2,7 @@ pub mod assets;
 pub mod health;
 pub mod routes;
 pub mod sse;
+pub mod timeframe;
 
 use std::collections::HashMap;
 use std::sync::Arc;
