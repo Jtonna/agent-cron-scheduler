@@ -12,10 +12,13 @@ use super::AppState;
 use crate::daemon::events::{JobChangeKind, JobEvent};
 use crate::models::job::{validate_job_update, validate_new_job};
 use crate::models::manifest::{
-    resolve_timeframe, CostSummaryData, DailyTrendPoint, GlobalCostResponse, PerJobCostResponse,
-    Timeframe, TodayTokens, TopJobEntry,
+    resolve_timeframe, DailyTrendPoint, GlobalCostResponse, Timeframe, TodayTokens, TopJobEntry,
 };
 use crate::models::{DispatchRequest, Job, JobManifest, JobUpdate, NewJob, TriggerParams};
+use crate::server::timeframe::{
+    aggregate_daily_buckets, filter_daily_buckets, format_timeframe_label, CostSummaryResponse,
+    CostSummaryStats, TimeframeQuery,
+};
 
 // ---------------------------------------------------------------------------
 // Error response
@@ -687,32 +690,33 @@ pub async fn list_runs(
 pub async fn get_job_cost_summary(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Query(params): Query<CostSummaryParams>,
+    Query(params): Query<TimeframeQuery>,
 ) -> impl IntoResponse {
+    // Resolve job
     let job = match resolve_job(&state, &id).await {
         Ok(j) => j,
         Err(resp) => return resp.into_response(),
     };
 
-    let (start, end, timeframe_str) = match parse_cost_summary_params(&params) {
+    // Resolve date range, returning 400 on validation error
+    let (start, end) = match crate::server::timeframe::resolve_date_range(&params) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(msg) => {
+            return error_response(StatusCode::BAD_REQUEST, "validation_error", &msg)
+                .into_response();
+        }
     };
 
-    let response = match state.log_store.read_manifest(job.id).await {
+    let timeframe_str = format_timeframe_label(start, end);
+
+    // Read manifest and aggregate cost data
+    let (mut stats, data) = match state.log_store.read_manifest(job.id).await {
         Ok(Some(manifest)) => {
-            let (summary, data) = manifest.summarize(start, end);
-            PerJobCostResponse {
-                job_id: job.id.to_string(),
-                timeframe: timeframe_str,
-                summary,
-                data,
-            }
+            let filtered = filter_daily_buckets(&manifest.daily_buckets, start, end);
+            aggregate_daily_buckets(&filtered)
         }
-        Ok(None) => PerJobCostResponse {
-            job_id: job.id.to_string(),
-            timeframe: timeframe_str,
-            summary: CostSummaryData {
+        Ok(None) => (
+            CostSummaryStats {
                 total_runs: 0,
                 total_cost_usd: 0.0,
                 avg_cost_per_run: 0.0,
@@ -720,10 +724,10 @@ pub async fn get_job_cost_summary(
                 total_input_tokens: 0,
                 total_output_tokens: 0,
                 total_cache_read_tokens: 0,
-                runs_by_status: std::collections::BTreeMap::new(),
+                runs_by_status: std::collections::HashMap::new(),
             },
-            data: Vec::new(),
-        },
+            Vec::new(),
+        ),
         Err(e) => {
             tracing::warn!("Failed to read manifest for job '{}': {}", id, e);
             return error_response(
@@ -733,6 +737,30 @@ pub async fn get_job_cost_summary(
             )
             .into_response();
         }
+    };
+
+    // Populate runs_by_status from actual run records filtered by date range
+    let start_dt = start.and_hms_opt(0, 0, 0).unwrap().and_utc();
+    let end_dt = end.and_hms_opt(23, 59, 59).unwrap().and_utc();
+    match state.log_store.list_runs(job.id, usize::MAX, 0).await {
+        Ok((runs, _)) => {
+            for run in runs {
+                if run.started_at >= start_dt && run.started_at <= end_dt {
+                    let status_key = format!("{:?}", run.status);
+                    *stats.runs_by_status.entry(status_key).or_insert(0) += 1;
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Failed to list runs for job '{}': {}", id, e);
+        }
+    }
+
+    let response = CostSummaryResponse {
+        job_id: job.id.to_string(),
+        timeframe: timeframe_str,
+        summary: stats,
+        data,
     };
 
     (StatusCode::OK, Json(response)).into_response()
@@ -830,9 +858,9 @@ pub async fn get_global_cost_summary(
         }
     }
 
-    // Sort top_jobs descending by total_cost, take top 10
+    // Sort top_jobs descending by total_cost, take top 5
     top_jobs_raw.sort_by(|a, b| b.total_cost.partial_cmp(&a.total_cost).unwrap_or(std::cmp::Ordering::Equal));
-    top_jobs_raw.truncate(10);
+    top_jobs_raw.truncate(5);
 
     // Build daily trend sorted by date ascending
     let daily_trend: Vec<DailyTrendPoint> = trend_map
