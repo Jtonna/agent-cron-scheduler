@@ -1,6 +1,1 @@
-[
-  {
-    "issue": 72,
-    "body": "## Implementation Plan (Auto-Approved)\n\n### Sub-Task 1: Extend TimeBucket with runs_by_status (light)\n- File: `acs/src/models/manifest.rs`\n- Add `runs_by_status: BTreeMap<String, u64>` to TimeBucket\n- Update merge_run() to track status counts\n\n### Sub-Task 2: Add timeframe filtering and response types (standard)\n- File: `acs/src/models/manifest.rs`\n- Timeframe enum, CostSummary/GlobalCostResponse structs, summarize() method\n\n### Sub-Task 3: Add three route handlers and register routes (standard)\n- Files: `acs/src/server/routes.rs`, `acs/src/server/mod.rs`\n- GET /api/jobs/{id}/cost-summary, GET /api/costs/summary, GET /api/jobs/{id}/manifest\n\n### Sub-Task 4: Unit tests for all three endpoints (standard)\n- File: `acs/src/server/mod.rs`\n- Enhance InMemoryLogStore, add 10 test cases\n\nDependency chain: 1 → 2 → 3 → 4 (sequential)"
-  }
-]
+[]
