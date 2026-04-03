@@ -1,6 +1,1 @@
-[
-  {
-    "issue": 75,
-    "body": "## Implementation Plan (Approved)\n\n| # | Sub-task | Complexity | Depends on |\n|---|----------|------------|------------|\n| 1 | Fix timeout=0 validation and input handling (3 files, 4 locations) | Light | -- |\n| 2 | Add pre_hook/post_hook to TypeScript interfaces | Light | -- |\n| 3 | Add hook state management to useJobFormState | Light | 2 |\n| 4 | Add hook textarea fields to form UI | Standard | 3 |\n| 5 | Display hooks on job detail page | Light | 2 |\n\n**Execution order:** 1+2 parallel → 3+5 parallel → 4\n\n🤖 Autonomous nightly run"
-  }
-]
+[]
