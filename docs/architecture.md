@@ -370,7 +370,7 @@ let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
 
 - **Purpose**: Allows cancellation of a specific running job.
 - **One per run**: Created inside `Executor::spawn_job()`, with `kill_tx` stored in the `RunHandle`.
-- **Producer**: `graceful_shutdown()` sends `()` to kill all active runs; could also be used by a future per-job kill API.
+- **Producer**: `graceful_shutdown()` sends `()` to kill all active runs; Used by `POST /api/jobs/{id}/kill` and during job deletion.
 - **Consumer**: The execution task's `tokio::select!` loop breaks on `kill_rx`, setting `killed = true`.
 
 ### 4.6 RwLock -- Shared State Protection

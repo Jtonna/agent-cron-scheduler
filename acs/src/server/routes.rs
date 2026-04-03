@@ -637,6 +637,93 @@ pub async fn trigger_job(
         .into_response()
 }
 
+/// POST /api/jobs/{id}/kill
+#[derive(Debug, Deserialize, Default)]
+pub struct KillJobParams {
+    pub run_id: Option<String>,
+}
+
+pub async fn kill_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<KillJobParams>,
+) -> impl IntoResponse {
+    let job = match resolve_job(&state, &id).await {
+        Ok(j) => j,
+        Err(resp) => return resp.into_response(),
+    };
+
+    if let Some(ref run_id_str) = params.run_id {
+        // Parse the run_id as a UUID
+        let run_id = match Uuid::parse_str(run_id_str) {
+            Ok(u) => u,
+            Err(_) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    &format!("Invalid run_id '{}': not a valid UUID", run_id_str),
+                )
+                .into_response();
+            }
+        };
+
+        let mut runs = state.active_runs.write().await;
+        if let Some(handles) = runs.get_mut(&job.id) {
+            if let Some(pos) = handles.iter().position(|h| h.run_id == run_id) {
+                let handle = handles.remove(pos);
+                let _ = handle.kill_tx.send(());
+                if handles.is_empty() {
+                    runs.remove(&job.id);
+                }
+                tracing::info!(
+                    "Kill signal sent to run '{}' for job '{}' (id: {})",
+                    run_id,
+                    job.name,
+                    job.id
+                );
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "message": "Kill signal sent",
+                        "run_id": run_id,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+
+        // run_id not found in active_runs
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "No active run found with that ID",
+            })),
+        )
+            .into_response()
+    } else {
+        // Kill ALL active runs for this job
+        let mut runs = state.active_runs.write().await;
+        if let Some(handles) = runs.remove(&job.id) {
+            for handle in handles {
+                let _ = handle.kill_tx.send(());
+            }
+        }
+        tracing::info!(
+            "Kill signal sent to all active runs for job '{}' (id: {})",
+            job.name,
+            job.id
+        );
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "message": "Kill signal sent to all active runs",
+                "job_id": job.id,
+            })),
+        )
+            .into_response()
+    }
+}
+
 /// GET /api/jobs/{id}/runs
 pub async fn list_runs(
     State(state): State<Arc<AppState>>,
@@ -686,6 +773,80 @@ pub async fn list_runs(
         )
         .into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Recent runs across all jobs
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct RecentRunEntry {
+    #[serde(flatten)]
+    run: crate::models::JobRun,
+    job_name: String,
+}
+
+#[derive(Serialize)]
+struct RecentRunsResponse {
+    runs: Vec<RecentRunEntry>,
+    limit: usize,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct RecentRunsParams {
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
+/// GET /api/runs/recent
+pub async fn list_recent_runs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RecentRunsParams>,
+) -> impl IntoResponse {
+    let jobs = match state.job_store.list_jobs().await {
+        Ok(j) => j,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to list jobs: {}", e),
+            )
+            .into_response();
+        }
+    };
+
+    let mut entries: Vec<RecentRunEntry> = Vec::new();
+    for job in &jobs {
+        match state.log_store.list_runs(job.id, 5, 0).await {
+            Ok((runs, _total)) => {
+                for run in runs {
+                    entries.push(RecentRunEntry {
+                        run,
+                        job_name: job.name.clone(),
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list runs for job '{}': {}", job.id, e);
+                // Continue with other jobs rather than failing the whole request
+            }
+        }
+    }
+
+    // Sort by started_at descending (most recent first)
+    entries.sort_by(|a, b| b.run.started_at.cmp(&a.run.started_at));
+
+    // Truncate to limit
+    entries.truncate(params.limit);
+
+    (
+        StatusCode::OK,
+        Json(RecentRunsResponse {
+            runs: entries,
+            limit: params.limit,
+        }),
+    )
+        .into_response()
 }
 
 /// GET /api/jobs/{id}/cost-summary

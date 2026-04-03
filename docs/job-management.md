@@ -227,7 +227,7 @@ Creation --> Scheduling --> Execution --> Completion
 | `Completed` | Process exited (any exit code). | Process returned an exit status, including non-zero codes. Non-zero exit is **not** treated as `Failed`. |
 | `CompletedWithWarnings` | Job completed but post-hook failed. | Process exited successfully, but the post-hook command failed. |
 | `Failed` | Infrastructure error prevented normal completion. | Process spawn failure, process wait failure, task join error, timeout, or pre-hook failure. |
-| `Killed` | Job was forcefully terminated. | Job deleted while running (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. There is no dedicated kill endpoint. **Note:** Killed runs broadcast a `Failed` SSE event, not a separate `Killed` event type. The error message is `"Job was killed"` for explicit kills or `"Daemon shutting down"` during graceful shutdown. |
+| `Killed` | Job was forcefully terminated. | Triggered via `POST /api/jobs/{id}/kill` or during job deletion (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. **Note:** Killed runs broadcast a `Failed` SSE event, not a separate `Killed` event type. The error message is `"Job was killed"` for explicit kills or `"Daemon shutting down"` during graceful shutdown. |
 
 ### JobRun Record
 

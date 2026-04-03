@@ -46,6 +46,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/jobs/{id}/enable", post(routes::enable_job))
         .route("/api/jobs/{id}/disable", post(routes::disable_job))
         .route("/api/jobs/{id}/trigger", post(routes::trigger_job))
+        .route("/api/jobs/{id}/kill", post(routes::kill_job))
         .route("/api/jobs/{id}/runs", get(routes::list_runs))
         .route("/api/jobs/{id}/manifest", get(routes::get_job_manifest))
         .route(
@@ -53,6 +54,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(routes::get_job_cost_summary),
         )
         .route("/api/costs/summary", get(routes::get_global_cost_summary))
+        .route("/api/runs/recent", get(routes::list_recent_runs))
         .route("/api/runs/{run_id}/log", get(routes::get_log))
         .route("/api/events", get(sse::sse_handler))
         .route("/api/shutdown", post(routes::shutdown))
