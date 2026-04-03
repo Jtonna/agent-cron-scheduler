@@ -1,6 +1,1 @@
-[
-  {
-    "issue": 81,
-    "body": "This issue needs clarification before autonomous execution:\n\n1. **Sidebar data-fetching approach:** The ticket lists three options for how the sidebar gets recent run data — (a) fetch recent runs per job (N+1 queries), (b) new `GET /api/runs/recent?limit=20` endpoint, or (c) extend `GET /api/jobs` to include a `recent_runs` field. The recommendation is option (b), but this is framed as a suggestion rather than a decision. Which approach should be implemented? This affects the API surface and backend route structure.\n\n2. **Kill endpoint scope:** The ticket specifies `POST /api/jobs/{id}/kill` which kills by job ID (looking up the active run). Should there also be support for killing by run ID (`POST /api/runs/{run_id}/kill`), or is kill-by-job-ID sufficient for this scope?\n\nThis issue is labeled autonomously-nightly but cannot proceed without answers to the above.\nOnce resolved, re-run the nightly workflow or remove the label and work on it manually."
-  }
-]
+[]
