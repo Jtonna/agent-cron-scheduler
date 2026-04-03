@@ -259,7 +259,7 @@ export function LineChartContent({
               textAnchor="middle"
               dominantBaseline="middle"
               fontSize="10"
-              fill="currentColor"
+              fill="hsl(var(--popover-foreground))"
             >
               {hp.data.date} &middot; {formatCost(hp.data.cost)}
             </text>
