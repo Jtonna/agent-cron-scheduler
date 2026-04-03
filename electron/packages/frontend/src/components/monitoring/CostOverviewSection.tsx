@@ -231,7 +231,7 @@ export function CostOverviewSection() {
               </p>
             </div>
           ) : (
-            <div className="h-[300px] sm:h-[250px] md:h-[300px]">
+            <div className="h-[300px] sm:h-[250px] md:h-[300px] overflow-hidden">
               <LineChartContent
                 data={filteredTrendPoints}
                 onDayClick={handleDayClick}

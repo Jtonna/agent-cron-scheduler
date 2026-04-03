@@ -123,7 +123,7 @@ export function LineChartContent({
     <svg
       viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
       width="100%"
-      className="overflow-visible"
+      height="100%"
       aria-label="Cost per run line chart"
     >
       {/* Gradient definition for area fill */}
@@ -228,7 +228,7 @@ export function LineChartContent({
       {hoveredIndex !== null && points[hoveredIndex] && (() => {
         const hp = points[hoveredIndex];
         const tooltipX = clampTooltipX(hp.x, tooltipHalf);
-        const tooltipY = Math.max(PADDING.top, hp.y - 32);
+        const tooltipY = Math.max(tooltipH, hp.y - 32);
 
         return (
           <g pointerEvents="none">

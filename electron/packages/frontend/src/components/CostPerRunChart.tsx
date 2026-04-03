@@ -99,7 +99,7 @@ export function CostPerRunChart({ jobId, allRuns, totalRuns }: CostPerRunChartPr
 
         {/* Chart */}
         {!loading && !error && data && data.data.length > 0 && (
-          <div className="h-[300px] sm:h-[250px] md:h-[300px]">
+          <div className="h-[300px] sm:h-[250px] md:h-[300px] overflow-hidden">
             <LineChartContent
               data={data.data}
               onDayClick={handleDayClick}
