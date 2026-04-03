@@ -249,8 +249,8 @@ export function LineChartContent({
               width={tooltipW}
               height={tooltipH}
               rx={4}
-              fill="hsl(var(--popover))"
-              stroke="hsl(var(--border))"
+              fill="var(--popover)"
+              stroke="var(--border)"
             />
             {/* Tooltip text */}
             <text
@@ -259,7 +259,7 @@ export function LineChartContent({
               textAnchor="middle"
               dominantBaseline="middle"
               fontSize="10"
-              fill="hsl(var(--popover-foreground))"
+              fill="var(--popover-foreground)"
             >
               {hp.data.date} &middot; {formatCost(hp.data.cost)}
             </text>
