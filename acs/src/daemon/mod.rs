@@ -804,7 +804,8 @@ pub async fn start_daemon(
                     Ok(manifest) if manifest.total_runs > 0 => {
                         tracing::info!(
                             "Rebuilt manifest for job '{}' ({} runs)",
-                            job.name, manifest.total_runs
+                            job.name,
+                            manifest.total_runs
                         );
                     }
                     Ok(_) => {} // No runs to rebuild
