@@ -155,3 +155,12 @@ export interface GlobalCostSummaryResponse {
   top_jobs: GlobalTopJob[];
   daily_trend: GlobalDailyTrend[];
 }
+
+export interface RecentRunEntry extends JobRun {
+  job_name: string;
+}
+
+export interface RecentRunsResponse {
+  runs: RecentRunEntry[];
+  limit: number;
+}
