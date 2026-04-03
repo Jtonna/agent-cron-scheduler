@@ -8,6 +8,7 @@ import {
   ArrowPathIcon,
   PlusIcon,
   XMarkIcon,
+  StopIcon,
 } from "@heroicons/react/24/outline";
 import { useJob } from "@/hooks/useJob";
 import { useRuns } from "@/hooks/useRuns";
@@ -79,6 +80,9 @@ export function JobDetailPage() {
 
   const [showDelete, setShowDelete] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+
+  // Per-run action loading state: maps run_id -> "killing" | "rerunning" | null
+  const [runActionLoading, setRunActionLoading] = useState<Record<string, "killing" | "rerunning">>({});
 
   // Trigger with overrides state
   const [showTriggerOverrides, setShowTriggerOverrides] = useState(false);
@@ -224,6 +228,52 @@ export function JobDetailPage() {
     const updated = [...triggerEnv];
     updated[index][field] = value;
     setTriggerEnv(updated);
+  };
+
+  const handleKillRun = async (e: React.MouseEvent, runId: string) => {
+    e.stopPropagation();
+    setRunActionLoading((prev) => ({ ...prev, [runId]: "killing" }));
+    try {
+      await api.killRun(id!, runId);
+      toast.success("Kill signal sent");
+      refreshRuns();
+    } catch (err) {
+      toast.error(
+        `Failed to kill run: ${err instanceof Error ? err.message : "Unknown error"}`
+      );
+    } finally {
+      setRunActionLoading((prev) => {
+        const next = { ...prev };
+        delete next[runId];
+        return next;
+      });
+    }
+  };
+
+  const handleRerunRun = async (e: React.MouseEvent, run: JobRun) => {
+    e.stopPropagation();
+    setRunActionLoading((prev) => ({ ...prev, [run.run_id]: "rerunning" }));
+    try {
+      const result = await api.triggerJob(
+        id!,
+        run.trigger_params ?? undefined
+      );
+      toast.success("Job re-triggered");
+      refreshRuns();
+      if (result?.run_id) {
+        navigate(`/jobs/${id}/runs/${result.run_id}`);
+      }
+    } catch (err) {
+      toast.error(
+        `Failed to re-trigger: ${err instanceof Error ? err.message : "Unknown error"}`
+      );
+    } finally {
+      setRunActionLoading((prev) => {
+        const next = { ...prev };
+        delete next[run.run_id];
+        return next;
+      });
+    }
   };
 
   if (jobLoading) {
@@ -416,6 +466,7 @@ export function JobDetailPage() {
                     <TableHead>Exit Code</TableHead>
                     <TableHead>Cost</TableHead>
                     <TableHead>Log Size</TableHead>
+                    <TableHead className="w-16">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -454,6 +505,42 @@ export function JobDetailPage() {
                       </TableCell>
                       <TableCell className="text-sm">
                         {formatBytes(run.log_size_bytes)}
+                      </TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        {run.status === "Running" ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                            onClick={(e) => handleKillRun(e, run.run_id)}
+                            disabled={!!runActionLoading[run.run_id]}
+                            title="Kill run"
+                          >
+                            {runActionLoading[run.run_id] === "killing" ? (
+                              <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <StopIcon className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                        ) : run.status === "Completed" ||
+                          run.status === "CompletedWithWarnings" ||
+                          run.status === "Failed" ||
+                          run.status === "Killed" ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                            onClick={(e) => handleRerunRun(e, run)}
+                            disabled={!!runActionLoading[run.run_id]}
+                            title="Re-run"
+                          >
+                            {runActionLoading[run.run_id] === "rerunning" ? (
+                              <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <ArrowPathIcon className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                        ) : null}
                       </TableCell>
                     </TableRow>
                   ))}
