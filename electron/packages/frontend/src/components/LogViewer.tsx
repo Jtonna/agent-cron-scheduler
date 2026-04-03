@@ -186,6 +186,10 @@ export const LogViewer = React.memo(function LogViewer({
   const prevScrollRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
   // Tracks when a scroll is being set programmatically so handleScroll can ignore it
   const isProgrammaticScroll = useRef(false);
+  // Tracks whether new content has arrived while user is scrolled up
+  const hasNewContent = useRef(false);
+  // Force re-render when hasNewContent changes
+  const [, setNewContentIndicator] = useState(false);
 
   useEffect(() => {
     localStorage.setItem("log-ansi-colors", String(ansiColors));
@@ -253,6 +257,11 @@ export const LogViewer = React.memo(function LogViewer({
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     setUserScrolled(!atBottom);
+    // Clear new content indicator when user scrolls to bottom
+    if (atBottom) {
+      hasNewContent.current = false;
+      setNewContentIndicator(false);
+    }
   }, []);
 
   // Capture scroll position before every render so we can restore it after
@@ -291,6 +300,14 @@ export const LogViewer = React.memo(function LogViewer({
     }
   }, [content, live, userScrolled]);
 
+  // Track new content arrival while user is scrolled up
+  useEffect(() => {
+    if (userScrolled && content) {
+      hasNewContent.current = true;
+      setNewContentIndicator(true);
+    }
+  }, [content, userScrolled]);
+
   const jumpToBottom = useCallback(() => {
     const el = scrollContainerRef.current;
     if (el) {
@@ -301,6 +318,8 @@ export const LogViewer = React.memo(function LogViewer({
       });
     }
     setUserScrolled(false);
+    hasNewContent.current = false;
+    setNewContentIndicator(false);
   }, []);
 
   // Loading state
@@ -533,13 +552,15 @@ export const LogViewer = React.memo(function LogViewer({
       {userScrolled && (
         <div className="flex justify-center py-1 border-t bg-muted/30">
           <Button
-            variant="ghost"
+            variant={hasNewContent.current ? "default" : "ghost"}
             size="sm"
-            className="h-6 text-xs gap-1"
+            className={`h-6 text-xs gap-1 ${
+              hasNewContent.current ? "animate-pulse font-semibold" : ""
+            }`}
             onClick={jumpToBottom}
           >
             <ArrowDownIcon className="h-3 w-3" />
-            Jump to bottom
+            {hasNewContent.current ? "New logs ↓" : "Jump to bottom"}
           </Button>
         </div>
       )}
