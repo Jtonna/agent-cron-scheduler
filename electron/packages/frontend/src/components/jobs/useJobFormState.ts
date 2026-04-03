@@ -52,7 +52,7 @@ export function useJobFormState(job?: Job | null) {
     if (!schedule.trim()) newErrors.schedule = "Schedule is required";
     const cronErr = validateCron(schedule);
     if (cronErr) newErrors.schedule = cronErr;
-    if (timeoutSecs < 1) newErrors.timeout = "Timeout must be at least 1 second";
+    if (timeoutSecs < 0) newErrors.timeout = "Timeout must not be negative";
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };

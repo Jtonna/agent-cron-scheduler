@@ -154,7 +154,7 @@ export function RuntimeFields({
           type="number"
           min={0}
           value={timeoutSecs}
-          onChange={(e) => setTimeoutSecs(parseInt(e.target.value, 10) || 3600)}
+          onChange={(e) => { const parsed = parseInt(e.target.value, 10); setTimeoutSecs(Number.isNaN(parsed) ? 0 : parsed); }}
           className={cn(errors.timeout && "border-destructive")}
         />
         <p className="text-xs text-muted-foreground">

@@ -26,7 +26,7 @@ export function JobForm({ job, title, onSubmit, submitLabel = "Save" }: JobFormP
       // If any validation errors are on advanced-tab fields, auto-switch
       // to that tab so the user can see them. We check the conditions
       // directly since state updates from validate() haven't flushed yet.
-      const hasAdvancedError = s.timeoutSecs < 1;
+      const hasAdvancedError = s.timeoutSecs < 0;
       if (hasAdvancedError && tab !== "advanced") {
         setTab("advanced");
       }
