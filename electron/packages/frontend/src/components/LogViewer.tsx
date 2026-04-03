@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import {
   MagnifyingGlassIcon,
   XMarkIcon,
@@ -182,7 +182,8 @@ export const LogViewer = React.memo(function LogViewer({
     return true;
   });
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  // Stores scroll state captured before a render so we can restore it after
+  const prevScrollRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
 
   useEffect(() => {
     localStorage.setItem("log-ansi-colors", String(ansiColors));
@@ -250,15 +251,43 @@ export const LogViewer = React.memo(function LogViewer({
     setUserScrolled(!atBottom);
   }, []);
 
-  // Auto-scroll to bottom for live logs
+  // Capture scroll position before every render so we can restore it after
+  // if the user has scrolled up (prevents viewport shift from layout reflows).
+  if (scrollContainerRef.current && userScrolled) {
+    const el = scrollContainerRef.current;
+    prevScrollRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
+  } else {
+    prevScrollRef.current = null;
+  }
+
+  // After render: restore scroll position when user has scrolled up so that
+  // appended content (or content mutations) don't shift the visible viewport.
+  useLayoutEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el || !userScrolled || !prevScrollRef.current) return;
+    const { scrollTop: prevScrollTop, scrollHeight: prevScrollHeight } = prevScrollRef.current;
+    const scrollHeightDelta = el.scrollHeight - prevScrollHeight;
+    // Only adjust if layout actually changed (guards against no-op renders)
+    if (scrollHeightDelta !== 0) {
+      el.scrollTop = prevScrollTop + scrollHeightDelta;
+    }
+  });
+
+  // Auto-scroll to bottom for live logs (instant, no animation to fight new content)
   useEffect(() => {
     if (live && !userScrolled) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      const el = scrollContainerRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      }
     }
   }, [content, live, userScrolled]);
 
   const jumpToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = scrollContainerRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
     setUserScrolled(false);
   }, []);
 
@@ -485,7 +514,6 @@ export const LogViewer = React.memo(function LogViewer({
               </div>
             );
           })}
-          <div ref={bottomRef} />
         </div>
       </div>
 
