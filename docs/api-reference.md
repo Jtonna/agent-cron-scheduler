@@ -23,10 +23,12 @@ All request and response bodies use JSON (`Content-Type: application/json`) unle
   - [POST /api/jobs/{id}/enable](#post-apijobsidenable)
   - [POST /api/jobs/{id}/disable](#post-apijobsiddisable)
   - [POST /api/jobs/{id}/trigger](#post-apijobsidtrigger)
+  - [POST /api/jobs/{id}/kill](#post-apijobsidkill)
   - [GET /api/jobs/{id}/runs](#get-apijobsidruns)
   - [GET /api/jobs/{id}/cost-summary](#get-apijobsidcost-summary)
   - [GET /api/jobs/{id}/manifest](#get-apijobsidmanifest)
   - [GET /api/costs/summary](#get-apicostssummary)
+  - [GET /api/runs/recent](#get-apirunsrecent)
   - [GET /api/runs/{run_id}/log](#get-apirunsrun_idlog)
   - [GET /api/events](#get-apievents)
   - [POST /api/shutdown](#post-apishutdown)
@@ -547,6 +549,71 @@ curl -X POST http://127.0.0.1:8377/api/jobs/my-backup/trigger
 
 ---
 
+### POST /api/jobs/{id}/kill
+
+Send a kill signal to active run(s) for a job. When a `run_id` query parameter is provided, only that specific run is killed. When omitted, all active runs for the job are killed.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description                            |
+|-----------|--------|----------------------------------------|
+| `id`      | string | Job UUID or job name (see [Job Identifier Resolution](#job-identifier-resolution)). |
+
+**Query Parameters:**
+
+| Parameter | Type   | Required | Default | Description                                                                       |
+|-----------|--------|----------|---------|-----------------------------------------------------------------------------------|
+| `run_id`  | string | No       | (none)  | UUID of the specific run to kill. If omitted, all active runs for the job are killed. |
+
+**Request:** No body.
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Kill signal sent successfully. |
+| 404 Not Found | Job not found, or the specified `run_id` is not an active run for this job. |
+
+**Response body when `run_id` is provided (200):**
+
+```json
+{
+  "message": "Kill signal sent",
+  "run_id": "01941234-aaaa-7abc-def0-123456789abc"
+}
+```
+
+**Response body when `run_id` is omitted (200):**
+
+```json
+{
+  "message": "Kill signal sent to all active runs",
+  "job_id": "01941234-5678-7abc-def0-123456789abc"
+}
+```
+
+| Field     | Type          | Description                                                                       |
+|-----------|---------------|-----------------------------------------------------------------------------------|
+| `message` | string        | Human-readable confirmation of the action taken.                                  |
+| `run_id`  | string (UUID) | Present when a specific run was targeted. The UUID of the run that was killed.    |
+| `job_id`  | string (UUID) | Present when no `run_id` was provided. The UUID of the job whose runs were killed. |
+
+**Example — kill a specific run:**
+
+```sh
+curl -X POST "http://127.0.0.1:8377/api/jobs/my-backup/kill?run_id=01941234-aaaa-7abc-def0-123456789abc"
+```
+
+**Example — kill all active runs for a job:**
+
+```sh
+curl -X POST http://127.0.0.1:8377/api/jobs/my-backup/kill
+```
+
+**Side effects:** Killed runs transition to the `Killed` [RunStatus](#runstatus). A `Killed` SSE event is broadcast for each terminated run.
+
+---
+
 ### GET /api/jobs/{id}/runs
 
 List execution runs for a specific job, with pagination.
@@ -741,6 +808,70 @@ Returns an aggregated cost summary across all jobs, with convenience fields for 
 | `today_tokens`           | object  | Token usage for today. Contains `input` (integer) and `output` (integer) fields.             |
 | `top_jobs`               | array   | Ranked list of jobs by total cost within the timeframe. Each entry contains `job_id`, `job_name`, `total_cost`, and `total_runs`. |
 | `daily_trend`            | array   | Day-by-day cost breakdown within the timeframe. Each entry contains `date`, `cost_usd`, `input_tokens`, and `output_tokens`. |
+
+---
+
+### GET /api/runs/recent
+
+Returns recent runs across all jobs, sorted by `started_at` descending (most recent first).
+
+**Query Parameters:**
+
+| Parameter | Type    | Required | Default | Description                                       |
+|-----------|---------|----------|---------|---------------------------------------------------|
+| `limit`   | integer | No       | `20`    | Maximum number of runs to return.                 |
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns a list of recent runs with their associated job names. |
+| 500 Internal Server Error | Storage failure. |
+
+```json
+{
+  "runs": [
+    {
+      "run_id": "01941234-aaaa-7abc-def0-123456789abc",
+      "job_id": "01941234-5678-7abc-def0-123456789abc",
+      "started_at": "2025-01-16T02:00:00Z",
+      "finished_at": "2025-01-16T02:05:30Z",
+      "status": "Completed",
+      "exit_code": 0,
+      "log_size_bytes": 4096,
+      "error": null,
+      "total_cost_usd": 0.0042,
+      "duration_ms": 5312,
+      "num_turns": 3,
+      "model": "claude-sonnet-4-20250514",
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 340,
+        "cache_read_input_tokens": 800
+      },
+      "job_name": "my-backup"
+    }
+  ],
+  "limit": 20
+}
+```
+
+| Field    | Type    | Description                                                                                         |
+|----------|---------|-----------------------------------------------------------------------------------------------------|
+| `runs`   | array   | Array of run objects. Each entry contains all standard [JobRun](#jobrun) fields plus `job_name`.    |
+| `limit`  | integer | The limit that was applied.                                                                         |
+
+Each run entry in `runs` is a [JobRun](#jobrun) object extended with:
+
+| Field      | Type   | Description                           |
+|------------|--------|---------------------------------------|
+| `job_name` | string | Human-readable name of the parent job. |
+
+**Example:**
+
+```sh
+curl "http://127.0.0.1:8377/api/runs/recent?limit=10"
+```
 
 ---
 

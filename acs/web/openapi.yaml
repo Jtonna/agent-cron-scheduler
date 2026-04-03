@@ -366,9 +366,80 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/jobs/{id}/kill:
+    post:
+      operationId: killJob
+      summary: Kill active run(s) for a job
+      description: |
+        Sends a kill signal to one or all active runs for the specified job.
+        If `run_id` is provided, only that specific run is killed. If omitted,
+        all currently active runs for the job are killed.
+      tags: [Jobs]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - name: run_id
+          in: query
+          required: false
+          description: Specific run ID to kill. If omitted, all active runs for the job are killed.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Kill signal sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KillResponse"
+              example:
+                message: Kill signal sent
+                run_id: "01930000-0000-7000-8000-000000000001"
+                job_id: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
+        "404":
+          description: Job or run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: not_found
+                message: "Job with id 'backup-db' not found"
+
   # -------------------------------------------------------------------------
   # Runs
   # -------------------------------------------------------------------------
+  /api/runs/recent:
+    get:
+      operationId: listRecentRuns
+      summary: List recent runs across all jobs
+      description: |
+        Returns the most recent runs across all jobs, ordered by start time
+        descending. Each entry includes all standard `JobRun` fields plus the
+        `job_name` of the job that produced the run.
+      tags: [Runs]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of runs to return (default 20).
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+      responses:
+        "200":
+          description: Recent runs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecentRunsResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/jobs/{id}/runs:
     get:
       operationId: listRuns
@@ -1063,6 +1134,58 @@ components:
           type: integer
           description: Requested offset.
           example: 0
+
+    # -----------------------------------------------------------------------
+    # Kill response
+    # -----------------------------------------------------------------------
+    KillResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: Human-readable confirmation that the kill signal was sent.
+          example: Kill signal sent
+        run_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The run ID that was killed, if a specific run was targeted.
+          example: "01930000-0000-7000-8000-000000000001"
+        job_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The job ID whose run(s) were killed.
+          example: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
+
+    # -----------------------------------------------------------------------
+    # RecentRunEntry / RecentRunsResponse
+    # -----------------------------------------------------------------------
+    RecentRunEntry:
+      allOf:
+        - $ref: "#/components/schemas/JobRun"
+        - type: object
+          required: [job_name]
+          properties:
+            job_name:
+              type: string
+              description: Human-readable name of the job that produced this run.
+              example: backup-db
+
+    RecentRunsResponse:
+      type: object
+      required: [runs, limit]
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecentRunEntry"
+          description: List of recent runs ordered by start time descending.
+        limit:
+          type: integer
+          description: The maximum number of runs that were requested.
+          example: 20
 
     # -----------------------------------------------------------------------
     # Trigger response
