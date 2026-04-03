@@ -360,6 +360,26 @@ export function JobDetailPage() {
                 <span className="text-sm">{formatDate(job.next_run_at)}</span>
               </div>
             )}
+            {job.pre_hook && (
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Pre-hook
+                </span>
+                <code className="font-mono text-sm bg-muted px-2 py-1 rounded truncate" title={job.pre_hook}>
+                  {job.pre_hook}
+                </code>
+              </div>
+            )}
+            {job.post_hook && (
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Post-hook
+                </span>
+                <code className="font-mono text-sm bg-muted px-2 py-1 rounded truncate" title={job.post_hook}>
+                  {job.post_hook}
+                </code>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

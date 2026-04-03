@@ -10,6 +10,8 @@ export interface Job {
   timeout_secs: number;
   log_environment: boolean;
   allow_concurrent: boolean;
+  pre_hook: string | null;
+  post_hook: string | null;
   created_at: string;
   updated_at: string;
   last_run_at: string | null;
@@ -28,6 +30,8 @@ export interface NewJob {
   timeout_secs?: number;
   log_environment?: boolean;
   allow_concurrent?: boolean;
+  pre_hook?: string;
+  post_hook?: string;
 }
 
 export interface JobUpdate {
@@ -41,6 +45,8 @@ export interface JobUpdate {
   timeout_secs?: number;
   log_environment?: boolean;
   allow_concurrent?: boolean;
+  pre_hook?: string | null;
+  post_hook?: string | null;
 }
 
 export interface JobRun {
