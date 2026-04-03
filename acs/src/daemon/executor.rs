@@ -435,24 +435,35 @@ impl Executor {
                 {
                     HookOutcome::Success(stdout) => {
                         tracing::debug!("Pre-hook succeeded for job {}", job_id);
-                        let start_marker = "================= PRE RUN HOOK START =================\n";
+                        let start_marker =
+                            "================= PRE RUN HOOK START =================\n";
                         let end_marker = "================= PRE RUN HOOK END ===================\n";
-                        log_store.append_log(job_id, run_id, start_marker.as_bytes()).await.ok();
+                        log_store
+                            .append_log(job_id, run_id, start_marker.as_bytes())
+                            .await
+                            .ok();
                         pre_hook_stdout_len += start_marker.len() as u64;
                         if !stdout.is_empty() {
                             pre_hook_stdout_len += stdout.len() as u64;
                             log_store.append_log(job_id, run_id, &stdout).await.ok();
                         }
-                        log_store.append_log(job_id, run_id, end_marker.as_bytes()).await.ok();
+                        log_store
+                            .append_log(job_id, run_id, end_marker.as_bytes())
+                            .await
+                            .ok();
                         pre_hook_stdout_len += end_marker.len() as u64;
                     }
                     HookOutcome::Failure(detail, stdout) => {
                         let error_msg = format!("Pre-hook failed: {}", detail);
                         tracing::warn!("{} for job {}", error_msg, job_id);
 
-                        let start_marker = "================= PRE RUN HOOK START =================\n";
+                        let start_marker =
+                            "================= PRE RUN HOOK START =================\n";
                         let end_marker = "================= PRE RUN HOOK END ===================\n";
-                        log_store.append_log(job_id, run_id, start_marker.as_bytes()).await.ok();
+                        log_store
+                            .append_log(job_id, run_id, start_marker.as_bytes())
+                            .await
+                            .ok();
 
                         // Append any stdout from the failing pre-hook before building failed_run
                         let pre_hook_fail_stdout_len: u64 = if !stdout.is_empty() {
@@ -463,7 +474,10 @@ impl Executor {
                             0
                         };
 
-                        log_store.append_log(job_id, run_id, end_marker.as_bytes()).await.ok();
+                        log_store
+                            .append_log(job_id, run_id, end_marker.as_bytes())
+                            .await
+                            .ok();
                         let pre_hook_fail_stdout_len = pre_hook_fail_stdout_len
                             + start_marker.len() as u64
                             + end_marker.len() as u64;
@@ -771,7 +785,10 @@ impl Executor {
 
             // Write JOB RUN END marker after PTY output completes
             let job_run_end_marker = "================= JOB RUN END ========================\n";
-            log_store.append_log(job_id, run_id, job_run_end_marker.as_bytes()).await.ok();
+            log_store
+                .append_log(job_id, run_id, job_run_end_marker.as_bytes())
+                .await
+                .ok();
             total_bytes += job_run_end_marker.len() as u64;
 
             let finished_at = Utc::now();
@@ -893,30 +910,46 @@ impl Executor {
                         {
                             HookOutcome::Success(stdout) => {
                                 tracing::debug!("Post-hook succeeded for job {}", job_id);
-                                let start_marker = "================= POST RUN HOOK START ================\n";
-                                let end_marker = "================= POST RUN HOOK END ==================\n";
-                                log_store.append_log(job_id, run_id, start_marker.as_bytes()).await.ok();
+                                let start_marker =
+                                    "================= POST RUN HOOK START ================\n";
+                                let end_marker =
+                                    "================= POST RUN HOOK END ==================\n";
+                                log_store
+                                    .append_log(job_id, run_id, start_marker.as_bytes())
+                                    .await
+                                    .ok();
                                 post_hook_stdout_len += start_marker.len() as u64;
                                 if !stdout.is_empty() {
                                     post_hook_stdout_len += stdout.len() as u64;
                                     log_store.append_log(job_id, run_id, &stdout).await.ok();
                                 }
-                                log_store.append_log(job_id, run_id, end_marker.as_bytes()).await.ok();
+                                log_store
+                                    .append_log(job_id, run_id, end_marker.as_bytes())
+                                    .await
+                                    .ok();
                                 post_hook_stdout_len += end_marker.len() as u64;
                                 (RunStatus::Completed, None)
                             }
                             HookOutcome::Failure(detail, stdout) => {
                                 let error_msg = format!("Post-hook failed: {}", detail);
                                 tracing::warn!("{} for job {}", error_msg, job_id);
-                                let start_marker = "================= POST RUN HOOK START ================\n";
-                                let end_marker = "================= POST RUN HOOK END ==================\n";
-                                log_store.append_log(job_id, run_id, start_marker.as_bytes()).await.ok();
+                                let start_marker =
+                                    "================= POST RUN HOOK START ================\n";
+                                let end_marker =
+                                    "================= POST RUN HOOK END ==================\n";
+                                log_store
+                                    .append_log(job_id, run_id, start_marker.as_bytes())
+                                    .await
+                                    .ok();
                                 post_hook_stdout_len += start_marker.len() as u64;
                                 if !stdout.is_empty() {
                                     post_hook_stdout_len += stdout.len() as u64;
                                     log_store.append_log(job_id, run_id, &stdout).await.ok();
                                 }
-                                log_store.append_log(job_id, run_id, end_marker.as_bytes()).await.ok();
+                                log_store
+                                    .append_log(job_id, run_id, end_marker.as_bytes())
+                                    .await
+                                    .ok();
                                 post_hook_stdout_len += end_marker.len() as u64;
                                 (RunStatus::CompletedWithWarnings, Some(error_msg))
                             }
