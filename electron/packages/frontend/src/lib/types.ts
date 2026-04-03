@@ -120,3 +120,32 @@ export interface CostSummaryResponse {
   summary: CostSummary;
   data: DailyDataPoint[];
 }
+
+export interface GlobalDailyTrend {
+  date: string;
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface GlobalTopJob {
+  job_id: string;
+  job_name: string;
+  total_cost: number;
+  total_runs: number;
+}
+
+export interface GlobalCostTokens {
+  input: number;
+  output: number;
+}
+
+export interface GlobalCostSummaryResponse {
+  timeframe: string;
+  today_usd: number;
+  week_usd: number;
+  month_usd: number;
+  today_tokens: GlobalCostTokens;
+  top_jobs: GlobalTopJob[];
+  daily_trend: GlobalDailyTrend[];
+}
