@@ -187,8 +187,7 @@ export function Sidebar() {
     {
       group: "System",
       items: [
-        { label: "Dashboard", icon: HomeIcon, path: "/" },
-        { label: "Logs", icon: DocumentTextIcon, path: "/logs" },
+        { label: "Monitoring", icon: HomeIcon, path: "/" },
       ],
     },
     {
