@@ -693,13 +693,13 @@ pub async fn kill_job(
         }
 
         // run_id not found in active_runs
-        return (
+        (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
                 "error": "No active run found with that ID",
             })),
         )
-            .into_response();
+            .into_response()
     } else {
         // Kill ALL active runs for this job
         let mut runs = state.active_runs.write().await;
