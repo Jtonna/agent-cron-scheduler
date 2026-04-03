@@ -1427,15 +1427,15 @@ mod tests {
             events.push(event);
         }
 
-        // Count Output events (includes 1 command header + 3 chunks = 4)
+        // Count Output events (includes 1 delimiter + 1 command header + 3 chunks = 5)
         let output_count = events
             .iter()
             .filter(|e| matches!(e, JobEvent::Output { .. }))
             .count();
 
         assert_eq!(
-            output_count, 4,
-            "Expected 4 Output events (1 header + 3 chunks), got {}",
+            output_count, 5,
+            "Expected 5 Output events (1 delimiter + 1 header + 3 chunks), got {}",
             output_count
         );
     }
@@ -1577,14 +1577,14 @@ mod tests {
             events.push(event);
         }
 
-        // Should have Started, command header Output, and Completed events
+        // Should have Started, JOB RUN START delimiter Output, command header Output, and Completed events
         let output_count = events
             .iter()
             .filter(|e| matches!(e, JobEvent::Output { .. }))
             .count();
         assert_eq!(
-            output_count, 1,
-            "Should have only the command header Output event"
+            output_count, 2,
+            "Should have JOB RUN START delimiter and command header Output events"
         );
 
         let completed = events
@@ -2193,20 +2193,21 @@ mod tests {
             .await
             .expect("read_log");
 
-        // The first line should be the effective command with trigger args appended
-        let first_line = log_content
+        // The second line should be the effective command with trigger args appended
+        // (first line is the JOB RUN START delimiter)
+        let command_line = log_content
             .lines()
-            .next()
-            .expect("should have at least one line");
+            .nth(1)
+            .expect("should have at least two lines");
         assert!(
-            first_line.contains("echo hello --verbose --flag"),
+            command_line.contains("echo hello --verbose --flag"),
             "Log header should include trigger args. Got: {}",
-            first_line
+            command_line
         );
         assert!(
-            first_line.starts_with("$ "),
+            command_line.starts_with("$ "),
             "Log header should start with '$ '. Got: {}",
-            first_line
+            command_line
         );
     }
 
@@ -2231,14 +2232,15 @@ mod tests {
             .await
             .expect("read_log");
 
-        let first_line = log_content
+        // The second line should be the base command (first line is the JOB RUN START delimiter)
+        let command_line = log_content
             .lines()
-            .next()
-            .expect("should have at least one line");
+            .nth(1)
+            .expect("should have at least two lines");
         assert_eq!(
-            first_line, "$ echo hello",
+            command_line, "$ echo hello",
             "Log header should show base command without trigger args. Got: {}",
-            first_line
+            command_line
         );
     }
 
@@ -2290,14 +2292,15 @@ mod tests {
             .await
             .expect("read_log");
 
-        let first_line = log_content
+        // The second line should be the script command header (first line is the JOB RUN START delimiter)
+        let command_line = log_content
             .lines()
-            .next()
-            .expect("should have at least one line");
+            .nth(1)
+            .expect("should have at least two lines");
         assert!(
-            first_line.contains("[script] deploy.sh --env prod"),
+            command_line.contains("[script] deploy.sh --env prod"),
             "Log header should include trigger args for script file. Got: {}",
-            first_line
+            command_line
         );
     }
 
