@@ -8,6 +8,7 @@ import type {
   ServiceStatus,
   CostSummaryResponse,
   GlobalCostSummaryResponse,
+  RecentRunsResponse,
 } from "./types";
 import { getActiveConnection } from "./connections";
 
@@ -152,6 +153,18 @@ export const api = {
     );
   },
 
+  killRun(
+    jobId: string,
+    runId: string
+  ): Promise<{ message: string; run_id: string }> {
+    return request<{ message: string; run_id: string }>(
+      `/api/jobs/${jobId}/kill?run_id=${runId}`,
+      {
+        method: "POST",
+      }
+    );
+  },
+
   listRuns(
     jobId: string,
     limit: number = 20,
@@ -206,5 +219,9 @@ export const api = {
 
   getGlobalCostSummary(): Promise<GlobalCostSummaryResponse> {
     return request<GlobalCostSummaryResponse>("/api/costs/summary");
+  },
+
+  listRecentRuns(limit: number = 20): Promise<RecentRunsResponse> {
+    return request<RecentRunsResponse>(`/api/runs/recent?limit=${limit}`);
   },
 };
