@@ -57,6 +57,26 @@ export function RunLogPage() {
     setStreamedContent("");
   }, [runId]);
 
+  // When the polled log updates, trim any prefix of streamedContent that is
+  // already covered by log to prevent duplicate display.
+  useEffect(() => {
+    if (!log) return;
+    setStreamedContent((prev) => {
+      if (!prev) return prev;
+      // If log fully contains streamedContent as a prefix, clear it entirely.
+      if (log.endsWith(prev)) return "";
+      // Find the longest suffix of log that matches a prefix of streamedContent.
+      // Walk from the full length of prev down to 1 to find the largest overlap.
+      const maxOverlap = Math.min(prev.length, log.length);
+      for (let len = maxOverlap; len > 0; len--) {
+        if (log.endsWith(prev.slice(0, len))) {
+          return prev.slice(len);
+        }
+      }
+      return prev;
+    });
+  }, [log]);
+
   const handleRetry = async () => {
     if (!run || !jobId) return;
     setRetryLoading(true);

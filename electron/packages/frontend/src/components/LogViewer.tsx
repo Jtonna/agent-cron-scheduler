@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import {
   MagnifyingGlassIcon,
   XMarkIcon,
@@ -182,7 +182,14 @@ export const LogViewer = React.memo(function LogViewer({
     return true;
   });
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  // Stores scroll state captured before a render so we can restore it after
+  const prevScrollRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+  // Tracks when a scroll is being set programmatically so handleScroll can ignore it
+  const isProgrammaticScroll = useRef(false);
+  // Tracks whether new content has arrived while user is scrolled up
+  const hasNewContent = useRef(false);
+  // Force re-render when hasNewContent changes
+  const [, setNewContentIndicator] = useState(false);
 
   useEffect(() => {
     localStorage.setItem("log-ansi-colors", String(ansiColors));
@@ -244,22 +251,75 @@ export const LogViewer = React.memo(function LogViewer({
 
   // Scroll tracking
   const handleScroll = useCallback(() => {
+    // Ignore scroll events fired by programmatic scroll assignments
+    if (isProgrammaticScroll.current) return;
     const el = scrollContainerRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     setUserScrolled(!atBottom);
+    // Clear new content indicator when user scrolls to bottom
+    if (atBottom) {
+      hasNewContent.current = false;
+      setNewContentIndicator(false);
+    }
   }, []);
 
-  // Auto-scroll to bottom for live logs
+  // Capture scroll position before every render so we can restore it after
+  // if the user has scrolled up (prevents viewport shift from layout reflows).
+  if (scrollContainerRef.current && userScrolled) {
+    const el = scrollContainerRef.current;
+    prevScrollRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
+  } else {
+    prevScrollRef.current = null;
+  }
+
+  // After render: restore scroll position when user has scrolled up so that
+  // appended content (or content mutations) don't shift the visible viewport.
+  useLayoutEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el || !userScrolled || !prevScrollRef.current) return;
+    const { scrollTop: prevScrollTop, scrollHeight: prevScrollHeight } = prevScrollRef.current;
+    const scrollHeightDelta = el.scrollHeight - prevScrollHeight;
+    // Only adjust if layout actually changed (guards against no-op renders)
+    if (scrollHeightDelta !== 0) {
+      el.scrollTop = prevScrollTop + scrollHeightDelta;
+    }
+  });
+
+  // Auto-scroll to bottom for live logs (instant, no animation to fight new content)
   useEffect(() => {
     if (live && !userScrolled) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      const el = scrollContainerRef.current;
+      if (el) {
+        isProgrammaticScroll.current = true;
+        el.scrollTop = el.scrollHeight;
+        requestAnimationFrame(() => {
+          isProgrammaticScroll.current = false;
+        });
+      }
     }
   }, [content, live, userScrolled]);
 
+  // Track new content arrival while user is scrolled up
+  useEffect(() => {
+    if (userScrolled && content) {
+      hasNewContent.current = true;
+      setNewContentIndicator(true);
+    }
+  }, [content, userScrolled]);
+
   const jumpToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = scrollContainerRef.current;
+    if (el) {
+      isProgrammaticScroll.current = true;
+      el.scrollTop = el.scrollHeight;
+      requestAnimationFrame(() => {
+        isProgrammaticScroll.current = false;
+      });
+    }
     setUserScrolled(false);
+    hasNewContent.current = false;
+    setNewContentIndicator(false);
   }, []);
 
   // Loading state
@@ -485,7 +545,6 @@ export const LogViewer = React.memo(function LogViewer({
               </div>
             );
           })}
-          <div ref={bottomRef} />
         </div>
       </div>
 
@@ -493,13 +552,15 @@ export const LogViewer = React.memo(function LogViewer({
       {userScrolled && (
         <div className="flex justify-center py-1 border-t bg-muted/30">
           <Button
-            variant="ghost"
+            variant={hasNewContent.current ? "default" : "ghost"}
             size="sm"
-            className="h-6 text-xs gap-1"
+            className={`h-6 text-xs gap-1 ${
+              hasNewContent.current ? "animate-pulse font-semibold" : ""
+            }`}
             onClick={jumpToBottom}
           >
             <ArrowDownIcon className="h-3 w-3" />
-            Jump to bottom
+            {hasNewContent.current ? "New logs ↓" : "Jump to bottom"}
           </Button>
         </div>
       )}
