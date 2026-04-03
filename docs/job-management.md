@@ -207,7 +207,7 @@ Creation --> Scheduling --> Execution --> Completion
    The executor then:
    - Creates a `JobRun` record with `Running` status using the pre-generated `run_id`.
    - Broadcasts a `Started` event.
-   - If a `pre_hook` is configured, executes it. If the pre-hook fails (non-zero exit), the run is marked as `Failed` and execution is blocked. Success continues to the main job execution.
+   - If a `pre_hook` is configured, executes it. If the pre-hook fails (non-zero exit), the run is marked as `Failed` and execution is blocked. Any NDJSON cost data present in the pre-hook's stdout is still extracted and stored in the run record. Success continues to the main job execution.
    - Optionally dumps the environment to the log (if `log_environment` is `true`).
    - Builds the effective command: if trigger `args` are provided, they are appended to the base command (`"{command} {args}"`).
    - Writes a command header to the log showing the effective command (`$ <command>` for ShellCommand, `$ [script] <path>` for ScriptFile).
@@ -215,7 +215,7 @@ Creation --> Scheduling --> Execution --> Completion
    - If trigger `input` is provided, writes it to the process's stdin, then closes stdin (EOF).
    - Streams output to both the log store and the event broadcast channel.
    - Monitors for timeout and kill signals.
-   - After the job completes (regardless of exit code), if a `post_hook` is configured, executes it. If the post-hook fails (non-zero exit), the run is marked as `CompletedWithWarnings`. If the post-hook succeeds, the run is marked as `Completed`.
+   - After the job completes (regardless of exit code), if a `post_hook` is configured, executes it. If the post-hook fails (non-zero exit), the run is marked as `CompletedWithWarnings`. Any NDJSON cost data present in the post-hook's stdout is still extracted and included in the run's total cost. If the post-hook succeeds, the run is marked as `Completed`.
 
 4. **Completion**: The run finishes with one of these terminal statuses. After completion, old run logs are cleaned up based on the configured retention limit (see [Configuration](configuration.md#field-reference)). Job metadata (`last_run_at`, `last_exit_code`) is updated automatically by a background task that listens for completion events.
 
@@ -233,7 +233,7 @@ Creation --> Scheduling --> Execution --> Completion
 
 Each execution creates a `JobRun` with the following fields:
 
-> **Note:** The `total_cost_usd`, `duration_ms`, `num_turns`, `model`, and `usage` fields are only populated when the job command is a Claude CLI invocation that emits NDJSON result events. For all other jobs, these fields are omitted from the JSON response.
+> **Note:** The `total_cost_usd`, `duration_ms`, `num_turns`, `model`, and `usage` fields are populated from NDJSON result events emitted by any Claude CLI invocation in the run — the main job command, the pre-hook, or the post-hook. Costs from all sources are summed into `total_cost_usd`. For runs with no Claude CLI invocations, these fields are omitted from the JSON response.
 
 | Field | Type | Description |
 |---|---|---|

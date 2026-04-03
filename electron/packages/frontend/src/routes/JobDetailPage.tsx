@@ -52,7 +52,7 @@ import { api } from "@/lib/api";
 import { formatDate, formatBytes, formatCost } from "@/lib/format";
 import { toast } from "sonner";
 import type { JobRun, TriggerParams } from "@/lib/types";
-import { CostTrendChart } from "@/components/CostTrendChart";
+import { CostPerRunChart } from "@/components/CostPerRunChart";
 
 const PAGE_SIZE = 15;
 
@@ -360,6 +360,26 @@ export function JobDetailPage() {
                 <span className="text-sm">{formatDate(job.next_run_at)}</span>
               </div>
             )}
+            {job.pre_hook && (
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Pre-hook
+                </span>
+                <code className="font-mono text-sm bg-muted px-2 py-1 rounded truncate" title={job.pre_hook}>
+                  {job.pre_hook}
+                </code>
+              </div>
+            )}
+            {job.post_hook && (
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Post-hook
+                </span>
+                <code className="font-mono text-sm bg-muted px-2 py-1 rounded truncate" title={job.post_hook}>
+                  {job.post_hook}
+                </code>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -372,7 +392,7 @@ export function JobDetailPage() {
             ({total})
           </span>
         </h2>
-        {Array.isArray(allRuns) && <CostTrendChart runs={allRuns} />}
+        {Array.isArray(allRuns) && <CostPerRunChart jobId={id!} allRuns={allRuns} totalRuns={total} />}
         {runsLoading && allRuns.length === 0 ? (
           <div className="flex items-center justify-center py-6">
             <ArrowPathIcon className="h-6 w-6 animate-spin text-muted-foreground" />

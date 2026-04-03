@@ -11,7 +11,7 @@ Frontend for the Agent Cron Scheduler (ACS) Electron desktop application.
 
 ## Architecture
 
-- **Page components**: `src/routes/` (DashboardPage, AllJobsPage, CreateJobPage, JobDetailPage, EditJobPage, RunLogPage, SystemLogsPage)
+- **Page components**: `src/routes/` (MonitoringPage, AllJobsPage, CreateJobPage, JobDetailPage, EditJobPage, RunLogPage)
 - **Router setup**: AppShell.tsx wraps all routes with BrowserRouter and persistent providers (SSE, Sidebar, ConnectionBanner)
 - **Build output**: `out/` directory (static export) served by Electron's in-process HTTP server
 

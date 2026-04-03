@@ -24,6 +24,9 @@ All request and response bodies use JSON (`Content-Type: application/json`) unle
   - [POST /api/jobs/{id}/disable](#post-apijobsiddisable)
   - [POST /api/jobs/{id}/trigger](#post-apijobsidtrigger)
   - [GET /api/jobs/{id}/runs](#get-apijobsidruns)
+  - [GET /api/jobs/{id}/cost-summary](#get-apijobsidcost-summary)
+  - [GET /api/jobs/{id}/manifest](#get-apijobsidmanifest)
+  - [GET /api/costs/summary](#get-apicostssummary)
   - [GET /api/runs/{run_id}/log](#get-apirunsrun_idlog)
   - [GET /api/events](#get-apievents)
   - [POST /api/shutdown](#post-apishutdown)
@@ -608,6 +611,139 @@ List execution runs for a specific job, with pagination.
 
 ---
 
+### GET /api/jobs/{id}/cost-summary
+
+Returns a cost and usage summary for a specific job, filtered by timeframe.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description                            |
+|-----------|--------|----------------------------------------|
+| `id`      | string | Job UUID or job name (see [Job Identifier Resolution](#job-identifier-resolution)). |
+
+**Query Parameters:**
+
+| Parameter   | Type   | Required | Default | Description                                                                                                      |
+|-------------|--------|----------|---------|------------------------------------------------------------------------------------------------------------------|
+| `timeframe` | string | No       | `30d`   | Filter window. Accepted values: `24h`, `7d`, `30d`, `90d`, `180d`, `365d`, `all`.                              |
+| `start`     | string | No       | (none)  | Custom range start date in `YYYY-MM-DD` format. Overrides `timeframe` when both `start` and `end` are provided. |
+| `end`       | string | No       | (none)  | Custom range end date in `YYYY-MM-DD` format. Overrides `timeframe` when both `start` and `end` are provided.   |
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns cost and usage summary for the job. |
+| 400 Bad Request | Invalid `timeframe` value or date format. |
+| 404 Not Found | Job not found. |
+| 500 Internal Server Error | Storage failure. |
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "timeframe": "30d",
+  "summary": {
+    "total_runs": 156,
+    "total_cost_usd": 8.34,
+    "avg_cost_per_run": 0.0534,
+    "total_duration_ms": 3402000,
+    "total_input_tokens": 500000,
+    "total_output_tokens": 125000,
+    "total_cache_read_tokens": 200000,
+    "runs_by_status": { "Completed": 151, "Failed": 5 }
+  },
+  "data": [
+    { "date": "2025-03-02", "runs": 5, "cost": 0.28, "input_tokens": 12000, "output_tokens": 3000 }
+  ]
+}
+```
+
+| Field                              | Type    | Description                                                          |
+|------------------------------------|---------|----------------------------------------------------------------------|
+| `job_id`                           | string (UUID) | The job this summary is for.                                   |
+| `timeframe`                        | string  | The resolved timeframe label (reflects the `timeframe` parameter, or `custom` when a custom date range is used). |
+| `summary.total_runs`               | integer | Total number of runs in the timeframe.                               |
+| `summary.total_cost_usd`           | number  | Total cost in USD across all runs in the timeframe.                  |
+| `summary.avg_cost_per_run`         | number  | Average cost per run in USD.                                         |
+| `summary.total_duration_ms`        | integer | Total execution time in milliseconds across all runs.                |
+| `summary.total_input_tokens`       | integer | Total input tokens consumed across all runs.                         |
+| `summary.total_output_tokens`      | integer | Total output tokens produced across all runs.                        |
+| `summary.total_cache_read_tokens`  | integer | Total cache-read tokens across all runs.                             |
+| `summary.runs_by_status`           | object  | Map of [RunStatus](#runstatus) value to run count.                   |
+| `data`                             | array   | Daily breakdown. Each entry contains `date`, `runs`, `cost`, `input_tokens`, and `output_tokens`. |
+
+---
+
+### GET /api/jobs/{id}/manifest
+
+Returns the raw manifest JSON for a job. Intended for debugging and admin inspection.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description                            |
+|-----------|--------|----------------------------------------|
+| `id`      | string | Job UUID or job name (see [Job Identifier Resolution](#job-identifier-resolution)). |
+
+**Request:** No body, no query parameters.
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns the full `JobManifest` JSON object. If no manifest has been generated yet, returns a default empty manifest with the job's ID and zero values. |
+| 404 Not Found | Job not found. |
+| 500 Internal Server Error | Storage failure. |
+
+---
+
+### GET /api/costs/summary
+
+Returns an aggregated cost summary across all jobs, with convenience fields for today, the current week, and the current month, plus a top-cost jobs ranking.
+
+**Query Parameters:**
+
+| Parameter   | Type   | Required | Default | Description                                                                                                      |
+|-------------|--------|----------|---------|------------------------------------------------------------------------------------------------------------------|
+| `timeframe` | string | No       | `30d`   | Filter window. Accepted values: `24h`, `7d`, `30d`, `90d`, `180d`, `365d`, `all`.                              |
+| `start`     | string | No       | (none)  | Custom range start date in `YYYY-MM-DD` format. Overrides `timeframe` when both `start` and `end` are provided. |
+| `end`       | string | No       | (none)  | Custom range end date in `YYYY-MM-DD` format. Overrides `timeframe` when both `start` and `end` are provided.   |
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns the aggregated cost summary. |
+| 400 Bad Request | Invalid `timeframe` value or date format. |
+| 500 Internal Server Error | Storage failure. |
+
+```json
+{
+  "timeframe": "30d",
+  "today_usd": 45.67,
+  "week_usd": 234.12,
+  "month_usd": 1205.49,
+  "today_tokens": { "input": 50000, "output": 12000 },
+  "top_jobs": [
+    { "job_id": "550e8400-...", "job_name": "nightly-analysis", "total_cost": 120.50, "total_runs": 30 }
+  ],
+  "daily_trend": [
+    { "date": "2025-03-31", "cost_usd": 15.23, "input_tokens": 30000, "output_tokens": 8000 }
+  ]
+}
+```
+
+| Field                    | Type    | Description                                                                                   |
+|--------------------------|---------|-----------------------------------------------------------------------------------------------|
+| `timeframe`              | string  | The resolved timeframe label.                                                                 |
+| `today_usd`              | number  | Total cost in USD for the current calendar day (UTC).                                         |
+| `week_usd`               | number  | Total cost in USD for the current calendar week (UTC).                                        |
+| `month_usd`              | number  | Total cost in USD for the current calendar month (UTC).                                       |
+| `today_tokens`           | object  | Token usage for today. Contains `input` (integer) and `output` (integer) fields.             |
+| `top_jobs`               | array   | Ranked list of jobs by total cost within the timeframe. Each entry contains `job_id`, `job_name`, `total_cost`, and `total_runs`. |
+| `daily_trend`            | array   | Day-by-day cost breakdown within the timeframe. Each entry contains `date`, `cost_usd`, `input_tokens`, and `output_tokens`. |
+
+---
+
 ### GET /api/runs/{run_id}/log
 
 Retrieve the output log for a specific run.
@@ -920,7 +1056,7 @@ Represents a single execution of a job.
 | `log_size_bytes` | integer (u64)     | No       | Size of the log output in bytes.               |
 | `error`          | string            | Yes      | Error message if the run failed to start (e.g., PTY spawn failure), or `null`. |
 | `trigger_params` | [TriggerParams](#triggerparams) | Yes | Trigger-time parameter overrides used for this run. Absent from the JSON response when `null` (omitted via `skip_serializing_if`). Only present when the run was triggered with per-invocation parameters. |
-| `total_cost_usd` | number (f64) | Yes | Total cost in USD reported by the Claude CLI, or absent when null. |
+| `total_cost_usd` | number (f64) | Yes | Total cost in USD aggregated across the main command and any pre/post hooks that produce NDJSON output, or absent when null. |
 | `duration_ms` | integer (u64) | Yes | CLI-reported execution duration in milliseconds, or absent when null. |
 | `num_turns` | integer (u32) | Yes | Number of conversation turns reported by the Claude CLI, or absent when null. |
 | `model` | string | Yes | Primary model used during the run, as reported by the Claude CLI, or absent when null. |

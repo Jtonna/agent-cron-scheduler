@@ -154,7 +154,7 @@ export function RuntimeFields({
           type="number"
           min={0}
           value={timeoutSecs}
-          onChange={(e) => setTimeoutSecs(parseInt(e.target.value, 10) || 3600)}
+          onChange={(e) => { const parsed = parseInt(e.target.value, 10); setTimeoutSecs(Number.isNaN(parsed) ? 0 : parsed); }}
           className={cn(errors.timeout && "border-destructive")}
         />
         <p className="text-xs text-muted-foreground">
@@ -208,6 +208,49 @@ export function EnvVarsFields({
             Not safe for production. Use only for temporary debugging.
           </span>
         </div>
+      </div>
+    </>
+  );
+}
+
+/* -- Pre/Post Hook fields (no card wrapper) -- */
+export function PrePostHookFields({
+  preHook, setPreHook, postHook, setPostHook,
+}: {
+  preHook: string;
+  setPreHook: (v: string) => void;
+  postHook: string;
+  setPostHook: (v: string) => void;
+}) {
+  return (
+    <>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="pre-hook">Pre-run Script</Label>
+        <Textarea
+          id="pre-hook"
+          value={preHook}
+          onChange={(e) => setPreHook(e.target.value)}
+          placeholder="echo 'starting...'"
+          rows={2}
+          className="font-mono"
+        />
+        <p className="text-xs text-muted-foreground">
+          Shell command to run before job execution. If it fails, the job is blocked.
+        </p>
+      </div>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="post-hook">Post-run Script</Label>
+        <Textarea
+          id="post-hook"
+          value={postHook}
+          onChange={(e) => setPostHook(e.target.value)}
+          placeholder="echo 'done'"
+          rows={2}
+          className="font-mono"
+        />
+        <p className="text-xs text-muted-foreground">
+          Shell command to run after job execution. If it fails, the run is marked as CompletedWithWarnings.
+        </p>
       </div>
     </>
   );

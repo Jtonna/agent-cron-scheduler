@@ -10,6 +10,8 @@ export interface Job {
   timeout_secs: number;
   log_environment: boolean;
   allow_concurrent: boolean;
+  pre_hook: string | null;
+  post_hook: string | null;
   created_at: string;
   updated_at: string;
   last_run_at: string | null;
@@ -28,6 +30,8 @@ export interface NewJob {
   timeout_secs?: number;
   log_environment?: boolean;
   allow_concurrent?: boolean;
+  pre_hook?: string;
+  post_hook?: string;
 }
 
 export interface JobUpdate {
@@ -41,6 +45,8 @@ export interface JobUpdate {
   timeout_secs?: number;
   log_environment?: boolean;
   allow_concurrent?: boolean;
+  pre_hook?: string | null;
+  post_hook?: string | null;
 }
 
 export interface JobRun {
@@ -93,4 +99,59 @@ export interface SavedConnection {
   label: string;
   url: string;
   addedAt: string;
+}
+
+export interface DailyDataPoint {
+  date: string;
+  runs: number;
+  cost: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface CostSummary {
+  total_runs: number;
+  total_cost_usd: number;
+  avg_cost_per_run: number;
+  total_duration_ms: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_read_tokens: number;
+  runs_by_status: Record<string, number>;
+}
+
+export interface CostSummaryResponse {
+  job_id: string;
+  timeframe: string;
+  summary: CostSummary;
+  data: DailyDataPoint[];
+}
+
+export interface GlobalDailyTrend {
+  date: string;
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface GlobalTopJob {
+  job_id: string;
+  job_name: string;
+  total_cost: number;
+  total_runs: number;
+}
+
+export interface GlobalCostTokens {
+  input: number;
+  output: number;
+}
+
+export interface GlobalCostSummaryResponse {
+  timeframe: string;
+  today_usd: number;
+  week_usd: number;
+  month_usd: number;
+  today_tokens: GlobalCostTokens;
+  top_jobs: GlobalTopJob[];
+  daily_trend: GlobalDailyTrend[];
 }

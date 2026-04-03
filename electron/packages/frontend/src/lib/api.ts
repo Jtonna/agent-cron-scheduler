@@ -6,6 +6,8 @@ import type {
   RunsResponse,
   HealthResponse,
   ServiceStatus,
+  CostSummaryResponse,
+  GlobalCostSummaryResponse,
 } from "./types";
 import { getActiveConnection } from "./connections";
 
@@ -184,5 +186,25 @@ export const api = {
 
   serviceStatus(): Promise<ServiceStatus> {
     return request<ServiceStatus>("/api/service/status");
+  },
+
+  getCostSummary(
+    jobId: string,
+    timeframe?: string,
+    start?: string,
+    end?: string
+  ): Promise<CostSummaryResponse> {
+    let queryParams = "";
+    if (start && end) {
+      queryParams = `?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+    } else {
+      const tf = timeframe || "30d";
+      queryParams = `?timeframe=${encodeURIComponent(tf)}`;
+    }
+    return request<CostSummaryResponse>(`/api/jobs/${jobId}/cost-summary${queryParams}`);
+  },
+
+  getGlobalCostSummary(): Promise<GlobalCostSummaryResponse> {
+    return request<GlobalCostSummaryResponse>("/api/costs/summary");
   },
 };
