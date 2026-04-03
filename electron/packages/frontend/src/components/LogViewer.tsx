@@ -184,6 +184,8 @@ export const LogViewer = React.memo(function LogViewer({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Stores scroll state captured before a render so we can restore it after
   const prevScrollRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+  // Tracks when a scroll is being set programmatically so handleScroll can ignore it
+  const isProgrammaticScroll = useRef(false);
 
   useEffect(() => {
     localStorage.setItem("log-ansi-colors", String(ansiColors));
@@ -245,9 +247,11 @@ export const LogViewer = React.memo(function LogViewer({
 
   // Scroll tracking
   const handleScroll = useCallback(() => {
+    // Ignore scroll events fired by programmatic scroll assignments
+    if (isProgrammaticScroll.current) return;
     const el = scrollContainerRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     setUserScrolled(!atBottom);
   }, []);
 
@@ -278,7 +282,11 @@ export const LogViewer = React.memo(function LogViewer({
     if (live && !userScrolled) {
       const el = scrollContainerRef.current;
       if (el) {
+        isProgrammaticScroll.current = true;
         el.scrollTop = el.scrollHeight;
+        requestAnimationFrame(() => {
+          isProgrammaticScroll.current = false;
+        });
       }
     }
   }, [content, live, userScrolled]);
@@ -286,7 +294,11 @@ export const LogViewer = React.memo(function LogViewer({
   const jumpToBottom = useCallback(() => {
     const el = scrollContainerRef.current;
     if (el) {
+      isProgrammaticScroll.current = true;
       el.scrollTop = el.scrollHeight;
+      requestAnimationFrame(() => {
+        isProgrammaticScroll.current = false;
+      });
     }
     setUserScrolled(false);
   }, []);
