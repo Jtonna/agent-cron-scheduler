@@ -7,6 +7,7 @@ import type {
   HealthResponse,
   ServiceStatus,
   CostSummaryResponse,
+  GlobalCostSummaryResponse,
 } from "./types";
 import { getActiveConnection } from "./connections";
 
@@ -201,5 +202,9 @@ export const api = {
       queryParams = `?timeframe=${encodeURIComponent(tf)}`;
     }
     return request<CostSummaryResponse>(`/api/jobs/${jobId}/cost-summary${queryParams}`);
+  },
+
+  getGlobalCostSummary(): Promise<GlobalCostSummaryResponse> {
+    return request<GlobalCostSummaryResponse>("/api/costs/summary");
   },
 };
