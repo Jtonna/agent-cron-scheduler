@@ -94,3 +94,29 @@ export interface SavedConnection {
   url: string;
   addedAt: string;
 }
+
+export interface DailyDataPoint {
+  date: string;
+  runs: number;
+  cost: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface CostSummary {
+  total_runs: number;
+  total_cost_usd: number;
+  avg_cost_per_run: number;
+  total_duration_ms: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_read_tokens: number;
+  runs_by_status: Record<string, number>;
+}
+
+export interface CostSummaryResponse {
+  job_id: string;
+  timeframe: string;
+  summary: CostSummary;
+  data: DailyDataPoint[];
+}
