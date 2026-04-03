@@ -130,6 +130,7 @@ export function Sidebar() {
     : "Local";
 
   const [recentRuns, setRecentRuns] = useState<RecentRunEntry[]>([]);
+  const [recentRunsError, setRecentRunsError] = useState(false);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -144,12 +145,13 @@ export function Sidebar() {
 
   const fetchRecentRuns = useCallback(async () => {
     try {
+      setRecentRunsError(false);
       const data = await api.listRecentRuns(20);
       if (data && Array.isArray(data.runs)) {
         setRecentRuns(data.runs);
       }
     } catch {
-      // Ignore errors silently in sidebar
+      setRecentRunsError(true);
     }
   }, []);
 
@@ -420,7 +422,14 @@ export function Sidebar() {
                   {groupedRecentRuns.length === 0 ? (
                     <SidebarMenuItem>
                       <SidebarMenuButton className="pointer-events-none text-sidebar-foreground/50">
-                        <span className="text-xs">No recent runs</span>
+                        {recentRunsError ? (
+                          <span className="flex items-center gap-1 text-xs text-amber-500/70 dark:text-amber-400/60">
+                            <ExclamationTriangleIcon className="size-3 shrink-0" />
+                            Unable to load
+                          </span>
+                        ) : (
+                          <span className="text-xs">No recent runs</span>
+                        )}
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   ) : (
