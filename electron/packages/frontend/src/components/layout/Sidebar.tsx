@@ -436,16 +436,29 @@ export function Sidebar() {
                     groupedRecentRuns.map((group) => (
                       <Collapsible key={group.jobId} defaultOpen className="group/job">
                         <SidebarMenuItem>
-                          <CollapsibleTrigger asChild>
-                            <SidebarMenuButton
-                              tooltip={group.jobName}
-                              isActive={pathname === `/jobs/${group.jobId}`}
+                          <SidebarMenuButton
+                            tooltip={group.jobName}
+                            isActive={pathname === `/jobs/${group.jobId}`}
+                            className="pr-1"
+                          >
+                            <ClockIcon className="size-4 shrink-0" />
+                            <Link
+                              to={`/jobs/${group.jobId}`}
+                              className="truncate font-medium flex-1 hover:text-foreground hover:underline"
+                              onClick={(e) => e.stopPropagation()}
                             >
-                              <ClockIcon className="size-4 shrink-0" />
-                              <span className="truncate font-medium">{group.jobName}</span>
-                              <ChevronRightIcon className="ml-auto size-3.5 transition-transform duration-200 group-data-[state=open]/job:rotate-90" />
-                            </SidebarMenuButton>
-                          </CollapsibleTrigger>
+                              {group.jobName}
+                            </Link>
+                            <CollapsibleTrigger asChild>
+                              <button
+                                type="button"
+                                className="ml-auto shrink-0 p-0.5 rounded hover:bg-accent"
+                                aria-label="Toggle runs"
+                              >
+                                <ChevronRightIcon className="size-3.5 transition-transform duration-200 group-data-[state=open]/job:rotate-90" />
+                              </button>
+                            </CollapsibleTrigger>
+                          </SidebarMenuButton>
                           <CollapsibleContent>
                             <SidebarMenuSub>
                               {group.runs.map((run) => (
