@@ -54,6 +54,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(routes::get_job_cost_summary),
         )
         .route("/api/costs/summary", get(routes::get_global_cost_summary))
+        .route("/api/runs/recent", get(routes::list_recent_runs))
         .route("/api/runs/{run_id}/log", get(routes::get_log))
         .route("/api/events", get(sse::sse_handler))
         .route("/api/shutdown", post(routes::shutdown))
