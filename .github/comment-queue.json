@@ -1,6 +1,1 @@
-[
-  {
-    "issue": 78,
-    "body": "## Implementation Plan (Auto-approved)\n\n**Sub-Task 1 (standard):** Deduplicate polled `log` and SSE `streamedContent` in RunLogPage.tsx\n- Treat `log` as authoritative base, trim `streamedContent` overlap when poll catches up\n- Files: `RunLogPage.tsx`\n\n**Sub-Task 2 (standard):** Replace `scrollIntoView` with instant `scrollTop` assignment + scroll-position preservation\n- Use `useLayoutEffect` to restore `scrollTop` when `userScrolled` is true\n- Files: `LogViewer.tsx`, `logs/LogViewer.tsx`\n\n**Sub-Task 3 (standard):** Fix `userScrolled` detection race condition\n- Add `isProgrammaticScroll` guard ref, increase threshold\n- Files: `LogViewer.tsx`\n\n**Sub-Task 4 (light):** Enhance Jump to bottom button with new-content indicator\n- Files: `LogViewer.tsx`\n\n**Execution:** ST1 & ST2 parallel → ST3 → ST4\n\n_Plan auto-approved by nightly autonomous run._"
-  }
-]
+[]
