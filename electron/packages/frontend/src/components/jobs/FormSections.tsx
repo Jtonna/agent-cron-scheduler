@@ -213,6 +213,49 @@ export function EnvVarsFields({
   );
 }
 
+/* -- Pre/Post Hook fields (no card wrapper) -- */
+export function PrePostHookFields({
+  preHook, setPreHook, postHook, setPostHook,
+}: {
+  preHook: string;
+  setPreHook: (v: string) => void;
+  postHook: string;
+  setPostHook: (v: string) => void;
+}) {
+  return (
+    <>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="pre-hook">Pre-run Script</Label>
+        <Textarea
+          id="pre-hook"
+          value={preHook}
+          onChange={(e) => setPreHook(e.target.value)}
+          placeholder="echo 'starting...'"
+          rows={2}
+          className="font-mono"
+        />
+        <p className="text-xs text-muted-foreground">
+          Shell command to run before job execution. If it fails, the job is blocked.
+        </p>
+      </div>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="post-hook">Post-run Script</Label>
+        <Textarea
+          id="post-hook"
+          value={postHook}
+          onChange={(e) => setPostHook(e.target.value)}
+          placeholder="echo 'done'"
+          rows={2}
+          className="font-mono"
+        />
+        <p className="text-xs text-muted-foreground">
+          Shell command to run after job execution. If it fails, the run is marked as CompletedWithWarnings.
+        </p>
+      </div>
+    </>
+  );
+}
+
 /* -- Reusable card wrapper -- */
 export function SectionCard({
   title, subtitle, children,
