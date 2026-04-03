@@ -795,6 +795,31 @@ pub async fn start_daemon(
         tracing::warn!("Failed to cleanup orphaned logs: {}", e);
     }
 
+    // Rebuild manifests for jobs that predate the manifest system
+    let all_jobs = job_store.list_jobs().await.unwrap_or_default();
+    for job in &all_jobs {
+        match log_store.read_manifest(job.id).await {
+            Ok(None) => {
+                match log_store.rebuild_manifest(job.id).await {
+                    Ok(manifest) if manifest.total_runs > 0 => {
+                        tracing::info!(
+                            "Rebuilt manifest for job '{}' ({} runs)",
+                            job.name, manifest.total_runs
+                        );
+                    }
+                    Ok(_) => {} // No runs to rebuild
+                    Err(e) => {
+                        tracing::warn!("Failed to rebuild manifest for job '{}': {}", job.name, e);
+                    }
+                }
+            }
+            Ok(Some(_)) => {} // Manifest already exists
+            Err(e) => {
+                tracing::warn!("Failed to check manifest for job '{}': {}", job.name, e);
+            }
+        }
+    }
+
     // Create broadcast channel
     let (event_tx, _event_rx) = broadcast::channel::<JobEvent>(config.broadcast_capacity);
 
