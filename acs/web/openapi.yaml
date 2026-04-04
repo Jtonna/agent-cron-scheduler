@@ -7,7 +7,7 @@ info:
     ACS is a cron-like job scheduler with a built-in HTTP API and web UI.
     Jobs can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "3.0.0"
+  version: "3.0.1"
   license:
     name: MIT
 
@@ -45,7 +45,7 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "3.0.0"
+                version: "3.0.1"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
 
   # -------------------------------------------------------------------------
