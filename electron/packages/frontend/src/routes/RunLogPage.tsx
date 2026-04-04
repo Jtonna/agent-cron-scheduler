@@ -5,7 +5,7 @@ import {
   ArrowPathIcon,
   PlayIcon,
 } from "@heroicons/react/24/outline";
-import { CheckCircleIcon, XCircleIcon } from "@heroicons/react/20/solid";
+import { CheckCircleIcon, XCircleIcon, ExclamationTriangleIcon } from "@heroicons/react/20/solid";
 import { useRunLog } from "@/hooks/useRunLog";
 import { useSSEEvents } from "@/hooks/useSSE";
 import { Badge, statusToBadgeVariant } from "@/components/ui/badge";
@@ -182,13 +182,19 @@ export function RunLogPage() {
 
   function statusIcon(status: string, exitCode: number | null) {
     if (status === "Running") {
-      return <ArrowPathIcon className="h-4 w-4 text-primary animate-spin" />;
+      return <ArrowPathIcon className="h-4 w-4 animate-spin text-blue-500" />;
     }
     if (status === "Completed" && (exitCode === null || exitCode === 0)) {
       return <CheckCircleIcon className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />;
     }
-    // Failed, Killed, or Completed with non-zero exit code
-    return <XCircleIcon className="h-4 w-4 text-destructive" />;
+    if (status === "CompletedWithWarnings") {
+      return <ExclamationTriangleIcon className="h-4 w-4 text-amber-500 dark:text-amber-400" />;
+    }
+    if (status === "Killed") {
+      return <XCircleIcon className="h-4 w-4 text-amber-500 dark:text-amber-400" />;
+    }
+    // Failed or Completed with non-zero exit code
+    return <XCircleIcon className="h-4 w-4 text-red-600 dark:text-red-400" />;
   }
 
   return (
