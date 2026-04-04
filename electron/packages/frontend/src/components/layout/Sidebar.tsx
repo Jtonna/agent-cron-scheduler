@@ -20,7 +20,6 @@ import {
   PlusIcon,
   PencilIcon,
   TrashIcon,
-  StopIcon,
   ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
 import {
@@ -272,7 +271,7 @@ export function Sidebar() {
       case "Failed":
         return <XCircleSolid className="size-3.5 text-red-600 dark:text-red-400 shrink-0" />;
       case "Killed":
-        return <StopIcon className="size-3.5 text-red-500/70 dark:text-red-400/70 shrink-0" />;
+        return <XCircleSolid className="size-3.5 text-amber-500 dark:text-amber-400 shrink-0" />;
       default:
         return <ClockIcon className="size-3.5 text-muted-foreground shrink-0" />;
     }
