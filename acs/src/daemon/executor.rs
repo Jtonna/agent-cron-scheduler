@@ -38,14 +38,23 @@ async fn run_hook(
     extra_env: Option<(&str, &str)>,
     label: &str,
 ) -> HookOutcome {
-    let mut cmd = if cfg!(target_os = "windows") {
-        let mut c = tokio::process::Command::new("cmd");
-        c.arg("/C").arg(command);
-        c
-    } else {
-        let mut c = tokio::process::Command::new("sh");
-        c.arg("-c").arg(command);
-        c
+    let mut cmd = {
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, cmd.exe /C needs the command string passed without
+            // Rust's automatic re-quoting, otherwise embedded quotes get mangled.
+            // Using raw_arg bypasses Rust's automatic quoting and sends the
+            // string to CreateProcessW as-is.
+            let mut c = tokio::process::Command::new("cmd");
+            c.raw_arg(format!("/C {}", command));
+            c
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut c = tokio::process::Command::new("sh");
+            c.arg("-c").arg(command);
+            c
+        }
     };
 
     if let Some(dir) = working_dir {
