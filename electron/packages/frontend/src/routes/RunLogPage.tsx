@@ -164,26 +164,17 @@ export function RunLogPage() {
   function isStreamJson(content: string): boolean {
     if (!content) return false;
     const lines = content.split("\n");
-    let inEnvBlock = false;
-    const limit = Math.min(lines.length, 30);
+    const limit = Math.min(lines.length, 50);
     for (let i = 0; i < limit; i++) {
       const trimmed = lines[i].trim();
       if (!trimmed) continue;
-      // Skip environment block delimiters
-      if (trimmed.startsWith("=== ") && trimmed.endsWith(" ===")) {
-        inEnvBlock = !inEnvBlock;
-        continue;
-      }
-      // Skip lines inside environment block
-      if (inEnvBlock) continue;
-      // Skip command echo line
-      if (trimmed.startsWith("$ ")) continue;
-      // First real content line — check if it's stream-json
+      // Only attempt to parse lines that look like JSON objects
+      if (trimmed[0] !== '{') continue;
       try {
         const parsed = JSON.parse(trimmed);
         return parsed && typeof parsed === "object" && "type" in parsed;
       } catch {
-        return false;
+        continue;
       }
     }
     return false;
