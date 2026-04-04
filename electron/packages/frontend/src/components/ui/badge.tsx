@@ -56,6 +56,8 @@ export function statusToBadgeVariant(
       return "running";
     case "Killed":
       return "warning";
+    case "CompletedWithWarnings":
+      return "warning";
     default:
       return "default";
   }
