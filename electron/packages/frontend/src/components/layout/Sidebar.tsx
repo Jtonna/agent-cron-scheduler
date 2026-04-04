@@ -20,6 +20,7 @@ import {
   PlusIcon,
   PencilIcon,
   TrashIcon,
+  ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
 import {
   CheckCircleIcon as CheckCircleSolid,
@@ -66,7 +67,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { api } from "@/lib/api";
-import type { Job, SavedConnection } from "@/lib/types";
+import type { Job, SavedConnection, RecentRunEntry } from "@/lib/types";
+import { formatDate } from "@/lib/format";
 import { useSSEEvents } from "@/hooks/useSSE";
 import { getConnections, getActiveConnectionId, setActiveConnectionId, deleteConnection } from "@/lib/connections";
 import { InstanceDialog } from "@/components/InstanceDialog";
@@ -126,6 +128,9 @@ export function Sidebar() {
     ? connections.find((c) => c.id === activeId)?.label ?? "Remote"
     : "Local";
 
+  const [recentRuns, setRecentRuns] = useState<RecentRunEntry[]>([]);
+  const [recentRunsError, setRecentRunsError] = useState(false);
+
   const fetchJobs = useCallback(async () => {
     try {
       const data = await api.listJobs();
@@ -137,11 +142,27 @@ export function Sidebar() {
     }
   }, []);
 
+  const fetchRecentRuns = useCallback(async () => {
+    try {
+      setRecentRunsError(false);
+      const data = await api.listRecentRuns(20);
+      if (data && Array.isArray(data.runs)) {
+        setRecentRuns(data.runs);
+      }
+    } catch {
+      setRecentRunsError(true);
+    }
+  }, []);
+
   useEffect(() => {
     fetchJobs();
-    const timer = setInterval(fetchJobs, 10000);
+    fetchRecentRuns();
+    const timer = setInterval(() => {
+      fetchJobs();
+      fetchRecentRuns();
+    }, 10000);
     return () => clearInterval(timer);
-  }, [fetchJobs]);
+  }, [fetchJobs, fetchRecentRuns]);
 
   useSSEEvents(
     useCallback(
@@ -149,12 +170,15 @@ export function Sidebar() {
         if (
           event.type === "job_changed" ||
           event.type === "completed" ||
-          event.type === "failed"
+          event.type === "failed" ||
+          event.type === "started" ||
+          event.type === "killed"
         ) {
           fetchJobs();
+          fetchRecentRuns();
         }
       },
-      [fetchJobs]
+      [fetchJobs, fetchRecentRuns]
     )
   );
 
@@ -187,8 +211,7 @@ export function Sidebar() {
     {
       group: "System",
       items: [
-        { label: "Dashboard", icon: HomeIcon, path: "/" },
-        { label: "Logs", icon: DocumentTextIcon, path: "/logs" },
+        { label: "Monitoring", icon: HomeIcon, path: "/" },
       ],
     },
     {
@@ -200,14 +223,59 @@ export function Sidebar() {
     },
   ];
 
-  const recentJobs = jobs
-    .filter((j) => j.last_run_at)
-    .sort(
-      (a, b) =>
-        new Date(b.last_run_at!).getTime() -
-        new Date(a.last_run_at!).getTime()
-    )
-    .slice(0, 7);
+  // Group recent runs by job, keeping all Running + up to 2 most recent non-running per job
+  const groupedRecentRuns = React.useMemo(() => {
+    const byJob = new Map<string, { jobName: string; jobId: string; runs: RecentRunEntry[] }>();
+    for (const run of recentRuns) {
+      if (!byJob.has(run.job_id)) {
+        byJob.set(run.job_id, { jobName: run.job_name, jobId: run.job_id, runs: [] });
+      }
+      byJob.get(run.job_id)!.runs.push(run);
+    }
+
+    const groups = Array.from(byJob.values()).map((group) => {
+      const running = group.runs.filter((r) => r.status === "Running");
+      const nonRunning = group.runs
+        .filter((r) => r.status !== "Running")
+        .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
+        .slice(0, 2);
+      return {
+        ...group,
+        runs: [...running, ...nonRunning].sort(
+          (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()
+        ),
+      };
+    });
+
+    // Sort groups: jobs with Running runs first, then by most recent started_at
+    groups.sort((a, b) => {
+      const aHasRunning = a.runs.some((r) => r.status === "Running") ? 1 : 0;
+      const bHasRunning = b.runs.some((r) => r.status === "Running") ? 1 : 0;
+      if (bHasRunning !== aHasRunning) return bHasRunning - aHasRunning;
+      const aMax = Math.max(...a.runs.map((r) => new Date(r.started_at).getTime()));
+      const bMax = Math.max(...b.runs.map((r) => new Date(r.started_at).getTime()));
+      return bMax - aMax;
+    });
+
+    return groups;
+  }, [recentRuns]);
+
+  function runStatusIcon(status: RecentRunEntry["status"]) {
+    switch (status) {
+      case "Running":
+        return <ArrowPathIcon className="size-3.5 text-blue-500 animate-spin shrink-0" />;
+      case "Completed":
+        return <CheckCircleSolid className="size-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />;
+      case "CompletedWithWarnings":
+        return <ExclamationTriangleIcon className="size-3.5 text-amber-500 dark:text-amber-400 shrink-0" />;
+      case "Failed":
+        return <XCircleSolid className="size-3.5 text-red-600 dark:text-red-400 shrink-0" />;
+      case "Killed":
+        return <XCircleSolid className="size-3.5 text-amber-500 dark:text-amber-400 shrink-0" />;
+      default:
+        return <ClockIcon className="size-3.5 text-muted-foreground shrink-0" />;
+    }
+  }
 
   return (
     <SidebarRoot collapsible="offcanvas">
@@ -338,56 +406,89 @@ export function Sidebar() {
           </Collapsible>
         ))}
 
-        {/* Recent Jobs as Collapsible Sub-Menu */}
-        <SidebarGroup>
-          <SidebarGroupLabel>Recent</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <Collapsible defaultOpen className="group/collapsible">
-                <SidebarMenuItem>
-                  <CollapsibleTrigger asChild>
-                    <SidebarMenuButton>
-                      <ClockIcon className="size-4" />
-                      <span>Recent Runs</span>
-                      <ChevronRightIcon className="ml-auto size-4 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
-                    </SidebarMenuButton>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <SidebarMenuSub>
-                      {recentJobs.length === 0 ? (
-                        <SidebarMenuSubItem>
-                          <SidebarMenuSubButton className="pointer-events-none text-sidebar-foreground/50">
-                            <span className="text-xs">No recent runs</span>
-                          </SidebarMenuSubButton>
-                        </SidebarMenuSubItem>
-                      ) : (
-                        recentJobs.map((job) => (
-                          <SidebarMenuSubItem key={job.id}>
-                            <SidebarMenuSubButton
-                              asChild
-                              isActive={pathname === `/jobs/${job.id}`}
+        {/* Recent Runs — grouped by job */}
+        <Collapsible defaultOpen className="group/collapsible">
+          <SidebarGroup>
+            <SidebarGroupLabel asChild>
+              <CollapsibleTrigger>
+                Recent Runs
+                <ChevronRightIcon className="ml-auto size-4 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+              </CollapsibleTrigger>
+            </SidebarGroupLabel>
+            <CollapsibleContent>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {groupedRecentRuns.length === 0 ? (
+                    <SidebarMenuItem>
+                      <SidebarMenuButton className="pointer-events-none text-sidebar-foreground/50">
+                        {recentRunsError ? (
+                          <span className="flex items-center gap-1 text-xs text-amber-500/70 dark:text-amber-400/60">
+                            <ExclamationTriangleIcon className="size-3 shrink-0" />
+                            Unable to load
+                          </span>
+                        ) : (
+                          <span className="text-xs">No recent runs</span>
+                        )}
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ) : (
+                    groupedRecentRuns.map((group) => (
+                      <Collapsible key={group.jobId} defaultOpen className="group/job">
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            tooltip={group.jobName}
+                            isActive={pathname === `/jobs/${group.jobId}`}
+                            className="pr-1"
+                          >
+                            <ClockIcon className="size-4 shrink-0" />
+                            <Link
+                              to={`/jobs/${group.jobId}`}
+                              className="truncate font-medium flex-1 hover:text-foreground hover:underline"
+                              onClick={(e) => e.stopPropagation()}
                             >
-                              <Link to={`/jobs/${job.id}`}>
-                                {job.last_exit_code === null ? (
-                                  <ArrowPathIcon className="size-4 text-muted-foreground shrink-0" />
-                                ) : job.last_exit_code === 0 ? (
-                                  <CheckCircleSolid className="size-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                                ) : (
-                                  <XCircleSolid className="size-4 text-red-600 dark:text-red-400 shrink-0" />
-                                )}
-                                <span>{job.name}</span>
-                              </Link>
-                            </SidebarMenuSubButton>
-                          </SidebarMenuSubItem>
-                        ))
-                      )}
-                    </SidebarMenuSub>
-                  </CollapsibleContent>
-                </SidebarMenuItem>
-              </Collapsible>
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+                              {group.jobName}
+                            </Link>
+                            <CollapsibleTrigger asChild>
+                              <button
+                                type="button"
+                                className="ml-auto shrink-0 p-0.5 rounded hover:bg-accent"
+                                aria-label="Toggle runs"
+                              >
+                                <ChevronRightIcon className="size-3.5 transition-transform duration-200 group-data-[state=open]/job:rotate-90" />
+                              </button>
+                            </CollapsibleTrigger>
+                          </SidebarMenuButton>
+                          <CollapsibleContent>
+                            <SidebarMenuSub>
+                              {group.runs.map((run) => (
+                                <SidebarMenuSubItem key={run.run_id}>
+                                  <SidebarMenuSubButton
+                                    asChild
+                                    isActive={pathname === `/jobs/${run.job_id}/runs/${run.run_id}`}
+                                  >
+                                    <Link to={`/jobs/${run.job_id}/runs/${run.run_id}`}>
+                                      {runStatusIcon(run.status)}
+                                      <span className="font-mono text-xs truncate">
+                                        {run.run_id.substring(0, 8)}&hellip;
+                                      </span>
+                                      <span className="ml-auto text-[10px] text-muted-foreground whitespace-nowrap">
+                                        {formatDate(run.started_at)}
+                                      </span>
+                                    </Link>
+                                  </SidebarMenuSubButton>
+                                </SidebarMenuSubItem>
+                              ))}
+                            </SidebarMenuSub>
+                          </CollapsibleContent>
+                        </SidebarMenuItem>
+                      </Collapsible>
+                    ))
+                  )}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </CollapsibleContent>
+          </SidebarGroup>
+        </Collapsible>
       </SidebarContent>
 
       {/* Footer */}

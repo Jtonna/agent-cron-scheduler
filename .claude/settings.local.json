@@ -1,5 +1,10 @@
 {
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/J/documents/Github/agent-cron-scheduler -name CostTrendChart* -type f)"
+    ]
   }
 }

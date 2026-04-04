@@ -6,6 +6,9 @@ import type {
   RunsResponse,
   HealthResponse,
   ServiceStatus,
+  CostSummaryResponse,
+  GlobalCostSummaryResponse,
+  RecentRunsResponse,
 } from "./types";
 import { getActiveConnection } from "./connections";
 
@@ -150,6 +153,18 @@ export const api = {
     );
   },
 
+  killRun(
+    jobId: string,
+    runId: string
+  ): Promise<{ message: string; run_id: string }> {
+    return request<{ message: string; run_id: string }>(
+      `/api/jobs/${jobId}/kill?run_id=${runId}`,
+      {
+        method: "POST",
+      }
+    );
+  },
+
   listRuns(
     jobId: string,
     limit: number = 20,
@@ -184,5 +199,29 @@ export const api = {
 
   serviceStatus(): Promise<ServiceStatus> {
     return request<ServiceStatus>("/api/service/status");
+  },
+
+  getCostSummary(
+    jobId: string,
+    timeframe?: string,
+    start?: string,
+    end?: string
+  ): Promise<CostSummaryResponse> {
+    let queryParams = "";
+    if (start && end) {
+      queryParams = `?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+    } else {
+      const tf = timeframe || "30d";
+      queryParams = `?timeframe=${encodeURIComponent(tf)}`;
+    }
+    return request<CostSummaryResponse>(`/api/jobs/${jobId}/cost-summary${queryParams}`);
+  },
+
+  getGlobalCostSummary(): Promise<GlobalCostSummaryResponse> {
+    return request<GlobalCostSummaryResponse>("/api/costs/summary");
+  },
+
+  listRecentRuns(limit: number = 20): Promise<RecentRunsResponse> {
+    return request<RecentRunsResponse>(`/api/runs/recent?limit=${limit}`);
   },
 };

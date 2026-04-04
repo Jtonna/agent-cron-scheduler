@@ -16,8 +16,8 @@ use crate::storage::LogStore;
 enum HookOutcome {
     /// Hook succeeded (exit code zero) with captured stdout.
     Success(Vec<u8>),
-    /// Hook failed: carries a human-readable description of the failure.
-    Failure(String),
+    /// Hook failed: carries a human-readable description of the failure and any captured stdout.
+    Failure(String, Vec<u8>),
 }
 
 /// Execute a hook command string using the platform shell.
@@ -38,14 +38,23 @@ async fn run_hook(
     extra_env: Option<(&str, &str)>,
     label: &str,
 ) -> HookOutcome {
-    let mut cmd = if cfg!(target_os = "windows") {
-        let mut c = tokio::process::Command::new("cmd");
-        c.arg("/C").arg(command);
-        c
-    } else {
-        let mut c = tokio::process::Command::new("sh");
-        c.arg("-c").arg(command);
-        c
+    let mut cmd = {
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, cmd.exe /C needs the command string passed without
+            // Rust's automatic re-quoting, otherwise embedded quotes get mangled.
+            // Using raw_arg bypasses Rust's automatic quoting and sends the
+            // string to CreateProcessW as-is.
+            let mut c = tokio::process::Command::new("cmd");
+            c.raw_arg(format!("/C {}", command));
+            c
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut c = tokio::process::Command::new("sh");
+            c.arg("-c").arg(command);
+            c
+        }
     };
 
     if let Some(dir) = working_dir {
@@ -69,7 +78,7 @@ async fn run_hook(
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            return HookOutcome::Failure(format!("{} spawn error: {}", label, e));
+            return HookOutcome::Failure(format!("{} spawn error: {}", label, e), Vec::new());
         }
     };
 
@@ -86,11 +95,11 @@ async fn run_hook(
                 } else {
                     format!("exited with code {}: {}", code, stderr.trim())
                 };
-                HookOutcome::Failure(format!("{} {}", label, detail))
+                HookOutcome::Failure(format!("{} {}", label, detail), output.stdout)
             }
         }
-        Ok(Err(e)) => HookOutcome::Failure(format!("{} wait error: {}", label, e)),
-        Err(_) => HookOutcome::Failure(format!("{} timed out after 30 seconds", label)),
+        Ok(Err(e)) => HookOutcome::Failure(format!("{} wait error: {}", label, e), Vec::new()),
+        Err(_) => HookOutcome::Failure(format!("{} timed out after 30 seconds", label), Vec::new()),
     }
 }
 
@@ -435,14 +444,76 @@ impl Executor {
                 {
                     HookOutcome::Success(stdout) => {
                         tracing::debug!("Pre-hook succeeded for job {}", job_id);
+                        let start_marker =
+                            "================= PRE RUN HOOK START =================\n";
+                        let end_marker = "================= PRE RUN HOOK END ===================\n";
+                        log_store
+                            .append_log(job_id, run_id, start_marker.as_bytes())
+                            .await
+                            .ok();
+                        pre_hook_stdout_len += start_marker.len() as u64;
                         if !stdout.is_empty() {
-                            pre_hook_stdout_len = stdout.len() as u64;
+                            pre_hook_stdout_len += stdout.len() as u64;
                             log_store.append_log(job_id, run_id, &stdout).await.ok();
                         }
+                        log_store
+                            .append_log(job_id, run_id, end_marker.as_bytes())
+                            .await
+                            .ok();
+                        pre_hook_stdout_len += end_marker.len() as u64;
                     }
-                    HookOutcome::Failure(detail) => {
+                    HookOutcome::Failure(detail, stdout) => {
                         let error_msg = format!("Pre-hook failed: {}", detail);
                         tracing::warn!("{} for job {}", error_msg, job_id);
+
+                        let start_marker =
+                            "================= PRE RUN HOOK START =================\n";
+                        let end_marker = "================= PRE RUN HOOK END ===================\n";
+                        log_store
+                            .append_log(job_id, run_id, start_marker.as_bytes())
+                            .await
+                            .ok();
+
+                        // Append any stdout from the failing pre-hook before building failed_run
+                        let pre_hook_fail_stdout_len: u64 = if !stdout.is_empty() {
+                            let len = stdout.len() as u64;
+                            log_store.append_log(job_id, run_id, &stdout).await.ok();
+                            len
+                        } else {
+                            0
+                        };
+
+                        log_store
+                            .append_log(job_id, run_id, end_marker.as_bytes())
+                            .await
+                            .ok();
+                        let pre_hook_fail_stdout_len = pre_hook_fail_stdout_len
+                            + start_marker.len() as u64
+                            + end_marker.len() as u64;
+
+                        // Extract cost data from whatever was appended (best-effort)
+                        let (
+                            fail_cost_usd,
+                            fail_duration_ms,
+                            fail_num_turns,
+                            fail_model,
+                            fail_usage,
+                        ) = if pre_hook_fail_stdout_len > 0 {
+                            let raw = log_store
+                                .read_log(job_id, run_id, None)
+                                .await
+                                .unwrap_or_default();
+                            let c = extract_cost_from_log(raw.as_bytes());
+                            (
+                                c.total_cost_usd,
+                                c.duration_ms,
+                                c.num_turns,
+                                c.model,
+                                c.usage,
+                            )
+                        } else {
+                            (None, None, None, None, None)
+                        };
 
                         let failed_run = JobRun {
                             run_id,
@@ -451,14 +522,14 @@ impl Executor {
                             finished_at: Some(Utc::now()),
                             status: RunStatus::Failed,
                             exit_code: None,
-                            log_size_bytes: 0,
+                            log_size_bytes: pre_hook_fail_stdout_len,
                             error: Some(error_msg.clone()),
                             trigger_params: trigger_params_owned.clone(),
-                            total_cost_usd: None,
-                            duration_ms: None,
-                            num_turns: None,
-                            model: None,
-                            usage: None,
+                            total_cost_usd: fail_cost_usd,
+                            duration_ms: fail_duration_ms,
+                            num_turns: fail_num_turns,
+                            model: fail_model,
+                            usage: fail_usage,
                         };
                         if let Err(e) = log_store.update_run(&failed_run).await {
                             tracing::error!("Failed to save run on pre-hook failure: {}", e);
@@ -577,6 +648,18 @@ impl Executor {
                     timestamp: Utc::now(),
                 });
             }
+
+            // Write JOB RUN START marker and command header to log
+            let job_run_start_marker = "================= JOB RUN START ======================\n";
+            let _ = log_store
+                .append_log(job_id, run_id, job_run_start_marker.as_bytes())
+                .await;
+            let _ = event_tx.send(JobEvent::Output {
+                job_id,
+                run_id,
+                data: Arc::from(job_run_start_marker),
+                timestamp: Utc::now(),
+            });
 
             // Write command header to log (effective command with trigger args)
             let command_str = match &execution {
@@ -705,6 +788,17 @@ impl Executor {
             let mut total_bytes: u64 = (log_writer_handle.await).unwrap_or_default();
             // Include bytes written directly by the pre-hook (outside the log writer)
             total_bytes += pre_hook_stdout_len;
+            // Include bytes written directly for the JOB RUN START marker and command header
+            total_bytes += job_run_start_marker.len() as u64;
+            total_bytes += header.len() as u64;
+
+            // Write JOB RUN END marker after PTY output completes
+            let job_run_end_marker = "================= JOB RUN END ========================\n";
+            log_store
+                .append_log(job_id, run_id, job_run_end_marker.as_bytes())
+                .await
+                .ok();
+            total_bytes += job_run_end_marker.len() as u64;
 
             let finished_at = Utc::now();
 
@@ -825,15 +919,47 @@ impl Executor {
                         {
                             HookOutcome::Success(stdout) => {
                                 tracing::debug!("Post-hook succeeded for job {}", job_id);
+                                let start_marker =
+                                    "================= POST RUN HOOK START ================\n";
+                                let end_marker =
+                                    "================= POST RUN HOOK END ==================\n";
+                                log_store
+                                    .append_log(job_id, run_id, start_marker.as_bytes())
+                                    .await
+                                    .ok();
+                                post_hook_stdout_len += start_marker.len() as u64;
                                 if !stdout.is_empty() {
-                                    post_hook_stdout_len = stdout.len() as u64;
+                                    post_hook_stdout_len += stdout.len() as u64;
                                     log_store.append_log(job_id, run_id, &stdout).await.ok();
                                 }
+                                log_store
+                                    .append_log(job_id, run_id, end_marker.as_bytes())
+                                    .await
+                                    .ok();
+                                post_hook_stdout_len += end_marker.len() as u64;
                                 (RunStatus::Completed, None)
                             }
-                            HookOutcome::Failure(detail) => {
+                            HookOutcome::Failure(detail, stdout) => {
                                 let error_msg = format!("Post-hook failed: {}", detail);
                                 tracing::warn!("{} for job {}", error_msg, job_id);
+                                let start_marker =
+                                    "================= POST RUN HOOK START ================\n";
+                                let end_marker =
+                                    "================= POST RUN HOOK END ==================\n";
+                                log_store
+                                    .append_log(job_id, run_id, start_marker.as_bytes())
+                                    .await
+                                    .ok();
+                                post_hook_stdout_len += start_marker.len() as u64;
+                                if !stdout.is_empty() {
+                                    post_hook_stdout_len += stdout.len() as u64;
+                                    log_store.append_log(job_id, run_id, &stdout).await.ok();
+                                }
+                                log_store
+                                    .append_log(job_id, run_id, end_marker.as_bytes())
+                                    .await
+                                    .ok();
+                                post_hook_stdout_len += end_marker.len() as u64;
                                 (RunStatus::CompletedWithWarnings, Some(error_msg))
                             }
                         }
@@ -1310,15 +1436,15 @@ mod tests {
             events.push(event);
         }
 
-        // Count Output events (includes 1 command header + 3 chunks = 4)
+        // Count Output events (includes 1 delimiter + 1 command header + 3 chunks = 5)
         let output_count = events
             .iter()
             .filter(|e| matches!(e, JobEvent::Output { .. }))
             .count();
 
         assert_eq!(
-            output_count, 4,
-            "Expected 4 Output events (1 header + 3 chunks), got {}",
+            output_count, 5,
+            "Expected 5 Output events (1 delimiter + 1 header + 3 chunks), got {}",
             output_count
         );
     }
@@ -1460,14 +1586,14 @@ mod tests {
             events.push(event);
         }
 
-        // Should have Started, command header Output, and Completed events
+        // Should have Started, JOB RUN START delimiter Output, command header Output, and Completed events
         let output_count = events
             .iter()
             .filter(|e| matches!(e, JobEvent::Output { .. }))
             .count();
         assert_eq!(
-            output_count, 1,
-            "Should have only the command header Output event"
+            output_count, 2,
+            "Should have JOB RUN START delimiter and command header Output events"
         );
 
         let completed = events
@@ -2076,20 +2202,21 @@ mod tests {
             .await
             .expect("read_log");
 
-        // The first line should be the effective command with trigger args appended
-        let first_line = log_content
+        // The second line should be the effective command with trigger args appended
+        // (first line is the JOB RUN START delimiter)
+        let command_line = log_content
             .lines()
-            .next()
-            .expect("should have at least one line");
+            .nth(1)
+            .expect("should have at least two lines");
         assert!(
-            first_line.contains("echo hello --verbose --flag"),
+            command_line.contains("echo hello --verbose --flag"),
             "Log header should include trigger args. Got: {}",
-            first_line
+            command_line
         );
         assert!(
-            first_line.starts_with("$ "),
+            command_line.starts_with("$ "),
             "Log header should start with '$ '. Got: {}",
-            first_line
+            command_line
         );
     }
 
@@ -2114,14 +2241,15 @@ mod tests {
             .await
             .expect("read_log");
 
-        let first_line = log_content
+        // The second line should be the base command (first line is the JOB RUN START delimiter)
+        let command_line = log_content
             .lines()
-            .next()
-            .expect("should have at least one line");
+            .nth(1)
+            .expect("should have at least two lines");
         assert_eq!(
-            first_line, "$ echo hello",
+            command_line, "$ echo hello",
             "Log header should show base command without trigger args. Got: {}",
-            first_line
+            command_line
         );
     }
 
@@ -2173,14 +2301,15 @@ mod tests {
             .await
             .expect("read_log");
 
-        let first_line = log_content
+        // The second line should be the script command header (first line is the JOB RUN START delimiter)
+        let command_line = log_content
             .lines()
-            .next()
-            .expect("should have at least one line");
+            .nth(1)
+            .expect("should have at least two lines");
         assert!(
-            first_line.contains("[script] deploy.sh --env prod"),
+            command_line.contains("[script] deploy.sh --env prod"),
             "Log header should include trigger args for script file. Got: {}",
-            first_line
+            command_line
         );
     }
 
@@ -3060,6 +3189,44 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_cost_prehook_plus_main_summed() {
+        // Simulates a pre-hook Claude invocation followed by the main Claude command,
+        // separated by a PTY header / plain-text line. Costs must be summed.
+        let log = concat!(
+            // Pre-hook Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.05,"duration_ms":2000,"num_turns":2,"usage":{"input_tokens":5000,"output_tokens":1000}}"#,
+            "\n",
+            // PTY header / separator (not JSON)
+            "--- main command ---\n",
+            // Main command Claude block
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.15,"duration_ms":6000,"num_turns":5,"usage":{"input_tokens":15000,"output_tokens":4000}}"#,
+            "\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // Costs from pre-hook and main command must be summed.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.20).abs() < 1e-10,
+            "expected total_cost_usd ~0.20, got {:?}",
+            summary.total_cost_usd
+        );
+        // Model comes from the first system event (pre-hook).
+        assert_eq!(
+            summary.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "model should be taken from the first system event"
+        );
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 20000);
+        assert_eq!(usage["output_tokens"], 5000);
+    }
+
+    #[test]
     fn test_extract_cost_different_models_across_invocations() {
         // When two invocations use different models, the model field should contain
         // only the FIRST model seen (from the first system event).
@@ -3089,6 +3256,44 @@ mod tests {
             Some("claude-sonnet-4-20250514"),
             "model should be taken from the first system event"
         );
+    }
+
+    #[test]
+    fn test_extract_cost_piped_input_with_csv_data() {
+        // Simulate piped-input Claude invocation: cat data.csv | claude -p "summarize"
+        // The log contains CSV data lines, shell output, and Claude NDJSON events.
+        let log = concat!(
+            // CSV data (simulating piped input)
+            "name,age,city\n",
+            "Alice,30,NYC\n",
+            "Bob,25,LA\n",
+            // Shell output lines
+            "Processing 3 rows...\n",
+            // Claude NDJSON system event
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}"#,
+            "\n",
+            // Claude NDJSON result event with cost and usage
+            r#"{"type":"result","total_cost_usd":0.0123,"duration_ms":850,"num_turns":1,"usage":{"input_tokens":156,"output_tokens":42}}"#,
+            "\n",
+            // More shell output
+            "Summary complete.\n"
+        );
+        let summary = extract_cost_from_log(log.as_bytes());
+
+        // CSV and shell output lines must be silently ignored.
+        // Cost, model, duration, and usage must be correctly extracted.
+        assert!(
+            (summary.total_cost_usd.unwrap() - 0.0123).abs() < 1e-10,
+            "expected total_cost_usd ~0.0123, got {:?}",
+            summary.total_cost_usd
+        );
+        assert_eq!(summary.duration_ms, Some(850));
+        assert_eq!(summary.num_turns, Some(1));
+        assert_eq!(summary.model.as_deref(), Some("claude-sonnet-4-20250514"));
+
+        let usage = summary.usage.expect("usage should be Some");
+        assert_eq!(usage["input_tokens"], 156);
+        assert_eq!(usage["output_tokens"], 42);
     }
 
     // --- Hook cost capture integration tests ---
@@ -3296,5 +3501,89 @@ mod tests {
             usage["output_tokens"], 500,
             "Output tokens should be summed: 400 + 100"
         );
+    }
+
+    #[tokio::test]
+    async fn test_posthook_failure_still_captures_cost() {
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+
+        let ndjson = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n",
+            "{\"type\":\"result\",\"total_cost_usd\":0.04,\"duration_ms\":1200,\"num_turns\":2,\"usage\":{\"input_tokens\":300,\"output_tokens\":150}}\n"
+        );
+
+        // Build a hook command that emits NDJSON to stdout and then exits with code 1.
+        // run_hook wraps this with `cmd /C` (Windows) or `sh -c` (Unix), so inline
+        // shell syntax works on both platforms.
+        let file_path = tmp_dir.path().join("failing_hook_ndjson.txt");
+        std::fs::write(&file_path, ndjson).expect("write ndjson file");
+        let path_str = file_path.to_string_lossy().to_string();
+        let hook_cmd = if cfg!(target_os = "windows") {
+            // cmd.exe: type prints the file, then `& exit /b 1` sets exit code 1
+            format!("type {} & exit /b 1", path_str)
+        } else {
+            // sh: cat prints the file, then `; exit 1` sets exit code 1
+            format!("cat \"{}\"; exit 1", path_str)
+        };
+
+        // Main command produces plain output (no NDJSON)
+        let spawner = MockPtySpawner::with_output_and_exit(vec![b"main done\n".to_vec()], 0);
+        let (executor, _event_rx, log_store) = setup_executor(spawner);
+
+        let mut job = make_test_job();
+        job.post_hook = Some(hook_cmd);
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+        handle.join_handle.await.expect("join");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        // Post-hook failure → CompletedWithWarnings, not Failed
+        assert_eq!(
+            run.status,
+            RunStatus::CompletedWithWarnings,
+            "Job should be CompletedWithWarnings when post-hook fails"
+        );
+
+        // Even though the post-hook failed, its stdout (NDJSON) was captured and
+        // cost fields should still be extracted.
+        assert_eq!(
+            run.total_cost_usd,
+            Some(0.04),
+            "Cost should be captured from failing post-hook stdout. Run: {:?}",
+            run
+        );
+        assert_eq!(
+            run.duration_ms,
+            Some(1200),
+            "Duration should be captured from failing post-hook stdout"
+        );
+        assert_eq!(
+            run.num_turns,
+            Some(2),
+            "num_turns should be captured from failing post-hook stdout"
+        );
+        assert_eq!(
+            run.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "Model should be captured from failing post-hook NDJSON"
+        );
+        assert!(
+            run.usage.is_some(),
+            "Usage should be captured from failing post-hook stdout"
+        );
+        let usage = run.usage.as_ref().unwrap();
+        assert_eq!(usage["input_tokens"], 300);
+        assert_eq!(usage["output_tokens"], 150);
     }
 }

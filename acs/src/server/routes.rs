@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,14 @@ use uuid::Uuid;
 use super::AppState;
 use crate::daemon::events::{JobChangeKind, JobEvent};
 use crate::models::job::{validate_job_update, validate_new_job};
-use crate::models::{DispatchRequest, Job, JobUpdate, NewJob, TriggerParams};
+use crate::models::manifest::{
+    resolve_timeframe, DailyTrendPoint, GlobalCostResponse, Timeframe, TodayTokens, TopJobEntry,
+};
+use crate::models::{DispatchRequest, Job, JobManifest, JobUpdate, NewJob, TriggerParams};
+use crate::server::timeframe::{
+    aggregate_daily_buckets, filter_daily_buckets, format_timeframe_label, CostSummaryResponse,
+    CostSummaryStats, TimeframeQuery,
+};
 
 // ---------------------------------------------------------------------------
 // Error response
@@ -120,6 +127,91 @@ fn default_limit() -> usize {
 pub struct GetLogParams {
     pub tail: Option<usize>,
     pub format: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct CostSummaryParams {
+    pub timeframe: Option<String>,
+    pub start: Option<String>,
+    pub end: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Cost summary helpers
+// ---------------------------------------------------------------------------
+
+/// Parse CostSummaryParams into (start, end, timeframe_display_string).
+#[allow(clippy::result_large_err)]
+fn parse_cost_summary_params(
+    params: &CostSummaryParams,
+) -> Result<(chrono::NaiveDate, chrono::NaiveDate, String), Response> {
+    // Parse timeframe string (default to Last30d)
+    let timeframe = match &params.timeframe {
+        Some(s) => {
+            match s.as_str() {
+                "24h" => Timeframe::Last24h,
+                "7d" => Timeframe::Last7d,
+                "30d" => Timeframe::Last30d,
+                "90d" => Timeframe::Last90d,
+                "180d" => Timeframe::Last180d,
+                "365d" => Timeframe::Last365d,
+                "all" => Timeframe::All,
+                other => {
+                    return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    &format!("Unknown timeframe '{}'. Valid values: 24h, 7d, 30d, 90d, 180d, 365d, all", other),
+                )
+                .into_response());
+                }
+            }
+        }
+        None => Timeframe::Last30d,
+    };
+
+    // Parse optional custom start/end dates
+    let custom_start = match &params.start {
+        Some(s) => match chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+            Ok(d) => Some(d),
+            Err(_) => {
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    &format!("Invalid start date '{}'. Expected format: YYYY-MM-DD", s),
+                )
+                .into_response());
+            }
+        },
+        None => None,
+    };
+
+    let custom_end = match &params.end {
+        Some(s) => match chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+            Ok(d) => Some(d),
+            Err(_) => {
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    &format!("Invalid end date '{}'. Expected format: YYYY-MM-DD", s),
+                )
+                .into_response());
+            }
+        },
+        None => None,
+    };
+
+    let timeframe_str = if custom_start.is_some() || custom_end.is_some() {
+        "custom".to_string()
+    } else {
+        params
+            .timeframe
+            .clone()
+            .unwrap_or_else(|| "30d".to_string())
+    };
+
+    let (start, end) = resolve_timeframe(&timeframe, custom_start, custom_end);
+
+    Ok((start, end, timeframe_str))
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +637,93 @@ pub async fn trigger_job(
         .into_response()
 }
 
+/// POST /api/jobs/{id}/kill
+#[derive(Debug, Deserialize, Default)]
+pub struct KillJobParams {
+    pub run_id: Option<String>,
+}
+
+pub async fn kill_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<KillJobParams>,
+) -> impl IntoResponse {
+    let job = match resolve_job(&state, &id).await {
+        Ok(j) => j,
+        Err(resp) => return resp.into_response(),
+    };
+
+    if let Some(ref run_id_str) = params.run_id {
+        // Parse the run_id as a UUID
+        let run_id = match Uuid::parse_str(run_id_str) {
+            Ok(u) => u,
+            Err(_) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    &format!("Invalid run_id '{}': not a valid UUID", run_id_str),
+                )
+                .into_response();
+            }
+        };
+
+        let mut runs = state.active_runs.write().await;
+        if let Some(handles) = runs.get_mut(&job.id) {
+            if let Some(pos) = handles.iter().position(|h| h.run_id == run_id) {
+                let handle = handles.remove(pos);
+                let _ = handle.kill_tx.send(());
+                if handles.is_empty() {
+                    runs.remove(&job.id);
+                }
+                tracing::info!(
+                    "Kill signal sent to run '{}' for job '{}' (id: {})",
+                    run_id,
+                    job.name,
+                    job.id
+                );
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "message": "Kill signal sent",
+                        "run_id": run_id,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+
+        // run_id not found in active_runs
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "No active run found with that ID",
+            })),
+        )
+            .into_response()
+    } else {
+        // Kill ALL active runs for this job
+        let mut runs = state.active_runs.write().await;
+        if let Some(handles) = runs.remove(&job.id) {
+            for handle in handles {
+                let _ = handle.kill_tx.send(());
+            }
+        }
+        tracing::info!(
+            "Kill signal sent to all active runs for job '{}' (id: {})",
+            job.name,
+            job.id
+        );
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "message": "Kill signal sent to all active runs",
+                "job_id": job.id,
+            })),
+        )
+            .into_response()
+    }
+}
+
 /// GET /api/jobs/{id}/runs
 pub async fn list_runs(
     State(state): State<Arc<AppState>>,
@@ -593,6 +772,327 @@ pub async fn list_runs(
             &format!("Failed to list runs: {}", e),
         )
         .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Recent runs across all jobs
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct RecentRunEntry {
+    #[serde(flatten)]
+    run: crate::models::JobRun,
+    job_name: String,
+}
+
+#[derive(Serialize)]
+struct RecentRunsResponse {
+    runs: Vec<RecentRunEntry>,
+    limit: usize,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct RecentRunsParams {
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
+/// GET /api/runs/recent
+pub async fn list_recent_runs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RecentRunsParams>,
+) -> impl IntoResponse {
+    let jobs = match state.job_store.list_jobs().await {
+        Ok(j) => j,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to list jobs: {}", e),
+            )
+            .into_response();
+        }
+    };
+
+    let mut entries: Vec<RecentRunEntry> = Vec::new();
+    for job in &jobs {
+        match state.log_store.list_runs(job.id, 5, 0).await {
+            Ok((runs, _total)) => {
+                for run in runs {
+                    entries.push(RecentRunEntry {
+                        run,
+                        job_name: job.name.clone(),
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list runs for job '{}': {}", job.id, e);
+                // Continue with other jobs rather than failing the whole request
+            }
+        }
+    }
+
+    // Sort by started_at descending (most recent first)
+    entries.sort_by(|a, b| b.run.started_at.cmp(&a.run.started_at));
+
+    // Truncate to limit
+    entries.truncate(params.limit);
+
+    (
+        StatusCode::OK,
+        Json(RecentRunsResponse {
+            runs: entries,
+            limit: params.limit,
+        }),
+    )
+        .into_response()
+}
+
+/// GET /api/jobs/{id}/cost-summary
+pub async fn get_job_cost_summary(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<TimeframeQuery>,
+) -> impl IntoResponse {
+    // Resolve job
+    let job = match resolve_job(&state, &id).await {
+        Ok(j) => j,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // Resolve date range, returning 400 on validation error
+    let (start, end) = match crate::server::timeframe::resolve_date_range(&params) {
+        Ok(v) => v,
+        Err(msg) => {
+            return error_response(StatusCode::BAD_REQUEST, "validation_error", &msg)
+                .into_response();
+        }
+    };
+
+    let timeframe_str = format_timeframe_label(start, end);
+
+    // Read manifest and aggregate cost data
+    let (mut stats, data) = match state.log_store.read_manifest(job.id).await {
+        Ok(Some(manifest)) => {
+            let filtered = filter_daily_buckets(&manifest.daily_buckets, start, end);
+            aggregate_daily_buckets(&filtered)
+        }
+        Ok(None) => (
+            CostSummaryStats {
+                total_runs: 0,
+                total_cost_usd: 0.0,
+                avg_cost_per_run: 0.0,
+                total_duration_ms: 0,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_cache_read_tokens: 0,
+                runs_by_status: std::collections::HashMap::new(),
+            },
+            Vec::new(),
+        ),
+        Err(e) => {
+            tracing::warn!("Failed to read manifest for job '{}': {}", id, e);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to read manifest: {}", e),
+            )
+            .into_response();
+        }
+    };
+
+    // Populate runs_by_status from actual run records filtered by date range
+    let start_dt = start.and_hms_opt(0, 0, 0).unwrap().and_utc();
+    let end_dt = end.and_hms_opt(23, 59, 59).unwrap().and_utc();
+    match state.log_store.list_runs(job.id, usize::MAX, 0).await {
+        Ok((runs, _)) => {
+            for run in runs {
+                if run.started_at >= start_dt && run.started_at <= end_dt {
+                    let status_key = format!("{:?}", run.status);
+                    *stats.runs_by_status.entry(status_key).or_insert(0) += 1;
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Failed to list runs for job '{}': {}", id, e);
+        }
+    }
+
+    let response = CostSummaryResponse {
+        job_id: job.id.to_string(),
+        timeframe: timeframe_str,
+        summary: stats,
+        data,
+    };
+
+    (StatusCode::OK, Json(response)).into_response()
+}
+
+/// GET /api/costs/summary
+pub async fn get_global_cost_summary(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CostSummaryParams>,
+) -> impl IntoResponse {
+    let (start, end, timeframe_str) = match parse_cost_summary_params(&params) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+
+    let jobs = match state.job_store.list_jobs().await {
+        Ok(j) => j,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to list jobs: {}", e),
+            )
+            .into_response();
+        }
+    };
+
+    let today = chrono::Utc::now().date_naive();
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let week_start = today - chrono::Duration::days(6);
+    let month_start = today - chrono::Duration::days(29);
+
+    let mut today_usd: f64 = 0.0;
+    let mut week_usd: f64 = 0.0;
+    let mut month_usd: f64 = 0.0;
+    let mut today_input: u64 = 0;
+    let mut today_output: u64 = 0;
+
+    // Map from date -> (cost_usd, input_tokens, output_tokens) for daily trend
+    let mut trend_map: std::collections::BTreeMap<String, (f64, u64, u64)> =
+        std::collections::BTreeMap::new();
+
+    // Vec of (job_id, job_name, total_cost, total_runs) for top jobs
+    let mut top_jobs_raw: Vec<TopJobEntry> = Vec::new();
+
+    for job in &jobs {
+        // Build a job name lookup
+        let job_name = job.name.clone();
+
+        let manifest_opt = match state.log_store.read_manifest(job.id).await {
+            Ok(opt) => opt,
+            Err(e) => {
+                tracing::warn!("Failed to read manifest for job '{}': {}", job.id, e);
+                continue;
+            }
+        };
+
+        let manifest = match manifest_opt {
+            Some(m) => m,
+            None => continue,
+        };
+
+        // Convenience buckets: today, week, month
+        if let Some(bucket) = manifest.daily_buckets.get(&today_str) {
+            today_usd += bucket.cost_usd;
+            for model_bucket in bucket.models.values() {
+                today_input += model_bucket.input_tokens;
+                today_output += model_bucket.output_tokens;
+            }
+        }
+
+        let (week_summary, _) = manifest.summarize(week_start, today);
+        week_usd += week_summary.total_cost_usd;
+
+        let (month_summary, _) = manifest.summarize(month_start, today);
+        month_usd += month_summary.total_cost_usd;
+
+        // Summarize within the requested timeframe for top_jobs and daily_trend
+        let (summary, data_points) = manifest.summarize(start, end);
+
+        if summary.total_runs > 0 || summary.total_cost_usd > 0.0 {
+            top_jobs_raw.push(TopJobEntry {
+                job_id: job.id.to_string(),
+                job_name,
+                total_cost: summary.total_cost_usd,
+                total_runs: summary.total_runs,
+            });
+        }
+
+        for dp in data_points {
+            let entry = trend_map.entry(dp.date).or_insert((0.0, 0, 0));
+            entry.0 += dp.cost;
+            entry.1 += dp.input_tokens;
+            entry.2 += dp.output_tokens;
+        }
+    }
+
+    // Sort top_jobs descending by total_cost, take top 5
+    top_jobs_raw.sort_by(|a, b| {
+        b.total_cost
+            .partial_cmp(&a.total_cost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    top_jobs_raw.truncate(5);
+
+    // Build daily trend sorted by date ascending
+    let daily_trend: Vec<DailyTrendPoint> = trend_map
+        .into_iter()
+        .map(
+            |(date, (cost_usd, input_tokens, output_tokens))| DailyTrendPoint {
+                date,
+                cost_usd,
+                input_tokens,
+                output_tokens,
+            },
+        )
+        .collect();
+
+    let response = GlobalCostResponse {
+        timeframe: timeframe_str,
+        today_usd,
+        week_usd,
+        month_usd,
+        today_tokens: TodayTokens {
+            input: today_input,
+            output: today_output,
+        },
+        top_jobs: top_jobs_raw,
+        daily_trend,
+    };
+
+    (StatusCode::OK, Json(response)).into_response()
+}
+
+/// GET /api/jobs/{id}/manifest
+pub async fn get_job_manifest(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Resolve the job first
+    let job = match resolve_job(&state, &id).await {
+        Ok(j) => j,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // Read manifest from log store; return default manifest (with job ID) if none exists
+    match state.log_store.read_manifest(job.id).await {
+        Ok(Some(manifest)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(&manifest).unwrap()),
+        )
+            .into_response(),
+        Ok(None) => {
+            let default_manifest = JobManifest::new(job.id);
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(&default_manifest).unwrap()),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::warn!("Failed to read manifest for job '{}': {}", id, e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to read manifest: {}", e),
+            )
+            .into_response()
+        }
     }
 }
 

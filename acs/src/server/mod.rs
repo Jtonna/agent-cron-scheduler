@@ -2,6 +2,7 @@ pub mod assets;
 pub mod health;
 pub mod routes;
 pub mod sse;
+pub mod timeframe;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,7 +46,15 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/jobs/{id}/enable", post(routes::enable_job))
         .route("/api/jobs/{id}/disable", post(routes::disable_job))
         .route("/api/jobs/{id}/trigger", post(routes::trigger_job))
+        .route("/api/jobs/{id}/kill", post(routes::kill_job))
         .route("/api/jobs/{id}/runs", get(routes::list_runs))
+        .route("/api/jobs/{id}/manifest", get(routes::get_job_manifest))
+        .route(
+            "/api/jobs/{id}/cost-summary",
+            get(routes::get_job_cost_summary),
+        )
+        .route("/api/costs/summary", get(routes::get_global_cost_summary))
+        .route("/api/runs/recent", get(routes::list_recent_runs))
         .route("/api/runs/{run_id}/log", get(routes::get_log))
         .route("/api/events", get(sse::sse_handler))
         .route("/api/shutdown", post(routes::shutdown))
@@ -197,6 +206,7 @@ mod tests {
     struct InMemoryLogStore {
         runs: RwLock<Vec<JobRun>>,
         logs: RwLock<HashMap<(Uuid, Uuid), Vec<u8>>>,
+        manifests: std::sync::RwLock<HashMap<Uuid, crate::models::JobManifest>>,
     }
 
     impl InMemoryLogStore {
@@ -204,7 +214,12 @@ mod tests {
             Self {
                 runs: RwLock::new(Vec::new()),
                 logs: RwLock::new(HashMap::new()),
+                manifests: std::sync::RwLock::new(HashMap::new()),
             }
+        }
+
+        pub fn seed_manifest(&self, job_id: Uuid, manifest: crate::models::JobManifest) {
+            self.manifests.write().unwrap().insert(job_id, manifest);
         }
     }
 
@@ -276,12 +291,17 @@ mod tests {
 
         async fn read_manifest(
             &self,
-            _job_id: Uuid,
+            job_id: Uuid,
         ) -> anyhow::Result<Option<crate::models::JobManifest>> {
-            Ok(None)
+            Ok(self.manifests.read().unwrap().get(&job_id).cloned())
         }
 
-        async fn update_manifest(&self, _job_id: Uuid, _run: &JobRun) -> anyhow::Result<()> {
+        async fn update_manifest(&self, job_id: Uuid, run: &JobRun) -> anyhow::Result<()> {
+            let mut manifests = self.manifests.write().unwrap();
+            let manifest = manifests
+                .entry(job_id)
+                .or_insert_with(|| crate::models::JobManifest::new(job_id));
+            manifest.merge_run(run);
             Ok(())
         }
 
@@ -1553,5 +1573,935 @@ mod tests {
 
         assert_eq!(json["total_jobs"], 3);
         assert_eq!(json["active_jobs"], 2);
+    }
+
+    // =======================================================================
+    // Helper: build a seeded manifest with the given daily bucket dates
+    // =======================================================================
+
+    fn make_manifest_with_buckets(
+        job_id: uuid::Uuid,
+        buckets: &[(&str, u64, f64)], // (date_key, runs, cost_usd)
+    ) -> crate::models::manifest::JobManifest {
+        use crate::models::manifest::{JobManifest, ModelUsageBucket, TimeBucket};
+        let mut manifest = JobManifest::new(job_id);
+        manifest.total_runs = buckets.iter().map(|(_, r, _)| r).sum();
+        manifest.total_cost_usd = buckets.iter().map(|(_, _, c)| c).sum();
+        for (date_key, runs, cost_usd) in buckets {
+            let mut bucket = TimeBucket::default();
+            bucket.runs = *runs;
+            bucket.cost_usd = *cost_usd;
+            bucket.duration_ms = runs * 60_000;
+            bucket.runs_by_status.insert("Completed".to_string(), *runs);
+            let mut model_usage = ModelUsageBucket::default();
+            model_usage.input_tokens = runs * 1000;
+            model_usage.output_tokens = runs * 250;
+            model_usage.cache_read_input_tokens = runs * 500;
+            bucket
+                .models
+                .insert("claude-sonnet".to_string(), model_usage);
+            manifest.daily_buckets.insert(date_key.to_string(), bucket);
+        }
+        manifest
+    }
+
+    // Helper: create a job in an InMemoryJobStore
+    async fn create_job_in_store(store: &InMemoryJobStore, name: &str) -> crate::models::Job {
+        store
+            .create_job(crate::models::job::NewJob {
+                name: name.to_string(),
+                schedule: "*/5 * * * *".to_string(),
+                execution: crate::models::job::ExecutionType::ShellCommand("echo hi".to_string()),
+                enabled: true,
+                timezone: None,
+                working_dir: None,
+                env_vars: None,
+                timeout_secs: 0,
+                log_environment: false,
+                allow_concurrent: None,
+                pre_hook: None,
+                post_hook: None,
+            })
+            .await
+            .unwrap()
+    }
+
+    // =======================================================================
+    // 20. GET /api/jobs/{id}/cost-summary — manifest present, default timeframe
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_cost_summary_with_manifest() {
+        use chrono::Utc;
+
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job = create_job_in_store(&job_store, "cost-job-1").await;
+
+        // Build recent buckets within the default 30-day window
+        let today = Utc::now().date_naive();
+        let day1 = (today - chrono::Duration::days(5))
+            .format("%Y-%m-%d")
+            .to_string();
+        let day2 = (today - chrono::Duration::days(2))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let manifest = make_manifest_with_buckets(
+            job.id,
+            &[(day1.as_str(), 3, 1.50), (day2.as_str(), 2, 0.80)],
+        );
+        log_store.seed_manifest(job.id, manifest);
+
+        let state = make_test_state_with_stores(
+            job_store as Arc<dyn JobStore>,
+            log_store as Arc<dyn LogStore>,
+        );
+        let app = make_test_app(state);
+
+        let uri = format!("/api/jobs/{}/cost-summary", job.id);
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(json["job_id"], job.id.to_string());
+        assert!(json["timeframe"].is_string());
+
+        let summary = &json["summary"];
+        assert_eq!(summary["total_runs"], 5);
+        assert!((summary["total_cost_usd"].as_f64().unwrap() - 2.30).abs() < 0.001);
+
+        let data = json["data"].as_array().unwrap();
+        assert_eq!(data.len(), 2);
+    }
+
+    // =======================================================================
+    // 21. GET /api/jobs/{id}/cost-summary — no manifest → zeroed response
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_cost_summary_no_manifest() {
+        let state = make_test_state();
+
+        let job = state
+            .job_store
+            .create_job(crate::models::job::NewJob {
+                name: "no-manifest-job".to_string(),
+                schedule: "*/5 * * * *".to_string(),
+                execution: crate::models::job::ExecutionType::ShellCommand("echo hi".to_string()),
+                enabled: true,
+                timezone: None,
+                working_dir: None,
+                env_vars: None,
+                timeout_secs: 0,
+                log_environment: false,
+                allow_concurrent: None,
+                pre_hook: None,
+                post_hook: None,
+            })
+            .await
+            .unwrap();
+
+        let app = make_test_app(state);
+
+        let uri = format!("/api/jobs/{}/cost-summary", job.id);
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        let summary = &json["summary"];
+        assert_eq!(summary["total_runs"], 0);
+        assert_eq!(summary["total_cost_usd"], 0.0);
+
+        let data = json["data"].as_array().unwrap();
+        assert!(data.is_empty());
+    }
+
+    // =======================================================================
+    // 22. GET /api/jobs/{id}/cost-summary — non-existent job → 404
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_cost_summary_not_found() {
+        let state = make_test_state();
+        let app = make_test_app(state);
+
+        let unknown = uuid::Uuid::now_v7();
+        let uri = format!("/api/jobs/{}/cost-summary", unknown);
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // =======================================================================
+    // 23. GET /api/jobs/{id}/cost-summary?timeframe=7d — filters old buckets
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_cost_summary_with_timeframe() {
+        use chrono::Utc;
+
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job = create_job_in_store(&job_store, "timeframe-job").await;
+
+        let today = Utc::now().date_naive();
+        let recent = (today - chrono::Duration::days(2))
+            .format("%Y-%m-%d")
+            .to_string();
+        let old = (today - chrono::Duration::days(60))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let manifest = make_manifest_with_buckets(
+            job.id,
+            &[(old.as_str(), 10, 5.00), (recent.as_str(), 2, 1.00)],
+        );
+        log_store.seed_manifest(job.id, manifest);
+
+        let state = make_test_state_with_stores(
+            job_store as Arc<dyn JobStore>,
+            log_store as Arc<dyn LogStore>,
+        );
+        let app = make_test_app(state);
+
+        let uri = format!("/api/jobs/{}/cost-summary?timeframe=7d", job.id);
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        let summary = &json["summary"];
+        // Only the recent bucket (2 runs, $1.00) should be in the 7d window
+        assert_eq!(summary["total_runs"], 2);
+        assert!((summary["total_cost_usd"].as_f64().unwrap() - 1.00).abs() < 0.001);
+
+        let data = json["data"].as_array().unwrap();
+        assert_eq!(data.len(), 1);
+    }
+
+    // =======================================================================
+    // 24. GET /api/jobs/{id}/cost-summary?start=...&end=... — custom range
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_cost_summary_custom_range() {
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job = create_job_in_store(&job_store, "custom-range-job").await;
+
+        let manifest = make_manifest_with_buckets(
+            job.id,
+            &[
+                ("2026-01-10", 4, 2.00),
+                ("2026-01-20", 3, 1.50),
+                ("2026-02-05", 5, 3.00),
+            ],
+        );
+        log_store.seed_manifest(job.id, manifest);
+
+        let state = make_test_state_with_stores(
+            job_store as Arc<dyn JobStore>,
+            log_store as Arc<dyn LogStore>,
+        );
+        let app = make_test_app(state);
+
+        // Request only January 2026
+        let uri = format!(
+            "/api/jobs/{}/cost-summary?start=2026-01-01&end=2026-01-31",
+            job.id
+        );
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        let summary = &json["summary"];
+        // Only the two January buckets: 4+3=7 runs, $2.00+$1.50=$3.50
+        assert_eq!(summary["total_runs"], 7);
+        assert!((summary["total_cost_usd"].as_f64().unwrap() - 3.50).abs() < 0.001);
+
+        let data = json["data"].as_array().unwrap();
+        assert_eq!(data.len(), 2);
+    }
+
+    // =======================================================================
+    // 25. GET /api/costs/summary — two jobs, manifests present
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_global_cost_summary() {
+        use chrono::Utc;
+
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job_a = create_job_in_store(&job_store, "global-job-a").await;
+        let job_b = create_job_in_store(&job_store, "global-job-b").await;
+
+        let today = Utc::now().date_naive();
+        let recent = (today - chrono::Duration::days(3))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        log_store.seed_manifest(
+            job_a.id,
+            make_manifest_with_buckets(job_a.id, &[(recent.as_str(), 4, 2.00)]),
+        );
+        log_store.seed_manifest(
+            job_b.id,
+            make_manifest_with_buckets(job_b.id, &[(recent.as_str(), 6, 3.00)]),
+        );
+
+        let state = make_test_state_with_stores(
+            job_store as Arc<dyn JobStore>,
+            log_store as Arc<dyn LogStore>,
+        );
+        let app = make_test_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/costs/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        assert!(json["timeframe"].is_string());
+
+        let top_jobs = json["top_jobs"].as_array().unwrap();
+        assert_eq!(top_jobs.len(), 2);
+
+        // Top job by cost should be job_b ($3.00 > $2.00)
+        assert_eq!(top_jobs[0]["job_id"], job_b.id.to_string());
+        assert_eq!(top_jobs[1]["job_id"], job_a.id.to_string());
+
+        let daily_trend = json["daily_trend"].as_array().unwrap();
+        assert_eq!(daily_trend.len(), 1);
+        // Merged cost for the single date: $2.00 + $3.00 = $5.00
+        assert!((daily_trend[0]["cost_usd"].as_f64().unwrap() - 5.00).abs() < 0.001);
+    }
+
+    // =======================================================================
+    // 26. GET /api/costs/summary — no jobs → zeroed response
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_global_cost_summary_no_jobs() {
+        let state = make_test_state();
+        let app = make_test_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/costs/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(json["today_usd"], 0.0);
+        assert_eq!(json["week_usd"], 0.0);
+        assert_eq!(json["month_usd"], 0.0);
+
+        let top_jobs = json["top_jobs"].as_array().unwrap();
+        assert!(top_jobs.is_empty());
+
+        let daily_trend = json["daily_trend"].as_array().unwrap();
+        assert!(daily_trend.is_empty());
+    }
+
+    // =======================================================================
+    // 27. GET /api/jobs/{id}/manifest — manifest present
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_manifest_exists() {
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job = create_job_in_store(&job_store, "manifest-job").await;
+
+        let manifest = make_manifest_with_buckets(job.id, &[("2026-03-30", 5, 2.50)]);
+        log_store.seed_manifest(job.id, manifest);
+
+        let state = make_test_state_with_stores(
+            job_store as Arc<dyn JobStore>,
+            log_store as Arc<dyn LogStore>,
+        );
+        let app = make_test_app(state);
+
+        let uri = format!("/api/jobs/{}/manifest", job.id);
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(json["job_id"], job.id.to_string());
+        assert_eq!(json["total_runs"], 5);
+        assert!((json["total_cost_usd"].as_f64().unwrap() - 2.50).abs() < 0.001);
+        assert!(json["daily_buckets"]["2026-03-30"].is_object());
+    }
+
+    // =======================================================================
+    // 28. GET /api/jobs/{id}/manifest — non-existent job → 404
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_manifest_not_found() {
+        let state = make_test_state();
+        let app = make_test_app(state);
+
+        let unknown = uuid::Uuid::now_v7();
+        let uri = format!("/api/jobs/{}/manifest", unknown);
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // =======================================================================
+    // 29. GET /api/jobs/{id}/manifest — job exists, no manifest → default
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_manifest_no_manifest() {
+        let state = make_test_state();
+
+        let job = state
+            .job_store
+            .create_job(crate::models::job::NewJob {
+                name: "no-manifest-job-2".to_string(),
+                schedule: "*/5 * * * *".to_string(),
+                execution: crate::models::job::ExecutionType::ShellCommand("echo hi".to_string()),
+                enabled: true,
+                timezone: None,
+                working_dir: None,
+                env_vars: None,
+                timeout_secs: 0,
+                log_environment: false,
+                allow_concurrent: None,
+                pre_hook: None,
+                post_hook: None,
+            })
+            .await
+            .unwrap();
+
+        let app = make_test_app(state);
+
+        let uri = format!("/api/jobs/{}/manifest", job.id);
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        // Should return a default manifest with the correct job_id
+        assert_eq!(json["job_id"], job.id.to_string());
+        assert_eq!(json["total_runs"], 0);
+        assert_eq!(json["total_cost_usd"], 0.0);
+        assert!(json["daily_buckets"].as_object().unwrap().is_empty());
+    }
+
+    // =======================================================================
+    // 30. GET /api/jobs/{id}/cost-summary?timeframe=INVALID → 400
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_cost_summary_invalid_timeframe_returns_400() {
+        let state = make_test_state();
+
+        let job = state
+            .job_store
+            .create_job(crate::models::job::NewJob {
+                name: "invalid-tf-job".to_string(),
+                schedule: "*/5 * * * *".to_string(),
+                execution: crate::models::job::ExecutionType::ShellCommand("echo hi".to_string()),
+                enabled: true,
+                timezone: None,
+                working_dir: None,
+                env_vars: None,
+                timeout_secs: 0,
+                log_environment: false,
+                allow_concurrent: None,
+                pre_hook: None,
+                post_hook: None,
+            })
+            .await
+            .unwrap();
+
+        let app = make_test_app(state);
+
+        let uri = format!("/api/jobs/{}/cost-summary?timeframe=2weeks", job.id);
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // =======================================================================
+    // 31. GET /api/jobs/{id}/cost-summary?timeframe=7d&start=... → 400 conflict
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_cost_summary_conflicting_params_returns_400() {
+        let state = make_test_state();
+
+        let job = state
+            .job_store
+            .create_job(crate::models::job::NewJob {
+                name: "conflict-params-job".to_string(),
+                schedule: "*/5 * * * *".to_string(),
+                execution: crate::models::job::ExecutionType::ShellCommand("echo hi".to_string()),
+                enabled: true,
+                timezone: None,
+                working_dir: None,
+                env_vars: None,
+                timeout_secs: 0,
+                log_environment: false,
+                allow_concurrent: None,
+                pre_hook: None,
+                post_hook: None,
+            })
+            .await
+            .unwrap();
+
+        let app = make_test_app(state);
+
+        let uri = format!(
+            "/api/jobs/{}/cost-summary?timeframe=7d&start=2026-01-01",
+            job.id
+        );
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // =======================================================================
+    // 32. GET /api/jobs/{id}/cost-summary — runs_by_status populated from runs
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_cost_summary_runs_by_status() {
+        use crate::models::{JobRun, RunStatus};
+        use chrono::Utc;
+
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job = create_job_in_store(&job_store, "status-job").await;
+
+        // Seed a manifest so the endpoint returns 200 with data
+        let today = Utc::now().date_naive();
+        let recent = (today - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let manifest = make_manifest_with_buckets(job.id, &[(recent.as_str(), 3, 1.50)]);
+        log_store.seed_manifest(job.id, manifest);
+
+        // Seed two completed and one failed run within the default 30d window
+        let now = Utc::now();
+        for status in [
+            RunStatus::Completed,
+            RunStatus::Completed,
+            RunStatus::Failed,
+        ] {
+            let run = JobRun {
+                run_id: uuid::Uuid::now_v7(),
+                job_id: job.id,
+                started_at: now - chrono::Duration::days(1),
+                finished_at: Some(now),
+                status,
+                exit_code: Some(0),
+                log_size_bytes: 0,
+                error: None,
+                trigger_params: None,
+                total_cost_usd: None,
+                duration_ms: None,
+                num_turns: None,
+                model: None,
+                usage: None,
+            };
+            log_store.create_run(&run).await.unwrap();
+        }
+
+        let state = make_test_state_with_stores(
+            job_store as Arc<dyn JobStore>,
+            log_store as Arc<dyn LogStore>,
+        );
+        let app = make_test_app(state);
+
+        let uri = format!("/api/jobs/{}/cost-summary", job.id);
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        let runs_by_status = json["summary"]["runs_by_status"].as_object().unwrap();
+        assert_eq!(
+            runs_by_status.get("Completed").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            runs_by_status.get("Failed").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+    }
+
+    // =======================================================================
+    // 33. GET /api/jobs/{id}/cost-summary — daily data sorted by date asc
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_job_cost_summary_data_sorted_by_date() {
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job = create_job_in_store(&job_store, "sorted-date-job").await;
+
+        // Insert buckets in non-chronological order to verify sorting
+        let manifest = make_manifest_with_buckets(
+            job.id,
+            &[
+                ("2026-01-20", 2, 1.00),
+                ("2026-01-10", 1, 0.50),
+                ("2026-01-15", 3, 1.50),
+            ],
+        );
+        log_store.seed_manifest(job.id, manifest);
+
+        let state = make_test_state_with_stores(
+            job_store as Arc<dyn JobStore>,
+            log_store as Arc<dyn LogStore>,
+        );
+        let app = make_test_app(state);
+
+        let uri = format!(
+            "/api/jobs/{}/cost-summary?start=2026-01-01&end=2026-01-31",
+            job.id
+        );
+        let response = app
+            .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        let data = json["data"].as_array().unwrap();
+        assert_eq!(data.len(), 3);
+
+        // Verify ascending date order
+        let dates: Vec<&str> = data.iter().map(|d| d["date"].as_str().unwrap()).collect();
+        assert_eq!(dates, vec!["2026-01-10", "2026-01-15", "2026-01-20"]);
+    }
+
+    // =======================================================================
+    // 34. GET /api/costs/summary — top_jobs capped at 5 even with 6+ jobs
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_global_cost_summary_top_jobs_capped_at_5() {
+        use chrono::Utc;
+
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let today = Utc::now().date_naive();
+        let recent = (today - chrono::Duration::days(2))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        // Create 6 jobs, each with a distinct cost
+        for i in 0..6u64 {
+            let job = create_job_in_store(&job_store, &format!("cap-job-{}", i)).await;
+            let cost = (i + 1) as f64 * 1.0; // costs: 1.0, 2.0, 3.0, 4.0, 5.0, 6.0
+            log_store.seed_manifest(
+                job.id,
+                make_manifest_with_buckets(job.id, &[(recent.as_str(), 1, cost)]),
+            );
+        }
+
+        let state = make_test_state_with_stores(
+            job_store as Arc<dyn JobStore>,
+            log_store as Arc<dyn LogStore>,
+        );
+        let app = make_test_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/costs/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        let top_jobs = json["top_jobs"].as_array().unwrap();
+        // Max 5 jobs returned
+        assert_eq!(top_jobs.len(), 5);
+
+        // First entry must have the highest cost (6.0)
+        let first_cost = top_jobs[0]["total_cost"].as_f64().unwrap();
+        assert!(
+            (first_cost - 6.0).abs() < 0.001,
+            "expected 6.0, got {}",
+            first_cost
+        );
+
+        // Last entry in top-5 must have cost 2.0 (jobs sorted desc: 6,5,4,3,2)
+        let last_cost = top_jobs[4]["total_cost"].as_f64().unwrap();
+        assert!(
+            (last_cost - 2.0).abs() < 0.001,
+            "expected 2.0, got {}",
+            last_cost
+        );
+    }
+
+    // =======================================================================
+    // 35. GET /api/costs/summary — today_usd, week_usd, month_usd verified
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_global_cost_summary_period_totals() {
+        use chrono::Utc;
+
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job = create_job_in_store(&job_store, "period-totals-job").await;
+
+        let today = Utc::now().date_naive();
+        let today_str = today.format("%Y-%m-%d").to_string();
+        let week_ago = (today - chrono::Duration::days(3))
+            .format("%Y-%m-%d")
+            .to_string();
+        let month_ago = (today - chrono::Duration::days(20))
+            .format("%Y-%m-%d")
+            .to_string();
+        // This date is outside the month window (30d) and week window
+        let old = (today - chrono::Duration::days(60))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let manifest = make_manifest_with_buckets(
+            job.id,
+            &[
+                (today_str.as_str(), 1, 1.00), // in today, week, month
+                (week_ago.as_str(), 2, 2.00),  // in week and month, not today
+                (month_ago.as_str(), 3, 3.00), // in month only
+                (old.as_str(), 4, 4.00),       // outside all windows
+            ],
+        );
+        log_store.seed_manifest(job.id, manifest);
+
+        let state = make_test_state_with_stores(
+            job_store as Arc<dyn JobStore>,
+            log_store as Arc<dyn LogStore>,
+        );
+        let app = make_test_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/costs/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        // today_usd should be 1.00 (only today's bucket)
+        let today_usd = json["today_usd"].as_f64().unwrap();
+        assert!(
+            (today_usd - 1.00).abs() < 0.001,
+            "today_usd expected 1.00, got {}",
+            today_usd
+        );
+
+        // week_usd covers last 7 days (days 0-6): today(1.00) + week_ago(2.00) = 3.00
+        let week_usd = json["week_usd"].as_f64().unwrap();
+        assert!(
+            (week_usd - 3.00).abs() < 0.001,
+            "week_usd expected 3.00, got {}",
+            week_usd
+        );
+
+        // month_usd covers last 30 days (days 0-29): today(1.00) + week_ago(2.00) + month_ago(3.00) = 6.00
+        let month_usd = json["month_usd"].as_f64().unwrap();
+        assert!(
+            (month_usd - 6.00).abs() < 0.001,
+            "month_usd expected 6.00, got {}",
+            month_usd
+        );
+    }
+
+    // =======================================================================
+    // 36. GET /api/costs/summary — today_tokens populated from today's bucket
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_global_cost_summary_today_tokens() {
+        use chrono::Utc;
+
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job = create_job_in_store(&job_store, "today-tokens-job").await;
+
+        let today = Utc::now().date_naive();
+        let today_str = today.format("%Y-%m-%d").to_string();
+
+        // make_manifest_with_buckets seeds: input_tokens = runs * 1000, output_tokens = runs * 250
+        // For 4 runs: input=4000, output=1000
+        let manifest = make_manifest_with_buckets(job.id, &[(today_str.as_str(), 4, 2.00)]);
+        log_store.seed_manifest(job.id, manifest);
+
+        let state = make_test_state_with_stores(
+            job_store as Arc<dyn JobStore>,
+            log_store as Arc<dyn LogStore>,
+        );
+        let app = make_test_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/costs/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        let today_tokens = &json["today_tokens"];
+        let input = today_tokens["input"].as_u64().unwrap();
+        let output = today_tokens["output"].as_u64().unwrap();
+
+        // 4 runs * 1000 input = 4000; 4 runs * 250 output = 1000
+        assert_eq!(input, 4000, "expected 4000 input tokens, got {}", input);
+        assert_eq!(output, 1000, "expected 1000 output tokens, got {}", output);
+    }
+
+    // =======================================================================
+    // 37. GET /api/costs/summary — mix of jobs with/without manifests
+    // =======================================================================
+    #[tokio::test]
+    async fn test_get_global_cost_summary_mixed_manifests() {
+        use chrono::Utc;
+
+        let job_store = Arc::new(InMemoryJobStore::new());
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        // job_with_manifest: has cost data
+        let job_with = create_job_in_store(&job_store, "mixed-with-manifest").await;
+        // job_without_manifest: no manifest seeded
+        let _job_without = create_job_in_store(&job_store, "mixed-no-manifest").await;
+
+        let today = Utc::now().date_naive();
+        let recent = (today - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        log_store.seed_manifest(
+            job_with.id,
+            make_manifest_with_buckets(job_with.id, &[(recent.as_str(), 3, 1.50)]),
+        );
+
+        let state = make_test_state_with_stores(
+            job_store as Arc<dyn JobStore>,
+            log_store as Arc<dyn LogStore>,
+        );
+        let app = make_test_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/costs/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        // Only the job with a manifest should appear in top_jobs
+        let top_jobs = json["top_jobs"].as_array().unwrap();
+        assert_eq!(top_jobs.len(), 1, "only 1 job with manifest should appear");
+        assert_eq!(top_jobs[0]["job_id"], job_with.id.to_string());
+
+        // month_usd should reflect only the job with a manifest ($1.50)
+        let month_usd = json["month_usd"].as_f64().unwrap();
+        assert!(
+            (month_usd - 1.50).abs() < 0.001,
+            "month_usd expected 1.50, got {}",
+            month_usd
+        );
     }
 }

@@ -617,29 +617,51 @@ export const StreamJsonViewer = React.memo(function StreamJsonViewer({
                   </div>
                   <table className="w-full text-sm">
                     <tbody>
-                      {Object.entries(costData.usage).map(([key, value], i) => {
-                        const label = key
-                          .replace(/_/g, " ")
-                          .replace(/\b\w/g, (c) => c.toUpperCase());
-                        const isNumber = typeof value === "number";
-                        return (
-                          <tr
-                            key={key}
-                            className={
-                              i % 2 === 0 ? "bg-background" : "bg-muted/20"
+                      {(() => {
+                        // Flatten usage entries: expand nested objects into sub-rows,
+                        // skip null/undefined/empty values, and skip object-valued
+                        // keys that are already represented by flat numeric fields.
+                        const flatEntries: Array<{ key: string; value: number | string }> = [];
+                        const usageObj = costData.usage as Record<string, unknown>;
+                        for (const [key, value] of Object.entries(usageObj)) {
+                          if (value === null || value === undefined) continue;
+                          if (typeof value === "object" && !Array.isArray(value)) {
+                            // Expand nested object into flat sub-entries prefixed by parent key
+                            for (const [subKey, subVal] of Object.entries(value as Record<string, unknown>)) {
+                              if (subVal === null || subVal === undefined) continue;
+                              if (typeof subVal === "number" || typeof subVal === "string") {
+                                flatEntries.push({ key: `${key}_${subKey}`, value: subVal as number | string });
+                              }
                             }
-                          >
-                            <td className="px-3 py-2 text-muted-foreground">
-                              {label}
-                            </td>
-                            <td className="px-3 py-2 text-right font-mono font-medium text-primary">
-                              {isNumber
-                                ? formatTokens(value as number)
-                                : String(value)}
-                            </td>
-                          </tr>
-                        );
-                      })}
+                          } else if (typeof value === "number") {
+                            flatEntries.push({ key, value });
+                          } else if (typeof value === "string") {
+                            if (value.trim() === "") continue;
+                            flatEntries.push({ key, value });
+                          }
+                        }
+                        return flatEntries.map(({ key, value }, i) => {
+                          const label = key
+                            .replace(/_/g, " ")
+                            .replace(/\b\w/g, (c) => c.toUpperCase());
+                          const displayValue = typeof value === "number"
+                            ? formatTokens(value)
+                            : value;
+                          return (
+                            <tr
+                              key={key}
+                              className={i % 2 === 0 ? "bg-background" : "bg-muted/20"}
+                            >
+                              <td className="px-3 py-2 text-muted-foreground">
+                                {label}
+                              </td>
+                              <td className="px-3 py-2 text-right font-mono font-medium text-primary">
+                                {displayValue}
+                              </td>
+                            </tr>
+                          );
+                        });
+                      })()}
                     </tbody>
                   </table>
                 </div>

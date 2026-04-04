@@ -1,6 +1,6 @@
 {
   "name": "acs-electron",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "private": true,
   "workspaces": [
     "packages/*"
@@ -19,6 +19,7 @@
     "wait-on": "^8.0.0"
   },
   "overrides": {
-    "minimatch": ">=10.2.1"
+    "minimatch": ">=10.2.1",
+    "axios": "1.14.0"
   }
 }

@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   FormTopBar, SectionCard,
-  JobDetailsFields, ScheduleFields, RuntimeFields, EnvVarsFields,
+  JobDetailsFields, ScheduleFields, RuntimeFields, EnvVarsFields, PrePostHookFields,
 } from "./FormSections";
 import { useJobFormState } from "./useJobFormState";
 import type { Job, NewJob } from "@/lib/types";
@@ -26,7 +26,7 @@ export function JobForm({ job, title, onSubmit, submitLabel = "Save" }: JobFormP
       // If any validation errors are on advanced-tab fields, auto-switch
       // to that tab so the user can see them. We check the conditions
       // directly since state updates from validate() haven't flushed yet.
-      const hasAdvancedError = s.timeoutSecs < 1;
+      const hasAdvancedError = s.timeoutSecs < 0;
       if (hasAdvancedError && tab !== "advanced") {
         setTab("advanced");
       }
@@ -93,6 +93,14 @@ export function JobForm({ job, title, onSubmit, submitLabel = "Save" }: JobFormP
                 <EnvVarsFields
                   envVars={s.envVars} setEnvVars={s.setEnvVars}
                   logEnvironment={s.logEnvironment} setLogEnvironment={s.setLogEnvironment}
+                />
+              </SectionCard>
+              <SectionCard title="Hooks" subtitle="Pre and post execution scripts">
+                <PrePostHookFields
+                  preHook={s.preHook}
+                  setPreHook={s.setPreHook}
+                  postHook={s.postHook}
+                  setPostHook={s.setPostHook}
                 />
               </SectionCard>
             </div>

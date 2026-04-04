@@ -24,6 +24,8 @@ export function useJobFormState(job?: Job | null) {
     job?.allow_concurrent ?? false
   );
   const [enabled, setEnabled] = useState(job?.enabled ?? true);
+  const [preHook, setPreHook] = useState(job?.pre_hook ?? "");
+  const [postHook, setPostHook] = useState(job?.post_hook ?? "");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -41,6 +43,8 @@ export function useJobFormState(job?: Job | null) {
       setLogEnvironment(job.log_environment);
       setAllowConcurrent(job.allow_concurrent ?? false);
       setEnabled(job.enabled);
+      setPreHook(job.pre_hook ?? "");
+      setPostHook(job.post_hook ?? "");
     }
   }, [job]);
 
@@ -52,7 +56,7 @@ export function useJobFormState(job?: Job | null) {
     if (!schedule.trim()) newErrors.schedule = "Schedule is required";
     const cronErr = validateCron(schedule);
     if (cronErr) newErrors.schedule = cronErr;
-    if (timeoutSecs < 1) newErrors.timeout = "Timeout must be at least 1 second";
+    if (timeoutSecs < 0) newErrors.timeout = "Timeout must not be negative";
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -73,6 +77,8 @@ export function useJobFormState(job?: Job | null) {
     if (timezone) data.timezone = timezone;
     if (workingDir) data.working_dir = workingDir;
     if (Object.keys(envVars).length > 0) data.env_vars = envVars;
+    if (preHook.trim()) data.pre_hook = preHook.trim();
+    if (postHook.trim()) data.post_hook = postHook.trim();
     return data;
   };
 
@@ -80,7 +86,9 @@ export function useJobFormState(job?: Job | null) {
     job?.working_dir ||
     job?.log_environment ||
     (job?.env_vars && Object.keys(job.env_vars).length > 0) ||
-    (job && job.timeout_secs !== 3600)
+    (job && job.timeout_secs !== 3600) ||
+    job?.pre_hook ||
+    job?.post_hook
   );
 
   return {
@@ -95,6 +103,8 @@ export function useJobFormState(job?: Job | null) {
     logEnvironment, setLogEnvironment,
     allowConcurrent, setAllowConcurrent,
     enabled, setEnabled,
+    preHook, setPreHook,
+    postHook, setPostHook,
     errors: visibleErrors,
     submitting, setSubmitting,
     validate, buildData,

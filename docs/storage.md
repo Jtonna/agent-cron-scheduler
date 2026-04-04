@@ -186,10 +186,11 @@ contains:
 | `env`   | object or null            | Per-trigger environment variables that were merged into the run. |
 | `input` | string or null            | Data that was written to the process's stdin.                    |
 
-The following fields are populated only when the job is executed via the Claude
-CLI and the CLI reports cost/usage metadata. They are omitted from the JSON
-file entirely when not present, preserving backward compatibility with older
-metadata files.
+The following fields are populated when the Claude CLI reports cost/usage
+metadata. This includes output from the main command as well as pre-hooks and
+post-hooks — if multiple sources report cost data, the costs are summed. They
+are omitted from the JSON file entirely when not present, preserving backward
+compatibility with older metadata files.
 
 | Field | Type | Description |
 |---|---|---|
