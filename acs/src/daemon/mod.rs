@@ -1496,6 +1496,13 @@ mod tests {
         };
         let all_jobs = vec![fake_job];
 
+        // Write NDJSON cost data to the log store for the orphaned run
+        let ndjson = b"{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":0.0342,\"duration_ms\":5000,\"num_turns\":3,\"usage\":{\"input_tokens\":1000,\"output_tokens\":500}}\n";
+        log_store
+            .append_log(job_id, run_id, ndjson)
+            .await
+            .expect("append_log should succeed");
+
         // Execute the same ghost run recovery logic as run_daemon
         for job in &all_jobs {
             let (runs, _total) = log_store
@@ -1504,6 +1511,16 @@ mod tests {
                 .expect("list_runs should succeed");
             for mut run in runs {
                 if run.status == RunStatus::Running {
+                    let raw = log_store
+                        .read_log(job.id, run.run_id, None)
+                        .await
+                        .unwrap_or_default();
+                    let cost = extract_cost_from_log(raw.as_bytes());
+                    run.total_cost_usd = cost.total_cost_usd;
+                    run.duration_ms = cost.duration_ms;
+                    run.num_turns = cost.num_turns;
+                    run.model = cost.model;
+                    run.usage = cost.usage;
                     run.status = RunStatus::Killed;
                     run.exit_code = Some(-1);
                     run.finished_at = Some(Utc::now());
@@ -1542,6 +1559,165 @@ mod tests {
             recovered.error.as_deref(),
             Some("Orphaned run — process not found on daemon restart"),
             "Orphaned run should have the correct error message"
+        );
+        assert_eq!(
+            recovered.total_cost_usd,
+            Some(0.0342),
+            "Orphaned run should have cost extracted from log"
+        );
+        assert_eq!(
+            recovered.model.as_deref(),
+            Some("claude-sonnet-4-20250514"),
+            "Orphaned run should have model extracted from log"
+        );
+        assert_eq!(
+            recovered.duration_ms,
+            Some(5000),
+            "Orphaned run should have duration_ms extracted from log"
+        );
+        assert_eq!(
+            recovered.num_turns,
+            Some(3),
+            "Orphaned run should have num_turns extracted from log"
+        );
+        assert!(
+            recovered.usage.is_some(),
+            "Orphaned run should have usage extracted from log"
+        );
+    }
+
+    // =======================================================================
+    // 5b-2. Ghost run recovery — no log data leaves cost fields as None
+    // =======================================================================
+    #[tokio::test]
+    async fn test_ghost_run_recovery_no_log_data() {
+        use crate::models::Job;
+
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+
+        // Simulate an orphaned run with no associated log data
+        let orphaned_run = crate::models::JobRun {
+            run_id,
+            job_id,
+            started_at: Utc::now(),
+            finished_at: None,
+            status: RunStatus::Running,
+            exit_code: None,
+            log_size_bytes: 0,
+            error: None,
+            trigger_params: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
+        };
+        log_store.create_run(&orphaned_run).await.unwrap();
+
+        // Build a minimal Job list (no log data written)
+        let fake_job = Job {
+            id: job_id,
+            name: "ghost-no-log-test-job".to_string(),
+            schedule: "* * * * *".to_string(),
+            execution: crate::models::ExecutionType::ShellCommand("echo hi".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
+            next_run_at: None,
+        };
+        let all_jobs = vec![fake_job];
+
+        // Execute the same ghost run recovery logic as run_daemon
+        for job in &all_jobs {
+            let (runs, _total) = log_store
+                .list_runs(job.id, 50, 0)
+                .await
+                .expect("list_runs should succeed");
+            for mut run in runs {
+                if run.status == RunStatus::Running {
+                    let raw = log_store
+                        .read_log(job.id, run.run_id, None)
+                        .await
+                        .unwrap_or_default();
+                    let cost = extract_cost_from_log(raw.as_bytes());
+                    run.total_cost_usd = cost.total_cost_usd;
+                    run.duration_ms = cost.duration_ms;
+                    run.num_turns = cost.num_turns;
+                    run.model = cost.model;
+                    run.usage = cost.usage;
+                    run.status = RunStatus::Killed;
+                    run.exit_code = Some(-1);
+                    run.finished_at = Some(Utc::now());
+                    run.error =
+                        Some("Orphaned run — process not found on daemon restart".to_string());
+                    log_store
+                        .update_run(&run)
+                        .await
+                        .expect("update_run should succeed");
+                }
+            }
+        }
+
+        // Verify recovery — status/exit_code/error set correctly
+        let runs = log_store.runs.read().await;
+        let recovered = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            recovered.status,
+            RunStatus::Killed,
+            "Orphaned run should be marked as Killed"
+        );
+        assert_eq!(
+            recovered.exit_code,
+            Some(-1),
+            "Orphaned run should have exit_code -1"
+        );
+        assert!(
+            recovered.finished_at.is_some(),
+            "Orphaned run should have a finished_at timestamp"
+        );
+        assert_eq!(
+            recovered.error.as_deref(),
+            Some("Orphaned run — process not found on daemon restart"),
+            "Orphaned run should have the correct error message"
+        );
+        // Cost fields should all be None when no log data exists
+        assert!(
+            recovered.total_cost_usd.is_none(),
+            "total_cost_usd should be None when no log data"
+        );
+        assert!(
+            recovered.model.is_none(),
+            "model should be None when no log data"
+        );
+        assert!(
+            recovered.duration_ms.is_none(),
+            "duration_ms should be None when no log data"
+        );
+        assert!(
+            recovered.num_turns.is_none(),
+            "num_turns should be None when no log data"
+        );
+        assert!(
+            recovered.usage.is_none(),
+            "usage should be None when no log data"
         );
     }
 
