@@ -821,6 +821,53 @@ pub async fn start_daemon(
         }
     }
 
+    // Recover ghost runs — any run still marked Running from a previous session
+    // will never complete on its own. Mark them Killed so the UI is consistent.
+    for job in &all_jobs {
+        match log_store.list_runs(job.id, 50, 0).await {
+            Ok((runs, _total)) => {
+                for mut run in runs {
+                    if run.status == crate::models::RunStatus::Running {
+                        run.status = crate::models::RunStatus::Killed;
+                        run.exit_code = Some(-1);
+                        run.finished_at = Some(chrono::Utc::now());
+                        run.error = Some(
+                            "Orphaned run — process not found on daemon restart".to_string(),
+                        );
+                        tracing::warn!(
+                            job_id = %job.id,
+                            run_id = %run.run_id,
+                            "Ghost run recovered: marking orphaned running run as Killed"
+                        );
+                        if let Err(e) = log_store.update_run(&run).await {
+                            tracing::warn!(
+                                job_id = %job.id,
+                                run_id = %run.run_id,
+                                "Failed to update ghost run: {}",
+                                e
+                            );
+                        }
+                        if let Err(e) = log_store.update_manifest(job.id, &run).await {
+                            tracing::warn!(
+                                job_id = %job.id,
+                                run_id = %run.run_id,
+                                "Failed to update manifest for ghost run: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to list runs for ghost run recovery (job '{}'): {}",
+                    job.name,
+                    e
+                );
+            }
+        }
+    }
+
     // Create broadcast channel
     let (event_tx, _event_rx) = broadcast::channel::<JobEvent>(config.broadcast_capacity);
 
@@ -901,9 +948,31 @@ pub async fn start_daemon(
                     if request.job.allow_concurrent {
                         handles.push(handle);
                     } else {
-                        // Kill existing handles for non-concurrent jobs
+                        // Kill existing handles for non-concurrent jobs.
+                        // After sending the kill signal, spawn a detached task
+                        // to await each old join_handle with a timeout so the
+                        // executor has time to update the run status to Killed.
+                        // Dropping join_handle without awaiting would race the
+                        // executor's kill-handling path, potentially leaving
+                        // ghost "Running" entries.
                         for old_handle in handles.drain(..) {
                             let _ = old_handle.kill_tx.send(());
+                            let old_join = old_handle.join_handle;
+                            tokio::spawn(async move {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    old_join,
+                                )
+                                .await
+                                {
+                                    Ok(_) => {}
+                                    Err(_) => {
+                                        tracing::warn!(
+                                            "Kill cleanup timed out waiting for old run to finish"
+                                        );
+                                    }
+                                }
+                            });
                         }
                         handles.push(handle);
                     }
@@ -1829,6 +1898,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -2201,6 +2271,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
