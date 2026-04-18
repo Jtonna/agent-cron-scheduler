@@ -19,7 +19,7 @@ use tracing;
 use uuid::Uuid;
 
 use crate::daemon::events::JobEvent;
-use crate::daemon::executor::{Executor, RunHandle};
+use crate::daemon::executor::{Executor, KillReason, RunHandle};
 use crate::daemon::scheduler::Scheduler;
 use crate::models::{DaemonConfig, RunStatus};
 use crate::server::{self, AppState};
@@ -831,9 +831,8 @@ pub async fn start_daemon(
                         run.status = crate::models::RunStatus::Killed;
                         run.exit_code = Some(-1);
                         run.finished_at = Some(chrono::Utc::now());
-                        run.error = Some(
-                            "Orphaned run — process not found on daemon restart".to_string(),
-                        );
+                        run.error =
+                            Some("Orphaned run — process not found on daemon restart".to_string());
                         tracing::warn!(
                             job_id = %job.id,
                             run_id = %run.run_id,

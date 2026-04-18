@@ -496,8 +496,13 @@ mod tests {
         let clock = Arc::new(FakeClock::new(Utc::now()));
         let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
-        let scheduler =
-            Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx, empty_active_runs());
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock.clone(),
+            notify.clone(),
+            tx,
+            empty_active_runs(),
+        );
 
         // Spawn the scheduler
         let handle = tokio::spawn(async move { scheduler.run().await });
@@ -596,8 +601,13 @@ mod tests {
         let notify = Arc::new(Notify::new());
         let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
-        let scheduler =
-            Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx, empty_active_runs());
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock.clone(),
+            notify.clone(),
+            tx,
+            empty_active_runs(),
+        );
 
         let handle = tokio::spawn(async move { scheduler.run().await });
 
@@ -758,8 +768,13 @@ mod tests {
         let notify = Arc::new(Notify::new());
         let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
-        let scheduler =
-            Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx, empty_active_runs());
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock.clone(),
+            notify.clone(),
+            tx,
+            empty_active_runs(),
+        );
 
         let handle = tokio::spawn(async move { scheduler.run().await });
 
@@ -823,8 +838,13 @@ mod tests {
         let notify = Arc::new(Notify::new());
         let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
-        let scheduler =
-            Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx, empty_active_runs());
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock.clone(),
+            notify.clone(),
+            tx,
+            empty_active_runs(),
+        );
 
         let handle = tokio::spawn(async move { scheduler.run().await });
 
