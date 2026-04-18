@@ -1430,6 +1430,211 @@ mod tests {
     }
 
     // =======================================================================
+    // 5b. Ghost run recovery marks orphaned Running runs as Killed
+    // =======================================================================
+    #[tokio::test]
+    async fn test_ghost_run_recovery_marks_orphaned_runs() {
+        use crate::models::Job;
+
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+
+        // Simulate a run that was left in Running state from a previous session
+        let orphaned_run = crate::models::JobRun {
+            run_id,
+            job_id,
+            started_at: Utc::now(),
+            finished_at: None,
+            status: RunStatus::Running,
+            exit_code: None,
+            log_size_bytes: 0,
+            error: None,
+            trigger_params: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
+        };
+        log_store.create_run(&orphaned_run).await.unwrap();
+
+        // Build a minimal Job list to drive recovery (mirrors run_daemon logic)
+        let fake_job = Job {
+            id: job_id,
+            name: "ghost-test-job".to_string(),
+            schedule: "* * * * *".to_string(),
+            execution: crate::models::ExecutionType::ShellCommand("echo hi".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
+            next_run_at: None,
+        };
+        let all_jobs = vec![fake_job];
+
+        // Execute the same ghost run recovery logic as run_daemon
+        for job in &all_jobs {
+            let (runs, _total) = log_store
+                .list_runs(job.id, 50, 0)
+                .await
+                .expect("list_runs should succeed");
+            for mut run in runs {
+                if run.status == RunStatus::Running {
+                    run.status = RunStatus::Killed;
+                    run.exit_code = Some(-1);
+                    run.finished_at = Some(Utc::now());
+                    run.error =
+                        Some("Orphaned run — process not found on daemon restart".to_string());
+                    log_store.update_run(&run).await.expect("update_run should succeed");
+                }
+            }
+        }
+
+        // Verify recovery
+        let runs = log_store.runs.read().await;
+        let recovered = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+
+        assert_eq!(
+            recovered.status,
+            RunStatus::Killed,
+            "Orphaned run should be marked as Killed"
+        );
+        assert_eq!(
+            recovered.exit_code,
+            Some(-1),
+            "Orphaned run should have exit_code -1"
+        );
+        assert!(
+            recovered.finished_at.is_some(),
+            "Orphaned run should have a finished_at timestamp"
+        );
+        assert_eq!(
+            recovered.error.as_deref(),
+            Some("Orphaned run — process not found on daemon restart"),
+            "Orphaned run should have the correct error message"
+        );
+    }
+
+    // =======================================================================
+    // 5c. Ghost run recovery leaves non-Running runs unchanged
+    // =======================================================================
+    #[tokio::test]
+    async fn test_ghost_run_recovery_ignores_non_running_runs() {
+        use crate::models::Job;
+
+        let log_store = Arc::new(InMemoryLogStore::new());
+
+        let job_id = Uuid::now_v7();
+        let completed_run_id = Uuid::now_v7();
+        let killed_run_id = Uuid::now_v7();
+
+        // A Completed run — should not be touched
+        let completed_run = crate::models::JobRun {
+            run_id: completed_run_id,
+            job_id,
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            status: RunStatus::Completed,
+            exit_code: Some(0),
+            log_size_bytes: 0,
+            error: None,
+            trigger_params: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
+        };
+        // A previously-killed run — should not be touched
+        let killed_run = crate::models::JobRun {
+            run_id: killed_run_id,
+            job_id,
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            status: RunStatus::Killed,
+            exit_code: Some(-1),
+            log_size_bytes: 0,
+            error: Some("prior kill".to_string()),
+            trigger_params: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            model: None,
+            usage: None,
+        };
+        log_store.create_run(&completed_run).await.unwrap();
+        log_store.create_run(&killed_run).await.unwrap();
+
+        let fake_job = Job {
+            id: job_id,
+            name: "ghost-ignore-test".to_string(),
+            schedule: "* * * * *".to_string(),
+            execution: crate::models::ExecutionType::ShellCommand("echo hi".to_string()),
+            enabled: true,
+            timezone: None,
+            working_dir: None,
+            env_vars: None,
+            timeout_secs: 0,
+            log_environment: false,
+            allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_run_at: None,
+            last_exit_code: None,
+            pre_hook: None,
+            post_hook: None,
+            next_run_at: None,
+        };
+        let all_jobs = vec![fake_job];
+
+        // Run ghost recovery
+        for job in &all_jobs {
+            let (runs, _total) = log_store
+                .list_runs(job.id, 50, 0)
+                .await
+                .expect("list_runs should succeed");
+            for mut run in runs {
+                if run.status == RunStatus::Running {
+                    run.status = RunStatus::Killed;
+                    run.exit_code = Some(-1);
+                    run.finished_at = Some(Utc::now());
+                    run.error =
+                        Some("Orphaned run — process not found on daemon restart".to_string());
+                    log_store.update_run(&run).await.expect("update_run");
+                }
+            }
+        }
+
+        // Verify neither run was modified
+        let runs = log_store.runs.read().await;
+
+        let c = runs.iter().find(|r| r.run_id == completed_run_id).unwrap();
+        assert_eq!(c.status, RunStatus::Completed, "Completed run should be unchanged");
+        assert_eq!(c.exit_code, Some(0), "Completed run exit_code should be unchanged");
+        assert!(c.error.is_none(), "Completed run should have no error");
+
+        let k = runs.iter().find(|r| r.run_id == killed_run_id).unwrap();
+        assert_eq!(k.status, RunStatus::Killed, "Previously-killed run status should be unchanged");
+        assert_eq!(k.error.as_deref(), Some("prior kill"), "Previously-killed run error should be unchanged");
+    }
+
+    // =======================================================================
     // 6. Service detection (is_service_registered)
     // =======================================================================
     #[test]
