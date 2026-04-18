@@ -234,7 +234,7 @@ Creation --> Scheduling --> Execution --> Completion
 | `Completed` | Process exited (any exit code). | Process returned an exit status, including non-zero codes. Non-zero exit is **not** treated as `Failed`. |
 | `CompletedWithWarnings` | Job completed but post-hook failed. | Process exited successfully, but the post-hook command failed. |
 | `Failed` | Infrastructure error prevented normal completion. | Process spawn failure, process wait failure, task join error, timeout, or pre-hook failure. |
-| `Killed` | Job was forcefully terminated. | Triggered via `POST /api/jobs/{id}/kill` or during job deletion (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. Also applied on daemon restart to any runs that were in `Running` state when the daemon was stopped or crashed (orphaned runs) — these are marked `Killed` with the error message `"Daemon restarted"` during startup recovery. **Note:** Killed runs broadcast a `Failed` SSE event, not a separate `Killed` event type. The error message is `"Job was killed"` for explicit kills or `"Daemon shutting down"` during graceful shutdown. |
+| `Killed` | Job was forcefully terminated. | Triggered via `POST /api/jobs/{id}/kill` or during job deletion (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. Also applied on daemon restart to any runs that were in `Running` state when the daemon was stopped or crashed (orphaned runs) — these are marked `Killed` with the error message `"Orphaned run — process not found on daemon restart"` during startup recovery. **Note:** Killed runs broadcast a `Failed` SSE event, not a separate `Killed` event type. The error message is `"Job was killed"` for explicit kills or `"Daemon shutting down"` during graceful shutdown. |
 
 ### JobRun Record
 
@@ -249,7 +249,7 @@ Each execution creates a `JobRun` with the following fields:
 | `started_at` | `DateTime<Utc>` | When execution began. |
 | `finished_at` | `Option<DateTime<Utc>>` | When execution ended. `None` while running. |
 | `status` | `RunStatus` | One of: `Running`, `Completed`, `CompletedWithWarnings`, `Failed`, `Killed`. |
-| `exit_code` | `Option<i32>` | Process exit code. Present only for `Completed` status. |
+| `exit_code` | `Option<i32>` | Process exit code. Present for `Completed` and `Killed` status. Killed runs have exit_code -1. |
 | `log_size_bytes` | `u64` | Total bytes of process output captured (excludes the command header and environment dump written by the executor). |
 | `error` | `Option<String>` | Error description for `Failed` or `Killed` runs. |
 | `trigger_params` | `Option<TriggerParams>` | Trigger-time parameter overrides used for this run. Omitted from serialized JSON when `None`. See [Trigger Arguments](#trigger-arguments). |

@@ -1193,7 +1193,7 @@ Represents a single execution of a job.
 | `started_at`     | string (ISO 8601) | No       | When the run started.                          |
 | `finished_at`    | string (ISO 8601) | Yes      | When the run finished, or `null` if still running. |
 | `status`         | [RunStatus](#runstatus) | No  | Current run status.                            |
-| `exit_code`      | integer (i32)     | Yes      | Process exit code, or `null` if not yet finished or if the process was killed. |
+| `exit_code`      | integer (i32)     | Yes      | `null` if not yet finished. Set to the process exit code for completed runs, or -1 for killed runs. |
 | `log_size_bytes` | integer (u64)     | No       | Size of the log output in bytes.               |
 | `error`          | string            | Yes      | Error message if the run failed to start (e.g., PTY spawn failure), or `null`. |
 | `trigger_params` | [TriggerParams](#triggerparams) | Yes | Trigger-time parameter overrides used for this run. Absent from the JSON response when `null` (omitted via `skip_serializing_if`). Only present when the run was triggered with per-invocation parameters. |
