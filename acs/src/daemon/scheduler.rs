@@ -933,7 +933,8 @@ mod tests {
         // long-lived task that won't finish during the test.
         let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let (kill_tx, _kill_rx) = tokio::sync::oneshot::channel::<()>();
+        let (kill_tx, _kill_rx) =
+            tokio::sync::oneshot::channel::<crate::daemon::executor::KillReason>();
         let long_running = tokio::spawn(async {
             // This task will be aborted at the end of the test; it won't finish on its own.
             tokio::time::sleep(Duration::from_secs(3600)).await;
@@ -1060,7 +1061,8 @@ mod tests {
         // Simulate an active run for this job
         let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let (kill_tx, _kill_rx) = tokio::sync::oneshot::channel::<()>();
+        let (kill_tx, _kill_rx) =
+            tokio::sync::oneshot::channel::<crate::daemon::executor::KillReason>();
         let long_running = tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(3600)).await;
         });
