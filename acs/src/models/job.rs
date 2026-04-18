@@ -6,16 +6,11 @@ use uuid::Uuid;
 
 use crate::errors::AcsError;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum ScheduleMode {
+    #[default]
     Cron,
     WaitForCompletion,
-}
-
-impl Default for ScheduleMode {
-    fn default() -> Self {
-        ScheduleMode::Cron
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
