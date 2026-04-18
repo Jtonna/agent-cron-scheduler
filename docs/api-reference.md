@@ -161,6 +161,7 @@ List all jobs, optionally filtered by enabled status.
     "timeout_secs": 3600,
     "log_environment": false,
     "allow_concurrent": false,
+    "schedule_mode": "Cron",
     "pre_hook": null,
     "post_hook": null,
     "created_at": "2025-01-15T10:30:00Z",
@@ -197,6 +198,7 @@ Create a new scheduled job.
   "timeout_secs": 3600,
   "log_environment": false,
   "allow_concurrent": true,
+  "schedule_mode": "Cron",
   "pre_hook": null,
   "post_hook": null
 }
@@ -214,6 +216,7 @@ Create a new scheduled job.
 | `timeout_secs`   | integer (u64)                   | No       | `0`     | Maximum execution time in seconds. `0` means no timeout. |
 | `log_environment`| bool                            | No       | `false` | Whether to log environment variables in the run output. |
 | `allow_concurrent`| boolean                        | No       | `null`  | Allow concurrent runs. Null uses daemon default. |
+| `schedule_mode`  | string                          | No       | (daemon default) | Controls scheduling behavior. One of `Cron` or `WaitForCompletion`. Null uses daemon's `default_schedule_mode` config. |
 | `pre_hook`       | string                          | No       | `null`  | Shell command to execute before the job runs.        |
 | `post_hook`      | string                          | No       | `null`  | Shell command to execute after the job completes.    |
 
@@ -244,6 +247,7 @@ Create a new scheduled job.
   "timeout_secs": 3600,
   "log_environment": false,
   "allow_concurrent": false,
+  "schedule_mode": "Cron",
   "pre_hook": null,
   "post_hook": null,
   "created_at": "2025-01-15T10:30:00Z",
@@ -312,6 +316,7 @@ The `next_run_at` field is computed at runtime for enabled jobs.
   "timeout_secs": 3600,
   "log_environment": false,
   "allow_concurrent": false,
+  "schedule_mode": "Cron",
   "pre_hook": null,
   "post_hook": null,
   "created_at": "2025-01-15T10:30:00Z",
@@ -351,6 +356,7 @@ Partially update an existing job. Only the fields you include in the request bod
   "timeout_secs": 7200,
   "log_environment": true,
   "allow_concurrent": true,
+  "schedule_mode": "WaitForCompletion",
   "pre_hook": "echo 'Starting backup'",
   "post_hook": "echo 'Backup complete'"
 }
@@ -368,6 +374,7 @@ Partially update an existing job. Only the fields you include in the request bod
 | `timeout_secs`   | integer (u64)                   | No       | New timeout in seconds.                    |
 | `log_environment`| bool                            | No       | New log_environment setting.               |
 | `allow_concurrent`| boolean\|null                  | No       | Set to true/false to change concurrency behavior |
+| `schedule_mode`  | string                          | No       | New scheduling mode. One of `Cron` or `WaitForCompletion`. |
 | `pre_hook`       | string                          | No       | New pre-execution hook command.            |
 | `post_hook`      | string                          | No       | New post-execution hook command.           |
 
@@ -1076,6 +1083,7 @@ The full job object returned by GET, POST, and PATCH endpoints.
 | `timeout_secs`   | integer (u64)                   | No       | Max execution time in seconds. `0` = no timeout.            |
 | `log_environment`| bool                            | No       | Whether to log environment variables in run output.          |
 | `allow_concurrent`| boolean                        | No       | Whether multiple instances of this job can run simultaneously. |
+| `schedule_mode`  | string                          | No       | Controls scheduling behavior. One of `Cron` or `WaitForCompletion`. |
 | `pre_hook`       | string                          | Yes      | Shell command to execute before the job runs, or `null`.     |
 | `post_hook`      | string                          | Yes      | Shell command to execute after the job completes, or `null`. |
 | `created_at`     | string (ISO 8601)               | No       | When the job was created.                                    |
@@ -1100,6 +1108,7 @@ Request body for `POST /api/jobs`.
 | `timeout_secs`   | integer (u64)                   | No       | `0`     | Timeout in seconds (`0` = no timeout).   |
 | `log_environment`| bool                            | No       | `false` | Log environment variables.               |
 | `allow_concurrent`| boolean\|null                  | No       | `null`  | Allow concurrent runs. Null uses daemon default. |
+| `schedule_mode`  | string                          | No       | (daemon default) | Controls scheduling behavior. One of `Cron` or `WaitForCompletion`. Null uses daemon's `default_schedule_mode` config. |
 | `pre_hook`       | string                          | No       | `null`  | Shell command to execute before the job. |
 | `post_hook`      | string                          | No       | `null`  | Shell command to execute after the job.  |
 
@@ -1119,6 +1128,7 @@ Request body for `PATCH /api/jobs/{id}`. All fields are optional; only included 
 | `timeout_secs`   | integer (u64)                   | New timeout in seconds.                  |
 | `log_environment`| bool                            | New log_environment flag.                |
 | `allow_concurrent`| boolean\|null                  | Set to true/false to change concurrency behavior. |
+| `schedule_mode`  | string                          | New scheduling mode. One of `Cron` or `WaitForCompletion`. |
 | `pre_hook`       | string                          | New pre-execution hook command.          |
 | `post_hook`      | string                          | New post-execution hook command.         |
 
