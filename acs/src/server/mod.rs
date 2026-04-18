@@ -148,6 +148,7 @@ mod tests {
                 pre_hook: new.pre_hook,
                 post_hook: new.post_hook,
                 allow_concurrent: new.allow_concurrent.unwrap_or(false),
+                schedule_mode: new.schedule_mode.unwrap_or_default(),
                 created_at: now,
                 updated_at: now,
                 last_run_at: None,
@@ -493,6 +494,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -583,6 +585,7 @@ mod tests {
                     timeout_secs: 0,
                     log_environment: false,
                     allow_concurrent: None,
+                    schedule_mode: None,
                     pre_hook: None,
                     post_hook: None,
                 })
@@ -630,6 +633,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -649,6 +653,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -695,6 +700,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -737,6 +743,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -806,6 +813,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -862,6 +870,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -881,6 +890,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -936,6 +946,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -979,6 +990,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1028,6 +1040,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1077,6 +1090,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1127,6 +1141,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1197,6 +1212,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1549,6 +1565,7 @@ mod tests {
                     timeout_secs: 0,
                     log_environment: false,
                     allow_concurrent: None,
+                    schedule_mode: None,
                     pre_hook: None,
                     post_hook: None,
                 })
@@ -1619,6 +1636,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1701,6 +1719,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -2019,6 +2038,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -2065,6 +2085,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -2102,6 +2123,7 @@ mod tests {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
