@@ -187,6 +187,8 @@ The `start_daemon()` function in `daemon::mod.rs` orchestrates startup:
 9.  cleanup_orphaned_logs() -- Remove log dirs for deleted jobs
 9a. Ghost run recovery      -- Scans all jobs for runs stuck in `Running`
                                 status from a previous daemon session.
+                                Reads the run's log file to extract any
+                                accumulated cost/usage data before marking.
                                 Marks them as `Killed` with exit_code `-1`
                                 and error 'Orphaned run — process not found
                                 on daemon restart'.
@@ -316,6 +318,7 @@ Triggered by Ctrl+C, SIGTERM (Unix), or `POST /api/shutdown`:
       - Send () on kill_tx         -- Signal task to stop
       - Await join_handle with 30s timeout
    c. For each in-flight run:
+      - Reads the run's log file to extract cost data before updating
       - Update JobRun to Killed status with finished_at and error message
    d. PidFile::release()           -- Remove agentcronsystem.pid
    e. PortFile::remove()           -- Remove agentcronsystem.port
