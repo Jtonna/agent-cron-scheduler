@@ -19,7 +19,7 @@ use tracing;
 use uuid::Uuid;
 
 use crate::daemon::events::JobEvent;
-use crate::daemon::executor::{Executor, KillReason, RunHandle};
+use crate::daemon::executor::{extract_cost_from_log, Executor, KillReason, RunHandle};
 use crate::daemon::scheduler::Scheduler;
 use crate::models::{DaemonConfig, RunStatus};
 use crate::server::{self, AppState};
@@ -500,6 +500,8 @@ pub async fn graceful_shutdown(
 
         for run in runs_list {
             if run.run_id == *run_id && run.status == RunStatus::Running {
+                let raw = log_store.read_log(*job_id, *run_id, None).await.unwrap_or_default();
+                let cost = extract_cost_from_log(raw.as_bytes());
                 let killed_run = crate::models::JobRun {
                     run_id: run.run_id,
                     job_id: run.job_id,
@@ -510,11 +512,11 @@ pub async fn graceful_shutdown(
                     log_size_bytes: run.log_size_bytes,
                     error: Some("Daemon shutting down".to_string()),
                     trigger_params: run.trigger_params.clone(),
-                    total_cost_usd: run.total_cost_usd,
-                    duration_ms: run.duration_ms,
-                    num_turns: run.num_turns,
-                    model: run.model.clone(),
-                    usage: run.usage.clone(),
+                    total_cost_usd: cost.total_cost_usd,
+                    duration_ms: cost.duration_ms,
+                    num_turns: cost.num_turns,
+                    model: cost.model,
+                    usage: cost.usage,
                 };
                 if let Err(e) = log_store.update_run(&killed_run).await {
                     tracing::error!("Failed to mark run {} as Killed: {}", run_id, e);
@@ -828,6 +830,16 @@ pub async fn start_daemon(
             Ok((runs, _total)) => {
                 for mut run in runs {
                     if run.status == crate::models::RunStatus::Running {
+                        let raw = log_store
+                            .read_log(job.id, run.run_id, None)
+                            .await
+                            .unwrap_or_default();
+                        let cost = extract_cost_from_log(raw.as_bytes());
+                        run.total_cost_usd = cost.total_cost_usd;
+                        run.duration_ms = cost.duration_ms;
+                        run.num_turns = cost.num_turns;
+                        run.model = cost.model;
+                        run.usage = cost.usage;
                         run.status = crate::models::RunStatus::Killed;
                         run.exit_code = Some(-1);
                         run.finished_at = Some(chrono::Utc::now());
