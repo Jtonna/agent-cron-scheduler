@@ -23,6 +23,9 @@ export function useJobFormState(job?: Job | null) {
   const [allowConcurrent, setAllowConcurrent] = useState(
     job?.allow_concurrent ?? false
   );
+  const [scheduleMode, setScheduleMode] = useState<"Cron" | "WaitForCompletion">(
+    job?.schedule_mode ?? "Cron"
+  );
   const [enabled, setEnabled] = useState(job?.enabled ?? true);
   const [preHook, setPreHook] = useState(job?.pre_hook ?? "");
   const [postHook, setPostHook] = useState(job?.post_hook ?? "");
@@ -42,6 +45,7 @@ export function useJobFormState(job?: Job | null) {
       setTimeoutSecs(job.timeout_secs);
       setLogEnvironment(job.log_environment);
       setAllowConcurrent(job.allow_concurrent ?? false);
+      setScheduleMode(job.schedule_mode ?? "Cron");
       setEnabled(job.enabled);
       setPreHook(job.pre_hook ?? "");
       setPostHook(job.post_hook ?? "");
@@ -73,6 +77,7 @@ export function useJobFormState(job?: Job | null) {
       timeout_secs: timeoutSecs,
       log_environment: logEnvironment,
       allow_concurrent: allowConcurrent,
+      schedule_mode: scheduleMode,
     };
     if (timezone) data.timezone = timezone;
     if (workingDir) data.working_dir = workingDir;
@@ -102,6 +107,7 @@ export function useJobFormState(job?: Job | null) {
     timeoutSecs, setTimeoutSecs,
     logEnvironment, setLogEnvironment,
     allowConcurrent, setAllowConcurrent,
+    scheduleMode, setScheduleMode,
     enabled, setEnabled,
     preHook, setPreHook,
     postHook, setPostHook,
