@@ -146,6 +146,7 @@ See [Storage](storage.md) for implementation details.
 - **`Job`**: Core job struct with identity, scheduling, execution config, and lifecycle metadata. See [Job Management](job-management.md) for the full field reference.
 - **`NewJob`**: Input struct for job creation. **`JobUpdate`**: Partial update struct with all optional fields.
 - **`ExecutionType`**: Tagged enum: `ShellCommand(String)` or `ScriptFile(String)`.
+- **`ScheduleMode`**: Enum controlling concurrency behavior for scheduled runs: `Cron` (default — always dispatch when due, regardless of active runs) or `WaitForCompletion` (skip dispatch if a run for this job is already active).
 - **`TriggerParams`**: Optional per-invocation overrides for manual triggers: `args` (extra command arguments), `env` (per-trigger environment variables), `input` (stdin data).
 - **`DispatchRequest`**: Wraps a `Job`, a pre-generated `run_id` (UUIDv7), and an optional `TriggerParams` for the dispatch channel.
 - **`JobRun`**: Run record. **`RunStatus`**: Enum with `Running`, `Completed`, `Failed`, `Killed`.
@@ -184,6 +185,11 @@ The `start_daemon()` function in `daemon::mod.rs` orchestrates startup:
 7.  JsonJobStore::new()     -- Load jobs.json into memory cache
 8.  FsLogStore::new()       -- Initialize logs directory
 9.  cleanup_orphaned_logs() -- Remove log dirs for deleted jobs
+9a. Ghost run recovery      -- Scans all jobs for runs stuck in `Running`
+                                status from a previous daemon session.
+                                Marks them as `Killed` with exit_code `-1`
+                                and error 'Orphaned run — process not found
+                                on daemon restart'.
 10. broadcast::channel()    -- Create event bus (capacity from config)
 11. Notify::new()           -- Create scheduler wake signal
 12. watch::channel()        -- Create shutdown signal
@@ -232,6 +238,8 @@ The `start_daemon()` function in `daemon::mod.rs` orchestrates startup:
 
 When the job list changes (create/update/delete via API), the route handler calls `scheduler_notify.notify_one()` to wake the scheduler, causing it to re-evaluate all enabled jobs from the top.
 
+> **Note — `WaitForCompletion` mode**: For jobs with `schedule_mode: WaitForCompletion`, the scheduler checks the `active_runs` map before dispatching. If the job has any active (non-finished) runs, the scheduler skips that job for the current tick. This prevents overlapping executions for long-running jobs without blocking the scheduler loop.
+
 ### 3.3 Job Execution Flow
 
 ```
@@ -278,6 +286,10 @@ executor.spawn_job(&job, run_id, trigger_params)
         16. Determine outcome:
             - timed_out  -> update run to Failed, broadcast Failed
             - killed     -> update run to Killed, broadcast Failed
+              (kill_tx is sent to signal cancellation; old join handles are
+               spawned as detached tasks with a 5-second timeout to ensure
+               the executor task has time to update the run status to Killed
+               before the handle is dropped)
             - Ok(status) -> update run to Completed, broadcast Completed
             - Err(e)     -> update run to Failed, broadcast Failed
         |
