@@ -1,14 +1,17 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, Notify, RwLock};
 
 use uuid::Uuid;
 
+use crate::daemon::executor::RunHandle;
 use crate::models::DispatchRequest;
 use crate::models::Job;
+use crate::models::ScheduleMode;
 use crate::storage::JobStore;
 
 // ---------------------------------------------------------------------------
@@ -115,6 +118,7 @@ pub struct Scheduler {
     clock: Arc<dyn Clock>,
     notify: Arc<Notify>,
     dispatch_tx: mpsc::Sender<DispatchRequest>,
+    active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>,
 }
 
 impl Scheduler {
@@ -124,12 +128,14 @@ impl Scheduler {
         clock: Arc<dyn Clock>,
         notify: Arc<Notify>,
         dispatch_tx: mpsc::Sender<DispatchRequest>,
+        active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>,
     ) -> Self {
         Self {
             job_store,
             clock,
             notify,
             dispatch_tx,
+            active_runs,
         }
     }
 
@@ -173,6 +179,26 @@ impl Scheduler {
                     let now = self.clock.now();
                     for (job, next_time) in &next_runs {
                         if *next_time <= now {
+                            // For WaitForCompletion jobs, skip dispatch if the job
+                            // already has an active run in progress.
+                            if job.schedule_mode == ScheduleMode::WaitForCompletion {
+                                let runs = self.active_runs.read().await;
+                                let has_active = runs
+                                    .get(&job.id)
+                                    .map(|handles| {
+                                        handles.iter().any(|h| !h.join_handle.is_finished())
+                                    })
+                                    .unwrap_or(false);
+                                if has_active {
+                                    tracing::debug!(
+                                        job_id = %job.id,
+                                        job_name = %job.name,
+                                        "WaitForCompletion: skipping dispatch — run still active"
+                                    );
+                                    continue;
+                                }
+                            }
+
                             let request = DispatchRequest {
                                 job: job.clone(),
                                 run_id: Uuid::now_v7(),

@@ -917,6 +917,7 @@ pub async fn start_daemon(
         sched_clock,
         Arc::clone(&scheduler_notify),
         dispatch_tx,
+        Arc::clone(&active_runs),
     );
 
     let scheduler_handle = tokio::spawn(async move {
