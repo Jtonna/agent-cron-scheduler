@@ -75,6 +75,7 @@ impl JobStore for InMemoryJobStore {
             timeout_secs: new.timeout_secs,
             log_environment: new.log_environment,
             allow_concurrent: new.allow_concurrent.unwrap_or(false),
+            schedule_mode: new.schedule_mode.unwrap_or_default(),
             pre_hook: new.pre_hook,
             post_hook: new.post_hook,
             created_at: now,
@@ -814,6 +815,7 @@ async fn test_job_cost_summary_happy_path() {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: None,
+            schedule_mode: None,
             pre_hook: None,
             post_hook: None,
         })
@@ -860,6 +862,7 @@ async fn test_job_cost_summary_no_manifest_returns_zeroed() {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: None,
+            schedule_mode: None,
             pre_hook: None,
             post_hook: None,
         })
@@ -920,6 +923,7 @@ async fn test_job_cost_summary_invalid_timeframe_returns_400() {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: None,
+            schedule_mode: None,
             pre_hook: None,
             post_hook: None,
         })
@@ -966,6 +970,7 @@ async fn test_global_cost_summary_happy_path_aggregates_multiple_jobs() {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1044,6 +1049,7 @@ async fn test_get_job_manifest_happy_path() {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: None,
+            schedule_mode: None,
             pre_hook: None,
             post_hook: None,
         })
@@ -1091,6 +1097,7 @@ async fn test_get_job_manifest_no_manifest_returns_default() {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: None,
+            schedule_mode: None,
             pre_hook: None,
             post_hook: None,
         })
@@ -1128,6 +1135,55 @@ async fn test_get_job_manifest_job_not_found_returns_404() {
     let json: serde_json::Value = resp.json().await.unwrap();
     assert!(json["error"].is_string());
     assert!(json["message"].is_string());
+}
+
+/// Verify that `schedule_mode` roundtrips correctly through create → get.
+/// A job created with `schedule_mode: "WaitForCompletion"` must return that
+/// value when fetched via GET, confirming the field is persisted and serialized.
+#[tokio::test]
+async fn test_schedule_mode_roundtrips_via_api() {
+    let (base_url, _handle) = spawn_test_server().await;
+    let client = reqwest::Client::new();
+
+    // Create a job with schedule_mode: WaitForCompletion
+    let job_body = serde_json::json!({
+        "name": "schedule-mode-roundtrip-job",
+        "schedule": "*/5 * * * *",
+        "execution": {
+            "type": "ShellCommand",
+            "value": "echo hello"
+        },
+        "schedule_mode": "WaitForCompletion"
+    });
+
+    let create_resp = client
+        .post(format!("{}/api/jobs", base_url))
+        .json(&job_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), 201);
+
+    let created: serde_json::Value = create_resp.json().await.unwrap();
+    assert_eq!(
+        created["schedule_mode"], "WaitForCompletion",
+        "create response should include schedule_mode"
+    );
+    let job_id = created["id"].as_str().unwrap();
+
+    // Fetch the job by ID and verify schedule_mode is preserved
+    let get_resp = client
+        .get(format!("{}/api/jobs/{}", base_url, job_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), 200);
+
+    let fetched: serde_json::Value = get_resp.json().await.unwrap();
+    assert_eq!(
+        fetched["schedule_mode"], "WaitForCompletion",
+        "fetched job should have schedule_mode WaitForCompletion"
+    );
 }
 
 /// Verify that a job created with `allow_concurrent: true` can be triggered

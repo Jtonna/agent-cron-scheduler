@@ -96,6 +96,7 @@ pub async fn cmd_add(
         pre_hook: pre_hook.map(|s| s.to_string()),
         post_hook: post_hook.map(|s| s.to_string()),
         allow_concurrent: if concurrent { Some(true) } else { None },
+        schedule_mode: None,
     };
 
     let client = Client::new();

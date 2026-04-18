@@ -49,7 +49,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { useSSEEvents } from "@/hooks/useSSE";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { formatDate, formatBytes, formatCost } from "@/lib/format";
 import { toast } from "sonner";
 import type { JobRun, TriggerParams } from "@/lib/types";
@@ -238,9 +238,15 @@ export function JobDetailPage() {
       toast.success("Kill signal sent");
       refreshRuns();
     } catch (err) {
-      toast.error(
-        `Failed to kill run: ${err instanceof Error ? err.message : "Unknown error"}`
-      );
+      // Handle the case where the run is no longer active (404)
+      if (err instanceof ApiError && err.status === 404) {
+        toast.info("Run is no longer active — refreshing status");
+        refreshRuns();
+      } else {
+        toast.error(
+          `Failed to kill run: ${err instanceof Error ? err.message : "Unknown error"}`
+        );
+      }
     } finally {
       setRunActionLoading((prev) => {
         const next = { ...prev };
@@ -393,6 +399,16 @@ export function JobDetailPage() {
               <code className="font-mono text-sm bg-muted px-2 py-1 rounded truncate">
                 {job.execution.value}
               </code>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Schedule Mode
+              </span>
+              <span className="text-sm">
+                {job.schedule_mode === "WaitForCompletion"
+                  ? "Wait for Completion"
+                  : "Cron"}
+              </span>
             </div>
             {job.timezone && (
               <div className="flex flex-col gap-0.5">

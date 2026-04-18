@@ -81,6 +81,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             last_run_at: None,

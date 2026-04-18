@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -10,6 +11,7 @@ use uuid::Uuid;
 
 use super::AppState;
 use crate::daemon::events::{JobChangeKind, JobEvent};
+use crate::daemon::executor::KillReason;
 use crate::models::job::{validate_job_update, validate_new_job};
 use crate::models::manifest::{
     resolve_timeframe, DailyTrendPoint, GlobalCostResponse, Timeframe, TodayTokens, TopJobEntry,
@@ -300,6 +302,11 @@ pub async fn create_job(
         new_job.allow_concurrent = Some(state.config.default_allow_concurrent);
     }
 
+    // Resolve schedule_mode against config default
+    if new_job.schedule_mode.is_none() {
+        new_job.schedule_mode = Some(state.config.default_schedule_mode.clone());
+    }
+
     match state.job_store.create_job(new_job).await {
         Ok(job) => {
             tracing::info!("Job '{}' created (id: {})", job.name, job.id);
@@ -453,7 +460,7 @@ pub async fn delete_job(
         let mut runs = state.active_runs.write().await;
         if let Some(handles) = runs.remove(&job.id) {
             for handle in handles {
-                let _ = handle.kill_tx.send(());
+                let _ = handle.kill_tx.send(KillReason::Manual);
             }
         }
     }
@@ -671,7 +678,7 @@ pub async fn kill_job(
         if let Some(handles) = runs.get_mut(&job.id) {
             if let Some(pos) = handles.iter().position(|h| h.run_id == run_id) {
                 let handle = handles.remove(pos);
-                let _ = handle.kill_tx.send(());
+                let _ = handle.kill_tx.send(KillReason::Manual);
                 if handles.is_empty() {
                     runs.remove(&job.id);
                 }
@@ -705,7 +712,7 @@ pub async fn kill_job(
         let mut runs = state.active_runs.write().await;
         if let Some(handles) = runs.remove(&job.id) {
             for handle in handles {
-                let _ = handle.kill_tx.send(());
+                let _ = handle.kill_tx.send(KillReason::Manual);
             }
         }
         tracing::info!(
@@ -834,7 +841,7 @@ pub async fn list_recent_runs(
     }
 
     // Sort by started_at descending (most recent first)
-    entries.sort_by(|a, b| b.run.started_at.cmp(&a.run.started_at));
+    entries.sort_by_key(|b| Reverse(b.run.started_at));
 
     // Truncate to limit
     entries.truncate(params.limit);

@@ -1,14 +1,17 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, Notify, RwLock};
 
 use uuid::Uuid;
 
+use crate::daemon::executor::RunHandle;
 use crate::models::DispatchRequest;
 use crate::models::Job;
+use crate::models::ScheduleMode;
 use crate::storage::JobStore;
 
 // ---------------------------------------------------------------------------
@@ -115,6 +118,7 @@ pub struct Scheduler {
     clock: Arc<dyn Clock>,
     notify: Arc<Notify>,
     dispatch_tx: mpsc::Sender<DispatchRequest>,
+    active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>,
 }
 
 impl Scheduler {
@@ -124,12 +128,14 @@ impl Scheduler {
         clock: Arc<dyn Clock>,
         notify: Arc<Notify>,
         dispatch_tx: mpsc::Sender<DispatchRequest>,
+        active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>,
     ) -> Self {
         Self {
             job_store,
             clock,
             notify,
             dispatch_tx,
+            active_runs,
         }
     }
 
@@ -173,6 +179,26 @@ impl Scheduler {
                     let now = self.clock.now();
                     for (job, next_time) in &next_runs {
                         if *next_time <= now {
+                            // For WaitForCompletion jobs, skip dispatch if the job
+                            // already has an active run in progress.
+                            if job.schedule_mode == ScheduleMode::WaitForCompletion {
+                                let runs = self.active_runs.read().await;
+                                let has_active = runs
+                                    .get(&job.id)
+                                    .map(|handles| {
+                                        handles.iter().any(|h| !h.join_handle.is_finished())
+                                    })
+                                    .unwrap_or(false);
+                                if has_active {
+                                    tracing::debug!(
+                                        job_id = %job.id,
+                                        job_name = %job.name,
+                                        "WaitForCompletion: skipping dispatch — run still active"
+                                    );
+                                    continue;
+                                }
+                            }
+
                             let request = DispatchRequest {
                                 job: job.clone(),
                                 run_id: Uuid::now_v7(),
@@ -198,12 +224,18 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::executor::RunHandle;
     use crate::models::{ExecutionType, Job, JobUpdate, NewJob};
     use crate::storage::JobStore;
     use async_trait::async_trait;
     use chrono::TimeZone;
     use tokio::sync::RwLock;
     use uuid::Uuid;
+
+    /// Helper to create an empty active_runs map for tests that don't need it.
+    fn empty_active_runs() -> Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> {
+        Arc::new(RwLock::new(HashMap::new()))
+    }
 
     // -----------------------------------------------------------------------
     // InMemoryJobStore — test double
@@ -259,6 +291,7 @@ mod tests {
                 timeout_secs: new.timeout_secs,
                 log_environment: new.log_environment,
                 allow_concurrent: new.allow_concurrent.unwrap_or(false),
+                schedule_mode: new.schedule_mode.unwrap_or_default(),
                 created_at: now,
                 updated_at: now,
                 last_run_at: None,
@@ -315,6 +348,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -462,7 +496,13 @@ mod tests {
         let clock = Arc::new(FakeClock::new(Utc::now()));
         let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
-        let scheduler = Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx);
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock.clone(),
+            notify.clone(),
+            tx,
+            empty_active_runs(),
+        );
 
         // Spawn the scheduler
         let handle = tokio::spawn(async move { scheduler.run().await });
@@ -509,7 +549,13 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
         let clock_clone = clock.clone();
-        let scheduler = Scheduler::new(store.clone(), clock_clone, notify.clone(), tx);
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock_clone,
+            notify.clone(),
+            tx,
+            empty_active_runs(),
+        );
 
         let handle = tokio::spawn(async move { scheduler.run().await });
 
@@ -555,7 +601,13 @@ mod tests {
         let notify = Arc::new(Notify::new());
         let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
-        let scheduler = Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx);
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock.clone(),
+            notify.clone(),
+            tx,
+            empty_active_runs(),
+        );
 
         let handle = tokio::spawn(async move { scheduler.run().await });
 
@@ -602,7 +654,13 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
         let clock_clone = clock.clone();
-        let scheduler = Scheduler::new(store.clone(), clock_clone, notify.clone(), tx);
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock_clone,
+            notify.clone(),
+            tx,
+            empty_active_runs(),
+        );
 
         let handle = tokio::spawn(async move { scheduler.run().await });
 
@@ -647,7 +705,13 @@ mod tests {
 
         let store_clone = store.clone();
         let notify_clone = notify.clone();
-        let scheduler = Scheduler::new(store_clone, clock.clone(), notify_clone, tx);
+        let scheduler = Scheduler::new(
+            store_clone,
+            clock.clone(),
+            notify_clone,
+            tx,
+            empty_active_runs(),
+        );
 
         let handle = tokio::spawn(async move { scheduler.run().await });
 
@@ -704,7 +768,13 @@ mod tests {
         let notify = Arc::new(Notify::new());
         let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
-        let scheduler = Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx);
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock.clone(),
+            notify.clone(),
+            tx,
+            empty_active_runs(),
+        );
 
         let handle = tokio::spawn(async move { scheduler.run().await });
 
@@ -768,7 +838,13 @@ mod tests {
         let notify = Arc::new(Notify::new());
         let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
 
-        let scheduler = Scheduler::new(store.clone(), clock.clone(), notify.clone(), tx);
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock.clone(),
+            notify.clone(),
+            tx,
+            empty_active_runs(),
+        );
 
         let handle = tokio::spawn(async move { scheduler.run().await });
 
@@ -831,5 +907,212 @@ mod tests {
         // Should be within 1 second
         let diff = (actual_now - now).num_seconds().abs();
         assert!(diff < 2, "SystemClock should return approximately now");
+    }
+
+    // =======================================================================
+    // 12. WaitForCompletion — job with active run is NOT dispatched
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_wait_for_completion_skips_when_active_run_exists() {
+        let store = Arc::new(InMemoryJobStore::new());
+
+        let base_time = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 30).unwrap();
+        let clock = Arc::new(FakeClock::new(base_time));
+
+        // Create a WaitForCompletion job
+        let mut job = make_test_job("wfc-job", "*/1 * * * *", true);
+        job.schedule_mode = ScheduleMode::WaitForCompletion;
+        let job_id = job.id;
+        store.add_job(job).await;
+
+        let notify = Arc::new(Notify::new());
+        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
+
+        // Simulate an active (not-finished) run for this job by using a
+        // long-lived task that won't finish during the test.
+        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let (kill_tx, _kill_rx) =
+            tokio::sync::oneshot::channel::<crate::daemon::executor::KillReason>();
+        let long_running = tokio::spawn(async {
+            // This task will be aborted at the end of the test; it won't finish on its own.
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        });
+        active_runs.write().await.insert(
+            job_id,
+            vec![RunHandle {
+                run_id: Uuid::now_v7(),
+                job_id,
+                join_handle: long_running,
+                kill_tx,
+            }],
+        );
+
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock.clone(),
+            notify.clone(),
+            tx,
+            Arc::clone(&active_runs),
+        );
+
+        let handle = tokio::spawn(async move { scheduler.run().await });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Advance clock past the fire time
+        clock.set(Utc.with_ymd_and_hms(2025, 6, 15, 10, 1, 0).unwrap());
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(31)).await;
+        tokio::time::resume();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Job should NOT be dispatched because it has an active run
+        assert!(
+            rx.try_recv().is_err(),
+            "WaitForCompletion job with active run should NOT be dispatched"
+        );
+
+        handle.abort();
+        // Clean up the long-running task
+        active_runs
+            .write()
+            .await
+            .remove(&job_id)
+            .unwrap()
+            .into_iter()
+            .for_each(|h| h.join_handle.abort());
+    }
+
+    // =======================================================================
+    // 13. WaitForCompletion — job WITHOUT active run IS dispatched normally
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_wait_for_completion_dispatches_when_no_active_run() {
+        let store = Arc::new(InMemoryJobStore::new());
+
+        let base_time = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 30).unwrap();
+        let clock = Arc::new(FakeClock::new(base_time));
+
+        // Create a WaitForCompletion job with no active runs
+        let mut job = make_test_job("wfc-idle-job", "*/1 * * * *", true);
+        job.schedule_mode = ScheduleMode::WaitForCompletion;
+        store.add_job(job).await;
+
+        let notify = Arc::new(Notify::new());
+        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
+
+        // active_runs is empty — no run is in progress
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock.clone(),
+            notify.clone(),
+            tx,
+            empty_active_runs(),
+        );
+
+        let handle = tokio::spawn(async move { scheduler.run().await });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Advance clock past the fire time
+        clock.set(Utc.with_ymd_and_hms(2025, 6, 15, 10, 1, 0).unwrap());
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(31)).await;
+        tokio::time::resume();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Job SHOULD be dispatched because there is no active run
+        let dispatched = rx.try_recv();
+        assert!(
+            dispatched.is_ok(),
+            "WaitForCompletion job with no active run should be dispatched"
+        );
+        assert_eq!(dispatched.unwrap().job.name, "wfc-idle-job");
+
+        handle.abort();
+    }
+
+    // =======================================================================
+    // 14. Cron mode — job WITH active run IS still dispatched (unchanged behavior)
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_cron_mode_dispatches_even_with_active_run() {
+        let store = Arc::new(InMemoryJobStore::new());
+
+        let base_time = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 30).unwrap();
+        let clock = Arc::new(FakeClock::new(base_time));
+
+        // Create a Cron-mode job (default)
+        let job = make_test_job("cron-job", "*/1 * * * *", true);
+        let job_id = job.id;
+        store.add_job(job).await;
+
+        let notify = Arc::new(Notify::new());
+        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
+
+        // Simulate an active run for this job
+        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let (kill_tx, _kill_rx) =
+            tokio::sync::oneshot::channel::<crate::daemon::executor::KillReason>();
+        let long_running = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        });
+        active_runs.write().await.insert(
+            job_id,
+            vec![RunHandle {
+                run_id: Uuid::now_v7(),
+                job_id,
+                join_handle: long_running,
+                kill_tx,
+            }],
+        );
+
+        let scheduler = Scheduler::new(
+            store.clone(),
+            clock.clone(),
+            notify.clone(),
+            tx,
+            Arc::clone(&active_runs),
+        );
+
+        let handle = tokio::spawn(async move { scheduler.run().await });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Advance clock past the fire time
+        clock.set(Utc.with_ymd_and_hms(2025, 6, 15, 10, 1, 0).unwrap());
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(31)).await;
+        tokio::time::resume();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Cron job SHOULD be dispatched regardless of active runs
+        let dispatched = rx.try_recv();
+        assert!(
+            dispatched.is_ok(),
+            "Cron-mode job should be dispatched even with an active run"
+        );
+        assert_eq!(dispatched.unwrap().job.name, "cron-job");
+
+        handle.abort();
+        // Clean up the long-running task
+        active_runs
+            .write()
+            .await
+            .remove(&job_id)
+            .unwrap()
+            .into_iter()
+            .for_each(|h| h.join_handle.abort());
     }
 }

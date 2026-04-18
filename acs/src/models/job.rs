@@ -6,6 +6,13 @@ use uuid::Uuid;
 
 use crate::errors::AcsError;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum ScheduleMode {
+    #[default]
+    Cron,
+    WaitForCompletion,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "value")]
 pub enum ExecutionType {
@@ -29,6 +36,8 @@ pub struct Job {
     pub log_environment: bool,
     #[serde(default)]
     pub allow_concurrent: bool,
+    #[serde(default)]
+    pub schedule_mode: ScheduleMode,
     #[serde(default)]
     pub pre_hook: Option<String>,
     #[serde(default)]
@@ -54,6 +63,7 @@ impl PartialEq for Job {
             && self.timeout_secs == other.timeout_secs
             && self.log_environment == other.log_environment
             && self.allow_concurrent == other.allow_concurrent
+            && self.schedule_mode == other.schedule_mode
             && self.pre_hook == other.pre_hook
             && self.post_hook == other.post_hook
             && self.created_at == other.created_at
@@ -79,6 +89,7 @@ pub struct NewJob {
     #[serde(default)]
     pub log_environment: bool,
     pub allow_concurrent: Option<bool>,
+    pub schedule_mode: Option<ScheduleMode>,
     #[serde(default)]
     pub pre_hook: Option<String>,
     #[serde(default)]
@@ -101,6 +112,7 @@ pub struct JobUpdate {
     pub timeout_secs: Option<u64>,
     pub log_environment: Option<bool>,
     pub allow_concurrent: Option<bool>,
+    pub schedule_mode: Option<ScheduleMode>,
     pub pre_hook: Option<String>,
     pub post_hook: Option<String>,
     /// Internal metadata: set to Some(Some(ts)) to update, Some(None) to clear.
@@ -191,6 +203,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: None,
+            schedule_mode: None,
             pre_hook: None,
             post_hook: None,
         }
@@ -214,6 +227,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: ScheduleMode::default(),
             pre_hook: None,
             post_hook: None,
             created_at: now,
@@ -427,5 +441,21 @@ mod tests {
         let json = r#"{"name":"test","schedule":"* * * * *","execution":{"type":"ShellCommand","value":"echo hi"}}"#;
         let job: NewJob = serde_json::from_str(json).expect("deserialize");
         assert!(job.allow_concurrent.is_none());
+    }
+
+    #[test]
+    fn test_job_schedule_mode_defaults_to_cron() {
+        let json = r#"{"id":"550e8400-e29b-41d4-a716-446655440000","name":"test-job","schedule":"* * * * *","execution":{"type":"ShellCommand","value":"echo hi"},"enabled":true,"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z"}"#;
+        let job: Job = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(job.schedule_mode, ScheduleMode::Cron);
+    }
+
+    #[test]
+    fn test_schedule_mode_wait_for_completion_roundtrip() {
+        let mode = ScheduleMode::WaitForCompletion;
+        let json = serde_json::to_string(&mode).expect("serialize");
+        assert!(json.contains("WaitForCompletion"));
+        let deserialized: ScheduleMode = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized, ScheduleMode::WaitForCompletion);
     }
 }

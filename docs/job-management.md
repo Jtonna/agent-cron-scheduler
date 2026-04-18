@@ -21,6 +21,7 @@ A job represents a scheduled command or script that ACS executes on a cron-based
 | `timeout_secs` | `u64` | Per-job timeout in seconds. `0` means fall back to the daemon config default. See [Timeouts](#timeouts). |
 | `log_environment` | `bool` | When `true`, the full environment is dumped to the run log before execution. Defaults to `false`. |
 | `allow_concurrent` | `bool` | Whether multiple instances of this job can run simultaneously. Defaults to false. When not set on creation, falls back to daemon's default_allow_concurrent config. |
+| `schedule_mode` | `ScheduleMode` (`Cron`, `WaitForCompletion`) | Controls how the scheduler handles timing between runs. Defaults to `Cron`. When not set on creation, falls back to daemon's `default_schedule_mode` config. See [Job Lifecycle](#job-lifecycle) for behavior details. |
 | `pre_hook` | `Option<String>` | Optional shell command to run before job execution. If the pre-hook fails, the job execution is blocked and the run is marked as `Failed`. |
 | `post_hook` | `Option<String>` | Optional shell command to run after job execution. If the post-hook fails, the run is marked as `CompletedWithWarnings` instead of `Completed`. |
 | `created_at` | `DateTime<Utc>` | Timestamp of job creation. |
@@ -43,12 +44,13 @@ When creating a job, the following fields are accepted:
 - `timeout_secs` (optional, defaults to `0`)
 - `log_environment` (optional, defaults to `false`)
 - `allow_concurrent` (optional, defaults to daemon's default_allow_concurrent config)
+- `schedule_mode` (optional, defaults to daemon's `default_schedule_mode` config value)
 - `pre_hook` (optional)
 - `post_hook` (optional)
 
 ### JobUpdate (Partial Update Payload)
 
-All fields in `JobUpdate` are optional. Only the fields present in the request body are modified; omitted fields remain unchanged. The `last_run_at` and `last_exit_code` fields are internal-only and cannot be set through the API (they use `#[serde(skip)]`, which excludes them from both JSON serialization and deserialization of `JobUpdate`). Updatable fields include `name`, `schedule`, `execution`, `enabled`, `timezone`, `working_dir`, `env_vars`, `timeout_secs`, `log_environment`, `allow_concurrent`, `pre_hook`, and `post_hook`.
+All fields in `JobUpdate` are optional. Only the fields present in the request body are modified; omitted fields remain unchanged. The `last_run_at` and `last_exit_code` fields are internal-only and cannot be set through the API (they use `#[serde(skip)]`, which excludes them from both JSON serialization and deserialization of `JobUpdate`). Updatable fields include `name`, `schedule`, `execution`, `enabled`, `timezone`, `working_dir`, `env_vars`, `timeout_secs`, `log_environment`, `allow_concurrent`, `schedule_mode`, `pre_hook`, and `post_hook`.
 
 Fields that can be updated include:
 - `name`
@@ -61,6 +63,7 @@ Fields that can be updated include:
 - `timeout_secs`
 - `log_environment`
 - `allow_concurrent`
+- `schedule_mode`
 - `pre_hook`
 - `post_hook`
 
@@ -204,6 +207,10 @@ Creation --> Scheduling --> Execution --> Completion
    - If `allow_concurrent` is `false` (default), any existing active run for the job is killed before the new run starts.
    - If `allow_concurrent` is `true`, the new run is started regardless of existing runs; multiple instances can coexist with no cap.
 
+   The job's `schedule_mode` also influences how cron ticks are handled while a run is active:
+   - **`Cron` (default)**: The scheduler fires on every cron tick regardless of whether a run is currently active. Combined with `allow_concurrent: false`, this kills the in-progress run and starts a fresh one; combined with `allow_concurrent: true`, it launches an additional concurrent run.
+   - **`WaitForCompletion`**: When `schedule_mode` is set to `WaitForCompletion`, the scheduler skips cron ticks while a run is active for that job. The job becomes eligible again only after the current run completes, and the next natural cron tick triggers a new run. This mode is useful for long-running jobs where overlapping or back-to-back executions would be harmful, and where missing an intermediate tick is preferable to queuing or killing work in progress.
+
    The executor then:
    - Creates a `JobRun` record with `Running` status using the pre-generated `run_id`.
    - Broadcasts a `Started` event.
@@ -227,7 +234,7 @@ Creation --> Scheduling --> Execution --> Completion
 | `Completed` | Process exited (any exit code). | Process returned an exit status, including non-zero codes. Non-zero exit is **not** treated as `Failed`. |
 | `CompletedWithWarnings` | Job completed but post-hook failed. | Process exited successfully, but the post-hook command failed. |
 | `Failed` | Infrastructure error prevented normal completion. | Process spawn failure, process wait failure, task join error, timeout, or pre-hook failure. |
-| `Killed` | Job was forcefully terminated. | Triggered via `POST /api/jobs/{id}/kill` or during job deletion (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. **Note:** Killed runs broadcast a `Failed` SSE event, not a separate `Killed` event type. The error message is `"Job was killed"` for explicit kills or `"Daemon shutting down"` during graceful shutdown. |
+| `Killed` | Job was forcefully terminated. | Triggered via `POST /api/jobs/{id}/kill` or during job deletion (`DELETE /api/jobs/{id}`), or daemon graceful shutdown. Also applied on daemon restart to any runs that were in `Running` state when the daemon was stopped or crashed (orphaned runs) — these are marked `Killed` with the error message `"Orphaned run — process not found on daemon restart"` during startup recovery. **Note:** Killed runs broadcast a `Failed` SSE event, not a separate `Killed` event type. The error message is `"Job was killed"` for explicit kills or `"Daemon shutting down"` during graceful shutdown. |
 
 ### JobRun Record
 
@@ -242,7 +249,7 @@ Each execution creates a `JobRun` with the following fields:
 | `started_at` | `DateTime<Utc>` | When execution began. |
 | `finished_at` | `Option<DateTime<Utc>>` | When execution ended. `None` while running. |
 | `status` | `RunStatus` | One of: `Running`, `Completed`, `CompletedWithWarnings`, `Failed`, `Killed`. |
-| `exit_code` | `Option<i32>` | Process exit code. Present only for `Completed` status. |
+| `exit_code` | `Option<i32>` | Process exit code. Present for `Completed` and `Killed` status. Killed runs have exit_code -1. |
 | `log_size_bytes` | `u64` | Total bytes of process output captured (excludes the command header and environment dump written by the executor). |
 | `error` | `Option<String>` | Error description for `Failed` or `Killed` runs. |
 | `trigger_params` | `Option<TriggerParams>` | Trigger-time parameter overrides used for this run. Omitted from serialized JSON when `None`. See [Trigger Arguments](#trigger-arguments). |

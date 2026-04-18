@@ -21,7 +21,8 @@ ACS uses a JSON configuration file. All fields are optional; any omitted field f
   "pty_rows": 24,
   "pty_cols": 80,
   "default_pre_hook": null,
-  "default_post_hook": null
+  "default_post_hook": null,
+  "default_schedule_mode": "Cron"
 }
 ```
 
@@ -41,6 +42,7 @@ ACS uses a JSON configuration file. All fields are optional; any omitted field f
 | `pty_cols` | integer (u16) | `80` | Number of columns for the pseudo-terminal allocated to job processes. **(No effect; the production spawner uses piped I/O, not a PTY.)** |
 | `default_pre_hook` | Option<String> | `null` | Global shell command to run before all job executions. Overridden by per-job pre-hooks. |
 | `default_post_hook` | Option<String> | `null` | Global shell command to run after all job executions. Overridden by per-job post-hooks. |
+| `default_schedule_mode` | string (`Cron` \| `WaitForCompletion`) | `Cron` | Default schedule mode for new jobs. `Cron` fires on every cron tick. `WaitForCompletion` skips ticks while a run is active. |
 
 ### Partial Configuration
 

@@ -31,6 +31,7 @@ fn make_job(name: &str) -> Job {
         timeout_secs: 0,
         log_environment: false,
         allow_concurrent: false,
+        schedule_mode: agent_cron_scheduler::models::ScheduleMode::default(),
         pre_hook: None,
         post_hook: None,
         created_at: now,

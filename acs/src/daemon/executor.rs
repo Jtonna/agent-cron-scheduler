@@ -160,12 +160,10 @@ fn extract_cost_from_log(log_content: &[u8]) -> CostSummary {
         };
 
         match val.get("type").and_then(|t| t.as_str()) {
-            Some("system") => {
+            Some("system") if summary.model.is_none() => {
                 // Keep the first model seen; continue scanning for result events.
-                if summary.model.is_none() {
-                    if let Some(model) = val.get("model").and_then(|m| m.as_str()) {
-                        summary.model = Some(model.to_string());
-                    }
+                if let Some(model) = val.get("model").and_then(|m| m.as_str()) {
+                    summary.model = Some(model.to_string());
                 }
             }
             Some("result") => {
@@ -211,12 +209,24 @@ fn extract_cost_from_log(log_content: &[u8]) -> CostSummary {
     summary
 }
 
+/// The reason a run was killed, carried over the kill channel so the executor
+/// can set the correct error message on the resulting `JobRun` record.
+#[derive(Debug, Clone, Copy)]
+pub enum KillReason {
+    /// A new run was dispatched for a job that does not allow concurrent execution.
+    Concurrent,
+    /// The daemon is shutting down.
+    Shutdown,
+    /// The run was killed manually via the API.
+    Manual,
+}
+
 /// Handle to a running job, allowing monitoring and cancellation.
 pub struct RunHandle {
     pub run_id: Uuid,
     pub job_id: Uuid,
     pub join_handle: tokio::task::JoinHandle<()>,
-    pub kill_tx: oneshot::Sender<()>,
+    pub kill_tx: oneshot::Sender<KillReason>,
 }
 
 /// The Executor spawns jobs using a PTY and manages the lifecycle.
@@ -422,7 +432,7 @@ impl Executor {
         let max_log_files = self.config.max_log_files_per_job;
 
         // Create kill channel
-        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        let (kill_tx, kill_rx) = oneshot::channel::<KillReason>();
 
         // Spawn the execution task
         let join_handle = tokio::spawn(async move {
@@ -733,6 +743,7 @@ impl Executor {
             // Process output chunks - use select to handle kill signal and timeout
             let mut kill_rx = kill_rx;
             let mut killed = false;
+            let mut kill_reason: Option<KillReason> = None;
             let mut timed_out = false;
 
             // Create timeout future if timeout is configured
@@ -767,8 +778,9 @@ impl Executor {
                             None => break, // PTY read loop ended
                         }
                     }
-                    _ = &mut kill_rx => {
+                    reason = &mut kill_rx => {
                         killed = true;
+                        kill_reason = reason.ok();
                         break;
                     }
                     _ = &mut timeout_fut => {
@@ -859,16 +871,23 @@ impl Executor {
             }
 
             if killed {
-                // Job was killed
+                // Job was killed — derive the error message from the kill reason.
+                let kill_error_msg = match kill_reason {
+                    Some(KillReason::Concurrent) => {
+                        "Run killed: concurrent execution is disabled for this job".to_string()
+                    }
+                    Some(KillReason::Shutdown) => "Daemon shutting down".to_string(),
+                    Some(KillReason::Manual) | None => "Job was killed".to_string(),
+                };
                 let killed_run = JobRun {
                     run_id,
                     job_id,
                     started_at: now,
                     finished_at: Some(finished_at),
                     status: RunStatus::Killed,
-                    exit_code: None,
+                    exit_code: Some(-1),
                     log_size_bytes: total_bytes,
-                    error: Some("Job was killed".to_string()),
+                    error: Some(kill_error_msg.clone()),
                     trigger_params: trigger_params_owned.clone(),
                     total_cost_usd: cost_total_usd,
                     duration_ms: cost_duration_ms,
@@ -885,7 +904,7 @@ impl Executor {
                 let _ = event_tx.send(JobEvent::Failed {
                     job_id,
                     run_id,
-                    error: "Job was killed".to_string(),
+                    error: kill_error_msg,
                     timestamp: finished_at,
                 });
 
@@ -1231,6 +1250,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -1616,6 +1636,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
@@ -1653,6 +1674,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
@@ -1878,6 +1900,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
@@ -1907,6 +1930,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
@@ -1944,6 +1968,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
@@ -1978,6 +2003,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
@@ -2011,6 +2037,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
@@ -2045,6 +2072,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
@@ -2081,6 +2109,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
@@ -2125,6 +2154,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_run_at: None,
@@ -2271,6 +2301,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -2481,6 +2512,7 @@ mod tests {
             timeout_secs: 0,
             log_environment: true,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -2829,6 +2861,7 @@ mod tests {
             pre_hook: None,
             post_hook: None,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -2870,6 +2903,7 @@ mod tests {
             pre_hook: None,
             post_hook: None,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -2916,6 +2950,7 @@ mod tests {
             pre_hook: None,
             post_hook: None,
             allow_concurrent: false,
+            schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
             updated_at: now,
             last_run_at: None,
