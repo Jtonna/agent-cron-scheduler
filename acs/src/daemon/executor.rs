@@ -160,12 +160,10 @@ fn extract_cost_from_log(log_content: &[u8]) -> CostSummary {
         };
 
         match val.get("type").and_then(|t| t.as_str()) {
-            Some("system") => {
+            Some("system") if summary.model.is_none() => {
                 // Keep the first model seen; continue scanning for result events.
-                if summary.model.is_none() {
-                    if let Some(model) = val.get("model").and_then(|m| m.as_str()) {
-                        summary.model = Some(model.to_string());
-                    }
+                if let Some(model) = val.get("model").and_then(|m| m.as_str()) {
+                    summary.model = Some(model.to_string());
                 }
             }
             Some("result") => {

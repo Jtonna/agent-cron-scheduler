@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -151,7 +152,7 @@ impl LogStore for FsLogStore {
         }
 
         // Sort by started_at descending
-        runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        runs.sort_by_key(|b| Reverse(b.started_at));
 
         let total = runs.len();
 
@@ -196,7 +197,7 @@ impl LogStore for FsLogStore {
         }
 
         // Sort by started_at ascending (oldest first)
-        runs.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+        runs.sort_by_key(|a| a.started_at);
 
         let to_remove = runs.len() - max_files;
         for run in runs.iter().take(to_remove) {
@@ -302,7 +303,7 @@ impl LogStore for FsLogStore {
             }
 
             // Sort by started_at ascending for deterministic bucket ordering
-            runs.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+            runs.sort_by_key(|a| a.started_at);
 
             for run in &runs {
                 manifest.merge_run(run);

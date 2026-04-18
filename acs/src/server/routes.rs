@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -840,7 +841,7 @@ pub async fn list_recent_runs(
     }
 
     // Sort by started_at descending (most recent first)
-    entries.sort_by(|a, b| b.run.started_at.cmp(&a.run.started_at));
+    entries.sort_by_key(|b| Reverse(b.run.started_at));
 
     // Truncate to limit
     entries.truncate(params.limit);

@@ -1497,7 +1497,10 @@ mod tests {
                     run.finished_at = Some(Utc::now());
                     run.error =
                         Some("Orphaned run — process not found on daemon restart".to_string());
-                    log_store.update_run(&run).await.expect("update_run should succeed");
+                    log_store
+                        .update_run(&run)
+                        .await
+                        .expect("update_run should succeed");
                 }
             }
         }
@@ -1625,13 +1628,29 @@ mod tests {
         let runs = log_store.runs.read().await;
 
         let c = runs.iter().find(|r| r.run_id == completed_run_id).unwrap();
-        assert_eq!(c.status, RunStatus::Completed, "Completed run should be unchanged");
-        assert_eq!(c.exit_code, Some(0), "Completed run exit_code should be unchanged");
+        assert_eq!(
+            c.status,
+            RunStatus::Completed,
+            "Completed run should be unchanged"
+        );
+        assert_eq!(
+            c.exit_code,
+            Some(0),
+            "Completed run exit_code should be unchanged"
+        );
         assert!(c.error.is_none(), "Completed run should have no error");
 
         let k = runs.iter().find(|r| r.run_id == killed_run_id).unwrap();
-        assert_eq!(k.status, RunStatus::Killed, "Previously-killed run status should be unchanged");
-        assert_eq!(k.error.as_deref(), Some("prior kill"), "Previously-killed run error should be unchanged");
+        assert_eq!(
+            k.status,
+            RunStatus::Killed,
+            "Previously-killed run status should be unchanged"
+        );
+        assert_eq!(
+            k.error.as_deref(),
+            Some("prior kill"),
+            "Previously-killed run error should be unchanged"
+        );
     }
 
     // =======================================================================
