@@ -95,6 +95,8 @@ pub async fn cmd_add(
         log_environment: log_env,
         pre_hook: pre_hook.map(|s| s.to_string()),
         post_hook: post_hook.map(|s| s.to_string()),
+        pre_hook_script_type: None,
+        post_hook_script_type: None,
         allow_concurrent: if concurrent { Some(true) } else { None },
         schedule_mode: None,
     };

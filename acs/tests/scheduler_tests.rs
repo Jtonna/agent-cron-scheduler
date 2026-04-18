@@ -34,6 +34,8 @@ fn make_job(name: &str) -> Job {
         schedule_mode: agent_cron_scheduler::models::ScheduleMode::default(),
         pre_hook: None,
         post_hook: None,
+        pre_hook_script_type: None,
+        post_hook_script_type: None,
         created_at: now,
         updated_at: now,
         last_run_at: None,

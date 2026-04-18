@@ -1257,6 +1257,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         }
     }
@@ -1643,6 +1645,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -1681,6 +1685,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -1907,6 +1913,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -1937,6 +1945,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -1975,6 +1985,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2010,6 +2022,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2044,6 +2058,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2079,6 +2095,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2116,6 +2134,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2161,6 +2181,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2308,6 +2330,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2519,6 +2543,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2860,6 +2886,8 @@ mod tests {
             log_environment: false,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             allow_concurrent: false,
             schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
@@ -2902,6 +2930,8 @@ mod tests {
             log_environment: false,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             allow_concurrent: false,
             schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
@@ -2949,6 +2979,8 @@ mod tests {
             log_environment: false,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             allow_concurrent: false,
             schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,

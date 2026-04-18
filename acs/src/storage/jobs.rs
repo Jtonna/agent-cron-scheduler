@@ -126,6 +126,8 @@ impl JobStore for JsonJobStore {
             schedule_mode: new.schedule_mode.unwrap_or_default(),
             pre_hook: new.pre_hook,
             post_hook: new.post_hook,
+            pre_hook_script_type: new.pre_hook_script_type,
+            post_hook_script_type: new.post_hook_script_type,
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -201,6 +203,12 @@ impl JobStore for JsonJobStore {
         if let Some(post_hook) = update.post_hook {
             job.post_hook = Some(post_hook);
         }
+        if let Some(pre_hook_script_type) = update.pre_hook_script_type {
+            job.pre_hook_script_type = Some(pre_hook_script_type);
+        }
+        if let Some(post_hook_script_type) = update.post_hook_script_type {
+            job.post_hook_script_type = Some(post_hook_script_type);
+        }
         // Internal metadata fields (not user-editable, set by the daemon)
         if let Some(last_run_at) = update.last_run_at {
             job.last_run_at = last_run_at;
@@ -252,6 +260,8 @@ mod tests {
             schedule_mode: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
         }
     }
 
