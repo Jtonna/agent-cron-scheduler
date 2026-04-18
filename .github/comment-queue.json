@@ -1,6 +1,1 @@
-[
-  {
-    "issue": 98,
-    "body": "## Approved Implementation Plan\n\n### Sub-task 1: Make `CostSummary` and `extract_cost_from_log` visible (light)\n- Change visibility to `pub(crate)` in `executor.rs` for `CostSummary` (struct + fields) and `extract_cost_from_log`\n- File: `acs/src/daemon/executor.rs`\n\n### Sub-task 2A: Extract cost during ghost run recovery (light)\n- Read log file via `log_store.read_log()` and call `extract_cost_from_log()` before marking orphaned runs as Killed\n- File: `acs/src/daemon/mod.rs`\n\n### Sub-task 2B: Extract cost during graceful shutdown fallback (light)\n- Read log file and extract cost instead of copying existing (null) fields\n- File: `acs/src/daemon/mod.rs`\n\n### Sub-task 3: Add/update tests (standard)\n- Update ghost recovery test to verify cost extraction\n- Add test for empty log (cost stays None)\n- File: `acs/src/daemon/mod.rs` (test module)\n\n### Dependencies\n`1 → [2A, 2B] → 3`\n\n### Note on dispatch loop path\nThe executor already extracts cost when handling `KillReason::Concurrent` (executor.rs:820-833). If the executor doesn't complete (child process not killed — issue #99), the run falls through to ghost recovery or shutdown fallback, which are addressed by sub-tasks 2A and 2B."
-  }
-]
+[]
