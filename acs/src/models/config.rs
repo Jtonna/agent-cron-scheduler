@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::models::job::ScheduleMode;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
     #[serde(default = "default_host")]
@@ -28,6 +30,8 @@ pub struct DaemonConfig {
     pub default_post_hook: Option<String>,
     #[serde(default)]
     pub default_allow_concurrent: bool,
+    #[serde(default)]
+    pub default_schedule_mode: ScheduleMode,
 }
 
 fn default_host() -> String {
@@ -77,6 +81,7 @@ impl Default for DaemonConfig {
             default_pre_hook: None,
             default_post_hook: None,
             default_allow_concurrent: false,
+            default_schedule_mode: ScheduleMode::Cron,
         }
     }
 }
