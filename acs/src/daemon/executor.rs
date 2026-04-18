@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::daemon::events::JobEvent;
 use crate::models::TriggerParams;
 use crate::models::{DaemonConfig, ExecutionType, Job, JobRun, RunStatus};
+use crate::process_kill;
 use crate::pty::PtySpawner;
 use crate::storage::LogStore;
 
@@ -710,6 +711,10 @@ impl Executor {
                 total_bytes
             });
 
+            // Extract the child PID before moving `process` into spawn_blocking so
+            // we can send kill signals from async context if needed.
+            let child_pid = process.pid();
+
             // Create a channel to receive output from spawn_blocking
             let (output_tx, mut output_rx) = mpsc::channel::<Vec<u8>>(256);
 
@@ -781,10 +786,24 @@ impl Executor {
                     reason = &mut kill_rx => {
                         killed = true;
                         kill_reason = reason.ok();
+                        if let Some(pid) = child_pid {
+                            tracing::info!(
+                                "Kill signal received, terminating process tree (PID: {})",
+                                pid
+                            );
+                            process_kill::kill_process_tree(pid).await;
+                        }
                         break;
                     }
                     _ = &mut timeout_fut => {
                         timed_out = true;
+                        if let Some(pid) = child_pid {
+                            tracing::info!(
+                                "Timeout reached, terminating process tree (PID: {})",
+                                pid
+                            );
+                            process_kill::kill_process_tree(pid).await;
+                        }
                         break;
                     }
                 }
@@ -793,8 +812,27 @@ impl Executor {
             // Drop log_tx to signal log writer to finish
             drop(log_tx_output);
 
-            // Wait for the read handle to complete and get exit status
-            let exit_result = read_handle.await;
+            // Wait for the read handle to complete and get exit status.
+            // Apply a safety timeout so we never block indefinitely after a kill.
+            let exit_result =
+                match tokio::time::timeout(std::time::Duration::from_secs(10), read_handle).await {
+                    Ok(join_result) => join_result,
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            "read_handle did not complete within 10 s after kill; \
+                         force-killing process tree and proceeding with cleanup"
+                        );
+                        if let Some(pid) = child_pid {
+                            process_kill::force_kill_process_tree(pid).await;
+                        }
+                        // Return an io::Error so the downstream match treats this as
+                        // a wait-failure (Ok(Err(…))) rather than a panic (Err(…)).
+                        Ok(Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "process did not exit within 10 s of kill signal",
+                        )))
+                    }
+                };
 
             // Wait for log writer to finish and get total bytes
             let mut total_bytes: u64 = (log_writer_handle.await).unwrap_or_default();
