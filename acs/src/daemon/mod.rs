@@ -467,7 +467,7 @@ pub async fn graceful_shutdown(
         for (_, handles) in runs.drain() {
             for handle in handles {
                 let run_id = handle.run_id;
-                let _ = handle.kill_tx.send(());
+                let _ = handle.kill_tx.send(KillReason::Shutdown);
                 // Wait up to 30s for the task to finish
                 let join_handle = handle.join_handle;
                 let timeout_result =
@@ -506,7 +506,7 @@ pub async fn graceful_shutdown(
                     started_at: run.started_at,
                     finished_at: Some(Utc::now()),
                     status: RunStatus::Killed,
-                    exit_code: None,
+                    exit_code: Some(-1),
                     log_size_bytes: run.log_size_bytes,
                     error: Some("Daemon shutting down".to_string()),
                     trigger_params: run.trigger_params.clone(),
@@ -956,7 +956,7 @@ pub async fn start_daemon(
                         // executor's kill-handling path, potentially leaving
                         // ghost "Running" entries.
                         for old_handle in handles.drain(..) {
-                            let _ = old_handle.kill_tx.send(());
+                            let _ = old_handle.kill_tx.send(KillReason::Concurrent);
                             let old_join = old_handle.join_handle;
                             tokio::spawn(async move {
                                 match tokio::time::timeout(
@@ -1372,7 +1372,7 @@ mod tests {
         log_store.create_run(&running_run).await.unwrap();
 
         // Create a fake active run handle
-        let (kill_tx, _kill_rx) = tokio::sync::oneshot::channel::<()>();
+        let (kill_tx, _kill_rx) = tokio::sync::oneshot::channel::<KillReason>();
         let join_handle = tokio::spawn(async {
             // Simulate a long-running task that finishes quickly on shutdown
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
