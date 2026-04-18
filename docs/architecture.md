@@ -143,7 +143,7 @@ See [Storage](storage.md) for implementation details.
 
 #### `models` -- Data Types
 
-- **`Job`**: Core job struct with identity, scheduling, execution config, and lifecycle metadata. See [Job Management](job-management.md) for the full field reference.
+- **`Job`**: Core job struct with identity, scheduling, execution config, and lifecycle metadata. Includes optional `pre_hook`/`post_hook` fields for shell commands or script-type execution (controlled by `pre_hook_script_type`/`post_hook_script_type`). See [Job Management](job-management.md) for the full field reference.
 - **`NewJob`**: Input struct for job creation. **`JobUpdate`**: Partial update struct with all optional fields.
 - **`ExecutionType`**: Tagged enum: `ShellCommand(String)` or `ScriptFile(String)`.
 - **`ScheduleMode`**: Enum controlling concurrency behavior for scheduled runs: `Cron` (default — always dispatch when due, regardless of active runs) or `WaitForCompletion` (skip dispatch if a run for this job is already active).
