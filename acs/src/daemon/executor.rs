@@ -107,12 +107,12 @@ async fn run_hook(
 ///
 /// All fields represent aggregates summed across all Claude CLI invocations in the log,
 /// not a single invocation.
-struct CostSummary {
-    total_cost_usd: Option<f64>,
-    duration_ms: Option<u64>,
-    num_turns: Option<u32>,
-    model: Option<String>,
-    usage: Option<serde_json::Value>,
+pub(crate) struct CostSummary {
+    pub(crate) total_cost_usd: Option<f64>,
+    pub(crate) duration_ms: Option<u64>,
+    pub(crate) num_turns: Option<u32>,
+    pub(crate) model: Option<String>,
+    pub(crate) usage: Option<serde_json::Value>,
 }
 
 /// Extract cost data from a Claude CLI NDJSON log.
@@ -133,7 +133,7 @@ struct CostSummary {
 ///
 /// Non-NDJSON lines are silently skipped. As a performance optimisation, `serde_json::from_str`
 /// is only called on lines that contain the substring `"type"`.
-fn extract_cost_from_log(log_content: &[u8]) -> CostSummary {
+pub(crate) fn extract_cost_from_log(log_content: &[u8]) -> CostSummary {
     let mut summary = CostSummary {
         total_cost_usd: None,
         duration_ms: None,
