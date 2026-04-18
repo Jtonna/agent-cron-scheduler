@@ -975,7 +975,7 @@ pub async fn start_daemon(
                             let old_join = old_handle.join_handle;
                             tokio::spawn(async move {
                                 match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
+                                    std::time::Duration::from_secs(15),
                                     old_join,
                                 )
                                 .await

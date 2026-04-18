@@ -25,6 +25,10 @@ pub trait PtyProcess: Send {
     }
     /// Close the stdin handle, signaling EOF to the process. Default is no-op.
     fn close_stdin(&mut self) {}
+    /// Return the OS process ID of the spawned process, if available.
+    fn pid(&self) -> Option<u32> {
+        None
+    }
 }
 
 // This module provides NoPtySpawner as the production process spawner.
@@ -92,6 +96,26 @@ impl PtySpawner for NoPtySpawner {
         }
         for (key, val) in cmd.iter_extra_env_as_str() {
             command.env(key, val);
+        }
+
+        // Create a new process group so that kill signals can be sent to the
+        // entire process tree (not just the immediate child).
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            command.creation_flags(CREATE_NEW_PROCESS_GROUP);
         }
 
         let mut child = command.spawn()?;
@@ -221,10 +245,15 @@ impl PtyProcess for NoPtyProcess {
     fn close_stdin(&mut self) {
         self.child.stdin.take();
     }
+
+    fn pid(&self) -> Option<u32> {
+        Some(self.child.id())
+    }
 }
 
 // --- Mock implementations for testing ---
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Configuration for creating a MockPtyProcess.
@@ -299,6 +328,7 @@ impl PtySpawner for MockPtySpawner {
             chunk_index: 0,
             exit_code: config.exit_code,
             chunk_delay_ms: config.chunk_delay_ms,
+            killed: Arc::new(AtomicBool::new(false)),
         }))
     }
 }
@@ -309,10 +339,16 @@ pub struct MockPtyProcess {
     chunk_index: usize,
     exit_code: i32,
     chunk_delay_ms: u64,
+    killed: Arc<AtomicBool>,
 }
 
 impl PtyProcess for MockPtyProcess {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // If killed, return EOF immediately.
+        if self.killed.load(Ordering::SeqCst) {
+            return Ok(0);
+        }
+
         if self.chunk_delay_ms > 0 {
             std::thread::sleep(std::time::Duration::from_millis(self.chunk_delay_ms));
         }
@@ -330,10 +366,14 @@ impl PtyProcess for MockPtyProcess {
     }
 
     fn kill(&mut self) -> io::Result<()> {
+        self.killed.store(true, Ordering::SeqCst);
         Ok(())
     }
 
     fn wait(&mut self) -> io::Result<ExitStatus> {
+        if self.killed.load(Ordering::SeqCst) {
+            return Ok(exit_status_from_code(self.exit_code));
+        }
         Ok(exit_status_from_code(self.exit_code))
     }
 }
