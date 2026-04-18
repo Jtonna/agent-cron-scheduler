@@ -858,6 +858,14 @@ components:
           description: When true, multiple instances of this job can run simultaneously. Default: false.
           default: false
           example: false
+        schedule_mode:
+          type: string
+          enum: [Cron, WaitForCompletion]
+          default: Cron
+          description: |
+            Controls how the scheduler handles timing. 'Cron' fires on every cron tick
+            regardless. 'WaitForCompletion' skips ticks while a run is active.
+          example: Cron
         created_at:
           type: string
           format: date-time
@@ -952,6 +960,14 @@ components:
           nullable: true
           description: When true, allow concurrent runs. When null/omitted, uses the daemon's default_allow_concurrent config.
           example: false
+        schedule_mode:
+          type: string
+          enum: [Cron, WaitForCompletion]
+          description: |
+            Controls how the scheduler handles timing. 'Cron' fires on every cron tick
+            regardless. 'WaitForCompletion' skips ticks while a run is active.
+            When null/omitted, defaults to Cron.
+          example: Cron
         pre_hook:
           type: string
           description: "Shell command to run before job execution. Pre-hook failure blocks the job."
@@ -1007,6 +1023,15 @@ components:
           type: boolean
           nullable: true
           description: Set to true/false to change concurrency behavior.
+        schedule_mode:
+          type: string
+          enum: [Cron, WaitForCompletion]
+          nullable: true
+          description: |
+            Controls how the scheduler handles timing. 'Cron' fires on every cron tick
+            regardless. 'WaitForCompletion' skips ticks while a run is active.
+            When null/omitted, the existing value is preserved.
+          example: WaitForCompletion
         pre_hook:
           type: string
           nullable: true
