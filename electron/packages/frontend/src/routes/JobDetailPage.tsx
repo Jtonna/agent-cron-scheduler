@@ -394,6 +394,16 @@ export function JobDetailPage() {
                 {job.execution.value}
               </code>
             </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Schedule Mode
+              </span>
+              <span className="text-sm">
+                {job.schedule_mode === "WaitForCompletion"
+                  ? "Wait for Completion"
+                  : "Cron"}
+              </span>
+            </div>
             {job.timezone && (
               <div className="flex flex-col gap-0.5">
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
