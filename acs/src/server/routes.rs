@@ -300,6 +300,11 @@ pub async fn create_job(
         new_job.allow_concurrent = Some(state.config.default_allow_concurrent);
     }
 
+    // Resolve schedule_mode against config default
+    if new_job.schedule_mode.is_none() {
+        new_job.schedule_mode = Some(state.config.default_schedule_mode.clone());
+    }
+
     match state.job_store.create_job(new_job).await {
         Ok(job) => {
             tracing::info!("Job '{}' created (id: {})", job.name, job.id);
