@@ -905,6 +905,16 @@ components:
           type: string
           nullable: true
           description: "Shell command to run after job execution. Inherits from global default_post_hook if not set. Receives ACS_JOB_EXIT_CODE env var. Post-hook failure results in CompletedWithWarnings status."
+        pre_hook_script_type:
+          type: string
+          nullable: true
+          enum: [shell, batch, python, powershell]
+          description: "Script type for pre-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
+        post_hook_script_type:
+          type: string
+          nullable: true
+          enum: [shell, batch, python, powershell]
+          description: "Script type for post-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
 
     # -----------------------------------------------------------------------
     # NewJob (create request body)
@@ -974,6 +984,16 @@ components:
         post_hook:
           type: string
           description: "Shell command to run after job execution. Receives ACS_JOB_EXIT_CODE env var. Post-hook failure results in CompletedWithWarnings status."
+        pre_hook_script_type:
+          type: string
+          nullable: true
+          enum: [shell, batch, python, powershell]
+          description: "Script type for pre-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
+        post_hook_script_type:
+          type: string
+          nullable: true
+          enum: [shell, batch, python, powershell]
+          description: "Script type for post-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
 
     # -----------------------------------------------------------------------
     # JobUpdate (patch request body)
@@ -1040,6 +1060,16 @@ components:
           type: string
           nullable: true
           description: "Shell command to run after job execution. Receives ACS_JOB_EXIT_CODE env var. Post-hook failure results in CompletedWithWarnings status."
+        pre_hook_script_type:
+          type: string
+          nullable: true
+          enum: [shell, batch, python, powershell]
+          description: "Script type for pre-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
+        post_hook_script_type:
+          type: string
+          nullable: true
+          enum: [shell, batch, python, powershell]
+          description: "Script type for post-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
 
     # -----------------------------------------------------------------------
     # JobRun

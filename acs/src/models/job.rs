@@ -42,6 +42,10 @@ pub struct Job {
     pub pre_hook: Option<String>,
     #[serde(default)]
     pub post_hook: Option<String>,
+    #[serde(default)]
+    pub pre_hook_script_type: Option<String>,
+    #[serde(default)]
+    pub post_hook_script_type: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_run_at: Option<DateTime<Utc>>,
@@ -66,6 +70,8 @@ impl PartialEq for Job {
             && self.schedule_mode == other.schedule_mode
             && self.pre_hook == other.pre_hook
             && self.post_hook == other.post_hook
+            && self.pre_hook_script_type == other.pre_hook_script_type
+            && self.post_hook_script_type == other.post_hook_script_type
             && self.created_at == other.created_at
             && self.updated_at == other.updated_at
             && self.last_run_at == other.last_run_at
@@ -94,6 +100,10 @@ pub struct NewJob {
     pub pre_hook: Option<String>,
     #[serde(default)]
     pub post_hook: Option<String>,
+    #[serde(default)]
+    pub pre_hook_script_type: Option<String>,
+    #[serde(default)]
+    pub post_hook_script_type: Option<String>,
 }
 
 fn default_enabled() -> bool {
@@ -115,6 +125,8 @@ pub struct JobUpdate {
     pub schedule_mode: Option<ScheduleMode>,
     pub pre_hook: Option<String>,
     pub post_hook: Option<String>,
+    pub pre_hook_script_type: Option<String>,
+    pub post_hook_script_type: Option<String>,
     /// Internal metadata: set to Some(Some(ts)) to update, Some(None) to clear.
     /// Skipped during JSON deserialization from API clients (not user-editable).
     #[serde(skip)]
@@ -206,6 +218,8 @@ mod tests {
             schedule_mode: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
         }
     }
 
@@ -230,6 +244,8 @@ mod tests {
             schedule_mode: ScheduleMode::default(),
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             created_at: now,
             updated_at: now,
             last_run_at: None,

@@ -1495,6 +1495,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
         let all_jobs = vec![fake_job];
@@ -1640,6 +1642,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
         let all_jobs = vec![fake_job];
@@ -1793,6 +1797,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
         let all_jobs = vec![fake_job];
@@ -2325,6 +2331,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         }
     }
@@ -2698,6 +2706,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
         job_store.add_job(test_job).await;

@@ -23,7 +23,9 @@ A job represents a scheduled command or script that ACS executes on a cron-based
 | `allow_concurrent` | `bool` | Whether multiple instances of this job can run simultaneously. Defaults to false. When not set on creation, falls back to daemon's default_allow_concurrent config. |
 | `schedule_mode` | `ScheduleMode` (`Cron`, `WaitForCompletion`) | Controls how the scheduler handles timing between runs. Defaults to `Cron`. When not set on creation, falls back to daemon's `default_schedule_mode` config. See [Job Lifecycle](#job-lifecycle) for behavior details. |
 | `pre_hook` | `Option<String>` | Optional shell command to run before job execution. If the pre-hook fails, the job execution is blocked and the run is marked as `Failed`. |
+| `pre_hook_script_type` | `string \| null` | Script type for the pre-hook. When set, the hook content is saved as a temp file and executed via the appropriate interpreter. Values: `shell`, `batch`, `python`, `powershell`. When `null`, the hook is executed as a shell command. |
 | `post_hook` | `Option<String>` | Optional shell command to run after job execution. If the post-hook fails, the run is marked as `CompletedWithWarnings` instead of `Completed`. |
+| `post_hook_script_type` | `string \| null` | Script type for the post-hook. When set, the hook content is saved as a temp file and executed via the appropriate interpreter. Values: `shell`, `batch`, `python`, `powershell`. When `null`, the hook is executed as a shell command. |
 | `created_at` | `DateTime<Utc>` | Timestamp of job creation. |
 | `updated_at` | `DateTime<Utc>` | Timestamp of the last update to the job definition. |
 | `last_run_at` | `Option<DateTime<Utc>>` | Timestamp of the most recent execution start, or `None` if never run. |
@@ -46,11 +48,13 @@ When creating a job, the following fields are accepted:
 - `allow_concurrent` (optional, defaults to daemon's default_allow_concurrent config)
 - `schedule_mode` (optional, defaults to daemon's `default_schedule_mode` config value)
 - `pre_hook` (optional)
+- `pre_hook_script_type` (optional)
 - `post_hook` (optional)
+- `post_hook_script_type` (optional)
 
 ### JobUpdate (Partial Update Payload)
 
-All fields in `JobUpdate` are optional. Only the fields present in the request body are modified; omitted fields remain unchanged. The `last_run_at` and `last_exit_code` fields are internal-only and cannot be set through the API (they use `#[serde(skip)]`, which excludes them from both JSON serialization and deserialization of `JobUpdate`). Updatable fields include `name`, `schedule`, `execution`, `enabled`, `timezone`, `working_dir`, `env_vars`, `timeout_secs`, `log_environment`, `allow_concurrent`, `schedule_mode`, `pre_hook`, and `post_hook`.
+All fields in `JobUpdate` are optional. Only the fields present in the request body are modified; omitted fields remain unchanged. The `last_run_at` and `last_exit_code` fields are internal-only and cannot be set through the API (they use `#[serde(skip)]`, which excludes them from both JSON serialization and deserialization of `JobUpdate`). Updatable fields include `name`, `schedule`, `execution`, `enabled`, `timezone`, `working_dir`, `env_vars`, `timeout_secs`, `log_environment`, `allow_concurrent`, `schedule_mode`, `pre_hook`, `pre_hook_script_type`, `post_hook`, and `post_hook_script_type`.
 
 Fields that can be updated include:
 - `name`
@@ -65,7 +69,9 @@ Fields that can be updated include:
 - `allow_concurrent`
 - `schedule_mode`
 - `pre_hook`
+- `pre_hook_script_type`
 - `post_hook`
+- `post_hook_script_type`
 
 ---
 
@@ -214,7 +220,7 @@ Creation --> Scheduling --> Execution --> Completion
    The executor then:
    - Creates a `JobRun` record with `Running` status using the pre-generated `run_id`.
    - Broadcasts a `Started` event.
-   - If a `pre_hook` is configured, executes it. If the pre-hook fails (non-zero exit), the run is marked as `Failed` and execution is blocked. Any NDJSON cost data present in the pre-hook's stdout is still extracted and stored in the run record. Success continues to the main job execution.
+   - If a `pre_hook` is configured, executes it. Hook execution depends on `pre_hook_script_type`: when `null`, the hook string is executed as a shell command (via `sh -c` on Unix/macOS or `cmd /C` on Windows); when set to `shell`, `batch`, `python`, or `powershell`, the hook content is written to a temp file with the matching extension (`.sh`, `.bat`, `.py`, or `.ps1`), executed via the corresponding interpreter (`sh`, `cmd`, `python`/`python3`, or `pwsh`), and the temp file is removed after execution. If the pre-hook fails (non-zero exit), the run is marked as `Failed` and execution is blocked. Any NDJSON cost data present in the pre-hook's stdout is still extracted and stored in the run record. Success continues to the main job execution.
    - Optionally dumps the environment to the log (if `log_environment` is `true`).
    - Builds the effective command: if trigger `args` are provided, they are appended to the base command (`"{command} {args}"`).
    - Writes a command header to the log showing the effective command (`$ <command>` for ShellCommand, `$ [script] <path>` for ScriptFile).
@@ -222,7 +228,7 @@ Creation --> Scheduling --> Execution --> Completion
    - If trigger `input` is provided, writes it to the process's stdin, then closes stdin (EOF).
    - Streams output to both the log store and the event broadcast channel.
    - Monitors for timeout and kill signals.
-   - After the job completes (regardless of exit code), if a `post_hook` is configured, executes it. If the post-hook fails (non-zero exit), the run is marked as `CompletedWithWarnings`. Any NDJSON cost data present in the post-hook's stdout is still extracted and included in the run's total cost. If the post-hook succeeds, the run is marked as `Completed`.
+   - After the job completes (regardless of exit code), if a `post_hook` is configured, executes it. Hook execution depends on `post_hook_script_type`: when `null`, the hook string is executed as a shell command (via `sh -c` on Unix/macOS or `cmd /C` on Windows); when set to `shell`, `batch`, `python`, or `powershell`, the hook content is written to a temp file with the matching extension (`.sh`, `.bat`, `.py`, or `.ps1`), executed via the corresponding interpreter (`sh`, `cmd`, `python`/`python3`, or `pwsh`), and the temp file is removed after execution. If the post-hook fails (non-zero exit), the run is marked as `CompletedWithWarnings`. Any NDJSON cost data present in the post-hook's stdout is still extracted and included in the run's total cost. If the post-hook succeeds, the run is marked as `Completed`.
 
 4. **Completion**: The run finishes with one of these terminal statuses. After completion, old run logs are cleaned up based on the configured retention limit (see [Configuration](configuration.md#field-reference)). Job metadata (`last_run_at`, `last_exit_code`) is updated automatically by a background task that listens for completion events.
 

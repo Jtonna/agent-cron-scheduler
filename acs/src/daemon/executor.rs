@@ -21,9 +21,21 @@ enum HookOutcome {
     Failure(String, Vec<u8>),
 }
 
-/// Execute a hook command string using the platform shell.
+/// RAII guard that removes a temp file when dropped.
+struct TempFileGuard(std::path::PathBuf);
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Execute a hook command string using the platform shell, or as a script file.
 ///
-/// * `command`     – the shell command to run
+/// * `command`     – the shell command (or script body when `script_type` is `Some`)
+/// * `script_type` – when `Some`, write the content to a temp file and execute via an interpreter;
+///   supported values: `"shell"`, `"batch"`, `"python"`, `"powershell"`
+/// * `run_id`      – used to construct a unique temp filename
 /// * `working_dir` – optional working directory (inherits cwd if None)
 /// * `env_vars`    – optional extra environment variables to set
 /// * `extra_env`   – optional single additional key/value env pair (e.g. ACS_JOB_EXIT_CODE)
@@ -34,12 +46,112 @@ enum HookOutcome {
 /// spawn error, etc.).
 async fn run_hook(
     command: &str,
+    script_type: Option<&str>,
+    run_id: Uuid,
     working_dir: Option<&str>,
     env_vars: Option<&HashMap<String, String>>,
     extra_env: Option<(&str, &str)>,
     label: &str,
 ) -> HookOutcome {
-    let mut cmd = {
+    // When a script_type is given, write the command body to a temp file and
+    // execute it via the appropriate interpreter.
+    let _temp_guard: Option<TempFileGuard>;
+
+    let mut cmd = if let Some(stype) = script_type {
+        // Determine file extension
+        let ext = match stype {
+            "shell" => "sh",
+            "batch" => "bat",
+            "python" => "py",
+            "powershell" => "ps1",
+            other => {
+                return HookOutcome::Failure(
+                    format!("{} unknown script_type '{}'", label, other),
+                    Vec::new(),
+                );
+            }
+        };
+
+        // Build unique temp path
+        let unique = Uuid::now_v7();
+        let file_name = format!("acs_hook_{}_{}.{}", run_id, unique, ext);
+        let temp_path = std::env::temp_dir().join(&file_name);
+
+        // Write the script body
+        if let Err(e) = std::fs::write(&temp_path, command) {
+            return HookOutcome::Failure(
+                format!("{} failed to write temp script: {}", label, e),
+                Vec::new(),
+            );
+        }
+
+        // Set up RAII cleanup
+        _temp_guard = Some(TempFileGuard(temp_path.clone()));
+
+        // On Unix, make .sh files executable
+        #[cfg(unix)]
+        if ext == "sh" {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) =
+                std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o700))
+            {
+                return HookOutcome::Failure(
+                    format!("{} failed to set script permissions: {}", label, e),
+                    Vec::new(),
+                );
+            }
+        }
+
+        // Build the interpreter command
+        let path_str = temp_path.to_string_lossy().into_owned();
+
+        match stype {
+            "shell" => {
+                let mut c = tokio::process::Command::new("sh");
+                c.arg(&path_str);
+                c
+            }
+            "batch" => {
+                #[cfg(target_os = "windows")]
+                {
+                    let mut c = tokio::process::Command::new("cmd");
+                    c.arg("/C").arg(&path_str);
+                    c
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    // Treat batch as shell on non-Windows
+                    let mut c = tokio::process::Command::new("sh");
+                    c.arg(&path_str);
+                    c
+                }
+            }
+            "python" => {
+                #[cfg(target_os = "windows")]
+                {
+                    let mut c = tokio::process::Command::new("python");
+                    c.arg(&path_str);
+                    c
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let mut c = tokio::process::Command::new("python3");
+                    c.arg(&path_str);
+                    c
+                }
+            }
+            "powershell" => {
+                // Try pwsh first (cross-platform PowerShell Core), fall back to powershell on Windows
+                let mut c = tokio::process::Command::new("pwsh");
+                c.arg("-File").arg(&path_str);
+                c
+            }
+            // Already handled unknown above; this arm is unreachable but keeps the compiler happy
+            _ => unreachable!(),
+        }
+    } else {
+        // Legacy path: wrap in platform shell
+        _temp_guard = None;
         #[cfg(target_os = "windows")]
         {
             // On Windows, cmd.exe /C needs the command string passed without
@@ -79,7 +191,17 @@ async fn run_hook(
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            return HookOutcome::Failure(format!("{} spawn error: {}", label, e), Vec::new());
+            // Provide a helpful message when the interpreter binary is missing
+            let msg = if e.kind() == std::io::ErrorKind::NotFound {
+                let interp = cmd.as_std().get_program().to_string_lossy().into_owned();
+                format!(
+                    "Interpreter '{}' not found. Install it or change the script type.",
+                    interp
+                )
+            } else {
+                format!("{} spawn error: {}", label, e)
+            };
+            return HookOutcome::Failure(msg, Vec::new());
         }
     };
 
@@ -403,6 +525,10 @@ impl Executor {
             .or_else(|| self.config.default_post_hook.clone())
             .filter(|h| !h.is_empty());
 
+        // Script types are job-level only — global defaults always use Command mode.
+        let effective_pre_hook_script_type = job.pre_hook_script_type.clone();
+        let effective_post_hook_script_type = job.post_hook_script_type.clone();
+
         // Build the command
         let cmd = Self::build_command(
             job,
@@ -446,6 +572,8 @@ impl Executor {
                 tracing::debug!("Running pre-hook for job {}: {}", job_id, hook_cmd);
                 match run_hook(
                     hook_cmd,
+                    effective_pre_hook_script_type.as_deref(),
+                    run_id,
                     job_working_dir.as_deref(),
                     job_env_vars.as_ref(),
                     None,
@@ -967,6 +1095,8 @@ impl Executor {
                         let exit_code_str = exit_code.to_string();
                         match run_hook(
                             hook_cmd,
+                            effective_post_hook_script_type.as_deref(),
+                            run_id,
                             job_working_dir.as_deref(),
                             job_env_vars.as_ref(),
                             Some(("ACS_JOB_EXIT_CODE", &exit_code_str)),
@@ -1295,6 +1425,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         }
     }
@@ -1681,6 +1813,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -1719,6 +1853,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -1945,6 +2081,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -1975,6 +2113,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2013,6 +2153,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2048,6 +2190,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2082,6 +2226,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2117,6 +2263,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2154,6 +2302,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2199,6 +2349,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2346,6 +2498,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2557,6 +2711,8 @@ mod tests {
             last_exit_code: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             next_run_at: None,
         };
 
@@ -2898,6 +3054,8 @@ mod tests {
             log_environment: false,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             allow_concurrent: false,
             schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
@@ -2940,6 +3098,8 @@ mod tests {
             log_environment: false,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             allow_concurrent: false,
             schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,
@@ -2987,6 +3147,8 @@ mod tests {
             log_environment: false,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
             allow_concurrent: false,
             schedule_mode: crate::models::ScheduleMode::default(),
             created_at: now,

@@ -164,6 +164,8 @@ List all jobs, optionally filtered by enabled status.
     "schedule_mode": "Cron",
     "pre_hook": null,
     "post_hook": null,
+    "pre_hook_script_type": null,
+    "post_hook_script_type": null,
     "created_at": "2025-01-15T10:30:00Z",
     "updated_at": "2025-01-15T10:30:00Z",
     "last_run_at": "2025-01-16T02:00:00Z",
@@ -200,7 +202,9 @@ Create a new scheduled job.
   "allow_concurrent": true,
   "schedule_mode": "Cron",
   "pre_hook": null,
-  "post_hook": null
+  "post_hook": null,
+  "pre_hook_script_type": null,
+  "post_hook_script_type": null
 }
 ```
 
@@ -219,6 +223,8 @@ Create a new scheduled job.
 | `schedule_mode`  | string                          | No       | (daemon default) | Controls scheduling behavior. One of `Cron` or `WaitForCompletion`. Null uses daemon's `default_schedule_mode` config. |
 | `pre_hook`       | string                          | No       | `null`  | Shell command to execute before the job runs.        |
 | `post_hook`      | string                          | No       | `null`  | Shell command to execute after the job completes.    |
+| `pre_hook_script_type` | string                    | No       | `null`  | Script type for the pre-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
+| `post_hook_script_type` | string                   | No       | `null`  | Script type for the post-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
 
 **Response:**
 
@@ -250,6 +256,8 @@ Create a new scheduled job.
   "schedule_mode": "Cron",
   "pre_hook": null,
   "post_hook": null,
+  "pre_hook_script_type": null,
+  "post_hook_script_type": null,
   "created_at": "2025-01-15T10:30:00Z",
   "updated_at": "2025-01-15T10:30:00Z",
   "last_run_at": null,
@@ -319,6 +327,8 @@ The `next_run_at` field is computed at runtime for enabled jobs.
   "schedule_mode": "Cron",
   "pre_hook": null,
   "post_hook": null,
+  "pre_hook_script_type": null,
+  "post_hook_script_type": null,
   "created_at": "2025-01-15T10:30:00Z",
   "updated_at": "2025-01-15T10:30:00Z",
   "last_run_at": "2025-01-16T02:00:00Z",
@@ -358,7 +368,9 @@ Partially update an existing job. Only the fields you include in the request bod
   "allow_concurrent": true,
   "schedule_mode": "WaitForCompletion",
   "pre_hook": "echo 'Starting backup'",
-  "post_hook": "echo 'Backup complete'"
+  "post_hook": "echo 'Backup complete'",
+  "pre_hook_script_type": "shell",
+  "post_hook_script_type": "shell"
 }
 ```
 
@@ -377,6 +389,8 @@ Partially update an existing job. Only the fields you include in the request bod
 | `schedule_mode`  | string                          | No       | New scheduling mode. One of `Cron` or `WaitForCompletion`. |
 | `pre_hook`       | string                          | No       | New pre-execution hook command.            |
 | `post_hook`      | string                          | No       | New post-execution hook command.           |
+| `pre_hook_script_type` | string\|null              | No       | Script type for the pre-hook. Values: `shell`, `batch`, `python`, `powershell`. Set to `null` to switch back to shell command mode. |
+| `post_hook_script_type` | string\|null             | No       | Script type for the post-hook. Values: `shell`, `batch`, `python`, `powershell`. Set to `null` to switch back to shell command mode. |
 
 **Response:**
 
@@ -1086,6 +1100,8 @@ The full job object returned by GET, POST, and PATCH endpoints.
 | `schedule_mode`  | string                          | No       | Controls scheduling behavior. One of `Cron` or `WaitForCompletion`. |
 | `pre_hook`       | string                          | Yes      | Shell command to execute before the job runs, or `null`.     |
 | `post_hook`      | string                          | Yes      | Shell command to execute after the job completes, or `null`. |
+| `pre_hook_script_type` | string \| null            | Yes      | Script type for the pre-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
+| `post_hook_script_type` | string \| null           | Yes      | Script type for the post-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
 | `created_at`     | string (ISO 8601)               | No       | When the job was created.                                    |
 | `updated_at`     | string (ISO 8601)               | No       | When the job was last modified.                              |
 | `last_run_at`    | string (ISO 8601)               | Yes      | When the job last ran, or `null` if never.                   |
@@ -1111,6 +1127,8 @@ Request body for `POST /api/jobs`.
 | `schedule_mode`  | string                          | No       | (daemon default) | Controls scheduling behavior. One of `Cron` or `WaitForCompletion`. Null uses daemon's `default_schedule_mode` config. |
 | `pre_hook`       | string                          | No       | `null`  | Shell command to execute before the job. |
 | `post_hook`      | string                          | No       | `null`  | Shell command to execute after the job.  |
+| `pre_hook_script_type` | string                    | No       | `null`  | Script type for the pre-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
+| `post_hook_script_type` | string                   | No       | `null`  | Script type for the post-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
 
 ### JobUpdate
 
@@ -1131,6 +1149,8 @@ Request body for `PATCH /api/jobs/{id}`. All fields are optional; only included 
 | `schedule_mode`  | string                          | New scheduling mode. One of `Cron` or `WaitForCompletion`. |
 | `pre_hook`       | string                          | New pre-execution hook command.          |
 | `post_hook`      | string                          | New post-execution hook command.         |
+| `pre_hook_script_type` | string\|null              | Script type for the pre-hook. Values: `shell`, `batch`, `python`, `powershell`. Set to `null` to switch back to shell command mode. |
+| `post_hook_script_type` | string\|null             | Script type for the post-hook. Values: `shell`, `batch`, `python`, `powershell`. Set to `null` to switch back to shell command mode. |
 
 Note: The `last_run_at` and `last_exit_code` fields cannot be set via the API. They are updated internally by the executor.
 

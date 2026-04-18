@@ -147,6 +147,8 @@ mod tests {
                 log_environment: new.log_environment,
                 pre_hook: new.pre_hook,
                 post_hook: new.post_hook,
+                pre_hook_script_type: new.pre_hook_script_type,
+                post_hook_script_type: new.post_hook_script_type,
                 allow_concurrent: new.allow_concurrent.unwrap_or(false),
                 schedule_mode: new.schedule_mode.unwrap_or_default(),
                 created_at: now,
@@ -497,6 +499,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -588,6 +592,8 @@ mod tests {
                     schedule_mode: None,
                     pre_hook: None,
                     post_hook: None,
+                    pre_hook_script_type: None,
+                    post_hook_script_type: None,
                 })
                 .await
                 .unwrap();
@@ -636,6 +642,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -656,6 +664,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -703,6 +713,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -746,6 +758,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -816,6 +830,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -873,6 +889,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -893,6 +911,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -949,6 +969,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -993,6 +1015,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -1043,6 +1067,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -1093,6 +1119,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -1144,6 +1172,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -1215,6 +1245,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -1568,6 +1600,8 @@ mod tests {
                     schedule_mode: None,
                     pre_hook: None,
                     post_hook: None,
+                    pre_hook_script_type: None,
+                    post_hook_script_type: None,
                 })
                 .await
                 .unwrap();
@@ -1639,6 +1673,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap()
@@ -1722,6 +1758,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -2041,6 +2079,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -2088,6 +2128,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -2126,6 +2168,8 @@ mod tests {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();

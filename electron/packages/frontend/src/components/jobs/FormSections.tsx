@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { CronInput } from "./CronInput";
 import { EnvVarsEditor } from "./EnvVarsEditor";
+import { ScriptEditor } from "./ScriptEditor";
 import { COMMON_TIMEZONES } from "@/lib/cron";
 import { cn } from "@/lib/utils";
 
@@ -237,41 +238,156 @@ export function EnvVarsFields({
 
 /* -- Pre/Post Hook fields (no card wrapper) -- */
 export function PrePostHookFields({
-  preHook, setPreHook, postHook, setPostHook,
+  preHook, setPreHook,
+  postHook, setPostHook,
+  preHookMode, setPreHookMode,
+  postHookMode, setPostHookMode,
+  preHookScriptType, setPreHookScriptType,
+  postHookScriptType, setPostHookScriptType,
 }: {
   preHook: string;
   setPreHook: (v: string) => void;
   postHook: string;
   setPostHook: (v: string) => void;
+  preHookMode: "command" | "script";
+  setPreHookMode: (v: "command" | "script") => void;
+  postHookMode: "command" | "script";
+  setPostHookMode: (v: "command" | "script") => void;
+  preHookScriptType: string;
+  setPreHookScriptType: (v: string) => void;
+  postHookScriptType: string;
+  setPostHookScriptType: (v: string) => void;
 }) {
   return (
     <>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="pre-hook">Pre-run Script</Label>
-        <Textarea
-          id="pre-hook"
-          value={preHook}
-          onChange={(e) => setPreHook(e.target.value)}
-          placeholder="echo 'starting...'"
-          rows={2}
-          className="font-mono"
-        />
+        <div className="flex items-center justify-between">
+          <Label htmlFor="pre-hook">Pre-run Hook</Label>
+          <div className="flex items-center gap-1 rounded-md border border-input p-0.5">
+            <button
+              type="button"
+              onClick={() => setPreHookMode("command")}
+              className={cn(
+                "rounded px-2.5 py-1 text-xs font-medium transition-colors",
+                preHookMode === "command"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              Command
+            </button>
+            <button
+              type="button"
+              onClick={() => setPreHookMode("script")}
+              className={cn(
+                "rounded px-2.5 py-1 text-xs font-medium transition-colors",
+                preHookMode === "script"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              Script
+            </button>
+          </div>
+        </div>
+        {preHookMode === "command" ? (
+          <Textarea
+            id="pre-hook"
+            value={preHook}
+            onChange={(e) => setPreHook(e.target.value)}
+            placeholder="echo 'starting...'"
+            rows={2}
+            className="font-mono"
+          />
+        ) : (
+          <div className="flex flex-col gap-2">
+            <Select value={preHookScriptType} onValueChange={setPreHookScriptType}>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Script type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="shell">Shell (.sh)</SelectItem>
+                <SelectItem value="batch">Batch (.bat)</SelectItem>
+                <SelectItem value="python">Python (.py)</SelectItem>
+                <SelectItem value="powershell">PowerShell (.ps1)</SelectItem>
+              </SelectContent>
+            </Select>
+            <ScriptEditor
+              value={preHook}
+              onChange={setPreHook}
+              language={preHookScriptType as "shell" | "batch" | "python" | "powershell"}
+            />
+          </div>
+        )}
         <p className="text-xs text-muted-foreground">
-          Shell command to run before job execution. If it fails, the job is blocked.
+          {preHookMode === "command"
+            ? "Shell command to run before job execution. If it fails, the job is blocked."
+            : "Script to run before job execution. Saved as a temp file and executed via the selected interpreter."}
         </p>
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="post-hook">Post-run Script</Label>
-        <Textarea
-          id="post-hook"
-          value={postHook}
-          onChange={(e) => setPostHook(e.target.value)}
-          placeholder="echo 'done'"
-          rows={2}
-          className="font-mono"
-        />
+        <div className="flex items-center justify-between">
+          <Label htmlFor="post-hook">Post-run Hook</Label>
+          <div className="flex items-center gap-1 rounded-md border border-input p-0.5">
+            <button
+              type="button"
+              onClick={() => setPostHookMode("command")}
+              className={cn(
+                "rounded px-2.5 py-1 text-xs font-medium transition-colors",
+                postHookMode === "command"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              Command
+            </button>
+            <button
+              type="button"
+              onClick={() => setPostHookMode("script")}
+              className={cn(
+                "rounded px-2.5 py-1 text-xs font-medium transition-colors",
+                postHookMode === "script"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              Script
+            </button>
+          </div>
+        </div>
+        {postHookMode === "command" ? (
+          <Textarea
+            id="post-hook"
+            value={postHook}
+            onChange={(e) => setPostHook(e.target.value)}
+            placeholder="echo 'done'"
+            rows={2}
+            className="font-mono"
+          />
+        ) : (
+          <div className="flex flex-col gap-2">
+            <Select value={postHookScriptType} onValueChange={setPostHookScriptType}>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Script type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="shell">Shell (.sh)</SelectItem>
+                <SelectItem value="batch">Batch (.bat)</SelectItem>
+                <SelectItem value="python">Python (.py)</SelectItem>
+                <SelectItem value="powershell">PowerShell (.ps1)</SelectItem>
+              </SelectContent>
+            </Select>
+            <ScriptEditor
+              value={postHook}
+              onChange={setPostHook}
+              language={postHookScriptType as "shell" | "batch" | "python" | "powershell"}
+            />
+          </div>
+        )}
         <p className="text-xs text-muted-foreground">
-          Shell command to run after job execution. If it fails, the run is marked as CompletedWithWarnings.
+          {postHookMode === "command"
+            ? "Shell command to run after job execution. If it fails, the run is marked as CompletedWithWarnings."
+            : "Script to run after job execution. Saved as a temp file and executed via the selected interpreter."}
         </p>
       </div>
     </>

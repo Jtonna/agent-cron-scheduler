@@ -78,6 +78,8 @@ impl JobStore for InMemoryJobStore {
             schedule_mode: new.schedule_mode.unwrap_or_default(),
             pre_hook: new.pre_hook,
             post_hook: new.post_hook,
+            pre_hook_script_type: new.pre_hook_script_type,
+            post_hook_script_type: new.post_hook_script_type,
             created_at: now,
             updated_at: now,
             last_run_at: None,
@@ -125,6 +127,12 @@ impl JobStore for InMemoryJobStore {
         }
         if let Some(ph) = update.post_hook {
             job.post_hook = Some(ph);
+        }
+        if let Some(pst) = update.pre_hook_script_type {
+            job.pre_hook_script_type = Some(pst);
+        }
+        if let Some(pst) = update.post_hook_script_type {
+            job.post_hook_script_type = Some(pst);
         }
         job.updated_at = Utc::now();
         Ok(job.clone())
@@ -818,6 +826,8 @@ async fn test_job_cost_summary_happy_path() {
             schedule_mode: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
         })
         .await
         .unwrap();
@@ -865,6 +875,8 @@ async fn test_job_cost_summary_no_manifest_returns_zeroed() {
             schedule_mode: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
         })
         .await
         .unwrap();
@@ -926,6 +938,8 @@ async fn test_job_cost_summary_invalid_timeframe_returns_400() {
             schedule_mode: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
         })
         .await
         .unwrap();
@@ -973,6 +987,8 @@ async fn test_global_cost_summary_happy_path_aggregates_multiple_jobs() {
                 schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
+                pre_hook_script_type: None,
+                post_hook_script_type: None,
             })
             .await
             .unwrap();
@@ -1052,6 +1068,8 @@ async fn test_get_job_manifest_happy_path() {
             schedule_mode: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
         })
         .await
         .unwrap();
@@ -1100,6 +1118,8 @@ async fn test_get_job_manifest_no_manifest_returns_default() {
             schedule_mode: None,
             pre_hook: None,
             post_hook: None,
+            pre_hook_script_type: None,
+            post_hook_script_type: None,
         })
         .await
         .unwrap();
