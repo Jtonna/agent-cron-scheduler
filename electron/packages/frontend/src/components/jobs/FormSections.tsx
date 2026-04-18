@@ -126,11 +126,14 @@ export function ScheduleFields({
 /* -- Runtime / Advanced fields (no card wrapper) -- */
 export function RuntimeFields({
   workingDir, setWorkingDir, timeoutSecs, setTimeoutSecs,
-  allowConcurrent, setAllowConcurrent, errors,
+  allowConcurrent, setAllowConcurrent,
+  scheduleMode, setScheduleMode,
+  errors,
 }: {
   workingDir: string; setWorkingDir: (v: string) => void;
   timeoutSecs: number; setTimeoutSecs: (v: number) => void;
   allowConcurrent: boolean; setAllowConcurrent: (v: boolean) => void;
+  scheduleMode: "Cron" | "WaitForCompletion"; setScheduleMode: (v: "Cron" | "WaitForCompletion") => void;
   errors: Record<string, string>;
 }) {
   return (
@@ -175,6 +178,25 @@ export function RuntimeFields({
         </div>
         <p className="text-xs text-muted-foreground">
           Allow multiple instances of this job to run simultaneously
+        </p>
+      </div>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="schedule-mode">Schedule Mode</Label>
+        <Select
+          value={scheduleMode}
+          onValueChange={(v) => setScheduleMode(v as "Cron" | "WaitForCompletion")}
+        >
+          <SelectTrigger id="schedule-mode">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="Cron">Cron</SelectItem>
+            <SelectItem value="WaitForCompletion">Wait for Completion</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          <strong>Cron:</strong> Run on every cron tick regardless of running jobs.{" "}
+          <strong>Wait for Completion:</strong> Skip cron ticks while a run is active.
         </p>
       </div>
     </>
