@@ -3659,4 +3659,278 @@ mod tests {
         assert_eq!(usage["input_tokens"], 300);
         assert_eq!(usage["output_tokens"], 150);
     }
+
+    // --- Process termination tests using real processes ---
+
+    /// A PtySpawner wrapper that records the PID of every spawned process into
+    /// a shared slot so tests can check liveness after the executor finishes.
+    ///
+    /// Only compiled on non-Windows because the tests that use it are Unix-only.
+    #[cfg(not(target_os = "windows"))]
+    struct PidCapturingSpawner {
+        inner: crate::pty::NoPtySpawner,
+        pid_slot: Arc<std::sync::Mutex<Option<u32>>>,
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    impl PidCapturingSpawner {
+        fn new(pid_slot: Arc<std::sync::Mutex<Option<u32>>>) -> Self {
+            Self {
+                inner: crate::pty::NoPtySpawner,
+                pid_slot,
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    impl crate::pty::PtySpawner for PidCapturingSpawner {
+        fn spawn(
+            &self,
+            cmd: portable_pty::CommandBuilder,
+            rows: u16,
+            cols: u16,
+        ) -> anyhow::Result<Box<dyn crate::pty::PtyProcess>> {
+            let process = self.inner.spawn(cmd, rows, cols)?;
+            if let Some(pid) = process.pid() {
+                *self.pid_slot.lock().unwrap() = Some(pid);
+            }
+            Ok(process)
+        }
+    }
+
+    /// Helper: build an executor backed by a real NoPtySpawner (with PID capture).
+    #[cfg(not(target_os = "windows"))]
+    fn setup_real_executor(
+        pid_slot: Arc<std::sync::Mutex<Option<u32>>>,
+    ) -> (
+        Executor,
+        broadcast::Receiver<JobEvent>,
+        Arc<InMemoryLogStore>,
+    ) {
+        let config = Arc::new(DaemonConfig::default());
+        let (event_tx, event_rx) = broadcast::channel::<JobEvent>(4096);
+        let log_store = Arc::new(InMemoryLogStore::new());
+        let spawner = Arc::new(PidCapturingSpawner::new(pid_slot));
+
+        let executor = Executor::new(
+            event_tx,
+            Arc::clone(&log_store) as Arc<dyn crate::storage::LogStore>,
+            config,
+            spawner as Arc<dyn crate::pty::PtySpawner>,
+        );
+
+        (executor, event_rx, log_store)
+    }
+
+    /// Helper: build an executor backed by a real NoPtySpawner with a custom timeout,
+    /// also capturing the PID.
+    #[cfg(not(target_os = "windows"))]
+    fn setup_real_executor_with_timeout(
+        pid_slot: Arc<std::sync::Mutex<Option<u32>>>,
+        timeout_secs: u64,
+    ) -> (
+        Executor,
+        broadcast::Receiver<JobEvent>,
+        Arc<InMemoryLogStore>,
+    ) {
+        let config = DaemonConfig {
+            default_timeout_secs: timeout_secs,
+            ..Default::default()
+        };
+        let config = Arc::new(config);
+        let (event_tx, event_rx) = broadcast::channel::<JobEvent>(4096);
+        let log_store = Arc::new(InMemoryLogStore::new());
+        let spawner = Arc::new(PidCapturingSpawner::new(pid_slot));
+
+        let executor = Executor::new(
+            event_tx,
+            Arc::clone(&log_store) as Arc<dyn crate::storage::LogStore>,
+            config,
+            spawner as Arc<dyn crate::pty::PtySpawner>,
+        );
+
+        (executor, event_rx, log_store)
+    }
+
+    /// Verify that sending a kill signal via `kill_tx` actually terminates the
+    /// child process (not just the in-process state machine).
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_kill_signal_terminates_child_process() {
+        let pid_slot: Arc<std::sync::Mutex<Option<u32>>> = Arc::new(std::sync::Mutex::new(None));
+        let (executor, _event_rx, log_store) = setup_real_executor(Arc::clone(&pid_slot));
+
+        let mut job = make_test_job();
+        job.execution = ExecutionType::ShellCommand("sleep 60".to_string());
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+
+        // Give the process a moment to start up before killing it.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Send kill signal.
+        handle
+            .kill_tx
+            .send(KillReason::Manual)
+            .expect("kill_tx send");
+
+        // Wait for executor to complete (30 s safety timeout).
+        tokio::time::timeout(std::time::Duration::from_secs(30), handle.join_handle)
+            .await
+            .expect("executor timed out after 30 s")
+            .expect("join_handle panicked");
+
+        // Give the OS a moment to reap the process.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Verify the run was recorded as Killed.
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist in log store");
+        assert_eq!(
+            run.status,
+            RunStatus::Killed,
+            "Run status should be Killed, got {:?}",
+            run.status
+        );
+
+        // Verify the child process is actually dead.
+        let pid = pid_slot
+            .lock()
+            .unwrap()
+            .expect("PID should have been captured");
+        assert!(
+            !crate::daemon::is_process_alive(pid),
+            "Child process (PID {}) should be dead after kill signal",
+            pid
+        );
+    }
+
+    /// Verify that killing the parent shell also kills child processes it spawned
+    /// (i.e., the entire process tree is terminated).
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_kill_terminates_process_tree() {
+        let pid_slot: Arc<std::sync::Mutex<Option<u32>>> = Arc::new(std::sync::Mutex::new(None));
+        let (executor, _event_rx, log_store) = setup_real_executor(Arc::clone(&pid_slot));
+
+        // `sh -c "sleep 60"` spawns sh as the top-level process, which in turn
+        // spawns `sleep 60` as a child.  The executor receives sh's PID; killing
+        // the process group (via setsid + killpg) must also kill `sleep`.
+        let mut job = make_test_job();
+        job.execution = ExecutionType::ShellCommand("sleep 60".to_string());
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+
+        // Give the shell and its child time to start.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        handle
+            .kill_tx
+            .send(KillReason::Manual)
+            .expect("kill_tx send");
+
+        tokio::time::timeout(std::time::Duration::from_secs(30), handle.join_handle)
+            .await
+            .expect("executor timed out after 30 s")
+            .expect("join_handle panicked");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Verify the run was recorded as Killed.
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+        assert_eq!(
+            run.status,
+            RunStatus::Killed,
+            "Run status should be Killed, got {:?}",
+            run.status
+        );
+
+        // Verify the parent process (sh) is dead — killing the process group
+        // should have taken care of the whole tree.
+        let pid = pid_slot
+            .lock()
+            .unwrap()
+            .expect("PID should have been captured");
+        assert!(
+            !crate::daemon::is_process_alive(pid),
+            "Parent process (PID {}) should be dead after killing the process tree",
+            pid
+        );
+    }
+
+    /// Verify that a configured timeout causes the child process to be terminated
+    /// (not just the in-process state machine).
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_timeout_terminates_child_process() {
+        let pid_slot: Arc<std::sync::Mutex<Option<u32>>> = Arc::new(std::sync::Mutex::new(None));
+        // 2-second timeout; `sleep 60` would run for 60 s without it.
+        let (executor, _event_rx, log_store) =
+            setup_real_executor_with_timeout(Arc::clone(&pid_slot), 2);
+
+        let mut job = make_test_job();
+        job.execution = ExecutionType::ShellCommand("sleep 60".to_string());
+        job.timeout_secs = 0; // use the config default (2 s)
+
+        let run_id = Uuid::now_v7();
+        let handle = executor
+            .spawn_job(&job, run_id, None)
+            .await
+            .expect("spawn_job");
+
+        // Wait for executor to complete (30 s safety timeout).
+        tokio::time::timeout(std::time::Duration::from_secs(30), handle.join_handle)
+            .await
+            .expect("executor timed out after 30 s")
+            .expect("join_handle panicked");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Verify the run was recorded as Failed (timed out).
+        let runs = log_store.runs.read().await;
+        let run = runs
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .expect("run should exist");
+        assert_eq!(
+            run.status,
+            RunStatus::Failed,
+            "Run status should be Failed (timed out), got {:?}",
+            run.status
+        );
+        assert!(
+            run.error
+                .as_ref()
+                .map(|e| e.contains("timed out"))
+                .unwrap_or(false),
+            "Error message should mention 'timed out', got: {:?}",
+            run.error
+        );
+
+        // Verify the child process is actually dead.
+        let pid = pid_slot
+            .lock()
+            .unwrap()
+            .expect("PID should have been captured");
+        assert!(
+            !crate::daemon::is_process_alive(pid),
+            "Child process (PID {}) should be dead after timeout",
+            pid
+        );
+    }
 }
