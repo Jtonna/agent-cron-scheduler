@@ -10,6 +10,7 @@ export interface Job {
   timeout_secs: number;
   log_environment: boolean;
   allow_concurrent: boolean;
+  schedule_mode?: "Cron" | "WaitForCompletion";
   pre_hook: string | null;
   post_hook: string | null;
   created_at: string;
@@ -30,6 +31,7 @@ export interface NewJob {
   timeout_secs?: number;
   log_environment?: boolean;
   allow_concurrent?: boolean;
+  schedule_mode?: "Cron" | "WaitForCompletion";
   pre_hook?: string;
   post_hook?: string;
 }
@@ -45,6 +47,7 @@ export interface JobUpdate {
   timeout_secs?: number;
   log_environment?: boolean;
   allow_concurrent?: boolean;
+  schedule_mode?: "Cron" | "WaitForCompletion";
   pre_hook?: string | null;
   post_hook?: string | null;
 }
