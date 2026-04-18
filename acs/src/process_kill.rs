@@ -26,7 +26,7 @@ pub async fn kill_process_tree(pid: u32) {
         // realistic process ID value.
         let ret = unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
         if ret != 0 {
-            let errno = unsafe { *libc::__errno_location() };
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             if errno == libc::ESRCH {
                 // Process group already gone — nothing to do.
                 debug!(pid, "Process group already gone (SIGTERM skipped)");
@@ -76,7 +76,7 @@ pub async fn force_kill_process_tree(pid: u32) {
         // SAFETY: same as above.
         let ret = unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
         if ret != 0 {
-            let errno = unsafe { *libc::__errno_location() };
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             if errno == libc::ESRCH {
                 debug!(pid, "Process group already gone (SIGKILL skipped)");
                 return;
@@ -89,7 +89,7 @@ pub async fn force_kill_process_tree(pid: u32) {
             );
             let ret2 = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
             if ret2 != 0 {
-                let errno2 = unsafe { *libc::__errno_location() };
+                let errno2 = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                 if errno2 != libc::ESRCH {
                     warn!(pid, errno = errno2, "kill(SIGKILL) also failed");
                 }
