@@ -1422,6 +1422,11 @@ mod tests {
             run.error.as_ref().unwrap().contains("shutting down"),
             "Error should mention shutdown"
         );
+        assert_eq!(
+            run.exit_code,
+            Some(-1),
+            "Killed run should have exit_code -1"
+        );
     }
 
     // =======================================================================
