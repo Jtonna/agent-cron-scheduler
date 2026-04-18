@@ -102,6 +102,14 @@ export function JobForm({ job, title, onSubmit, submitLabel = "Save" }: JobFormP
                   setPreHook={s.setPreHook}
                   postHook={s.postHook}
                   setPostHook={s.setPostHook}
+                  preHookMode={s.preHookMode}
+                  setPreHookMode={s.setPreHookMode}
+                  postHookMode={s.postHookMode}
+                  setPostHookMode={s.setPostHookMode}
+                  preHookScriptType={s.preHookScriptType}
+                  setPreHookScriptType={s.setPreHookScriptType}
+                  postHookScriptType={s.postHookScriptType}
+                  setPostHookScriptType={s.setPostHookScriptType}
                 />
               </SectionCard>
             </div>
