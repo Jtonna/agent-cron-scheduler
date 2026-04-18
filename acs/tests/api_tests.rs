@@ -1137,6 +1137,55 @@ async fn test_get_job_manifest_job_not_found_returns_404() {
     assert!(json["message"].is_string());
 }
 
+/// Verify that `schedule_mode` roundtrips correctly through create → get.
+/// A job created with `schedule_mode: "WaitForCompletion"` must return that
+/// value when fetched via GET, confirming the field is persisted and serialized.
+#[tokio::test]
+async fn test_schedule_mode_roundtrips_via_api() {
+    let (base_url, _handle) = spawn_test_server().await;
+    let client = reqwest::Client::new();
+
+    // Create a job with schedule_mode: WaitForCompletion
+    let job_body = serde_json::json!({
+        "name": "schedule-mode-roundtrip-job",
+        "schedule": "*/5 * * * *",
+        "execution": {
+            "type": "ShellCommand",
+            "value": "echo hello"
+        },
+        "schedule_mode": "WaitForCompletion"
+    });
+
+    let create_resp = client
+        .post(format!("{}/api/jobs", base_url))
+        .json(&job_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), 201);
+
+    let created: serde_json::Value = create_resp.json().await.unwrap();
+    assert_eq!(
+        created["schedule_mode"], "WaitForCompletion",
+        "create response should include schedule_mode"
+    );
+    let job_id = created["id"].as_str().unwrap();
+
+    // Fetch the job by ID and verify schedule_mode is preserved
+    let get_resp = client
+        .get(format!("{}/api/jobs/{}", base_url, job_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), 200);
+
+    let fetched: serde_json::Value = get_resp.json().await.unwrap();
+    assert_eq!(
+        fetched["schedule_mode"], "WaitForCompletion",
+        "fetched job should have schedule_mode WaitForCompletion"
+    );
+}
+
 /// Verify that a job created with `allow_concurrent: true` can be triggered
 /// multiple times and both runs are recorded in run history.
 #[tokio::test]
