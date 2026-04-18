@@ -500,7 +500,10 @@ pub async fn graceful_shutdown(
 
         for run in runs_list {
             if run.run_id == *run_id && run.status == RunStatus::Running {
-                let raw = log_store.read_log(*job_id, *run_id, None).await.unwrap_or_default();
+                let raw = log_store
+                    .read_log(*job_id, *run_id, None)
+                    .await
+                    .unwrap_or_default();
                 let cost = extract_cost_from_log(raw.as_bytes());
                 let killed_run = crate::models::JobRun {
                     run_id: run.run_id,
