@@ -81,6 +81,7 @@ acs/src/
     run.rs                    # JobRun, RunStatus
     config.rs                 # DaemonConfig
     dispatch.rs               # DispatchRequest, TriggerParams
+  process_kill.rs               # Platform-specific process tree termination
   pty/
     mod.rs                    # PtySpawner trait, PtyProcess trait,
                               #   NoPtySpawner, MockPtySpawner
@@ -115,7 +116,7 @@ See [CLI Reference](cli-reference.md) for the full command documentation.
 #### `daemon::executor` -- Job Execution Engine
 
 - **`Executor`**: Spawns child processes for jobs. Each `spawn_job()` call creates a `JobRun` record, broadcasts a `Started` event, spawns the process via the `PtySpawner` trait, and manages the output/log pipeline.
-- **`RunHandle`**: Returned by `spawn_job()`. Contains `run_id`, `job_id`, `join_handle` (the Tokio task handle), and `kill_tx` (a oneshot channel to signal cancellation).
+- **`RunHandle`**: Returned by `spawn_job()`. Contains `run_id`, `job_id`, `join_handle` (the Tokio task handle), and `kill_tx` (a oneshot channel carrying a `KillReason` enum to signal cancellation).
 - **`Executor::build_command()`**: Constructs a `portable_pty::CommandBuilder` from the job's `ExecutionType` (see [Job Management](job-management.md#execution-types) for platform-specific shell behavior).
 
 #### `daemon::events` -- Event System
@@ -155,9 +156,14 @@ See [Storage](storage.md) for implementation details.
 #### `pty` -- Process Spawning Abstraction
 
 - **`PtySpawner` trait**: `fn spawn(&self, cmd: CommandBuilder, rows: u16, cols: u16) -> anyhow::Result<Box<dyn PtyProcess>>`.
-- **`PtyProcess` trait**: `fn read()`, `fn kill()`, `fn wait()`, `fn write_stdin()`, `fn close_stdin()` for managing spawned processes. The `write_stdin()` and `close_stdin()` methods have default no-op implementations and are used to support `TriggerParams.input` (stdin piping).
+- **`PtyProcess` trait**: `fn read()`, `fn kill()`, `fn wait()`, `fn write_stdin()`, `fn close_stdin()`, `fn pid()` for managing spawned processes. The `write_stdin()` and `close_stdin()` methods have default no-op implementations and are used to support `TriggerParams.input` (stdin piping). The `pid()` method has a default `None` implementation and returns the OS process ID for process tree kill.
 - **`NoPtySpawner`**: Production implementation using `std::process::Command` with piped stdout/stderr.
 - **`MockPtySpawner`**: Test double with configurable output and exit codes.
+
+#### `process_kill` -- Process Tree Termination
+
+- **`kill_process_tree(pid)`**: Gracefully terminates an entire process tree. On Unix, sends SIGTERM to the process group (via `killpg`), polls for up to 5 seconds, then escalates to SIGKILL. On Windows, delegates directly to `force_kill_process_tree` (no graceful equivalent).
+- **`force_kill_process_tree(pid)`**: Immediately force-kills a process tree. On Unix, sends SIGKILL to the process group (with fallback to single-PID kill). On Windows, runs `taskkill /T /F /PID`.
 
 #### `errors` -- Error Types
 
@@ -271,25 +277,27 @@ executor.spawn_job(&job, run_id, trigger_params)
         |
         9. Create mpsc::channel(256) for log writer
         10. Spawn log writer task (async: recv bytes, append to log_store)
+        10a. Extract PID from PtyProcess::pid() for process tree kill
         11. Spawn blocking PTY read loop (spawn_blocking)
         |    reads 8192-byte chunks, sends via mpsc to async side
         |
         12. Output forwarding loop:
             tokio::select! {
                 chunk from output_rx  -> broadcast Output event + send to log writer
-                kill_rx               -> set killed=true, break
-                timeout_fut           -> set timed_out=true, break
+                kill_rx               -> call kill_process_tree(pid), set killed=true, break
+                timeout_fut           -> call kill_process_tree(pid), set timed_out=true, break
             }
         |
         13. Drop log_tx (signals log writer to finish)
-        14. Await read_handle (get exit status)
+        14. Await read_handle with 10s safety timeout (get exit status)
         15. Await log_writer_handle (get total_bytes)
         |
         16. Determine outcome:
             - timed_out  -> update run to Failed, broadcast Failed
-            - killed     -> update run to Killed, broadcast Failed
+            - killed     -> process tree terminated via kill_process_tree(pid),
+                            update run to Killed, broadcast Failed
               (kill_tx is sent to signal cancellation; old join handles are
-               spawned as detached tasks with a 5-second timeout to ensure
+               spawned as detached tasks with a 15-second timeout to ensure
                the executor task has time to update the run status to Killed
                before the handle is dropped)
             - Ok(status) -> update run to Completed, broadcast Completed
@@ -380,12 +388,12 @@ let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 ### 4.5 Oneshot Channel -- Per-Run Kill Signal
 
 ```rust
-let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
+let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<KillReason>();
 ```
 
 - **Purpose**: Allows cancellation of a specific running job.
 - **One per run**: Created inside `Executor::spawn_job()`, with `kill_tx` stored in the `RunHandle`.
-- **Producer**: `graceful_shutdown()` sends `()` to kill all active runs; Used by `POST /api/jobs/{id}/kill` and during job deletion.
+- **Producer**: `graceful_shutdown()` sends `KillReason::Shutdown` to kill all active runs; `POST /api/jobs/{id}/kill` sends `KillReason::Manual`; concurrent run handling sends `KillReason::Concurrent`.
 - **Consumer**: The execution task's `tokio::select!` loop breaks on `kill_rx`, setting `killed = true`.
 
 ### 4.6 RwLock -- Shared State Protection
@@ -395,11 +403,11 @@ let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
 cache: RwLock<Vec<Job>>              // inside JsonJobStore
 
 // Active runs tracking
-active_runs: Arc<RwLock<HashMap<Uuid, RunHandle>>>  // in AppState
+active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>  // in AppState
 ```
 
 - **`JsonJobStore::cache`**: Tokio `RwLock<Vec<Job>>`. Read lock for `list_jobs`, `get_job`, `find_by_name`. Write lock for `create_job`, `update_job`, `delete_job` (each followed by `persist()` to disk).
-- **`active_runs`**: Tokio `RwLock<HashMap<Uuid, RunHandle>>`, keyed by `job_id` (not `run_id`). This means only one active run per job is tracked at a time. Write lock when inserting new handles (dispatch loop) or draining during shutdown. Read lock potentially for status queries.
+- **`active_runs`**: Tokio `RwLock<HashMap<Uuid, Vec<RunHandle>>>`, keyed by `job_id` (not `run_id`). Each job maps to a `Vec` of active run handles, supporting concurrent runs. Write lock when inserting new handles (dispatch loop) or draining during shutdown. Read lock potentially for status queries.
 
 ### 4.7 Arc Sharing
 
@@ -411,7 +419,7 @@ All major components are shared via `Arc`:
 | `log_store` | `Arc<dyn LogStore>` | AppState, Executor, graceful_shutdown |
 | `config` | `Arc<DaemonConfig>` | AppState, Executor |
 | `scheduler_notify` | `Arc<Notify>` | AppState, Scheduler |
-| `active_runs` | `Arc<RwLock<HashMap<Uuid, RunHandle>>>` | AppState, dispatch loop, graceful_shutdown |
+| `active_runs` | `Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>` | AppState, dispatch loop, graceful_shutdown |
 | `event_tx` | `broadcast::Sender<JobEvent>` | AppState, Executor, Scheduler, metadata updater |
 | `pty_spawner` | `Arc<dyn PtySpawner>` | Executor |
 
@@ -433,7 +441,7 @@ Single-instance enforcement uses `create_new(true)` (maps to `O_EXCL`/`CREATE_NE
 
 ### 5.3 Piped I/O over PTY
 
-The production `NoPtySpawner` uses `std::process::Command` with piped stdout, stderr, and stdin rather than a real PTY. Both stdout and stderr are read by the `PtyProcess::read()` implementation and merged into the unified output stream. Piped I/O reliably delivers EOF on all platforms, avoiding platform-specific PTY issues. On Windows, `NoPtySpawner::spawn()` uses `raw_arg()` to bypass Rust's MSVC quoting for `cmd.exe` compatibility.
+The production `NoPtySpawner` uses `std::process::Command` with piped stdout, stderr, and stdin rather than a real PTY. Both stdout and stderr are read by the `PtyProcess::read()` implementation and merged into the unified output stream. Piped I/O reliably delivers EOF on all platforms, avoiding platform-specific PTY issues. On Windows, `NoPtySpawner::spawn()` uses `raw_arg()` to bypass Rust's MSVC quoting for `cmd.exe` compatibility. Each spawned child process is placed in a new process group: on Unix via `setsid()` (creating a new session with PGID == child PID), on Windows via `CREATE_NEW_PROCESS_GROUP`. This enables `process_kill::kill_process_tree()` to terminate the entire process tree rather than just the immediate child.
 
 ### 5.4 Atomic File Persistence
 
