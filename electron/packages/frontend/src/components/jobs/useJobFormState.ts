@@ -29,6 +29,18 @@ export function useJobFormState(job?: Job | null) {
   const [enabled, setEnabled] = useState(job?.enabled ?? true);
   const [preHook, setPreHook] = useState(job?.pre_hook ?? "");
   const [postHook, setPostHook] = useState(job?.post_hook ?? "");
+  const [preHookMode, setPreHookMode] = useState<"command" | "script">(
+    job?.pre_hook_script_type ? "script" : "command"
+  );
+  const [postHookMode, setPostHookMode] = useState<"command" | "script">(
+    job?.post_hook_script_type ? "script" : "command"
+  );
+  const [preHookScriptType, setPreHookScriptType] = useState(
+    job?.pre_hook_script_type ?? "shell"
+  );
+  const [postHookScriptType, setPostHookScriptType] = useState(
+    job?.post_hook_script_type ?? "shell"
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -49,6 +61,10 @@ export function useJobFormState(job?: Job | null) {
       setEnabled(job.enabled);
       setPreHook(job.pre_hook ?? "");
       setPostHook(job.post_hook ?? "");
+      setPreHookMode(job.pre_hook_script_type ? "script" : "command");
+      setPostHookMode(job.post_hook_script_type ? "script" : "command");
+      setPreHookScriptType(job.pre_hook_script_type ?? "shell");
+      setPostHookScriptType(job.post_hook_script_type ?? "shell");
     }
   }, [job]);
 
@@ -84,6 +100,16 @@ export function useJobFormState(job?: Job | null) {
     if (Object.keys(envVars).length > 0) data.env_vars = envVars;
     if (preHook.trim()) data.pre_hook = preHook.trim();
     if (postHook.trim()) data.post_hook = postHook.trim();
+    if (preHookMode === "script") {
+      data.pre_hook_script_type = preHookScriptType;
+    } else {
+      data.pre_hook_script_type = undefined;
+    }
+    if (postHookMode === "script") {
+      data.post_hook_script_type = postHookScriptType;
+    } else {
+      data.post_hook_script_type = undefined;
+    }
     return data;
   };
 
@@ -93,7 +119,9 @@ export function useJobFormState(job?: Job | null) {
     (job?.env_vars && Object.keys(job.env_vars).length > 0) ||
     (job && job.timeout_secs !== 3600) ||
     job?.pre_hook ||
-    job?.post_hook
+    job?.post_hook ||
+    job?.pre_hook_script_type ||
+    job?.post_hook_script_type
   );
 
   return {
@@ -111,6 +139,10 @@ export function useJobFormState(job?: Job | null) {
     enabled, setEnabled,
     preHook, setPreHook,
     postHook, setPostHook,
+    preHookMode, setPreHookMode,
+    postHookMode, setPostHookMode,
+    preHookScriptType, setPreHookScriptType,
+    postHookScriptType, setPostHookScriptType,
     errors: visibleErrors,
     submitting, setSubmitting,
     validate, buildData,

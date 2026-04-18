@@ -13,6 +13,8 @@ export interface Job {
   schedule_mode?: "Cron" | "WaitForCompletion";
   pre_hook: string | null;
   post_hook: string | null;
+  pre_hook_script_type: string | null;
+  post_hook_script_type: string | null;
   created_at: string;
   updated_at: string;
   last_run_at: string | null;
@@ -34,6 +36,8 @@ export interface NewJob {
   schedule_mode?: "Cron" | "WaitForCompletion";
   pre_hook?: string;
   post_hook?: string;
+  pre_hook_script_type?: string;
+  post_hook_script_type?: string;
 }
 
 export interface JobUpdate {
@@ -50,6 +54,8 @@ export interface JobUpdate {
   schedule_mode?: "Cron" | "WaitForCompletion";
   pre_hook?: string | null;
   post_hook?: string | null;
+  pre_hook_script_type?: string | null;
+  post_hook_script_type?: string | null;
 }
 
 export interface JobRun {
