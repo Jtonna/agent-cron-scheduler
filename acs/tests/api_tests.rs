@@ -75,6 +75,7 @@ impl JobStore for InMemoryJobStore {
             timeout_secs: new.timeout_secs,
             log_environment: new.log_environment,
             allow_concurrent: new.allow_concurrent.unwrap_or(false),
+            schedule_mode: new.schedule_mode.unwrap_or_default(),
             pre_hook: new.pre_hook,
             post_hook: new.post_hook,
             created_at: now,
@@ -814,6 +815,7 @@ async fn test_job_cost_summary_happy_path() {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: None,
+            schedule_mode: None,
             pre_hook: None,
             post_hook: None,
         })
@@ -860,6 +862,7 @@ async fn test_job_cost_summary_no_manifest_returns_zeroed() {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: None,
+            schedule_mode: None,
             pre_hook: None,
             post_hook: None,
         })
@@ -920,6 +923,7 @@ async fn test_job_cost_summary_invalid_timeframe_returns_400() {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: None,
+            schedule_mode: None,
             pre_hook: None,
             post_hook: None,
         })
@@ -966,6 +970,7 @@ async fn test_global_cost_summary_happy_path_aggregates_multiple_jobs() {
                 timeout_secs: 0,
                 log_environment: false,
                 allow_concurrent: None,
+                schedule_mode: None,
                 pre_hook: None,
                 post_hook: None,
             })
@@ -1044,6 +1049,7 @@ async fn test_get_job_manifest_happy_path() {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: None,
+            schedule_mode: None,
             pre_hook: None,
             post_hook: None,
         })
@@ -1091,6 +1097,7 @@ async fn test_get_job_manifest_no_manifest_returns_default() {
             timeout_secs: 0,
             log_environment: false,
             allow_concurrent: None,
+            schedule_mode: None,
             pre_hook: None,
             post_hook: None,
         })
