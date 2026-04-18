@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use super::AppState;
 use crate::daemon::events::{JobChangeKind, JobEvent};
+use crate::daemon::executor::KillReason;
 use crate::models::job::{validate_job_update, validate_new_job};
 use crate::models::manifest::{
     resolve_timeframe, DailyTrendPoint, GlobalCostResponse, Timeframe, TodayTokens, TopJobEntry,
@@ -458,7 +459,7 @@ pub async fn delete_job(
         let mut runs = state.active_runs.write().await;
         if let Some(handles) = runs.remove(&job.id) {
             for handle in handles {
-                let _ = handle.kill_tx.send(());
+                let _ = handle.kill_tx.send(KillReason::Manual);
             }
         }
     }
@@ -676,7 +677,7 @@ pub async fn kill_job(
         if let Some(handles) = runs.get_mut(&job.id) {
             if let Some(pos) = handles.iter().position(|h| h.run_id == run_id) {
                 let handle = handles.remove(pos);
-                let _ = handle.kill_tx.send(());
+                let _ = handle.kill_tx.send(KillReason::Manual);
                 if handles.is_empty() {
                     runs.remove(&job.id);
                 }
@@ -710,7 +711,7 @@ pub async fn kill_job(
         let mut runs = state.active_runs.write().await;
         if let Some(handles) = runs.remove(&job.id) {
             for handle in handles {
-                let _ = handle.kill_tx.send(());
+                let _ = handle.kill_tx.send(KillReason::Manual);
             }
         }
         tracing::info!(
