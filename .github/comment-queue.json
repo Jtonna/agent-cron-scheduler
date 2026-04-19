@@ -1,6 +1,1 @@
-[
-  {
-    "issue": 107,
-    "body": "## Implementation Plan\n\n**11 sub-tasks across 4 waves:**\n\nWave 1: ST-1 ANSI utility, ST-2 Data hooks (5), ST-6 ChatInput, ST-7 QuickActions\nWave 2: ST-3 Hook tests, ST-4 Footer, ST-5 SystemLogs+LogViewer, ST-8 WidgetCarousel+Charts, ST-10 RecentRuns\nWave 3: ST-9 HeroSection\nWave 4: ST-11 MonitoringPage composition\n\n26 new/modified files under `electron/packages/frontend-v2/src/`.\n\nAll human gates auto-approved (autonomous nightly mode)."
-  }
-]
+[]
