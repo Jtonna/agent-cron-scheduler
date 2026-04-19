@@ -1,3 +1,12 @@
-export default function Home() {
-  return <div className="p-6 text-foreground">frontend-v2</div>;
+"use client";
+
+import dynamic from "next/dynamic";
+
+const AppShell = dynamic(
+  () => import("@/components/layout/AppShell").then((mod) => ({ default: mod.AppShell })),
+  { ssr: false }
+);
+
+export default function Page() {
+  return <AppShell />;
 }
