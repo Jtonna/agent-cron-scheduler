@@ -2,30 +2,29 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
-import type { Job } from "@/lib/types";
 
-export function useJobs() {
-  const [jobs, setJobs] = useState<Job[]>([]);
+export function useSystemLogs(tail: number = 100) {
+  const [logs, setLogs] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const data = await api.listJobs();
-      if (Array.isArray(data)) {
-        setJobs(data);
-      }
+      const data = await api.getSystemLogs(tail);
+      setLogs(data);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch jobs");
+      setError(
+        err instanceof Error ? err.message : "Failed to fetch system logs"
+      );
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [tail]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  return { jobs, loading, error, refresh };
+  return { logs, loading, error, refresh };
 }
