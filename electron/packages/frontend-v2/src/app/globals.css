@@ -1,0 +1,380 @@
+@import "tailwindcss";
+@plugin "tailwindcss-animate";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Theme System — 4 combinations
+   Mode axis:   :root (light)  vs  .dark
+   Accent axis: burgundy (default)  vs  [data-accent="sage"]
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Light + Burgundy (DEFAULT) ─────────────────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  /* Base surfaces */
+  --background:            oklch(0.98  0.004  350);
+  --foreground:            oklch(0.18  0.014  340);
+  --card:                  oklch(1.00  0      0);
+  --card-foreground:       oklch(0.18  0.014  340);
+  --popover:               oklch(1.00  0      0);
+  --popover-foreground:    oklch(0.18  0.014  340);
+
+  /* Primary — burgundy/wine */
+  --primary:               oklch(0.50  0.155  18);
+  --primary-foreground:    oklch(0.99  0.004  350);
+
+  /* Secondary */
+  --secondary:             oklch(0.93  0.010  350);
+  --secondary-foreground:  oklch(0.35  0.040  18);
+
+  /* Muted */
+  --muted:                 oklch(0.95  0.006  350);
+  --muted-foreground:      oklch(0.48  0.020  340);
+
+  /* Accent */
+  --accent:                oklch(0.92  0.018  20);
+  --accent-foreground:     oklch(0.35  0.040  18);
+
+  /* Semantic */
+  --destructive:           oklch(0.54  0.194  27);
+  --destructive-foreground: oklch(0.99  0      0);
+  --success:               oklch(0.46  0.120  150);
+  --success-foreground:    oklch(0.26  0.065  145);
+  --warning:               oklch(0.66  0.140  75);
+  --warning-foreground:    oklch(0.32  0.070  75);
+  --info:                  oklch(0.50  0.120  250);
+  --info-foreground:       oklch(0.26  0.055  250);
+
+  /* Borders / inputs */
+  --border:                oklch(0.88  0.010  350);
+  --input:                 oklch(0.88  0.010  350);
+  --ring:                  oklch(0.50  0.155  18);
+
+  /* Charts — warm burgundy scale */
+  --chart-1:               oklch(0.62  0.160  18);
+  --chart-2:               oklch(0.54  0.150  18);
+  --chart-3:               oklch(0.46  0.140  18);
+  --chart-4:               oklch(0.70  0.100  50);
+  --chart-5:               oklch(0.75  0.090  75);
+
+  /* Sidebar */
+  --sidebar:               oklch(0.96  0.006  350);
+  --sidebar-foreground:    oklch(0.18  0.014  340);
+  --sidebar-primary:       oklch(0.50  0.155  18);
+  --sidebar-primary-foreground: oklch(0.99  0.004  350);
+  --sidebar-accent:        oklch(0.92  0.018  20);
+  --sidebar-accent-foreground: oklch(0.35  0.040  18);
+  --sidebar-border:        oklch(0.88  0.010  350);
+  --sidebar-ring:          oklch(0.50  0.155  18);
+
+  /* Special */
+  --code-bg:               oklch(0.96  0.005  350);
+
+  /* Typography */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* Radius */
+  --radius: 0.625rem;
+
+  /* Shadows — light mode (subtle) */
+  --shadow-2xs:   0 1px 2px 0px hsl(0 0% 0% / 0.04);
+  --shadow-xs:    0 1px 3px 0px hsl(0 0% 0% / 0.06);
+  --shadow-sm:    0 1px 3px 0px hsl(0 0% 0% / 0.08), 0 1px 2px -1px hsl(0 0% 0% / 0.08);
+  --shadow:       0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 1px 2px -1px hsl(0 0% 0% / 0.10);
+  --shadow-md:    0 2px 6px -1px hsl(0 0% 0% / 0.10), 0 2px 4px -2px hsl(0 0% 0% / 0.08);
+  --shadow-lg:    0 4px 12px -2px hsl(0 0% 0% / 0.10), 0 2px 6px -2px hsl(0 0% 0% / 0.08);
+  --shadow-xl:    0 8px 24px -4px hsl(0 0% 0% / 0.12), 0 4px 10px -3px hsl(0 0% 0% / 0.08);
+  --shadow-2xl:   0 16px 48px -8px hsl(0 0% 0% / 0.16);
+  --shadow-card:     0 1px 4px hsl(0 0% 0% / 0.06), 0 1px 2px hsl(0 0% 0% / 0.04);
+  --shadow-elevated: 0 8px 24px hsl(0 0% 0% / 0.12), 0 2px 8px hsl(0 0% 0% / 0.06);
+}
+
+/* ── Light + Sage override ──────────────────────────────────────────────── */
+:root[data-accent="sage"] {
+  /* Primary — sage green */
+  --primary:               oklch(0.44  0.110  152);
+  --primary-foreground:    oklch(0.99  0.004  140);
+
+  /* Ring follows primary */
+  --ring:                  oklch(0.44  0.110  152);
+
+  /* Secondary tinted sage */
+  --secondary:             oklch(0.93  0.012  140);
+  --secondary-foreground:  oklch(0.32  0.060  152);
+
+  /* Accent tinted sage */
+  --accent:                oklch(0.90  0.024  148);
+  --accent-foreground:     oklch(0.32  0.060  152);
+
+  /* Charts — cool sage/green scale */
+  --chart-1:               oklch(0.60  0.120  152);
+  --chart-2:               oklch(0.52  0.110  152);
+  --chart-3:               oklch(0.44  0.100  152);
+  --chart-4:               oklch(0.65  0.080  180);
+  --chart-5:               oklch(0.72  0.070  200);
+
+  /* Sidebar accent → sage */
+  --sidebar-primary:              oklch(0.44  0.110  152);
+  --sidebar-primary-foreground:   oklch(0.99  0.004  140);
+  --sidebar-accent:               oklch(0.90  0.024  148);
+  --sidebar-accent-foreground:    oklch(0.32  0.060  152);
+  --sidebar-ring:                 oklch(0.44  0.110  152);
+}
+
+/* ── Dark + Burgundy ────────────────────────────────────────────────────── */
+.dark {
+  color-scheme: dark;
+
+  /* Base surfaces */
+  --background:            oklch(0.13  0.010  340);
+  --foreground:            oklch(0.93  0.008  350);
+  --card:                  oklch(0.17  0.012  340);
+  --card-foreground:       oklch(0.93  0.008  350);
+  --popover:               oklch(0.17  0.012  340);
+  --popover-foreground:    oklch(0.93  0.008  350);
+
+  /* Primary — burgundy/wine (brighter in dark mode) */
+  --primary:               oklch(0.64  0.150  18);
+  --primary-foreground:    oklch(0.14  0.012  340);
+
+  /* Secondary */
+  --secondary:             oklch(0.24  0.018  340);
+  --secondary-foreground:  oklch(0.82  0.016  350);
+
+  /* Muted */
+  --muted:                 oklch(0.20  0.012  340);
+  --muted-foreground:      oklch(0.58  0.018  340);
+
+  /* Accent */
+  --accent:                oklch(0.28  0.030  22);
+  --accent-foreground:     oklch(0.93  0.008  350);
+
+  /* Semantic */
+  --destructive:           oklch(0.56  0.194  27);
+  --destructive-foreground: oklch(0.93  0.008  350);
+  --success:               oklch(0.60  0.140  148);
+  --success-foreground:    oklch(0.92  0.040  145);
+  --warning:               oklch(0.72  0.140  75);
+  --warning-foreground:    oklch(0.95  0.040  75);
+  --info:                  oklch(0.60  0.110  250);
+  --info-foreground:       oklch(0.92  0.030  250);
+
+  /* Borders / inputs */
+  --border:                oklch(0.26  0.014  340);
+  --input:                 oklch(0.26  0.014  340);
+  --ring:                  oklch(0.64  0.150  18);
+
+  /* Charts — warm burgundy scale (brighter for dark bg) */
+  --chart-1:               oklch(0.74  0.140  18);
+  --chart-2:               oklch(0.66  0.150  18);
+  --chart-3:               oklch(0.58  0.145  18);
+  --chart-4:               oklch(0.76  0.100  50);
+  --chart-5:               oklch(0.80  0.090  75);
+
+  /* Sidebar */
+  --sidebar:               oklch(0.13  0.010  340);
+  --sidebar-foreground:    oklch(0.93  0.008  350);
+  --sidebar-primary:       oklch(0.64  0.150  18);
+  --sidebar-primary-foreground: oklch(0.14  0.012  340);
+  --sidebar-accent:        oklch(0.28  0.030  22);
+  --sidebar-accent-foreground: oklch(0.93  0.008  350);
+  --sidebar-border:        oklch(0.26  0.014  340);
+  --sidebar-ring:          oklch(0.64  0.150  18);
+
+  /* Special */
+  --code-bg:               oklch(0.10  0.008  340);
+
+  /* Shadows — dark mode (stronger opacity) */
+  --shadow-2xs:   0 1px 2px 0px hsl(0 0% 0% / 0.20);
+  --shadow-xs:    0 1px 3px 0px hsl(0 0% 0% / 0.25);
+  --shadow-sm:    0 1px 3px 0px hsl(0 0% 0% / 0.30), 0 1px 2px -1px hsl(0 0% 0% / 0.25);
+  --shadow:       0 1px 3px 0px hsl(0 0% 0% / 0.35), 0 1px 2px -1px hsl(0 0% 0% / 0.25);
+  --shadow-md:    0 2px 6px -1px hsl(0 0% 0% / 0.35), 0 2px 4px -2px hsl(0 0% 0% / 0.25);
+  --shadow-lg:    0 4px 12px -2px hsl(0 0% 0% / 0.40), 0 2px 6px -2px hsl(0 0% 0% / 0.28);
+  --shadow-xl:    0 8px 24px -4px hsl(0 0% 0% / 0.45), 0 4px 10px -3px hsl(0 0% 0% / 0.30);
+  --shadow-2xl:   0 16px 48px -8px hsl(0 0% 0% / 0.55);
+  --shadow-card:     0 1px 4px hsl(0 0% 0% / 0.30), 0 1px 2px hsl(0 0% 0% / 0.20);
+  --shadow-elevated: 0 8px 24px hsl(0 0% 0% / 0.45), 0 2px 8px hsl(0 0% 0% / 0.28);
+}
+
+/* ── Dark + Sage override ───────────────────────────────────────────────── */
+.dark[data-accent="sage"] {
+  /* Primary — sage green (brighter in dark mode) */
+  --primary:               oklch(0.62  0.120  155);
+  --primary-foreground:    oklch(0.12  0.012  155);
+
+  /* Ring follows primary */
+  --ring:                  oklch(0.62  0.120  155);
+
+  /* Secondary tinted sage */
+  --secondary:             oklch(0.22  0.018  155);
+  --secondary-foreground:  oklch(0.82  0.016  140);
+
+  /* Accent tinted sage */
+  --accent:                oklch(0.26  0.030  155);
+  --accent-foreground:     oklch(0.93  0.008  140);
+
+  /* Charts — cool sage/green scale */
+  --chart-1:               oklch(0.72  0.120  155);
+  --chart-2:               oklch(0.64  0.115  155);
+  --chart-3:               oklch(0.56  0.110  155);
+  --chart-4:               oklch(0.70  0.080  185);
+  --chart-5:               oklch(0.76  0.070  210);
+
+  /* Sidebar accent → sage */
+  --sidebar-primary:              oklch(0.62  0.120  155);
+  --sidebar-primary-foreground:   oklch(0.12  0.012  155);
+  --sidebar-accent:               oklch(0.26  0.030  155);
+  --sidebar-accent-foreground:    oklch(0.93  0.008  140);
+  --sidebar-ring:                 oklch(0.62  0.120  155);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   @theme inline — map CSS vars to Tailwind utilities
+   ═══════════════════════════════════════════════════════════════════════════ */
+@theme inline {
+  /* Colors */
+  --color-background:               var(--background);
+  --color-foreground:               var(--foreground);
+  --color-card:                     var(--card);
+  --color-card-foreground:          var(--card-foreground);
+  --color-popover:                  var(--popover);
+  --color-popover-foreground:       var(--popover-foreground);
+  --color-primary:                  var(--primary);
+  --color-primary-foreground:       var(--primary-foreground);
+  --color-secondary:                var(--secondary);
+  --color-secondary-foreground:     var(--secondary-foreground);
+  --color-muted:                    var(--muted);
+  --color-muted-foreground:         var(--muted-foreground);
+  --color-accent:                   var(--accent);
+  --color-accent-foreground:        var(--accent-foreground);
+  --color-destructive:              var(--destructive);
+  --color-destructive-foreground:   var(--destructive-foreground);
+  --color-success:                  var(--success);
+  --color-success-foreground:       var(--success-foreground);
+  --color-warning:                  var(--warning);
+  --color-warning-foreground:       var(--warning-foreground);
+  --color-info:                     var(--info);
+  --color-info-foreground:          var(--info-foreground);
+  --color-border:                   var(--border);
+  --color-input:                    var(--input);
+  --color-ring:                     var(--ring);
+  --color-chart-1:                  var(--chart-1);
+  --color-chart-2:                  var(--chart-2);
+  --color-chart-3:                  var(--chart-3);
+  --color-chart-4:                  var(--chart-4);
+  --color-chart-5:                  var(--chart-5);
+  --color-sidebar:                  var(--sidebar);
+  --color-sidebar-foreground:       var(--sidebar-foreground);
+  --color-sidebar-primary:          var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent:           var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border:           var(--sidebar-border);
+  --color-sidebar-ring:             var(--sidebar-ring);
+  --color-code-bg:                  var(--code-bg);
+
+  /* Typography */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  /* Radius */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Shadows */
+  --shadow-2xs:      var(--shadow-2xs);
+  --shadow-xs:       var(--shadow-xs);
+  --shadow-sm:       var(--shadow-sm);
+  --shadow:          var(--shadow);
+  --shadow-md:       var(--shadow-md);
+  --shadow-lg:       var(--shadow-lg);
+  --shadow-xl:       var(--shadow-xl);
+  --shadow-2xl:      var(--shadow-2xl);
+  --shadow-card:     var(--shadow-card);
+  --shadow-elevated: var(--shadow-elevated);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Base layer
+   ═══════════════════════════════════════════════════════════════════════════ */
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Selection
+   ═══════════════════════════════════════════════════════════════════════════ */
+::selection {
+  background-color: oklch(from var(--primary) l c h / 0.20);
+  color: var(--foreground);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Scrollbar (dark mode — narrow and subtle)
+   ═══════════════════════════════════════════════════════════════════════════ */
+.dark ::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.dark ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+.dark * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Sidebar typography
+   ═══════════════════════════════════════════════════════════════════════════ */
+[data-sidebar] {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+[data-sidebar] [data-sidebar-group-label] {
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+[data-sidebar] [data-sidebar-menu-button] {
+  font-size: 0.875rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Design token documentation (spacing & typography scale)
+
+   SPACING
+   ─────────────────────────────────────────────────────
+   Page padding:   p-6
+   Section gap:    gap-6
+   Card padding:   p-5
+   Form gap:       gap-4
+
+   TYPOGRAPHY
+   ─────────────────────────────────────────────────────
+   Page title:     text-xl font-semibold tracking-tight
+   Section:        text-lg font-semibold
+   Body:           text-sm
+   Caption:        text-[11px]
+   Code:           text-xs font-mono
+   ═══════════════════════════════════════════════════════════════════════════ */
