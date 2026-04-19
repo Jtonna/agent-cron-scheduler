@@ -26,17 +26,9 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { DeleteJobDialog } from "@/components/DeleteJobDialog";
+import { TriggerOverrideDialog } from "@/components/TriggerOverrideDialog";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -176,14 +168,12 @@ function JobListView() {
 /** Detail state — shown on /jobs/:id, /jobs/:id/edit, /jobs/:id/runs/:runId */
 function JobDetailView({ jobId }: { jobId: string }) {
   const navigate = useNavigate();
-  const { pathname } = useLocation();
   const params = useParams<{ runId?: string }>();
 
   const [job, setJob] = useState<Job | null>(null);
   const [runs, setRuns] = useState<JobRun[]>([]);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [deleteLoading, setDeleteLoading] = useState(false);
-  const [triggerLoading, setTriggerLoading] = useState(false);
+  const [showTriggerDialog, setShowTriggerDialog] = useState(false);
 
   const fetchJob = useCallback(async () => {
     try {
@@ -220,29 +210,16 @@ function JobDetailView({ jobId }: { jobId: string }) {
     ),
   );
 
-  const handleTrigger = async () => {
-    setTriggerLoading(true);
-    try {
-      await api.triggerJob(jobId);
-    } catch {
-      // ignore — toast or error handling can be added later
-    } finally {
-      setTriggerLoading(false);
-    }
-  };
+  const handleDeleted = useCallback(() => {
+    navigate("/jobs");
+  }, [navigate]);
 
-  const handleDelete = async () => {
-    setDeleteLoading(true);
-    try {
-      await api.deleteJob(jobId);
-      setShowDeleteDialog(false);
-      navigate("/jobs");
-    } catch {
-      // ignore
-    } finally {
-      setDeleteLoading(false);
-    }
-  };
+  const handleTriggered = useCallback(
+    (runId: string) => {
+      navigate(`/jobs/${jobId}/runs/${runId}`);
+    },
+    [jobId, navigate],
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -289,8 +266,7 @@ function JobDetailView({ jobId }: { jobId: string }) {
                 variant="ghost"
                 size="icon"
                 className="size-8"
-                onClick={handleTrigger}
-                disabled={triggerLoading}
+                onClick={() => setShowTriggerDialog(true)}
               >
                 <PlayIcon className="size-4" />
               </Button>
@@ -355,27 +331,22 @@ function JobDetailView({ jobId }: { jobId: string }) {
       </ScrollArea>
 
       {/* Delete confirmation dialog */}
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Job</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete &ldquo;{job?.name}&rdquo;? This
-              action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              disabled={deleteLoading}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {deleteLoading ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <DeleteJobDialog
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+        jobId={jobId}
+        jobName={job?.name ?? ""}
+        onDeleted={handleDeleted}
+      />
+
+      {/* Trigger with overrides dialog */}
+      <TriggerOverrideDialog
+        open={showTriggerDialog}
+        onOpenChange={setShowTriggerDialog}
+        jobId={jobId}
+        jobName={job?.name ?? ""}
+        onTriggered={handleTriggered}
+      />
     </div>
   );
 }
