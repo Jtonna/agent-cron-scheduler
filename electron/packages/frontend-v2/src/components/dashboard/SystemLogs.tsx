@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { useSystemLogs } from "@/hooks/useSystemLogs";
-import { LogViewer } from "@/components/dashboard/LogViewer";
+import { LogViewer } from "@/components/LogViewer";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
