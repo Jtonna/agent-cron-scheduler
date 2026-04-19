@@ -10,13 +10,10 @@ import {
   Cog6ToothIcon,
   SunIcon,
   MoonIcon,
-  ArrowPathIcon,
-  PowerIcon,
   CheckIcon,
 } from "@heroicons/react/24/outline";
 import { useTheme } from "next-themes";
 import { useAccentTheme } from "@/hooks/use-accent-theme";
-import { api } from "@/lib/api";
 import type { SavedConnection } from "@/lib/types";
 import {
   getConnections,
@@ -50,7 +47,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InstanceDialog } from "@/components/InstanceDialog";
-import { toast } from "sonner";
+import { SettingsDialog } from "@/components/SettingsDialog";
 
 const NAV_OPTIONS = [
   { label: "Dashboard", value: "dashboard" },
@@ -72,10 +69,8 @@ export function TopBar() {
   const [deletingConnection, setDeletingConnection] =
     useState<SavedConnection | null>(null);
 
-  // Server action state
-  const [showRestart, setShowRestart] = useState(false);
-  const [showShutdown, setShowShutdown] = useState(false);
-  const [actionLoading, setActionLoading] = useState(false);
+  // Settings dialog state
+  const [showSettings, setShowSettings] = useState(false);
 
   // Refresh connections from localStorage
   const refreshConnections = useCallback(() => {
@@ -113,37 +108,10 @@ export function TopBar() {
     }
   };
 
-  // Compute instance name for dialog messages
+  // Compute instance name for display
   const instanceName = activeId
     ? connections.find((c) => c.id === activeId)?.label ?? "Remote"
     : "Local";
-
-  // Server actions
-  const handleRestart = async () => {
-    setActionLoading(true);
-    try {
-      await api.restart();
-      setShowRestart(false);
-      toast.success("Server is restarting...");
-    } catch {
-      toast.error("Failed to restart server");
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleShutdown = async () => {
-    setActionLoading(true);
-    try {
-      await api.shutdown();
-      setShowShutdown(false);
-      toast.success("Server is shutting down...");
-    } catch {
-      toast.error("Failed to shut down server");
-    } finally {
-      setActionLoading(false);
-    }
-  };
 
   return (
     <>
@@ -289,87 +257,27 @@ export function TopBar() {
               </TooltipContent>
             </Tooltip>
 
-            {/* Settings gear with restart/shutdown dropdown */}
-            <DropdownMenu>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-8"
-                      aria-label="Settings"
-                    >
-                      <Cog6ToothIcon className="size-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                </TooltipTrigger>
-                <TooltipContent>Settings</TooltipContent>
-              </Tooltip>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => setShowRestart(true)}>
-                  <ArrowPathIcon className="size-4" />
-                  <span>Restart Server</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setShowShutdown(true)}
-                  className="text-destructive focus:text-destructive"
+            {/* Settings gear button */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  aria-label="Settings"
+                  onClick={() => setShowSettings(true)}
                 >
-                  <PowerIcon className="size-4" />
-                  <span>Shutdown Server</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  <Cog6ToothIcon className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Settings</TooltipContent>
+            </Tooltip>
           </TooltipProvider>
         </div>
       </header>
 
-      {/* Restart Confirmation */}
-      <AlertDialog open={showRestart} onOpenChange={setShowRestart}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Restart Server</AlertDialogTitle>
-            <AlertDialogDescription>
-              {activeId
-                ? `Are you sure you want to restart ${instanceName}? Active jobs will continue running.`
-                : "Are you sure you want to restart the server? Active jobs will continue running."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleRestart}
-              disabled={actionLoading}
-            >
-              {actionLoading ? "Restarting..." : "Restart"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Shutdown Confirmation */}
-      <AlertDialog open={showShutdown} onOpenChange={setShowShutdown}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Shutdown Server</AlertDialogTitle>
-            <AlertDialogDescription>
-              {activeId
-                ? `Are you sure you want to shut down ${instanceName}? This will stop all scheduled jobs.`
-                : "Are you sure you want to shut down the server? This will stop all scheduled jobs."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleShutdown}
-              disabled={actionLoading}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {actionLoading ? "Shutting down..." : "Shutdown"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* Settings Dialog */}
+      <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
 
       {/* Add Connection Dialog */}
       <InstanceDialog
