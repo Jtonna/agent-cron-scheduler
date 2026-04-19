@@ -1,0 +1,162 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import { validateCron } from "@/lib/cron";
+import type { Job, NewJob } from "@/lib/types";
+
+interface UseJobFormStateProps {
+  job?: Job;
+}
+
+export function useJobFormState({ job }: UseJobFormStateProps = {}) {
+  const [name, setName] = useState(job?.name ?? "");
+  const [execType, setExecType] = useState<"ShellCommand" | "ScriptFile">(
+    job?.execution.type ?? "ShellCommand"
+  );
+  const [execValue, setExecValue] = useState(job?.execution.value ?? "");
+  const [schedule, setSchedule] = useState(job?.schedule ?? "*/5 * * * *");
+  const [timezone, setTimezone] = useState(job?.timezone ?? "");
+  const [workingDir, setWorkingDir] = useState(job?.working_dir ?? "");
+  const [envVars, setEnvVars] = useState<Record<string, string>>(
+    job?.env_vars ?? {}
+  );
+  const [timeoutSecs, setTimeoutSecs] = useState<number | string>(
+    job?.timeout_secs ?? 3600
+  );
+  const [logEnvironment, setLogEnvironment] = useState(
+    job?.log_environment ?? false
+  );
+  const [allowConcurrent, setAllowConcurrent] = useState(
+    job?.allow_concurrent ?? false
+  );
+  const [scheduleMode, setScheduleMode] = useState<"Cron" | "WaitForCompletion">(
+    job?.schedule_mode ?? "Cron"
+  );
+  const [enabled, setEnabled] = useState(job?.enabled ?? true);
+  const [preHook, setPreHook] = useState(job?.pre_hook ?? "");
+  const [postHook, setPostHook] = useState(job?.post_hook ?? "");
+  const [preHookMode, setPreHookMode] = useState<"command" | "script">(
+    job?.pre_hook_script_type ? "script" : "command"
+  );
+  const [postHookMode, setPostHookMode] = useState<"command" | "script">(
+    job?.post_hook_script_type ? "script" : "command"
+  );
+  const [preHookScriptType, setPreHookScriptType] = useState(
+    job?.pre_hook_script_type ?? "shell"
+  );
+  const [postHookScriptType, setPostHookScriptType] = useState(
+    job?.post_hook_script_type ?? "shell"
+  );
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (job) {
+      setName(job.name);
+      setExecType(job.execution.type);
+      setExecValue(job.execution.value);
+      setSchedule(job.schedule);
+      setTimezone(job.timezone ?? "");
+      setWorkingDir(job.working_dir ?? "");
+      setEnvVars(job.env_vars ?? {});
+      setTimeoutSecs(job.timeout_secs);
+      setLogEnvironment(job.log_environment);
+      setAllowConcurrent(job.allow_concurrent ?? false);
+      setScheduleMode(job.schedule_mode ?? "Cron");
+      setEnabled(job.enabled);
+      setPreHook(job.pre_hook ?? "");
+      setPostHook(job.post_hook ?? "");
+      setPreHookMode(job.pre_hook_script_type ? "script" : "command");
+      setPostHookMode(job.post_hook_script_type ? "script" : "command");
+      setPreHookScriptType(job.pre_hook_script_type ?? "shell");
+      setPostHookScriptType(job.post_hook_script_type ?? "shell");
+    }
+  }, [job]);
+
+  const validate = (): boolean => {
+    setSubmitted(true);
+    const newErrors: Record<string, string> = {};
+    if (!name.trim()) newErrors.name = "Name is required";
+    if (!execValue.trim()) newErrors.execValue = "Command or script path is required";
+    if (!schedule.trim()) {
+      newErrors.schedule = "Schedule is required";
+    } else {
+      const cronErr = validateCron(schedule);
+      if (cronErr) newErrors.schedule = cronErr;
+    }
+    const timeoutNum = typeof timeoutSecs === "string" ? parseFloat(timeoutSecs) : timeoutSecs;
+    if (isNaN(timeoutNum) || timeoutNum < 0) newErrors.timeout = "Timeout must not be negative";
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  // Only expose errors after the user has attempted to submit
+  const visibleErrors = submitted ? errors : {};
+
+  const buildData = (): NewJob => {
+    const timeoutNum = typeof timeoutSecs === "string" ? parseFloat(timeoutSecs) : timeoutSecs;
+    const data: NewJob = {
+      name: name.trim(),
+      schedule: schedule.trim(),
+      execution: { type: execType, value: execValue.trim() },
+      enabled,
+      timeout_secs: isNaN(timeoutNum) ? 3600 : timeoutNum,
+      log_environment: logEnvironment,
+      allow_concurrent: allowConcurrent,
+      schedule_mode: scheduleMode,
+    };
+    if (timezone) data.timezone = timezone;
+    if (workingDir) data.working_dir = workingDir;
+    if (Object.keys(envVars).length > 0) data.env_vars = envVars;
+    if (preHook.trim()) data.pre_hook = preHook.trim();
+    if (postHook.trim()) data.post_hook = postHook.trim();
+    if (preHookMode === "script") {
+      data.pre_hook_script_type = preHookScriptType;
+    } else {
+      data.pre_hook_script_type = undefined;
+    }
+    if (postHookMode === "script") {
+      data.post_hook_script_type = postHookScriptType;
+    } else {
+      data.post_hook_script_type = undefined;
+    }
+    return data;
+  };
+
+  const hasAdvancedFields = !!(
+    job?.working_dir ||
+    job?.log_environment ||
+    (job?.env_vars && Object.keys(job.env_vars).length > 0) ||
+    (job && job.timeout_secs !== 3600) ||
+    job?.pre_hook ||
+    job?.post_hook ||
+    job?.pre_hook_script_type ||
+    job?.post_hook_script_type
+  );
+
+  return {
+    name, setName,
+    execType, setExecType,
+    execValue, setExecValue,
+    schedule, setSchedule,
+    timezone, setTimezone,
+    workingDir, setWorkingDir,
+    envVars, setEnvVars,
+    timeoutSecs, setTimeoutSecs,
+    logEnvironment, setLogEnvironment,
+    allowConcurrent, setAllowConcurrent,
+    scheduleMode, setScheduleMode,
+    enabled, setEnabled,
+    preHook, setPreHook,
+    postHook, setPostHook,
+    preHookMode, setPreHookMode,
+    postHookMode, setPostHookMode,
+    preHookScriptType, setPreHookScriptType,
+    postHookScriptType, setPostHookScriptType,
+    errors: visibleErrors,
+    submitting, setSubmitting,
+    validate, buildData,
+    hasAdvancedFields,
+  };
+}
