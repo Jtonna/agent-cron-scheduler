@@ -142,6 +142,8 @@ cd electron/packages/frontend && npm run dev
 
 The dev server proxies `/api/*` and `/health` to `http://127.0.0.1:8377` via rewrites in `next.config.ts`. The backend includes CORS middleware so direct cross-origin requests also work.
 
+A new frontend project at `electron/packages/frontend-v2/` contains the redesigned theme system and component library (issue #105). Run `npm test` from that directory to execute the Vitest test suite.
+
 ### Testing
 
 ```sh
@@ -183,6 +185,7 @@ acs/                     # Rust project root
 electron/                # Electron app and frontend
   packages/
     frontend/            # Next.js interactive dashboard (independent)
+    frontend-v2/         # Next.js v2 — new theme system + component library
 docs/                    # Documentation
 ```
 
