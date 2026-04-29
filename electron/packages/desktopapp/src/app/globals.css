@@ -46,6 +46,12 @@
   --color-status-failed-bg: #fef2f2;
   --color-status-failed-border: #fecaca;
 
+  /* ── Status: killed ── */
+  --color-status-killed: #6b7280;
+  --color-status-killed-dot: #9ca3af;
+  --color-status-killed-bg: #f9fafb;
+  --color-status-killed-border: #e5e7eb;
+
   /* ── Status: partial ── */
   --color-status-partial: #f59e0b;
   --color-status-partial-dot: #fbbf24;
