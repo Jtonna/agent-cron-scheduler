@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { TextField, Input, Button } from "react-aria-components";
 import { SendHorizontal } from "lucide-react";
 
 interface ChatBarProps {
@@ -18,21 +19,26 @@ export function ChatBar({ placeholder = "Ask a question, build or do something",
   }
 
   return (
-    <div className="flex items-center border border-gray-200 rounded-full overflow-hidden bg-gray-50 focus-within:border-pink-300 transition-colors">
-      <input
-        className="flex-1 bg-transparent px-6 py-4 text-base outline-none placeholder-gray-400"
-        placeholder={placeholder}
+    <div className="flex items-center border border-border rounded-pill overflow-hidden bg-surface-secondary focus-within:border-brand-ring transition-colors">
+      <TextField
+        aria-label="Chat input"
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={setValue}
         onKeyDown={(e) => { if (e.key === "Enter") handleSend(); }}
-      />
-      <button
-        onClick={handleSend}
-        disabled={!value.trim()}
-        className="w-12 h-12 mr-1.5 flex items-center justify-center bg-pink-500 hover:bg-pink-600 disabled:bg-gray-300 rounded-full text-white transition-colors shrink-0"
+        className="flex-1"
+      >
+        <Input
+          className="w-full bg-transparent px-6 py-4 text-base outline-none placeholder-fg-subtle"
+          placeholder={placeholder}
+        />
+      </TextField>
+      <Button
+        onPress={handleSend}
+        isDisabled={!value.trim()}
+        className="w-[var(--width-send-btn)] h-[var(--height-send-btn)] mr-1.5 flex items-center justify-center bg-brand hover:bg-brand-hover disabled:bg-fg-faint rounded-full text-surface transition-colors shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
       >
         <SendHorizontal size={18} strokeWidth={2.5} />
-      </button>
+      </Button>
     </div>
   );
 }
