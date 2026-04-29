@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Navbar } from "@/components/Navbar";
 import { FilterTabs } from "@/components/FilterTabs";
@@ -8,20 +8,14 @@ import { ChatBar } from "@/components/ChatBar";
 import { FavoritedJobs } from "@/components/FavoritedJobs";
 import { SystemBanner } from "@/components/SystemBanner";
 import { TabBar } from "@/components/TabBar";
-import { JobRunCard, JobRun } from "@/components/JobRunCard";
+import { JobRunCard } from "@/components/JobRunCard";
+import type { JobRun, JobStatus } from "@/components/JobRunCard";
+import { useHealth } from "@/apis/useHealth";
+import { useRecentRuns } from "@/apis/useRecentRuns";
+import type { RecentRunEntry } from "@/apis/types";
+import { Loader2 } from "lucide-react";
 
 const FAVORITED_JOBS = ["backup-db", "sync-users", "health-check", "deploy-staging", "cleanup-logs", "nightly-report"];
-
-const RECENT_RUNS: JobRun[] = [
-  { name: "backup-db", status: "running", duration: "0m 42s", timeAgo: "just now", cost: "0.003" },
-  { name: "sync-users", status: "success", duration: "2m 14s", timeAgo: "2 min ago", cost: "0.042" },
-  { name: "deploy-staging", status: "failed", duration: "1m 02s", timeAgo: "5 min ago", cost: "0.018" },
-  { name: "health-check", status: "success", duration: "0m 08s", timeAgo: "3 min ago" },
-  { name: "cleanup-logs", status: "partial", duration: "4m 31s", timeAgo: "8 min ago", cost: "0.091" },
-  { name: "nightly-report", status: "success", duration: "12m 44s", timeAgo: "22 min ago", cost: "0.214" },
-  { name: "index-rebuild", status: "failed", duration: "0m 03s", timeAgo: "30 min ago" },
-  { name: "cert-renewal", status: "success", duration: "0m 22s", timeAgo: "1 hr ago" },
-];
 
 const STATUS_FILTER_MAP: Record<string, string | undefined> = {
   "All runs": undefined,
@@ -30,9 +24,109 @@ const STATUS_FILTER_MAP: Record<string, string | undefined> = {
   "Failed": "failed",
 };
 
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                           */
+/* ------------------------------------------------------------------ */
+
+function mapApiStatus(
+  status: RecentRunEntry["status"],
+): JobStatus {
+  switch (status) {
+    case "Running":
+      return "running";
+    case "Completed":
+      return "success";
+    case "Failed":
+      return "failed";
+    case "Killed":
+      return "killed";
+    case "CompletedWithWarnings":
+      return "partial";
+    default:
+      return "failed";
+  }
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+function formatTimeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function formatUptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${d}d ${h}h ${m}m`;
+}
+
+function toJobRun(entry: RecentRunEntry): JobRun {
+  const durationMs =
+    entry.duration_ms ??
+    (entry.finished_at
+      ? new Date(entry.finished_at).getTime() -
+        new Date(entry.started_at).getTime()
+      : Date.now() - new Date(entry.started_at).getTime());
+
+  return {
+    name: entry.job_name,
+    status: mapApiStatus(entry.status),
+    duration: formatDuration(durationMs),
+    timeAgo: formatTimeAgo(entry.started_at),
+    cost:
+      entry.total_cost_usd != null && entry.total_cost_usd > 0
+        ? entry.total_cost_usd.toFixed(3)
+        : undefined,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Page                                                              */
+/* ------------------------------------------------------------------ */
+
 export default function Home() {
   const router = useRouter();
   const [activeFilter, setActiveFilter] = useState("All runs");
+  const { health } = useHealth();
+  const { runs, loading: runsLoading, loadingMore, hasMore, loadMore } = useRecentRuns();
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  // Infinite scroll: observe a sentinel at the bottom of the grid and call loadMore when visible
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !runsLoading && !loadingMore) {
+          loadMore();
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, runsLoading, loadingMore, loadMore]);
+
+  const jobRuns = useMemo(() => runs.map(toJobRun), [runs]);
+
+  const filteredRuns = useMemo(() => {
+    const status = STATUS_FILTER_MAP[activeFilter];
+    if (!status) return jobRuns;
+    return jobRuns.filter((job) => job.status === status);
+  }, [jobRuns, activeFilter]);
 
   return (
     <div className="min-h-screen bg-surface text-fg">
@@ -58,7 +152,10 @@ export default function Home() {
 
       {/* System info */}
       <div className="px-16 mb-6">
-        <SystemBanner updateAvailable="3.2.0" />
+        <SystemBanner
+          version={health?.version}
+          uptime={health ? formatUptime(health.uptime_seconds) : undefined}
+        />
       </div>
 
       {/* Recent runs */}
@@ -69,15 +166,33 @@ export default function Home() {
         onTabClick={setActiveFilter}
       />
       <div className="px-16 py-8 grid grid-cols-4 gap-4">
-        {RECENT_RUNS
-          .filter((job) => {
-            const status = STATUS_FILTER_MAP[activeFilter];
-            return !status || job.status === status;
-          })
-          .map((job, i) => (
+        {runsLoading && filteredRuns.length === 0 ? (
+          <div className="col-span-4 flex items-center justify-center py-16">
+            <Loader2 size={24} className="animate-spin text-fg-subtle" />
+          </div>
+        ) : filteredRuns.length === 0 ? (
+          <div className="col-span-4 text-center py-16 text-fg-subtle text-sm">
+            {activeFilter === "All runs"
+              ? "No recent runs"
+              : `No ${activeFilter.toLowerCase()} runs in the last ${runs.length}`}
+          </div>
+        ) : (
+          filteredRuns.map((job, i) => (
             <JobRunCard key={i} job={job} />
-          ))}
+          ))
+        )}
       </div>
+
+      {/* Infinite scroll sentinel + loading more indicator */}
+      {filteredRuns.length > 0 && (
+        <div ref={sentinelRef} className="px-16 pb-12 flex items-center justify-center">
+          {loadingMore ? (
+            <Loader2 size={20} className="animate-spin text-fg-subtle" />
+          ) : !hasMore ? (
+            <span className="text-fg-subtle text-xs">No more runs</span>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }

@@ -77,10 +77,23 @@ async function requestText(
   return res.text();
 }
 
+import type { HealthResponse, Job, RecentRunsResponse } from "./types";
+
 export const api = {
   getSystemLogs(tail?: number): Promise<string> {
     const params = tail ? `?tail=${tail}` : "";
     return requestText(`/api/logs${params}`);
   },
-  // We'll add more methods later
+
+  health(): Promise<HealthResponse> {
+    return request<HealthResponse>("/health");
+  },
+
+  listJobs(): Promise<Job[]> {
+    return request<Job[]>("/api/jobs");
+  },
+
+  listRecentRuns(limit: number = 20): Promise<RecentRunsResponse> {
+    return request<RecentRunsResponse>(`/api/runs/recent?limit=${limit}`);
+  },
 };

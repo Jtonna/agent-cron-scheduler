@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { Button } from "react-aria-components";
-import { Clock, DollarSign, Loader2, CheckCircle2, XCircle, AlertTriangle, ArrowRight } from "lucide-react";
+import { Clock, DollarSign, Loader2, CheckCircle2, XCircle, AlertTriangle, ArrowRight, Ban } from "lucide-react";
 
-export type JobStatus = "running" | "success" | "failed" | "partial";
+export type JobStatus = "running" | "success" | "failed" | "killed" | "partial";
 
 export interface JobRun {
   name: string;
@@ -38,6 +38,14 @@ const statusConfig: Record<JobStatus, { icon: React.ReactNode; label: string; co
     dotColor: "bg-status-failed-dot",
     badgeBg: "bg-status-failed-bg",
     badgeBorder: "border-status-failed-border",
+  },
+  killed: {
+    icon: <Ban size={14} />,
+    label: "Killed",
+    color: "text-status-killed",
+    dotColor: "bg-status-killed-dot",
+    badgeBg: "bg-status-killed-bg",
+    badgeBorder: "border-status-killed-border",
   },
   partial: {
     icon: <AlertTriangle size={14} />,
