@@ -1,20 +1,23 @@
+import { ToggleButton } from "react-aria-components";
+
 interface PillProps {
   label: string;
   active?: boolean;
-  onClick?: () => void;
+  onChange?: (isSelected: boolean) => void;
 }
 
-export function Pill({ label, active, onClick }: PillProps) {
+export function Pill({ label, active, onChange }: PillProps) {
   return (
-    <span
-      onClick={onClick}
-      className={`px-3 py-1 text-xs rounded-full border cursor-pointer transition-colors ${
+    <ToggleButton
+      isSelected={active}
+      onChange={onChange}
+      className={`px-3 py-1 text-xs rounded-pill border cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand-ring ${
         active
-          ? "text-gray-900 border-gray-900 bg-gray-50"
-          : "text-gray-500 bg-transparent border-gray-300 hover:border-gray-400 hover:text-gray-700"
+          ? "text-fg border-border-active bg-surface-secondary"
+          : "text-fg-muted bg-transparent border-border-strong hover:border-fg-subtle hover:text-fg-secondary"
       }`}
     >
       {label}
-    </span>
+    </ToggleButton>
   );
 }

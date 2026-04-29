@@ -32,10 +32,10 @@ export function FilterTabs({ tabs = DEFAULT_TABS }: FilterTabsProps) {
           <Link
             key={tab.label}
             href={tab.href}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-full transition-colors ${
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-pill transition-colors ${
               active
-                ? "text-white border border-gray-900 bg-gray-900"
-                : "text-gray-700 hover:text-gray-900 hover:bg-gray-100"
+                ? "text-surface border border-border-active bg-fg"
+                : "text-fg-secondary hover:text-fg hover:bg-surface-hover"
             }`}
           >
             {tab.icon}

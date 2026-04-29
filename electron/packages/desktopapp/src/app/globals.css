@@ -1,1 +1,86 @@
 @import "tailwindcss";
+
+@theme {
+  /* ── Primary ── */
+  --color-brand: #ec4899;
+  --color-brand-hover: #db2777;
+  --color-brand-ring: #f9a8d4;
+  --color-brand-muted: #fdf2f8;
+
+  /* ── Foreground (text) ── */
+  --color-fg: #111827;
+  --color-fg-secondary: #374151;
+  --color-fg-tertiary: #4b5563;
+  --color-fg-muted: #6b7280;
+  --color-fg-subtle: #9ca3af;
+  --color-fg-faint: #d1d5db;
+  --color-fg-ghost: #e5e7eb;
+
+  /* ── Background ── */
+  --color-surface: #ffffff;
+  --color-surface-secondary: #f9fafb;
+  --color-surface-tertiary: #f3f4f6;
+  --color-surface-hover: #f3f4f6;
+
+  /* ── Border ── */
+  --color-border: #e5e7eb;
+  --color-border-subtle: #f3f4f6;
+  --color-border-strong: #d1d5db;
+  --color-border-active: #111827;
+
+  /* ── Status: running ── */
+  --color-status-running: #2563eb;
+  --color-status-running-dot: #3b82f6;
+  --color-status-running-bg: #eff6ff;
+  --color-status-running-border: #bfdbfe;
+
+  /* ── Status: success ── */
+  --color-status-success: #16a34a;
+  --color-status-success-dot: #22c55e;
+  --color-status-success-bg: #f0fdf4;
+  --color-status-success-border: #bbf7d0;
+
+  /* ── Status: failed ── */
+  --color-status-failed: #ef4444;
+  --color-status-failed-dot: #ef4444;
+  --color-status-failed-bg: #fef2f2;
+  --color-status-failed-border: #fecaca;
+
+  /* ── Status: partial ── */
+  --color-status-partial: #f59e0b;
+  --color-status-partial-dot: #fbbf24;
+  --color-status-partial-bg: #fffbeb;
+  --color-status-partial-border: #fde68a;
+
+  /* ── Decorative gradients ── */
+  --color-gradient-bot-from: #8b5cf6;
+  --color-gradient-bot-to: #d946ef;
+  --color-gradient-hero-from: #fce7f3;
+  --color-gradient-hero-via: #faf5ff;
+  --color-gradient-hero-to: #e0f2fe;
+
+  /* ── Radius ── */
+  --radius-pill: 9999px;
+  --radius-card: 0.75rem;
+  --radius-menu: 0.75rem;
+  --radius-input: 0.5rem;
+  --radius-badge: 9999px;
+
+  /* ── Shadows ── */
+  --shadow-menu: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+
+  /* ── Sizing ── */
+  --height-navbar: 4rem;
+  --height-banner: 3rem;
+  --height-tab-bar: 3rem;
+  --height-input: 2rem;
+  --height-btn: 2.5rem;
+  --height-btn-icon: 2.25rem;
+  --height-avatar: 2.25rem;
+  --height-send-btn: 3rem;
+  --width-send-btn: 3rem;
+  --size-status-dot: 0.5rem;
+  --size-icon-sm: 0.75rem;
+  --size-icon-md: 0.875rem;
+  --size-icon-lg: 1.25rem;
+}

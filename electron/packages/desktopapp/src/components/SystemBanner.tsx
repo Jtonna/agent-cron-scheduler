@@ -1,4 +1,7 @@
+"use client";
+
 import { useState } from "react";
+import { Button } from "react-aria-components";
 import { Clock, DatabaseBackup, ArrowRight, X } from "lucide-react";
 
 interface SystemBannerProps {
@@ -22,19 +25,19 @@ export function SystemBanner({
   const showUpdate = updateAvailable && !dismissed;
 
   return (
-    <div className={`flex items-center h-12 px-5 bg-gray-50 border rounded-full text-sm text-gray-500 ${showUpdate ? "border-pink-300" : "border-gray-200"}`}>
+    <div className={`flex items-center h-[var(--height-banner)] px-5 bg-surface-secondary border rounded-pill text-sm text-fg-muted ${showUpdate ? "border-brand-ring" : "border-border"}`}>
       {/* Left — uptime & backups */}
       <div className="flex items-center gap-5">
         <span className="inline-flex items-center gap-2 leading-none">
-          <Clock size={14} className="text-gray-400 shrink-0" />
+          <Clock size={14} className="text-fg-subtle shrink-0" />
           <span>Uptime</span>
-          <span className="text-green-600">{uptime}</span>
+          <span className="text-status-success">{uptime}</span>
         </span>
-        <span className="text-gray-200">|</span>
+        <span className="text-fg-ghost">|</span>
         <span className="inline-flex items-center gap-2 leading-none">
-          <DatabaseBackup size={14} className="text-gray-400 shrink-0" />
+          <DatabaseBackup size={14} className="text-fg-subtle shrink-0" />
           <span>Backups</span>
-          <span className={backupsEnabled ? "text-green-600" : "text-gray-400"}>
+          <span className={backupsEnabled ? "text-status-success" : "text-fg-subtle"}>
             {backupsEnabled ? "Enabled" : "Disabled"}
           </span>
         </span>
@@ -44,23 +47,23 @@ export function SystemBanner({
       <div className="ml-auto">
         {showUpdate ? (
           <span className="inline-flex items-center gap-1.5 leading-none">
-            <button
-              onClick={onUpdate}
-              className="inline-flex items-center gap-1.5 leading-none bg-pink-500 hover:bg-pink-600 text-white px-3.5 py-1.5 rounded-full transition-colors"
+            <Button
+              onPress={onUpdate}
+              className="inline-flex items-center gap-1.5 leading-none bg-brand hover:bg-brand-hover text-surface px-3.5 py-1.5 rounded-pill transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
             >
               Update to v{updateAvailable}
               <ArrowRight size={14} />
-            </button>
-            <button
-              onClick={() => { setDismissed(true); onDismissUpdate?.(); }}
-              className="text-gray-300 hover:text-gray-500 transition-colors p-1"
-              title="Dismiss"
+            </Button>
+            <Button
+              onPress={() => { setDismissed(true); onDismissUpdate?.(); }}
+              className="text-fg-faint hover:text-fg-muted transition-colors p-1 outline-none focus-visible:ring-2 focus-visible:ring-brand-ring rounded-full"
+              aria-label="Dismiss update"
             >
               <X size={14} />
-            </button>
+            </Button>
           </span>
         ) : (
-          <span className="inline-flex items-center leading-none text-gray-400 border border-gray-200 px-3.5 py-1.5 rounded-full">
+          <span className="inline-flex items-center leading-none text-fg-subtle border border-border px-3.5 py-1.5 rounded-pill">
             v{version}
           </span>
         )}

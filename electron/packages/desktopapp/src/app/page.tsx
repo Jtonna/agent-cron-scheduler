@@ -35,7 +35,7 @@ export default function Home() {
   const [activeFilter, setActiveFilter] = useState("All runs");
 
   return (
-    <div className="min-h-screen bg-white text-gray-900">
+    <div className="min-h-screen bg-surface text-fg">
       <Navbar />
 
       {/* Hero */}
@@ -44,15 +44,15 @@ export default function Home() {
           <h1 className="text-[52px] font-extrabold leading-[1.05] tracking-tight">
             Welcome to<br />Agent Cron System
           </h1>
-          <p className="text-gray-500 text-[15px] leading-relaxed max-w-md">
+          <p className="text-fg-muted text-[15px] leading-relaxed max-w-md">
             Schedule and run AI agent jobs on demand or on a cron. Build automations, manage tasks, and orchestrate your infrastructure from one place.
           </p>
           <FilterTabs />
           <ChatBar onSend={(msg) => router.push(`/chat?q=${encodeURIComponent(msg)}`)} />
           <FavoritedJobs jobs={FAVORITED_JOBS} />
         </div>
-        <div className="bg-gradient-to-br from-pink-100 via-purple-50 to-sky-100 rounded-2xl min-h-[420px] flex items-center justify-center">
-          <span className="text-gray-400 text-sm">Hero illustration</span>
+        <div className="bg-gradient-to-br from-gradient-hero-from via-gradient-hero-via to-gradient-hero-to rounded-card min-h-[420px] flex items-center justify-center">
+          <span className="text-fg-subtle text-sm">Hero illustration</span>
         </div>
       </section>
 
