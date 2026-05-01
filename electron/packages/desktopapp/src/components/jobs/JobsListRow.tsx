@@ -1,0 +1,120 @@
+"use client";
+
+import Link from "next/link";
+import { useState } from "react";
+import { formatTimeAgo, formatTimeUntil } from "@/apis/format";
+import type { Job } from "@/apis/types";
+import { isRunning, type AnyRun } from "@/apis/jobStatus";
+import {
+  JobStateIndicator,
+  apiStatusToJobState,
+  type JobState,
+} from "@/components/ui/JobStateIndicator";
+import { RunTooltip } from "@/components/ui/RunTooltip";
+
+/**
+ * JobsListRow
+ *
+ * One row of the jobs table on `/jobs`. Renders a leading state dot,
+ * the job name, up to 7 recent run dots (with hover tooltips), the cron
+ * schedule, last-run time, and next-run time. The row itself is a
+ * navigation link to the job detail page.
+ */
+
+interface JobsListRowProps {
+  job: Job;
+  /** Most recent runs for this job, newest first. Up to 7 are rendered. */
+  runs?: AnyRun[];
+}
+
+/**
+ * Compute the leading dot's state for a row:
+ * - "running" if any recent run is in-flight
+ * - "idle" if the job is disabled or has never run
+ * - "failed" on a non-zero last exit code
+ * - "success" otherwise
+ */
+function leadingState(job: Job, runs: AnyRun[] | undefined): JobState {
+  if (runs && isRunning(runs)) return "running";
+  if (!job.enabled) return "idle";
+  if (job.last_exit_code !== null && job.last_exit_code !== 0) return "failed";
+  if (job.last_run_at) return "success";
+  return "idle";
+}
+
+export function JobsListRow({ job, runs }: JobsListRowProps) {
+  const leading = leadingState(job, runs);
+  // API returns newest first; reverse so the oldest is on the left and the
+  // most recent run is on the right.
+  const recent = runs ? runs.slice(0, 7).reverse() : [];
+  const running = leading === "running";
+  const lastRun = running ? "Running now" : job.last_run_at ? formatTimeAgo(job.last_run_at) : "—";
+  const nextRun = job.next_run_at ? formatTimeUntil(job.next_run_at) : "—";
+
+  const [hovered, setHovered] = useState<{
+    run: AnyRun;
+    pos: { left: number; top: number };
+  } | null>(null);
+
+  function handleEnter(run: AnyRun) {
+    return (e: React.MouseEvent<HTMLSpanElement>) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      setHovered({
+        run,
+        pos: {
+          left: rect.left + rect.width / 2,
+          top: rect.bottom + 8,
+        },
+      });
+    };
+  }
+
+  return (
+    <>
+      <Link
+        href={`/jobs/${job.id}`}
+        className="grid grid-cols-[20px_minmax(0,1.6fr)_120px_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-4 px-4 py-3 rounded-input border border-border bg-surface hover:bg-surface-hover hover:border-border-strong transition-colors text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
+      >
+        <JobStateIndicator state={leading} variant="dot" size="sm" />
+        <span className="font-medium text-fg truncate">{job.name}</span>
+        <span className="flex items-center gap-1">
+          {recent.length === 0 ? (
+            <span className="text-[10px] text-fg-faint italic">no runs</span>
+          ) : (
+            recent.map((run) => {
+              const state = apiStatusToJobState(run.status);
+              return (
+                <span
+                  key={run.run_id}
+                  onMouseEnter={handleEnter(run)}
+                  onMouseLeave={() => setHovered(null)}
+                  className="inline-flex"
+                >
+                  <JobStateIndicator
+                    state={state}
+                    variant="dot"
+                    size="sm"
+                    className="hover:ring-2 hover:ring-fg-faint hover:scale-125 transition-all"
+                  />
+                </span>
+              );
+            })
+          )}
+        </span>
+        <span className="font-mono text-xs text-fg-muted truncate">{job.schedule}</span>
+        <span className="text-xs text-fg-muted truncate">{lastRun}</span>
+        <span className="text-xs text-fg-muted truncate">{nextRun}</span>
+      </Link>
+
+      {hovered && (
+        <RunTooltip
+          run={hovered.run}
+          jobName={job.name}
+          left={hovered.pos.left}
+          top={hovered.pos.top}
+          transform="translateX(-50%)"
+        />
+      )}
+    </>
+  );
+}
