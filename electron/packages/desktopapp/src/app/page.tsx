@@ -1,89 +1,53 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { Navbar } from "@/components/Navbar";
-import { FilterTabs } from "@/components/FilterTabs";
-import { ChatBar } from "@/components/ChatBar";
-import { FavoritedJobs } from "@/components/FavoritedJobs";
-import { SystemBanner } from "@/components/SystemBanner";
-import { TabBar } from "@/components/TabBar";
-import { JobRunCard } from "@/components/JobRunCard";
-import type { JobRun, JobStatus } from "@/components/JobRunCard";
+import { Navbar } from "@/components/navbar/Navbar";
+import { FilterTabs } from "@/components/jobs/FilterTabs";
+import { ChatBar } from "@/components/ui/ChatBar";
+import { FavoritedJobs } from "@/components/jobs/FavoritedJobs";
+import { SystemBanner } from "@/components/widgets/SystemBanner";
+import { TabBar } from "@/components/ui/TabBar";
+import { JobRunCard } from "@/components/jobs/JobRunCard";
+import type { JobRun } from "@/components/jobs/JobRunCard";
+import { apiStatusToJobState } from "@/components/ui/JobStateIndicator";
 import { useHealth } from "@/apis/useHealth";
 import { useRecentRuns } from "@/apis/useRecentRuns";
 import type { RecentRunEntry } from "@/apis/types";
+import { formatDuration, formatTimeAgo, formatUptime } from "@/apis/format";
 import { Loader2 } from "lucide-react";
 
-const FAVORITED_JOBS = ["backup-db", "sync-users", "health-check", "deploy-staging", "cleanup-logs", "nightly-report"];
+// Mock favorited jobs — replace with real data once ACS-17 lands.
+const FAVORITED_JOBS = [
+  { id: "01941111-1111-7111-8111-111111111111", name: "backup-db" },
+  { id: "01942222-2222-7222-8222-222222222222", name: "sync-users" },
+  { id: "01943333-3333-7333-8333-333333333333", name: "health-check" },
+  { id: "01944444-4444-7444-8444-444444444444", name: "deploy-staging" },
+  { id: "01945555-5555-7555-8555-555555555555", name: "cleanup-logs" },
+  { id: "01946666-6666-7666-8666-666666666666", name: "nightly-report" },
+];
 
 const STATUS_FILTER_MAP: Record<string, string | undefined> = {
   "All runs": undefined,
-  "Running": "running",
-  "Succeeded": "success",
-  "Failed": "failed",
+  Running: "running",
+  Succeeded: "success",
+  Failed: "failed",
 };
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */
 /* ------------------------------------------------------------------ */
 
-function mapApiStatus(
-  status: RecentRunEntry["status"],
-): JobStatus {
-  switch (status) {
-    case "Running":
-      return "running";
-    case "Completed":
-      return "success";
-    case "Failed":
-      return "failed";
-    case "Killed":
-      return "killed";
-    case "CompletedWithWarnings":
-      return "partial";
-    default:
-      return "failed";
-  }
-}
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
-}
-
-function formatTimeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hr ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
-function formatUptime(seconds: number): string {
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  return `${d}d ${h}h ${m}m`;
-}
-
 function toJobRun(entry: RecentRunEntry): JobRun {
   const durationMs =
     entry.duration_ms ??
     (entry.finished_at
-      ? new Date(entry.finished_at).getTime() -
-        new Date(entry.started_at).getTime()
+      ? new Date(entry.finished_at).getTime() - new Date(entry.started_at).getTime()
       : Date.now() - new Date(entry.started_at).getTime());
 
   return {
     name: entry.job_name,
-    status: mapApiStatus(entry.status),
+    status: apiStatusToJobState(entry.status),
     duration: formatDuration(durationMs),
     timeAgo: formatTimeAgo(entry.started_at),
     cost:
@@ -120,13 +84,10 @@ export default function Home() {
     return () => observer.disconnect();
   }, [hasMore, runsLoading, loadingMore, loadMore]);
 
-  const jobRuns = useMemo(() => runs.map(toJobRun), [runs]);
-
-  const filteredRuns = useMemo(() => {
-    const status = STATUS_FILTER_MAP[activeFilter];
-    if (!status) return jobRuns;
-    return jobRuns.filter((job) => job.status === status);
-  }, [jobRuns, activeFilter]);
+  // Cheap derivations over small arrays — no useMemo needed.
+  const jobRuns = runs.map(toJobRun);
+  const statusFilter = STATUS_FILTER_MAP[activeFilter];
+  const filteredRuns = statusFilter ? jobRuns.filter((job) => job.status === statusFilter) : jobRuns;
 
   return (
     <div className="min-h-screen bg-surface text-fg">
@@ -136,10 +97,13 @@ export default function Home() {
       <section className="px-16 pt-14 pb-10 grid grid-cols-[1fr_1fr] gap-8 items-center">
         <div className="flex flex-col gap-5 max-w-xl">
           <h1 className="text-[52px] font-extrabold leading-[1.05] tracking-tight">
-            Welcome to<br />Agent Cron System
+            Welcome to
+            <br />
+            Agent Cron System
           </h1>
           <p className="text-fg-muted text-[15px] leading-relaxed max-w-md">
-            Schedule and run AI agent jobs on demand or on a cron. Build automations, manage tasks, and orchestrate your infrastructure from one place.
+            Schedule and run AI agent jobs on demand or on a cron. Build automations, manage tasks,
+            and orchestrate your infrastructure from one place.
           </p>
           <FilterTabs />
           <ChatBar onSend={(msg) => router.push(`/chat?q=${encodeURIComponent(msg)}`)} />
@@ -177,9 +141,7 @@ export default function Home() {
               : `No ${activeFilter.toLowerCase()} runs in the last ${runs.length}`}
           </div>
         ) : (
-          filteredRuns.map((job, i) => (
-            <JobRunCard key={i} job={job} />
-          ))
+          filteredRuns.map((job, i) => <JobRunCard key={i} job={job} />)
         )}
       </div>
 

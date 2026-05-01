@@ -52,11 +52,11 @@
   --color-status-killed-bg: #f9fafb;
   --color-status-killed-border: #e5e7eb;
 
-  /* ── Status: partial ── */
-  --color-status-partial: #f59e0b;
-  --color-status-partial-dot: #fbbf24;
-  --color-status-partial-bg: #fffbeb;
-  --color-status-partial-border: #fde68a;
+  /* ── Status: warning ── */
+  --color-status-warning: #f59e0b;
+  --color-status-warning-dot: #fbbf24;
+  --color-status-warning-bg: #fffbeb;
+  --color-status-warning-border: #fde68a;
 
   /* ── Decorative gradients ── */
   --color-gradient-bot-from: #8b5cf6;
@@ -85,6 +85,7 @@
   --height-avatar: 2.25rem;
   --height-send-btn: 3rem;
   --width-send-btn: 3rem;
+  --width-sidebar: 17.5rem;
   --size-status-dot: 0.5rem;
   --size-icon-sm: 0.75rem;
   --size-icon-md: 0.875rem;

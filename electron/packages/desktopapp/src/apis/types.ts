@@ -28,12 +28,7 @@ export interface RecentRunEntry {
   job_name: string;
   started_at: string;
   finished_at: string | null;
-  status:
-    | "Running"
-    | "Completed"
-    | "CompletedWithWarnings"
-    | "Failed"
-    | "Killed";
+  status: "Running" | "Completed" | "CompletedWithWarnings" | "Failed" | "Killed";
   exit_code: number | null;
   log_size_bytes: number;
   error: string | null;
@@ -56,4 +51,51 @@ export interface HealthResponse {
   total_jobs: number;
   version: string;
   data_dir: string;
+}
+
+export interface GlobalCostTokens {
+  input: number;
+  output: number;
+}
+
+export interface GlobalTopJob {
+  job_id: string;
+  job_name: string;
+  total_cost: number;
+  total_runs: number;
+}
+
+export interface GlobalDailyTrend {
+  date: string;
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface GlobalCostSummaryResponse {
+  timeframe: string;
+  today_usd: number;
+  week_usd: number;
+  month_usd: number;
+  today_tokens: GlobalCostTokens;
+  top_jobs: GlobalTopJob[];
+  daily_trend: GlobalDailyTrend[];
+}
+
+export interface JobRun {
+  run_id: string;
+  job_id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: "Running" | "Completed" | "CompletedWithWarnings" | "Failed" | "Killed";
+  exit_code: number | null;
+  total_cost_usd?: number | null;
+  duration_ms?: number | null;
+}
+
+export interface RunsResponse {
+  runs: JobRun[];
+  total: number;
+  limit: number;
+  offset: number;
 }

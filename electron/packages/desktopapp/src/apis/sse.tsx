@@ -1,13 +1,6 @@
 "use client";
 
-import React, {
-  createContext,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-  useCallback,
-} from "react";
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { getBaseUrl } from "@/apis/client";
 
 interface SSEEvent {
@@ -56,14 +49,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       };
 
       // Listen for specific event types
-      const eventTypes = [
-        "job_changed",
-        "started",
-        "completed",
-        "failed",
-        "killed",
-        "output",
-      ];
+      const eventTypes = ["job_changed", "started", "completed", "failed", "killed", "output"];
       eventTypes.forEach((eventType) => {
         es.addEventListener(eventType, (event) => {
           const sseEvent: SSEEvent = {
@@ -102,17 +88,18 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  return (
-    <SSEContext.Provider value={{ subscribe, connected }}>
-      {children}
-    </SSEContext.Provider>
-  );
+  return <SSEContext.Provider value={{ subscribe, connected }}>{children}</SSEContext.Provider>;
 }
 
 export function useSSEEvents(callback: SSECallback) {
   const ctx = useContext(SSEContext);
   const callbackRef = useRef(callback);
-  callbackRef.current = callback;
+
+  // Keep the latest callback in a ref without writing during render.
+  // Writing to refs during render is flagged by react-hooks/refs.
+  useEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
 
   useEffect(() => {
     if (!ctx) return;

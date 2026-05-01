@@ -1,10 +1,11 @@
+interface AcsWindow {
+  __ACS_API_URL__?: string;
+}
+
 export function getBaseUrl(): string {
   if (typeof window !== "undefined") {
-    return (
-      (window as any).__ACS_API_URL__ ??
-      process.env.NEXT_PUBLIC_API_URL ??
-      "http://127.0.0.1:8377"
-    );
+    const w = window as Window & AcsWindow;
+    return w.__ACS_API_URL__ ?? process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8377";
   }
   return "http://127.0.0.1:8377";
 }
@@ -21,10 +22,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(
-  path: string,
-  options: RequestInit = {},
-): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${getBaseUrl()}${path}`;
   const res = await fetch(url, {
     ...options,
@@ -54,10 +52,7 @@ async function request<T>(
   return undefined as unknown as T;
 }
 
-async function requestText(
-  path: string,
-  options: RequestInit = {},
-): Promise<string> {
+async function requestText(path: string, options: RequestInit = {}): Promise<string> {
   const url = `${getBaseUrl()}${path}`;
   const res = await fetch(url, options);
 
@@ -77,7 +72,13 @@ async function requestText(
   return res.text();
 }
 
-import type { HealthResponse, Job, RecentRunsResponse } from "./types";
+import type {
+  GlobalCostSummaryResponse,
+  HealthResponse,
+  Job,
+  RecentRunsResponse,
+  RunsResponse,
+} from "./types";
 
 export const api = {
   getSystemLogs(tail?: number): Promise<string> {
@@ -95,5 +96,15 @@ export const api = {
 
   listRecentRuns(limit: number = 20): Promise<RecentRunsResponse> {
     return request<RecentRunsResponse>(`/api/runs/recent?limit=${limit}`);
+  },
+
+  getGlobalCostSummary(timeframe: string = "30d"): Promise<GlobalCostSummaryResponse> {
+    return request<GlobalCostSummaryResponse>(
+      `/api/costs/summary?timeframe=${encodeURIComponent(timeframe)}`,
+    );
+  },
+
+  listJobRuns(jobId: string, limit: number = 20, offset: number = 0): Promise<RunsResponse> {
+    return request<RunsResponse>(`/api/jobs/${jobId}/runs?limit=${limit}&offset=${offset}`);
   },
 };

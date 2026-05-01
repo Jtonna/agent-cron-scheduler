@@ -1,7 +1,7 @@
 "use client";
 
-import { Navbar } from "@/components/Navbar";
-import { ChatBar } from "@/components/ChatBar";
+import { Navbar } from "@/components/navbar/Navbar";
+import { ChatBar } from "@/components/ui/ChatBar";
 
 export default function ChatPage() {
   return (
