@@ -4,19 +4,17 @@ pub mod routes;
 pub mod sse;
 pub mod workflow_routes;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::routing::{get, post};
 use axum::Router;
-use tokio::sync::{broadcast, Notify, RwLock};
+use tokio::sync::{broadcast, Notify};
 use tower_http::cors::{Any, CorsLayer};
-use uuid::Uuid;
 
 use crate::daemon::events::WorkflowEvent;
-use crate::models::workflow::WorkflowRun;
 use crate::models::DaemonConfig;
+use crate::storage::workflow_runs::WorkflowRunStore;
 use crate::storage::workflows::WorkflowStore;
 
 /// Shared application state for the Axum server.
@@ -29,8 +27,8 @@ pub struct AppState {
     pub workflow_event_tx: broadcast::Sender<WorkflowEvent>,
     /// Workflow definition store.
     pub workflow_store: Arc<dyn WorkflowStore>,
-    /// In-memory map of run_id → WorkflowRun.
-    pub workflow_runs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<WorkflowRun>>>>>,
+    /// Persistent workflow run store.
+    pub workflow_run_store: Arc<dyn WorkflowRunStore>,
 }
 
 /// Create the Axum router with all routes.

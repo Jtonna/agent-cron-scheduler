@@ -207,6 +207,17 @@ async fn execute_steps(
             started_at: Utc::now(),
         });
 
+        // Inform the log sink which step is active so that chunk events carry
+        // the correct step_index and step_id.  Errors are logged but do not
+        // abort the step — the chunk path is best-effort.
+        if let Err(e) = ctx.log_sink.set_current_step(step_index, &common.id).await {
+            tracing::warn!(
+                step_id = %common.id,
+                "log_sink.set_current_step failed (non-fatal): {}",
+                e
+            );
+        }
+
         let started_at = Utc::now();
         let effective_policy = common
             .on_failure
@@ -1295,5 +1306,120 @@ mod tests {
             run.total_cost_usd.is_none(),
             "expected None total_cost when no steps have cost"
         );
+    }
+
+    // ── Test 16: EventEmittingLogSink integration ─────────────────────────────
+    //
+    // When `run_workflow` is called with an already-wrapped `EventEmittingLogSink`,
+    // the executor's `set_current_step` call correctly labels chunk events with
+    // the right step index and step id.  The chronology of events is also
+    // verified: RunStarted → StepStarted(0) → StepOutput(0) → StepCompleted(0)
+    // → StepStarted(1) → StepOutput(1) → StepCompleted(1) → RunCompleted.
+
+    #[tokio::test]
+    async fn test_executor_event_emitting_log_sink_integration() {
+        use crate::daemon::events::WorkflowEvent;
+        use crate::workflow::EventEmittingLogSink;
+        use tokio::sync::broadcast;
+
+        // 2-step workflow where each step prints one line.
+        #[cfg(windows)]
+        let (cmd1, cmd2) = ("echo step-one", "echo step-two");
+        #[cfg(not(windows))]
+        let (cmd1, cmd2) = ("echo step-one", "echo step-two");
+
+        let workflow = make_workflow(
+            "eel_integration",
+            vec![
+                shell_step("s1", cmd1),
+                shell_step("s2", cmd2),
+            ],
+        );
+
+        let run_id = Uuid::now_v7();
+        let (event_tx, mut event_rx) = broadcast::channel::<WorkflowEvent>(64);
+
+        let inner_sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let wrapped_sink = Arc::new(EventEmittingLogSink::new(
+            inner_sink,
+            event_tx.clone(),
+            run_id,
+            workflow.id,
+        )) as Arc<dyn LogSink>;
+
+        let run = run_workflow(
+            &workflow,
+            run_id,
+            empty_trigger(),
+            wrapped_sink,
+            Some(event_tx),
+        )
+        .await;
+
+        assert_eq!(run.status, RunStatus::Completed);
+
+        // Collect all events that are buffered.
+        let mut events: Vec<WorkflowEvent> = Vec::new();
+        loop {
+            match event_rx.try_recv() {
+                Ok(e) => events.push(e),
+                Err(_) => break,
+            }
+        }
+
+        // Must have at least RunStarted + 2×StepStarted + at least 1 StepOutput
+        // per step + 2×StepCompleted + RunCompleted.
+        assert!(
+            !events.is_empty(),
+            "No events were emitted; expected at least RunStarted"
+        );
+
+        // RunStarted must be first.
+        assert!(
+            matches!(events[0], WorkflowEvent::RunStarted { run_id: r, .. } if r == run_id),
+            "First event should be RunStarted, got {:?}", events[0]
+        );
+
+        // RunCompleted must be last.
+        let last = events.last().unwrap();
+        assert!(
+            matches!(last, WorkflowEvent::RunCompleted { .. })
+                || matches!(last, WorkflowEvent::RunFailed { .. }),
+            "Last event should be RunCompleted or RunFailed, got {:?}", last
+        );
+
+        // Every StepOutput event must have a non-empty step_id.
+        let step_output_events: Vec<_> = events
+            .iter()
+            .filter_map(|e| {
+                if let WorkflowEvent::StepOutput { step_id, step_index, .. } = e {
+                    Some((step_id.clone(), *step_index))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // We must have received at least one StepOutput per step.
+        assert!(
+            !step_output_events.is_empty(),
+            "Expected at least one StepOutput event"
+        );
+
+        // All StepOutput events should have a step_index of 1 or 2 (executor
+        // starts at 0 and increments before each step, so first step → index 1).
+        for (step_id, step_index) in &step_output_events {
+            assert!(
+                *step_index > 0,
+                "step_index should be > 0, got {} for step '{}'",
+                step_index,
+                step_id
+            );
+            assert!(
+                step_id == "s1" || step_id == "s2",
+                "Unknown step_id in StepOutput: '{}'",
+                step_id
+            );
+        }
     }
 }

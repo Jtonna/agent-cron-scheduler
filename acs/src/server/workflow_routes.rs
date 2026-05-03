@@ -26,7 +26,7 @@ use super::AppState;
 use crate::daemon::events::{WorkflowChangeKind, WorkflowEvent};
 use crate::errors::AcsError;
 use crate::models::workflow::{NewWorkflow, RunStatus, TriggerParams, Workflow, WorkflowRun, WorkflowUpdate};
-use crate::workflow::FileLogSink;
+use crate::workflow::{EventEmittingLogSink, FileLogSink};
 
 // ---------------------------------------------------------------------------
 // Error response
@@ -324,8 +324,9 @@ pub async fn trigger_workflow(
     let log_dir = data_dir.join("logs").join(workflow_id.to_string());
     let log_path = log_dir.join(format!("{}.log", run_id));
 
-    // Pre-insert a Running WorkflowRun into the in-memory map.
-    let initial_run = Arc::new(tokio::sync::RwLock::new(WorkflowRun {
+    // Persist a Running WorkflowRun to the store immediately so it's readable
+    // before the background task completes.
+    let initial_run = WorkflowRun {
         run_id,
         workflow_id,
         workflow_version,
@@ -337,11 +338,20 @@ pub async fn trigger_workflow(
         steps: vec![],
         total_cost_usd: None,
         total_duration_ms: None,
-    }));
-    state.workflow_runs.write().await.insert(run_id, Arc::clone(&initial_run));
+    };
+
+    if let Err(e) = state.workflow_run_store.create_run(initial_run).await {
+        tracing::error!("Failed to persist initial run {}: {}", run_id, e);
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            &format!("Failed to create run record: {}", e),
+        )
+        .into_response();
+    }
 
     let event_tx = state.workflow_event_tx.clone();
-    let run_map = Arc::clone(&state.workflow_runs);
+    let run_store = Arc::clone(&state.workflow_run_store);
 
     // Spawn the workflow run in the background.
     tokio::spawn(async move {
@@ -351,9 +361,18 @@ pub async fn trigger_workflow(
             return;
         }
 
-        // Create file log sink.
+        // Create file log sink, wrapped in an event-emitting sink so that
+        // stdout/stderr chunks are broadcast to SSE subscribers in real time.
         let log_sink = match FileLogSink::create(log_path).await {
-            Ok(sink) => Arc::new(sink) as Arc<dyn crate::workflow::LogSink>,
+            Ok(sink) => {
+                let emitting = EventEmittingLogSink::new(
+                    Arc::new(sink) as Arc<dyn crate::workflow::LogSink>,
+                    event_tx.clone(),
+                    run_id,
+                    workflow_id,
+                );
+                Arc::new(emitting) as Arc<dyn crate::workflow::LogSink>
+            }
             Err(e) => {
                 tracing::error!("Failed to create log sink for run {}: {}", run_id, e);
                 return;
@@ -369,10 +388,9 @@ pub async fn trigger_workflow(
         )
         .await;
 
-        // Update the in-memory run map with the final result.
-        if let Some(entry) = run_map.read().await.get(&run_id) {
-            let mut w = entry.write().await;
-            *w = final_run;
+        // Persist the final run state to the store.
+        if let Err(e) = run_store.update_run(&final_run).await {
+            tracing::error!("Failed to persist final run {}: {}", run_id, e);
         }
     });
 
@@ -407,18 +425,25 @@ pub async fn get_workflow_run(
         }
     };
 
-    let runs = state.workflow_runs.read().await;
-    match runs.get(&run_id) {
-        Some(run_lock) => {
-            let run = run_lock.read().await.clone();
+    match state.workflow_run_store.get_run(run_id).await {
+        Ok(Some(run)) => {
             (StatusCode::OK, Json(serde_json::to_value(run).unwrap())).into_response()
         }
-        None => error_response(
+        Ok(None) => error_response(
             StatusCode::NOT_FOUND,
             "not_found",
             &format!("Run '{}' not found", run_id),
         )
         .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to get run {}: {}", run_id, e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to fetch run: {}", e),
+            )
+            .into_response()
+        }
     }
 }
 
@@ -426,10 +451,8 @@ pub async fn get_workflow_run(
 // POST /api/runs/{run_id}/kill
 // ---------------------------------------------------------------------------
 //
-// Phase 5 limitation: this sets a "kill flag" by marking the run as Killed
-// in the in-memory tracker. Actual process-tree kill wiring (SIGKILL / job
-// object termination) is deferred to phase 6, which will add per-run kill
-// channels similar to the JobRun executor's kill_tx pattern.
+// Sets status=Killed on the persisted run. Actual process-tree kill wiring
+// (SIGKILL / job object termination) is deferred to a future phase.
 
 pub async fn kill_workflow_run(
     State(state): State<Arc<AppState>>,
@@ -447,28 +470,43 @@ pub async fn kill_workflow_run(
         }
     };
 
-    let runs = state.workflow_runs.read().await;
-    match runs.get(&run_id) {
-        Some(run_lock) => {
-            let mut run = run_lock.write().await;
+    match state.workflow_run_store.get_run(run_id).await {
+        Ok(Some(mut run)) => {
             if run.status == RunStatus::Running {
-                // Phase 5: set a kill flag in-memory; actual process kill wired in phase 6.
                 tracing::info!(
-                    "Kill requested for workflow run {} (phase 5: in-memory flag only; \
-                     actual process kill wiring deferred to phase 6)",
+                    "Kill requested for workflow run {} (in-memory flag; \
+                     actual process kill wiring deferred)",
                     run_id
                 );
                 run.status = RunStatus::Killed;
                 run.finished_at = Some(Utc::now());
+                if let Err(e) = state.workflow_run_store.update_run(&run).await {
+                    tracing::error!("Failed to persist kill status for run {}: {}", run_id, e);
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal_error",
+                        &format!("Failed to update run status: {}", e),
+                    )
+                    .into_response();
+                }
             }
             StatusCode::ACCEPTED.into_response()
         }
-        None => error_response(
+        Ok(None) => error_response(
             StatusCode::NOT_FOUND,
             "not_found",
             &format!("Run '{}' not found", run_id),
         )
         .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to get run {} for kill: {}", run_id, e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to fetch run: {}", e),
+            )
+            .into_response()
+        }
     }
 }
 
@@ -479,31 +517,37 @@ pub async fn kill_workflow_run(
 #[cfg(test)]
 mod tests {
     use crate::daemon::events::WorkflowEvent;
+    use crate::errors::AcsError;
     use crate::models::workflow::{
-        CaptureSpec, FailurePolicy, NewWorkflow, ShellStep, StepDef, StepDefCommon, WorkflowUpdate,
+        CaptureSpec, FailurePolicy, NewWorkflow, RunStatus, ShellStep, StepDef, StepDefCommon,
+        Workflow, WorkflowRun, WorkflowUpdate,
     };
     use crate::models::DaemonConfig;
+    use crate::storage::workflow_runs::WorkflowRunStore;
     use crate::storage::workflows::WorkflowStore;
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use crate::models::workflow::Workflow;
+    use chrono::Utc;
     use http_body_util::BodyExt;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Instant;
-    use tokio::sync::{broadcast, Notify, RwLock};
+    use tokio::sync::{broadcast, Mutex, Notify};
     use tower::ServiceExt;
     use uuid::Uuid;
-    use chrono::Utc;
+
+    // ── In-memory WorkflowStore ───────────────────────────────────────────────
 
     struct InMemoryWorkflowStore {
-        workflows: RwLock<Vec<crate::models::workflow::Workflow>>,
+        workflows: tokio::sync::RwLock<Vec<crate::models::workflow::Workflow>>,
     }
 
     impl InMemoryWorkflowStore {
         fn new() -> Self {
-            Self { workflows: RwLock::new(vec![]) }
+            Self {
+                workflows: tokio::sync::RwLock::new(vec![]),
+            }
         }
     }
 
@@ -513,17 +557,31 @@ mod tests {
             Ok(self.workflows.read().await.clone())
         }
         async fn get_workflow(&self, id: Uuid) -> anyhow::Result<Option<Workflow>> {
-            Ok(self.workflows.read().await.iter().find(|w| w.id == id).cloned())
+            Ok(self
+                .workflows
+                .read()
+                .await
+                .iter()
+                .find(|w| w.id == id)
+                .cloned())
         }
         async fn find_by_name(&self, name: &str) -> anyhow::Result<Option<Workflow>> {
-            Ok(self.workflows.read().await.iter().find(|w| w.name == name).cloned())
+            Ok(self
+                .workflows
+                .read()
+                .await
+                .iter()
+                .find(|w| w.name == name)
+                .cloned())
         }
         async fn create_workflow(&self, new: NewWorkflow) -> anyhow::Result<Workflow> {
             let mut wfs = self.workflows.write().await;
             if wfs.iter().any(|w| w.name == new.name) {
                 return Err(crate::errors::AcsError::Conflict(format!(
-                    "A workflow with name '{}' already exists", new.name
-                )).into());
+                    "A workflow with name '{}' already exists",
+                    new.name
+                ))
+                .into());
             }
             let now = Utc::now();
             let wf = Workflow {
@@ -551,25 +609,51 @@ mod tests {
             wfs.push(wf.clone());
             Ok(wf)
         }
-        async fn update_workflow(&self, id: Uuid, update: WorkflowUpdate) -> anyhow::Result<Workflow> {
+        async fn update_workflow(
+            &self,
+            id: Uuid,
+            update: WorkflowUpdate,
+        ) -> anyhow::Result<Workflow> {
             let mut wfs = self.workflows.write().await;
-            let idx = wfs.iter().position(|w| w.id == id)
+            let idx = wfs
+                .iter()
+                .position(|w| w.id == id)
                 .ok_or_else(|| anyhow::anyhow!("not found"))?;
-            // Check for duplicate name
             if let Some(ref new_name) = update.name {
                 if wfs.iter().any(|w| w.name == *new_name && w.id != id) {
                     return Err(crate::errors::AcsError::Conflict(format!(
-                        "A workflow with name '{}' already exists", new_name
-                    )).into());
+                        "A workflow with name '{}' already exists",
+                        new_name
+                    ))
+                    .into());
                 }
             }
             let wf = &mut wfs[idx];
             let mut bumped = false;
-            if let Some(n) = update.name { if wf.name != n { bumped = true; } wf.name = n; }
-            if let Some(s) = update.schedule { if wf.schedule != s { bumped = true; } wf.schedule = s; }
-            if let Some(e) = update.enabled { wf.enabled = e; }
-            if let Some(steps) = update.steps { if wf.steps != steps { bumped = true; } wf.steps = steps; }
-            if bumped { wf.version += 1; }
+            if let Some(n) = update.name {
+                if wf.name != n {
+                    bumped = true;
+                }
+                wf.name = n;
+            }
+            if let Some(s) = update.schedule {
+                if wf.schedule != s {
+                    bumped = true;
+                }
+                wf.schedule = s;
+            }
+            if let Some(e) = update.enabled {
+                wf.enabled = e;
+            }
+            if let Some(steps) = update.steps {
+                if wf.steps != steps {
+                    bumped = true;
+                }
+                wf.steps = steps;
+            }
+            if bumped {
+                wf.version += 1;
+            }
             wf.updated_at = Utc::now();
             Ok(wf.clone())
         }
@@ -583,6 +667,74 @@ mod tests {
             Ok(())
         }
     }
+
+    // ── In-memory WorkflowRunStore ────────────────────────────────────────────
+
+    struct InMemoryRunStore {
+        runs: Mutex<HashMap<Uuid, WorkflowRun>>,
+    }
+
+    impl InMemoryRunStore {
+        fn new() -> Self {
+            Self {
+                runs: Mutex::new(HashMap::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl WorkflowRunStore for InMemoryRunStore {
+        async fn create_run(&self, run: WorkflowRun) -> Result<(), AcsError> {
+            self.runs.lock().await.insert(run.run_id, run);
+            Ok(())
+        }
+        async fn update_run(&self, run: &WorkflowRun) -> Result<(), AcsError> {
+            let mut map = self.runs.lock().await;
+            if !map.contains_key(&run.run_id) {
+                return Err(AcsError::NotFound(format!("Run '{}' not found", run.run_id)));
+            }
+            map.insert(run.run_id, run.clone());
+            Ok(())
+        }
+        async fn get_run(&self, run_id: Uuid) -> Result<Option<WorkflowRun>, AcsError> {
+            Ok(self.runs.lock().await.get(&run_id).cloned())
+        }
+        async fn list_runs(
+            &self,
+            workflow_id: Uuid,
+            limit: usize,
+            offset: usize,
+        ) -> Result<Vec<WorkflowRun>, AcsError> {
+            let map = self.runs.lock().await;
+            let mut runs: Vec<WorkflowRun> = map
+                .values()
+                .filter(|r| r.workflow_id == workflow_id)
+                .cloned()
+                .collect();
+            runs.sort_by(|a, b| b.run_id.cmp(&a.run_id));
+            let result = if limit == 0 {
+                runs.into_iter().skip(offset).collect()
+            } else {
+                runs.into_iter().skip(offset).take(limit).collect()
+            };
+            Ok(result)
+        }
+        async fn count_runs(&self, workflow_id: Uuid) -> Result<usize, AcsError> {
+            Ok(self
+                .runs
+                .lock()
+                .await
+                .values()
+                .filter(|r| r.workflow_id == workflow_id)
+                .count())
+        }
+        async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError> {
+            self.runs.lock().await.remove(&run_id);
+            Ok(())
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn make_shell_step(id: &str) -> StepDef {
         StepDef::Shell(ShellStep {
@@ -617,7 +769,10 @@ mod tests {
         }
     }
 
-    fn make_state(wf_store: Arc<dyn WorkflowStore>) -> Arc<crate::server::AppState> {
+    fn make_state(
+        wf_store: Arc<dyn WorkflowStore>,
+        run_store: Arc<dyn WorkflowRunStore>,
+    ) -> Arc<crate::server::AppState> {
         let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(256);
         Arc::new(crate::server::AppState {
             scheduler_notify: Arc::new(Notify::new()),
@@ -626,8 +781,15 @@ mod tests {
             shutdown_tx: None,
             workflow_event_tx,
             workflow_store: wf_store,
-            workflow_runs: Arc::new(RwLock::new(HashMap::new())),
+            workflow_run_store: run_store,
         })
+    }
+
+    fn make_state_default(wf_store: Arc<dyn WorkflowStore>) -> Arc<crate::server::AppState> {
+        make_state(
+            wf_store,
+            Arc::new(InMemoryRunStore::new()) as Arc<dyn WorkflowRunStore>,
+        )
     }
 
     async fn body_json(body: Body) -> serde_json::Value {
@@ -639,10 +801,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_workflows_empty() {
-        let state = make_state(Arc::new(InMemoryWorkflowStore::new()));
+        let state = make_state_default(Arc::new(InMemoryWorkflowStore::new()));
         let app = crate::server::create_router(state);
         let resp = app
-            .oneshot(Request::builder().uri("/api/workflows").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflows")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -652,7 +819,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_workflow_returns_201() {
-        let state = make_state(Arc::new(InMemoryWorkflowStore::new()));
+        let state = make_state_default(Arc::new(InMemoryWorkflowStore::new()));
         let app = crate::server::create_router(state);
         let body = serde_json::to_string(&make_new_workflow("test-wf")).unwrap();
         let resp = app
@@ -675,9 +842,12 @@ mod tests {
     #[tokio::test]
     async fn test_create_workflow_duplicate_name_returns_409() {
         let store = Arc::new(InMemoryWorkflowStore::new());
-        let state = make_state(Arc::clone(&store) as Arc<dyn WorkflowStore>);
+        let state = make_state_default(Arc::clone(&store) as Arc<dyn WorkflowStore>);
         // Create once
-        store.create_workflow(make_new_workflow("dup-wf")).await.unwrap();
+        store
+            .create_workflow(make_new_workflow("dup-wf"))
+            .await
+            .unwrap();
         let app = crate::server::create_router(state);
         let body = serde_json::to_string(&make_new_workflow("dup-wf")).unwrap();
         let resp = app
@@ -697,8 +867,11 @@ mod tests {
     #[tokio::test]
     async fn test_get_workflow_by_id() {
         let store = Arc::new(InMemoryWorkflowStore::new());
-        let wf = store.create_workflow(make_new_workflow("get-by-id")).await.unwrap();
-        let state = make_state(Arc::clone(&store) as Arc<dyn WorkflowStore>);
+        let wf = store
+            .create_workflow(make_new_workflow("get-by-id"))
+            .await
+            .unwrap();
+        let state = make_state_default(Arc::clone(&store) as Arc<dyn WorkflowStore>);
         let app = crate::server::create_router(state);
         let resp = app
             .oneshot(
@@ -717,8 +890,11 @@ mod tests {
     #[tokio::test]
     async fn test_get_workflow_by_name() {
         let store = Arc::new(InMemoryWorkflowStore::new());
-        let _wf = store.create_workflow(make_new_workflow("by-name-wf")).await.unwrap();
-        let state = make_state(Arc::clone(&store) as Arc<dyn WorkflowStore>);
+        let _wf = store
+            .create_workflow(make_new_workflow("by-name-wf"))
+            .await
+            .unwrap();
+        let state = make_state_default(Arc::clone(&store) as Arc<dyn WorkflowStore>);
         let app = crate::server::create_router(state);
         let resp = app
             .oneshot(
@@ -736,7 +912,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_workflow_not_found() {
-        let state = make_state(Arc::new(InMemoryWorkflowStore::new()));
+        let state = make_state_default(Arc::new(InMemoryWorkflowStore::new()));
         let app = crate::server::create_router(state);
         let resp = app
             .oneshot(
@@ -753,8 +929,11 @@ mod tests {
     #[tokio::test]
     async fn test_delete_workflow_returns_204() {
         let store = Arc::new(InMemoryWorkflowStore::new());
-        let wf = store.create_workflow(make_new_workflow("to-delete")).await.unwrap();
-        let state = make_state(Arc::clone(&store) as Arc<dyn WorkflowStore>);
+        let wf = store
+            .create_workflow(make_new_workflow("to-delete"))
+            .await
+            .unwrap();
+        let state = make_state_default(Arc::clone(&store) as Arc<dyn WorkflowStore>);
         let app = crate::server::create_router(state);
         let resp = app
             .oneshot(
@@ -769,5 +948,70 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         // Verify it's gone
         assert!(store.get_workflow(wf.id).await.unwrap().is_none());
+    }
+
+    // ── get_workflow_run via store ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_run_not_found_returns_404() {
+        let state = make_state_default(Arc::new(InMemoryWorkflowStore::new()));
+        let app = crate::server::create_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(&format!("/api/runs/{}", Uuid::now_v7()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_run_returns_stored_run() {
+        let run_store = Arc::new(InMemoryRunStore::new());
+        let wf_store = Arc::new(InMemoryWorkflowStore::new());
+        let wf = wf_store
+            .create_workflow(make_new_workflow("run-test"))
+            .await
+            .unwrap();
+
+        // Pre-insert a run.
+        let run = WorkflowRun {
+            run_id: Uuid::now_v7(),
+            workflow_id: wf.id,
+            workflow_version: 1,
+            workflow_snapshot: wf.clone(),
+            started_at: Utc::now(),
+            finished_at: None,
+            status: RunStatus::Running,
+            trigger_input: None,
+            steps: vec![],
+            total_cost_usd: None,
+            total_duration_ms: None,
+        };
+        let run_id = run.run_id;
+        run_store.create_run(run).await.unwrap();
+
+        let state = make_state(
+            Arc::clone(&wf_store) as Arc<dyn WorkflowStore>,
+            Arc::clone(&run_store) as Arc<dyn WorkflowRunStore>,
+        );
+        let app = crate::server::create_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(&format!("/api/runs/{}", run_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["run_id"], run_id.to_string());
+        assert_eq!(json["status"], "Running");
     }
 }

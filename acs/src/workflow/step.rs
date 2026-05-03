@@ -80,6 +80,16 @@ pub trait Step: Send + Sync {
 /// `StepRun.log_byte_offset_start` / `_end`.
 #[async_trait]
 pub trait LogSink: Send + Sync {
+    /// Inform the sink which step is now executing.
+    ///
+    /// Called by the executor before invoking each step's `execute()`.
+    /// The default implementation is a no-op so that existing `LogSink`
+    /// implementations (e.g. `FileLogSink`) do not require changes.
+    async fn set_current_step(&self, step_index: usize, step_id: &str) -> std::io::Result<()> {
+        let _ = (step_index, step_id);
+        Ok(())
+    }
+
     /// Write the START marker for a step.
     /// Returns the byte offset of the BEGINNING of the marker line.
     async fn write_step_start(&self, step_id: &str, started_at: DateTime<Utc>)

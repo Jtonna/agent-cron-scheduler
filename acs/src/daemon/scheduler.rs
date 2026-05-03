@@ -1,16 +1,16 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use tokio::sync::{broadcast, Notify, RwLock};
+use tokio::sync::{broadcast, Notify};
 
 use uuid::Uuid;
 
 use crate::daemon::events::WorkflowEvent;
 use crate::models::workflow::TriggerParams;
 use crate::models::ScheduleMode;
+use crate::storage::workflow_runs::WorkflowRunStore;
 use crate::storage::workflows::WorkflowStore;
 
 // ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ pub struct WorkflowScheduler {
     clock: Arc<dyn Clock>,
     notify: Arc<Notify>,
     workflow_event_tx: broadcast::Sender<WorkflowEvent>,
-    workflow_runs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<crate::models::workflow::WorkflowRun>>>>>,
+    workflow_run_store: Arc<dyn WorkflowRunStore>,
     data_dir: std::path::PathBuf,
 }
 
@@ -126,7 +126,7 @@ impl WorkflowScheduler {
         clock: Arc<dyn Clock>,
         notify: Arc<Notify>,
         workflow_event_tx: broadcast::Sender<WorkflowEvent>,
-        workflow_runs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<crate::models::workflow::WorkflowRun>>>>>,
+        workflow_run_store: Arc<dyn WorkflowRunStore>,
         data_dir: std::path::PathBuf,
     ) -> Self {
         Self {
@@ -134,7 +134,7 @@ impl WorkflowScheduler {
             clock,
             notify,
             workflow_event_tx,
-            workflow_runs,
+            workflow_run_store,
             data_dir,
         }
     }
@@ -179,33 +179,60 @@ impl WorkflowScheduler {
                         if *next_time <= now {
                             // WaitForCompletion: skip if already running
                             if wf.schedule_mode == ScheduleMode::WaitForCompletion {
-                                let runs = self.workflow_runs.read().await;
-                                let has_active = runs.values().any(|r| {
-                                    // Check if any run belongs to this workflow and is still Running
-                                    if let Ok(run) = r.try_read() {
-                                        run.workflow_id == wf.id
-                                            && run.status == crate::models::workflow::RunStatus::Running
-                                    } else {
-                                        false
+                                match self.workflow_run_store.list_runs(wf.id, 0, 0).await {
+                                    Ok(runs) => {
+                                        let has_active = runs.iter().any(|r| {
+                                            r.status == crate::models::workflow::RunStatus::Running
+                                        });
+                                        if has_active {
+                                            tracing::debug!(
+                                                workflow_id = %wf.id,
+                                                workflow_name = %wf.name,
+                                                "WaitForCompletion: skipping dispatch — run still active"
+                                            );
+                                            continue;
+                                        }
                                     }
-                                });
-                                if has_active {
-                                    tracing::debug!(
-                                        workflow_id = %wf.id,
-                                        workflow_name = %wf.name,
-                                        "WaitForCompletion: skipping dispatch — run still active"
-                                    );
-                                    continue;
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            workflow_id = %wf.id,
+                                            "Failed to check active runs for WaitForCompletion: {}",
+                                            e
+                                        );
+                                    }
                                 }
                             }
 
                             let run_id = Uuid::now_v7();
                             let wf_clone = wf.clone();
                             let event_tx = self.workflow_event_tx.clone();
-                            let workflow_runs = Arc::clone(&self.workflow_runs);
+                            let run_store = Arc::clone(&self.workflow_run_store);
                             let data_dir = self.data_dir.clone();
 
                             tokio::spawn(async move {
+                                // Persist an initial Running record before execution.
+                                let initial_run = crate::models::workflow::WorkflowRun {
+                                    run_id,
+                                    workflow_id: wf_clone.id,
+                                    workflow_version: wf_clone.version,
+                                    workflow_snapshot: wf_clone.clone(),
+                                    started_at: Utc::now(),
+                                    finished_at: None,
+                                    status: crate::models::workflow::RunStatus::Running,
+                                    trigger_input: None,
+                                    steps: vec![],
+                                    total_cost_usd: None,
+                                    total_duration_ms: None,
+                                };
+                                if let Err(e) = run_store.create_run(initial_run).await {
+                                    tracing::error!(
+                                        workflow_id = %wf_clone.id,
+                                        "Failed to persist initial run {}: {}",
+                                        run_id, e
+                                    );
+                                    return;
+                                }
+
                                 // Build log path: data_dir/logs/<workflow_id>/<run_id>.log
                                 let log_dir = data_dir.join("logs").join(wf_clone.id.to_string());
                                 if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
@@ -219,7 +246,15 @@ impl WorkflowScheduler {
                                 let log_path = log_dir.join(format!("{}.log", run_id));
 
                                 let sink = match crate::workflow::log_sink::FileLogSink::create(log_path).await {
-                                    Ok(s) => Arc::new(s) as Arc<dyn crate::workflow::step::LogSink>,
+                                    Ok(s) => {
+                                        let emitting = crate::workflow::EventEmittingLogSink::new(
+                                            Arc::new(s) as Arc<dyn crate::workflow::step::LogSink>,
+                                            event_tx.clone(),
+                                            run_id,
+                                            wf_clone.id,
+                                        );
+                                        Arc::new(emitting) as Arc<dyn crate::workflow::step::LogSink>
+                                    }
                                     Err(e) => {
                                         tracing::error!(
                                             workflow_id = %wf_clone.id,
@@ -237,7 +272,7 @@ impl WorkflowScheduler {
                                     target_step: None,
                                 };
 
-                                let run = crate::workflow::executor::run_workflow(
+                                let final_run = crate::workflow::executor::run_workflow(
                                     &wf_clone,
                                     run_id,
                                     trigger,
@@ -245,9 +280,14 @@ impl WorkflowScheduler {
                                     Some(event_tx),
                                 ).await;
 
-                                // Store the completed run in the in-memory map
-                                let run = Arc::new(RwLock::new(run));
-                                workflow_runs.write().await.insert(run_id, run);
+                                // Persist the final run state.
+                                if let Err(e) = run_store.update_run(&final_run).await {
+                                    tracing::error!(
+                                        workflow_id = %wf_clone.id,
+                                        "Failed to persist final run {}: {}",
+                                        run_id, e
+                                    );
+                                }
                             });
                         }
                     }

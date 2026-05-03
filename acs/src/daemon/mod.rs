@@ -5,20 +5,18 @@ pub mod events;
 pub mod scheduler;
 pub mod service;
 
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use tokio::sync::{broadcast, Notify, RwLock};
+use tokio::sync::{broadcast, Notify};
 use tracing;
-use uuid::Uuid;
 
+use crate::daemon::events::WorkflowEvent;
 use crate::models::DaemonConfig;
 use crate::server::{self, AppState};
-use crate::daemon::events::WorkflowEvent;
 
 // ---------------------------------------------------------------------------
 // PidFile — exclusive PID file acquisition
@@ -684,9 +682,10 @@ pub async fn start_daemon(
         crate::storage::workflows::FsWorkflowStore::new(&data_dir).await?,
     ) as Arc<dyn crate::storage::workflows::WorkflowStore>;
 
-    // In-memory workflow runs map.
-    let workflow_runs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<crate::models::workflow::WorkflowRun>>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
+    // Initialize WorkflowRunStore (persistent, file-backed).
+    let workflow_run_store = Arc::new(
+        crate::storage::workflow_runs::FsWorkflowRunStore::new(&data_dir).await?,
+    ) as Arc<dyn crate::storage::workflow_runs::WorkflowRunStore>;
 
     // WorkflowEvent broadcast channel.
     let (workflow_event_tx, _workflow_event_rx) =
@@ -706,7 +705,7 @@ pub async fn start_daemon(
         shutdown_tx: Some(shutdown_tx.clone()),
         workflow_event_tx: workflow_event_tx.clone(),
         workflow_store,
-        workflow_runs,
+        workflow_run_store: Arc::clone(&workflow_run_store),
     });
 
     // Start Workflow Scheduler
@@ -716,7 +715,7 @@ pub async fn start_daemon(
         wf_sched_clock,
         Arc::clone(&scheduler_notify),
         workflow_event_tx.clone(),
-        Arc::clone(&state.workflow_runs),
+        Arc::clone(&workflow_run_store),
         data_dir.clone(),
     );
 

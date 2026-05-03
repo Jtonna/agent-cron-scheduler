@@ -3,7 +3,6 @@
 //! Each test spawns a real Axum server on a random port and exercises the
 //! workflow API end-to-end.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -13,25 +12,34 @@ use agent_cron_scheduler::models::workflow::{
 };
 use agent_cron_scheduler::models::DaemonConfig;
 use agent_cron_scheduler::server::{self, AppState};
+use agent_cron_scheduler::storage::workflow_runs::WorkflowRunStore;
 use agent_cron_scheduler::storage::workflows::WorkflowStore;
 
-use tokio::sync::{broadcast, Notify, RwLock};
+use tokio::sync::{broadcast, Notify};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
-// In-memory WorkflowStore backed by FsWorkflowStore on a temp dir
-// (we reuse the real FsWorkflowStore so tests exercise the real codepath)
+// Store helpers — use the real Fs* implementations on a temp dir
 // ---------------------------------------------------------------------------
 
-async fn make_workflow_store() -> (
+async fn make_stores() -> (
     Arc<dyn WorkflowStore>,
+    Arc<dyn WorkflowRunStore>,
     tempfile::TempDir,
 ) {
     let tmp = tempfile::TempDir::new().expect("create temp dir");
-    let store = agent_cron_scheduler::storage::workflows::FsWorkflowStore::new(tmp.path())
+    let wf_store = agent_cron_scheduler::storage::workflows::FsWorkflowStore::new(tmp.path())
         .await
         .expect("create FsWorkflowStore");
-    (Arc::new(store) as Arc<dyn WorkflowStore>, tmp)
+    let run_store =
+        agent_cron_scheduler::storage::workflow_runs::FsWorkflowRunStore::new(tmp.path())
+            .await
+            .expect("create FsWorkflowRunStore");
+    (
+        Arc::new(wf_store) as Arc<dyn WorkflowStore>,
+        Arc::new(run_store) as Arc<dyn WorkflowRunStore>,
+        tmp,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -40,6 +48,7 @@ async fn make_workflow_store() -> (
 
 async fn spawn_test_server(
     workflow_store: Arc<dyn WorkflowStore>,
+    workflow_run_store: Arc<dyn WorkflowRunStore>,
     data_dir: std::path::PathBuf,
 ) -> (String, Arc<AppState>, tokio::task::JoinHandle<()>) {
     let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(4096);
@@ -54,7 +63,7 @@ async fn spawn_test_server(
         shutdown_tx: None,
         workflow_event_tx,
         workflow_store,
-        workflow_runs: Arc::new(RwLock::new(HashMap::new())),
+        workflow_run_store,
     });
 
     let router = server::create_router(Arc::clone(&state));
@@ -117,8 +126,9 @@ fn make_new_workflow(name: &str) -> NewWorkflow {
 /// 1. POST creates a workflow with steps (1-step ShellStep echo)
 #[tokio::test]
 async fn test_create_workflow_with_shell_step() {
-    let (store, tmp) = make_workflow_store().await;
-    let (base_url, _state, _handle) = spawn_test_server(store, tmp.path().to_path_buf()).await;
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
     let client = reqwest::Client::new();
 
     let body = serde_json::to_string(&make_new_workflow("echo-wf")).unwrap();
@@ -140,8 +150,9 @@ async fn test_create_workflow_with_shell_step() {
 /// 2. GET /api/workflows lists includes the created workflow
 #[tokio::test]
 async fn test_list_workflows_includes_created() {
-    let (store, tmp) = make_workflow_store().await;
-    let (base_url, _state, _handle) = spawn_test_server(store, tmp.path().to_path_buf()).await;
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
     let client = reqwest::Client::new();
 
     let body = serde_json::to_string(&make_new_workflow("list-test")).unwrap();
@@ -168,8 +179,9 @@ async fn test_list_workflows_includes_created() {
 /// 3. GET /api/workflows/{id} returns the workflow
 #[tokio::test]
 async fn test_get_workflow_by_uuid() {
-    let (store, tmp) = make_workflow_store().await;
-    let (base_url, _state, _handle) = spawn_test_server(store, tmp.path().to_path_buf()).await;
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
     let client = reqwest::Client::new();
 
     let body = serde_json::to_string(&make_new_workflow("get-by-uuid")).unwrap();
@@ -199,8 +211,9 @@ async fn test_get_workflow_by_uuid() {
 /// 4. GET by name resolves correctly
 #[tokio::test]
 async fn test_get_workflow_by_name() {
-    let (store, tmp) = make_workflow_store().await;
-    let (base_url, _state, _handle) = spawn_test_server(store, tmp.path().to_path_buf()).await;
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
     let client = reqwest::Client::new();
 
     let body = serde_json::to_string(&make_new_workflow("get-by-name")).unwrap();
@@ -225,8 +238,9 @@ async fn test_get_workflow_by_name() {
 /// 5. PATCH updates a field, version bumps if a definition field changed
 #[tokio::test]
 async fn test_patch_workflow_bumps_version() {
-    let (store, tmp) = make_workflow_store().await;
-    let (base_url, _state, _handle) = spawn_test_server(store, tmp.path().to_path_buf()).await;
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
     let client = reqwest::Client::new();
 
     let body = serde_json::to_string(&make_new_workflow("patch-me")).unwrap();
@@ -265,8 +279,9 @@ async fn test_patch_workflow_bumps_version() {
 /// 6. PATCH with duplicate name returns 409
 #[tokio::test]
 async fn test_patch_workflow_duplicate_name_returns_409() {
-    let (store, tmp) = make_workflow_store().await;
-    let (base_url, _state, _handle) = spawn_test_server(store, tmp.path().to_path_buf()).await;
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
     let client = reqwest::Client::new();
 
     // Create wf-a and wf-b
@@ -309,8 +324,9 @@ async fn test_patch_workflow_duplicate_name_returns_409() {
 /// 7. DELETE returns 204 and subsequent GET returns 404
 #[tokio::test]
 async fn test_delete_workflow() {
-    let (store, tmp) = make_workflow_store().await;
-    let (base_url, _state, _handle) = spawn_test_server(store, tmp.path().to_path_buf()).await;
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
     let client = reqwest::Client::new();
 
     let created: serde_json::Value = client
@@ -343,9 +359,10 @@ async fn test_delete_workflow() {
 /// 8. POST /api/workflows/{id}/trigger returns 202 with run_id
 #[tokio::test]
 async fn test_trigger_workflow_returns_202() {
-    let (store, tmp) = make_workflow_store().await;
+    let (wf_store, run_store, tmp) = make_stores().await;
     let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&store), tmp.path().to_path_buf()).await;
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
+            .await;
     let client = reqwest::Client::new();
 
     let created: serde_json::Value = client
@@ -377,15 +394,12 @@ async fn test_trigger_workflow_returns_202() {
 /// 9. After trigger, polling GET /api/runs/{run_id} eventually shows status=Completed
 #[tokio::test]
 async fn test_trigger_and_poll_until_completed() {
-    let (store, tmp) = make_workflow_store().await;
+    let (wf_store, run_store, tmp) = make_stores().await;
     let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&store), tmp.path().to_path_buf()).await;
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
+            .await;
     let client = reqwest::Client::new();
 
-    // Use echo command appropriate for the platform
-    #[cfg(windows)]
-    let echo_cmd = "echo hello";
-    #[cfg(not(windows))]
     let echo_cmd = "echo hello";
 
     let wf = NewWorkflow {
@@ -448,8 +462,7 @@ async fn test_trigger_and_poll_until_completed() {
                     assert_eq!(
                         status, "Completed",
                         "expected Completed, got {} for run {}",
-                        status,
-                        run_id
+                        status, run_id
                     );
                     break;
                 }
@@ -465,9 +478,10 @@ async fn test_trigger_and_poll_until_completed() {
 ///     observe at minimum a RunStarted event for that run_id.
 #[tokio::test]
 async fn test_sse_workflow_events_run_started() {
-    let (store, tmp) = make_workflow_store().await;
+    let (wf_store, run_store, tmp) = make_stores().await;
     let (base_url, state, _handle) =
-        spawn_test_server(Arc::clone(&store), tmp.path().to_path_buf()).await;
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
+            .await;
     let client = reqwest::Client::new();
 
     // Create workflow
@@ -533,20 +547,14 @@ async fn test_sse_workflow_events_run_started() {
 
 /// 11. Trigger with input that's referenced by step's command template:
 ///     input flows through and the step runs successfully.
-///
-/// Note: On Windows, command template expansion in ShellStep routes through
-/// `cmd /C`, so we use echo with a literal string in the step command
-/// and pass input separately to confirm end-to-end flow.
 #[tokio::test]
 async fn test_trigger_with_input_flows_through() {
-    let (store, tmp) = make_workflow_store().await;
+    let (wf_store, run_store, tmp) = make_stores().await;
     let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&store), tmp.path().to_path_buf()).await;
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
+            .await;
     let client = reqwest::Client::new();
 
-    // The command echoes a literal — we just want to confirm the run completes
-    // with status=Completed when input is provided. Template substitution in the
-    // command itself is tested at the unit level in executor tests.
     let wf = NewWorkflow {
         name: "input-flow-test".to_string(),
         schedule: "*/5 * * * *".to_string(),
@@ -624,5 +632,168 @@ async fn test_trigger_with_input_flows_through() {
                 }
             }
         }
+    }
+}
+
+/// 12. Triggering a workflow persists the run to disk (file exists).
+#[tokio::test]
+async fn test_trigger_persists_run_to_disk() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let tmp_path = tmp.path().to_path_buf();
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp_path.clone(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("persist-run-test")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+    let run_id = trigger_json["run_id"].as_str().unwrap();
+
+    // Wait briefly then verify the JSON file exists on disk.
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    let run_file = tmp_path
+        .join("runs")
+        .join(wf_id)
+        .join(format!("{}.json", run_id));
+    assert!(
+        run_file.exists(),
+        "Run JSON file should be persisted at {}",
+        run_file.display()
+    );
+}
+
+/// 13. Restart simulation: runs persisted by instance A are readable by instance B
+///     pointing at the same data_dir.
+#[tokio::test]
+async fn test_restart_simulation_run_persists() {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let data_dir = tmp.path().to_path_buf();
+
+    let run_id_str;
+
+    // Instance A — create a workflow and trigger it.
+    {
+        let wf_store_a =
+            agent_cron_scheduler::storage::workflows::FsWorkflowStore::new(&data_dir)
+                .await
+                .expect("create wf store A");
+        let run_store_a =
+            agent_cron_scheduler::storage::workflow_runs::FsWorkflowRunStore::new(&data_dir)
+                .await
+                .expect("create run store A");
+        let (base_url, _state, _handle) = spawn_test_server(
+            Arc::new(wf_store_a) as Arc<dyn WorkflowStore>,
+            Arc::new(run_store_a) as Arc<dyn WorkflowRunStore>,
+            data_dir.clone(),
+        )
+        .await;
+        let client = reqwest::Client::new();
+
+        let created: serde_json::Value = client
+            .post(format!("{}/api/workflows", base_url))
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&make_new_workflow("restart-test")).unwrap())
+            .send()
+            .await
+            .expect("POST")
+            .json()
+            .await
+            .unwrap();
+        let wf_id = created["id"].as_str().unwrap();
+
+        let trigger_json: serde_json::Value = client
+            .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+            .header("Content-Type", "application/json")
+            .body(r#"{"input": null}"#)
+            .send()
+            .await
+            .expect("trigger")
+            .json()
+            .await
+            .unwrap();
+        run_id_str = trigger_json["run_id"].as_str().unwrap().to_string();
+
+        // Wait for run to complete before "restarting".
+        let deadline =
+            tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                panic!("Run did not complete within 10s before restart simulation");
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            let run_resp = client
+                .get(format!("{}/api/runs/{}", base_url, run_id_str))
+                .send()
+                .await
+                .expect("GET run");
+            if run_resp.status() == 200 {
+                let run_json: serde_json::Value = run_resp.json().await.unwrap();
+                let status = run_json["status"].as_str().unwrap_or("");
+                if status == "Completed" || status == "Failed" {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Instance B — open the same data_dir and verify the run is readable.
+    {
+        let wf_store_b =
+            agent_cron_scheduler::storage::workflows::FsWorkflowStore::new(&data_dir)
+                .await
+                .expect("create wf store B");
+        let run_store_b =
+            agent_cron_scheduler::storage::workflow_runs::FsWorkflowRunStore::new(&data_dir)
+                .await
+                .expect("create run store B");
+        let (base_url_b, _state_b, _handle_b) = spawn_test_server(
+            Arc::new(wf_store_b) as Arc<dyn WorkflowStore>,
+            Arc::new(run_store_b) as Arc<dyn WorkflowRunStore>,
+            data_dir.clone(),
+        )
+        .await;
+        let client = reqwest::Client::new();
+
+        let run_resp = client
+            .get(format!("{}/api/runs/{}", base_url_b, run_id_str))
+            .send()
+            .await
+            .expect("GET run on instance B");
+
+        assert_eq!(
+            run_resp.status(),
+            200,
+            "Run should be readable from a fresh store instance (restart simulation)"
+        );
+        let run_json: serde_json::Value = run_resp.json().await.unwrap();
+        assert_eq!(
+            run_json["run_id"].as_str().unwrap(),
+            run_id_str,
+            "run_id should match"
+        );
     }
 }
