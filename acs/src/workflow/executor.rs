@@ -649,7 +649,7 @@ mod tests {
         StepDefCommon, TriggerParams, Workflow,
     };
     use crate::models::workflow::ScheduleMode;
-    use crate::workflow::step::{LogSink, StepOutput};
+    use crate::workflow::step::LogSink;
 
     use super::run_workflow;
 
@@ -1164,7 +1164,6 @@ mod tests {
     async fn test_executor_default_input_applied() {
         let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
 
-        let n = now();
         let mut workflow = make_workflow(
             "default_input",
             vec![shell_step("s1", "echo ${input.x}")],

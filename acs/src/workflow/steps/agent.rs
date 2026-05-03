@@ -290,7 +290,7 @@ mod tests {
 
     use crate::models::workflow::{AgentStep, AgentType, CaptureSpec, StepDefCommon};
     use crate::pty::MockPtySpawner;
-    use crate::workflow::step::{LogSink, Step, StepContext, StepOutput};
+    use crate::workflow::step::{LogSink, Step, StepContext};
 
     use super::{execute_with_spawner, substitute_prompt};
 

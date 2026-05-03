@@ -229,9 +229,6 @@ mod tests {
     }
 
     impl MockLogSink {
-        fn collected_output(&self) -> Vec<u8> {
-            self.chunks.lock().unwrap().clone()
-        }
         fn events(&self) -> Vec<String> {
             self.events.lock().unwrap().clone()
         }

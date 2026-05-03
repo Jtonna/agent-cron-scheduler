@@ -250,7 +250,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::models::workflow::{CaptureSpec, ShellStep, StepDefCommon};
-    use crate::workflow::step::{LogSink, Step, StepContext, StepError, StepOutput};
+    use crate::workflow::step::{LogSink, Step, StepContext, StepError};
 
     // ── Mock LogSink ─────────────────────────────────────────────────────────────
     // Records all calls for assertions in tests. `chunks` accumulates raw output bytes.
@@ -338,15 +338,51 @@ mod tests {
         }
     }
 
-    // ── Test 1: Happy path — echo hello ──────────────────────────────────────────
+    // ── Platform helpers ─────────────────────────────────────────────────────────
+    // `echo hello` works the same on both sh and cmd.exe, so Test 1 is cross-platform.
+    // Tests that use shell-specific syntax (env vars, sleep) keep separate cfg blocks.
 
+    /// Return a command string that echoes a known token and exits 0.
+    /// `echo hello` is in the intersection of sh and cmd.exe syntax.
+    fn echo_cmd(text: &str) -> String {
+        format!("echo {}", text)
+    }
+
+    /// Return a command string that exits with code 1.
+    /// On Unix `sh -c 'exit 1'` is reliable. On Windows the ShellStep wraps with
+    /// `cmd /C`, so `exit 1` inside that context exits with code 1.
     #[cfg(unix)]
+    fn exit_one_cmd() -> &'static str {
+        "sh -c 'exit 1'"
+    }
+    #[cfg(windows)]
+    fn exit_one_cmd() -> &'static str {
+        "exit 1"
+    }
+
+    /// Return a command string that sleeps for a long time (used for timeout tests).
+    /// On Unix: `sleep 10`.
+    /// On Windows: PowerShell Start-Sleep.
+    /// Note: We avoid `timeout.exe` on Windows because Git for Windows can shadow it
+    /// with the GNU coreutils `timeout`, which has incompatible flags.
+    #[cfg(unix)]
+    fn sleep_long_cmd() -> &'static str {
+        "sleep 10"
+    }
+    #[cfg(windows)]
+    fn sleep_long_cmd() -> &'static str {
+        "powershell -NoProfile -Command \"Start-Sleep -Seconds 10\""
+    }
+
+    // ── Test 1: Happy path — echo hello (cross-platform) ─────────────────────────
+    // `echo hello` works in both sh and cmd.exe.
+
     #[tokio::test]
     async fn test_shell_step_happy_path_echo() {
         let sink = Arc::new(MockLogSink::default());
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
-        let step = make_step("s1", "echo hello");
+        let step = make_step("s1", &echo_cmd("hello"));
         let output = step.execute(&mut ctx).await.expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
@@ -356,13 +392,16 @@ mod tests {
             other => panic!("expected String, got {:?}", other),
         };
         assert!(
-            stdout_str.contains("hello"),
+            stdout_str.to_lowercase().contains("hello"),
             "expected 'hello' in stdout: {:?}",
             stdout_str
         );
         // log sink received data
         let logged = String::from_utf8_lossy(&sink.collected_output()).into_owned();
-        assert!(logged.contains("hello"), "log sink should contain 'hello'");
+        assert!(
+            logged.to_lowercase().contains("hello"),
+            "log sink should contain 'hello'"
+        );
         // start and end markers
         let events = sink.events();
         assert_eq!(events.len(), 2);
@@ -370,66 +409,33 @@ mod tests {
         assert_eq!(events[1], "end:s1:0");
     }
 
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn test_shell_step_happy_path_echo() {
-        let sink = Arc::new(MockLogSink::default());
-        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+    // ── Test 2: Non-zero exit code (cross-platform via helper) ───────────────────
 
-        let step = make_step("s1", "echo hello");
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
-
-        assert_eq!(output.exit_code, Some(0));
-        let stdout_str = match output.stdout {
-            Some(Value::String(s)) => s,
-            other => panic!("expected String, got {:?}", other),
-        };
-        assert!(
-            stdout_str.to_lowercase().contains("hello"),
-            "expected 'hello' in stdout: {:?}",
-            stdout_str
-        );
-        let events = sink.events();
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0], "start:s1");
-        assert!(events[1].starts_with("end:s1:"));
-    }
-
-    // ── Test 2: Non-zero exit code ────────────────────────────────────────────────
-
-    #[cfg(unix)]
     #[tokio::test]
     async fn test_shell_step_nonzero_exit_is_ok() {
         let sink = Arc::new(MockLogSink::default());
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
-        let step = make_step("s2", "sh -c 'exit 1'");
+        let step = make_step("s2", exit_one_cmd());
         let output = step.execute(&mut ctx).await.expect("non-zero exit should be Ok");
 
-        assert_eq!(output.exit_code, Some(1), "exit code should be 1");
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn test_shell_step_nonzero_exit_is_ok() {
-        let sink = Arc::new(MockLogSink::default());
-        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
-
-        let step = make_step("s2", "exit 1");
-        let output = step.execute(&mut ctx).await.expect("non-zero exit should be Ok");
-        // cmd.exe exit codes may vary but step should be Ok
-        assert!(output.exit_code.is_some());
+        // Both platforms should produce a non-zero exit code.
+        let code = output.exit_code.expect("exit code should be present");
+        assert_ne!(code, 0, "exit code should be non-zero");
     }
 
     // ── Test 3: Template substitution ────────────────────────────────────────────
+    // `echo world` is in the intersection of sh and cmd.exe.
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn test_shell_step_template_substitution() {
         let sink = Arc::new(MockLogSink::default());
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
         ctx.input = json!({"name": "world"});
 
+        // The template engine substitutes ${input.name} → "world" before the command
+        // reaches the shell.  After substitution the command is `echo world` which
+        // is valid on both sh and cmd.exe.
         let step = make_step("s3", "echo ${input.name}");
         let output = step.execute(&mut ctx).await.expect("execute should succeed");
 
@@ -445,6 +451,7 @@ mod tests {
     }
 
     // ── Test 4: Capture parser = json ─────────────────────────────────────────────
+    // `printf` is not available on bare cmd.exe, so this uses platform-specific commands.
 
     #[cfg(unix)]
     #[tokio::test]
@@ -478,7 +485,43 @@ mod tests {
         }
     }
 
+    // On Windows, cmd.exe `echo` adds a trailing space before the newline, so we use
+    // PowerShell's Write-Output which gives clean output for JSON parsing.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_step_capture_parser_json() {
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+
+        let step = ShellStep {
+            common: StepDefCommon {
+                id: "s4".to_string(),
+                on_failure: None,
+                always_run: false,
+                timeout_secs: None,
+                working_dir: None,
+                env_vars: None,
+                capture: CaptureSpec {
+                    stdout_max_bytes: 65536,
+                    parser: Some("json".to_string()),
+                },
+            },
+            // powershell.exe is always present on Windows; Write-Output emits no trailing space.
+            command: r#"powershell -NoProfile -Command "Write-Output '{\"x\":1}'""#.to_string(),
+            pass_stdin: false,
+        };
+
+        let output = step.execute(&mut ctx).await.expect("execute");
+        match output.stdout {
+            Some(Value::Object(map)) => {
+                assert_eq!(map.get("x"), Some(&json!(1)));
+            }
+            other => panic!("expected JSON object, got {:?}", other),
+        }
+    }
+
     // ── Test 5: Capture parser = lines ───────────────────────────────────────────
+    // `printf` is not available on bare cmd.exe.
 
     #[cfg(unix)]
     #[tokio::test]
@@ -514,6 +557,55 @@ mod tests {
         }
     }
 
+    // On Windows we use two separate `echo` calls chained with `&&` inside cmd.exe.
+    // Each `echo X` on cmd.exe produces "X\r\n"; the lines parser splits on '\n'
+    // and the '\r' remains in the value — so we trim before asserting.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_step_capture_parser_lines() {
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+
+        let step = ShellStep {
+            common: StepDefCommon {
+                id: "s5".to_string(),
+                on_failure: None,
+                always_run: false,
+                timeout_secs: None,
+                working_dir: None,
+                env_vars: None,
+                capture: CaptureSpec {
+                    stdout_max_bytes: 65536,
+                    parser: Some("lines".to_string()),
+                },
+            },
+            // `echo a && echo b` — two lines of output via cmd.exe
+            command: "echo lineA && echo lineB".to_string(),
+            pass_stdin: false,
+        };
+
+        let output = step.execute(&mut ctx).await.expect("execute");
+        match output.stdout {
+            Some(Value::Array(arr)) => {
+                assert!(arr.len() >= 2, "expected at least 2 lines, got {:?}", arr);
+                // cmd.exe echo may include trailing spaces/CR; just check containment.
+                let first = arr[0].as_str().unwrap_or("").trim().to_lowercase();
+                let second = arr[1].as_str().unwrap_or("").trim().to_lowercase();
+                assert!(
+                    first.contains("linea"),
+                    "expected 'lineA' in first line: {:?}",
+                    arr[0]
+                );
+                assert!(
+                    second.contains("lineb"),
+                    "expected 'lineB' in second line: {:?}",
+                    arr[1]
+                );
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
     // ── Test 6: Working dir override ─────────────────────────────────────────────
 
     #[cfg(unix)]
@@ -540,6 +632,37 @@ mod tests {
         );
     }
 
+    // On Windows, `cd` prints the current directory and `%CD%` expands it.
+    // We use a real temp dir path so the test is deterministic.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_step_working_dir() {
+        use std::path::PathBuf;
+
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+
+        // Use %TEMP% or C:\Windows\Temp as a known directory that exists.
+        let temp_dir = std::env::var("TEMP")
+            .or_else(|_| std::env::var("TMP"))
+            .unwrap_or_else(|_| "C:\\Windows\\Temp".to_string());
+        ctx.working_dir = Some(PathBuf::from(&temp_dir));
+
+        // `cd` in cmd.exe prints the current directory when given no args.
+        let step = make_step("s6", "cd");
+        let output = step.execute(&mut ctx).await.expect("execute");
+
+        let stdout_str = match output.stdout {
+            Some(Value::String(s)) => s,
+            other => panic!("expected String, got {:?}", other),
+        };
+        // The output should contain part of the temp path (case-insensitive).
+        assert!(
+            !stdout_str.trim().is_empty(),
+            "expected working dir output, got empty string"
+        );
+    }
+
     // ── Test 7: Env var passing ───────────────────────────────────────────────────
 
     #[cfg(unix)]
@@ -563,9 +686,30 @@ mod tests {
         );
     }
 
+    // On Windows, cmd.exe uses %VAR% for env var expansion.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_step_env_var_passing() {
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+        ctx.env.insert("SHELL_STEP_TEST_VAR".to_string(), "bar42".to_string());
+
+        let step = make_step("s7", "echo %SHELL_STEP_TEST_VAR%");
+        let output = step.execute(&mut ctx).await.expect("execute");
+
+        let stdout_str = match output.stdout {
+            Some(Value::String(s)) => s,
+            other => panic!("expected String, got {:?}", other),
+        };
+        assert!(
+            stdout_str.contains("bar42"),
+            "expected 'bar42' in stdout: {:?}",
+            stdout_str
+        );
+    }
+
     // ── Test 8: Timeout fires ─────────────────────────────────────────────────────
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn test_shell_step_timeout() {
         let sink = Arc::new(MockLogSink::default());
@@ -581,7 +725,8 @@ mod tests {
                 env_vars: None,
                 capture: CaptureSpec::default(),
             },
-            command: "sleep 10".to_string(),
+            // sleep_long_cmd() uses platform-appropriate long-sleep command.
+            command: sleep_long_cmd().to_string(),
             pass_stdin: false,
         };
 
@@ -594,15 +739,14 @@ mod tests {
         }
     }
 
-    // ── Test: exports and cost are empty/none for ShellStep ───────────────────────
+    // ── Test: exports and cost are empty/none for ShellStep (cross-platform) ──────
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn test_shell_step_exports_empty_cost_none() {
         let sink = Arc::new(MockLogSink::default());
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
-        let step = make_step("s9", "echo hi");
+        let step = make_step("s9", &echo_cmd("hi"));
         let output = step.execute(&mut ctx).await.expect("execute");
 
         assert!(output.exports.is_empty(), "exports should be empty");

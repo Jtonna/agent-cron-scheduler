@@ -82,7 +82,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::models::workflow::{CaptureSpec, SetVarStep, StepDefCommon};
-    use crate::workflow::step::{LogSink, Step, StepContext, StepOutput};
+    use crate::workflow::step::{LogSink, Step, StepContext};
 
     // ── Mock LogSink ──────────────────────────────────────────────────────────
 

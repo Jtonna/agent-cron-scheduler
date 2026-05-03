@@ -355,7 +355,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::models::workflow::{CaptureSpec, ScriptStep, StepDefCommon};
-    use crate::workflow::step::{LogSink, Step, StepContext, StepError, StepOutput};
+    use crate::workflow::step::{LogSink, Step, StepContext, StepError};
 
     // ── Mock LogSink ─────────────────────────────────────────────────────────────
 
@@ -365,6 +365,7 @@ mod tests {
         events: Arc<Mutex<Vec<String>>>,
     }
 
+    #[allow(dead_code)]
     impl MockLogSink {
         fn collected_output(&self) -> Vec<u8> {
             self.chunks.lock().unwrap().clone()
@@ -625,6 +626,8 @@ mod tests {
     }
 
     // ── Test 6: Templated path and args ─────────────────────────────────────────
+    // Unix: sh script receives $1. Windows: batch script receives %1.
+    // Both test that template substitution resolves ${input.*} in both path and args.
 
     #[cfg(unix)]
     #[tokio::test]
@@ -665,6 +668,51 @@ mod tests {
         };
         assert!(
             stdout_str.contains("greet:world"),
+            "expected 'greet:world' in stdout: {:?}",
+            stdout_str
+        );
+    }
+
+    // Windows equivalent: batch script using %1 for the first argument.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_script_step_templated_path_and_args() {
+        let dir = TempDir::new().expect("tmpdir");
+        let _path = write_script(&dir, "greet.bat", "@echo off\necho greet:%1\n");
+        let dir_str = dir.path().to_str().unwrap().to_string();
+
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+        ctx.input = json!({
+            "script_dir": dir_str,
+            "arg": "world"
+        });
+
+        let step = ScriptStep {
+            common: StepDefCommon {
+                id: "s6".to_string(),
+                on_failure: None,
+                always_run: false,
+                timeout_secs: None,
+                working_dir: None,
+                env_vars: None,
+                capture: CaptureSpec::default(),
+            },
+            path: "${input.script_dir}\\greet.bat".to_string(),
+            script_type: Some("batch".to_string()),
+            args: Some("${input.arg}".to_string()),
+            pass_stdin: false,
+        };
+
+        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+
+        assert_eq!(output.exit_code, Some(0));
+        let stdout_str = match output.stdout {
+            Some(Value::String(s)) => s,
+            other => panic!("expected String, got {:?}", other),
+        };
+        assert!(
+            stdout_str.to_lowercase().contains("greet:world"),
             "expected 'greet:world' in stdout: {:?}",
             stdout_str
         );
@@ -721,6 +769,8 @@ mod tests {
     }
 
     // ── Test 8: Capture parser variants ─────────────────────────────────────────
+    // Unix: sh scripts using printf for precise output.
+    // Windows: batch scripts using echo (with trailing space/CR awareness).
 
     #[cfg(unix)]
     #[tokio::test]
@@ -750,6 +800,50 @@ mod tests {
             },
             path: path.to_str().unwrap().to_string(),
             script_type: Some("shell".to_string()),
+            args: None,
+            pass_stdin: false,
+        };
+
+        let output = step.execute(&mut ctx).await.expect("execute");
+        match output.stdout {
+            Some(Value::Object(map)) => {
+                assert_eq!(map.get("x"), Some(&json!(1)));
+            }
+            other => panic!("expected JSON object, got {:?}", other),
+        }
+    }
+
+    // Windows: use a powershell.exe call inside a batch script for clean JSON output
+    // (cmd.exe `echo` adds a trailing space before \r\n which breaks JSON parsing).
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_script_step_capture_parser_json() {
+        let dir = TempDir::new().expect("tmpdir");
+        // Use powershell.exe (always available on Windows) to emit clean JSON.
+        let path = write_script(
+            &dir,
+            "json.bat",
+            "@echo off\npowershell -NoProfile -Command \"Write-Output '{\\\"x\\\":1}'\"\n",
+        );
+
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+
+        let step = ScriptStep {
+            common: StepDefCommon {
+                id: "s8a".to_string(),
+                on_failure: None,
+                always_run: false,
+                timeout_secs: None,
+                working_dir: None,
+                env_vars: None,
+                capture: CaptureSpec {
+                    stdout_max_bytes: 65536,
+                    parser: Some("json".to_string()),
+                },
+            },
+            path: path.to_str().unwrap().to_string(),
+            script_type: Some("batch".to_string()),
             args: None,
             pass_stdin: false,
         };
@@ -806,6 +900,62 @@ mod tests {
         }
     }
 
+    // Windows: two echo lines from a batch script.
+    // cmd.exe echo includes trailing space + \r\n; the lines parser splits on '\n'
+    // leaving '\r' in the value — we just check containment.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_script_step_capture_parser_lines() {
+        let dir = TempDir::new().expect("tmpdir");
+        let path = write_script(
+            &dir,
+            "lines.bat",
+            "@echo off\necho lineA\necho lineB\n",
+        );
+
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+
+        let step = ScriptStep {
+            common: StepDefCommon {
+                id: "s8b".to_string(),
+                on_failure: None,
+                always_run: false,
+                timeout_secs: None,
+                working_dir: None,
+                env_vars: None,
+                capture: CaptureSpec {
+                    stdout_max_bytes: 65536,
+                    parser: Some("lines".to_string()),
+                },
+            },
+            path: path.to_str().unwrap().to_string(),
+            script_type: Some("batch".to_string()),
+            args: None,
+            pass_stdin: false,
+        };
+
+        let output = step.execute(&mut ctx).await.expect("execute");
+        match output.stdout {
+            Some(Value::Array(arr)) => {
+                assert!(arr.len() >= 2, "expected at least 2 lines, got {:?}", arr);
+                let first = arr[0].as_str().unwrap_or("").trim().to_lowercase();
+                let second = arr[1].as_str().unwrap_or("").trim().to_lowercase();
+                assert!(
+                    first.contains("linea"),
+                    "expected 'lineA' in first line: {:?}",
+                    arr[0]
+                );
+                assert!(
+                    second.contains("lineb"),
+                    "expected 'lineB' in second line: {:?}",
+                    arr[1]
+                );
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn test_script_step_capture_parser_raw() {
@@ -843,6 +993,47 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_script_step_capture_parser_raw() {
+        let dir = TempDir::new().expect("tmpdir");
+        let path = write_script(&dir, "raw.bat", "@echo off\necho rawdata\n");
+
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+
+        let step = ScriptStep {
+            common: StepDefCommon {
+                id: "s8c".to_string(),
+                on_failure: None,
+                always_run: false,
+                timeout_secs: None,
+                working_dir: None,
+                env_vars: None,
+                capture: CaptureSpec {
+                    stdout_max_bytes: 65536,
+                    parser: Some("raw".to_string()),
+                },
+            },
+            path: path.to_str().unwrap().to_string(),
+            script_type: Some("batch".to_string()),
+            args: None,
+            pass_stdin: false,
+        };
+
+        let output = step.execute(&mut ctx).await.expect("execute");
+        match output.stdout {
+            Some(Value::String(s)) => {
+                assert!(
+                    s.to_lowercase().contains("rawdata"),
+                    "expected 'rawdata' in raw output: {:?}",
+                    s
+                );
+            }
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
     // ── Test 9: Timeout ──────────────────────────────────────────────────────────
 
     #[cfg(unix)]
@@ -866,6 +1057,47 @@ mod tests {
             },
             path: path.to_str().unwrap().to_string(),
             script_type: Some("shell".to_string()),
+            args: None,
+            pass_stdin: false,
+        };
+
+        let result = step.execute(&mut ctx).await;
+        match result {
+            Err(StepError::Timeout(secs)) => {
+                assert_eq!(secs, 1, "expected timeout of 1 second");
+            }
+            other => panic!("expected Timeout error, got {:?}", other),
+        }
+    }
+
+    // Windows: batch script that sleeps via PowerShell Start-Sleep.
+    // We avoid using `timeout.exe` here because it may be shadowed by GNU coreutils
+    // on developer machines (e.g. Git for Windows adds it to PATH).
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_script_step_timeout() {
+        let dir = TempDir::new().expect("tmpdir");
+        let path = write_script(
+            &dir,
+            "slow.bat",
+            "@echo off\npowershell -NoProfile -Command \"Start-Sleep -Seconds 10\"\n",
+        );
+
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+
+        let step = ScriptStep {
+            common: StepDefCommon {
+                id: "s9".to_string(),
+                on_failure: None,
+                always_run: false,
+                timeout_secs: Some(1),
+                working_dir: None,
+                env_vars: None,
+                capture: CaptureSpec::default(),
+            },
+            path: path.to_str().unwrap().to_string(),
+            script_type: Some("batch".to_string()),
             args: None,
             pass_stdin: false,
         };

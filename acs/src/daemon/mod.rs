@@ -584,20 +584,30 @@ pub async fn start_daemon(
     // Create data directories
     create_data_dirs(&data_dir).await?;
 
-    // Run migration: convert legacy jobs.json → workflows.json if needed
-    match crate::migration::migrate_if_needed(&data_dir).await {
-        Ok(crate::migration::MigrationResult::Migrated { count }) => {
-            tracing::info!("Migrated {} legacy job(s) to workflows format", count);
-        }
-        Ok(crate::migration::MigrationResult::AlreadyMigrated) => {
-            tracing::debug!("Migration skipped: workflows.json already exists");
-        }
-        Ok(crate::migration::MigrationResult::NotNeeded) => {
-            tracing::debug!("Migration not needed: no legacy jobs.json found");
+    // Run pending migrations (numbered migration system).
+    match crate::migration::run_pending(&data_dir).await {
+        Ok(report) => {
+            if !report.newly_applied.is_empty() {
+                tracing::info!(
+                    "Migrations applied: {:?}",
+                    report.newly_applied
+                );
+            }
+            if !report.already_applied.is_empty() {
+                tracing::debug!(
+                    "Migrations already applied (skipped): {:?}",
+                    report.already_applied
+                );
+            }
+            if !report.skipped_not_needed.is_empty() {
+                tracing::debug!(
+                    "Migrations not needed (skipped): {:?}",
+                    report.skipped_not_needed
+                );
+            }
         }
         Err(e) => {
-            tracing::error!("Migration failed: {}", e);
-            // Non-fatal: continue startup even if migration fails
+            return Err(anyhow::anyhow!("Migration failed: {}", e));
         }
     }
 
