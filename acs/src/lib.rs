@@ -6,3 +6,4 @@ pub mod process_kill;
 pub mod pty;
 pub mod server;
 pub mod storage;
+pub mod workflow;
