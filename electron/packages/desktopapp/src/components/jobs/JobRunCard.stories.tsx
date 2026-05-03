@@ -35,6 +35,13 @@ const MOCK_JOBS: JobRun[] = [
     cost: "0.091",
   },
   {
+    name: "runaway-task",
+    status: "killed",
+    duration: "0m 14s",
+    timeAgo: "15 min ago",
+    cost: "0.001",
+  },
+  {
     name: "nightly-report",
     status: "success",
     duration: "12m 44s",
@@ -82,6 +89,17 @@ export const Failed: Story = {
 
 export const Warning: Story = {
   args: { job: MOCK_JOBS[4] },
+  decorators: [
+    (Story) => (
+      <div style={{ maxWidth: 300 }}>
+        <Story />
+      </div>
+    ),
+  ],
+};
+
+export const Killed: Story = {
+  args: { job: MOCK_JOBS[5] },
   decorators: [
     (Story) => (
       <div style={{ maxWidth: 300 }}>

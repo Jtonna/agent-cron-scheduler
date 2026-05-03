@@ -1,17 +1,9 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import {
-  Button,
-  Input,
-  TextField,
-  MenuTrigger,
-  Menu,
-  MenuItem,
-  Popover,
-} from "react-aria-components";
-import { Search, ChevronDown, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { JobsListRow } from "./JobsListRow";
+import { TabBar } from "@/components/ui/TabBar";
 import type { Job, RecentRunEntry } from "@/apis/types";
 import { useRecentRuns } from "@/apis/useRecentRuns";
 import { useJobRuns } from "@/apis/useJobRuns";
@@ -108,54 +100,18 @@ export function JobsList({ jobs, loading }: JobsListProps) {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Toolbar — TabBar style: sort dropdown + tab on the left, search on the right */}
-      <div className="border-y border-border-subtle">
-        <div className="h-[var(--height-tab-bar)] flex items-center gap-6 text-sm">
-          <MenuTrigger>
-            <Button className="text-fg font-semibold cursor-pointer flex items-center gap-1 outline-none focus-visible:ring-2 focus-visible:ring-brand-ring rounded px-1">
-              {SORT_LABELS[sortKey]}
-              <ChevronDown size={12} />
-            </Button>
-            <Popover
-              placement="bottom start"
-              className="w-52 bg-surface border border-border rounded-menu shadow-menu py-1 z-50 outline-none entering:animate-in entering:fade-in entering:zoom-in-95 exiting:animate-out exiting:fade-out exiting:zoom-out-95"
-            >
-              <Menu className="outline-none">
-                {(Object.keys(SORT_LABELS) as SortKey[]).map((key) => (
-                  <MenuItem
-                    key={key}
-                    onAction={() => setSortKey(key)}
-                    className={`px-3 py-2 text-sm hover:bg-surface-secondary outline-none cursor-pointer ${
-                      key === sortKey ? "text-fg font-semibold" : "text-fg-secondary"
-                    }`}
-                  >
-                    {SORT_LABELS[key]}
-                  </MenuItem>
-                ))}
-              </Menu>
-            </Popover>
-          </MenuTrigger>
-
-          <div className="w-px h-5 bg-border" />
-
-          <span className="text-fg font-semibold">Jobs</span>
-
-          <div className="ml-auto">
-            <TextField aria-label="Search jobs" value={search} onChange={setSearch}>
-              <div className="relative">
-                <Search
-                  size={14}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-fg-subtle pointer-events-none"
-                />
-                <Input
-                  placeholder="Search jobs..."
-                  className="w-64 h-[var(--height-input)] pl-9 pr-3 text-sm border border-border rounded-input bg-surface outline-none focus:border-brand-ring transition-colors"
-                />
-              </div>
-            </TextField>
-          </div>
-        </div>
-      </div>
+      <TabBar
+        label={{
+          value: sortKey,
+          options: SORT_LABELS,
+          onChange: (key) => setSortKey(key as SortKey),
+        }}
+        search={{
+          value: search,
+          onChange: setSearch,
+          placeholder: "Search jobs...",
+        }}
+      />
 
       {/* Header row */}
       <div className="grid grid-cols-[20px_minmax(0,1.6fr)_120px_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 px-4 text-[11px] font-semibold text-fg-subtle uppercase tracking-wider">
