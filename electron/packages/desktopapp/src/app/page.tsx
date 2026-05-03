@@ -123,12 +123,14 @@ export default function Home() {
       </div>
 
       {/* Recent runs */}
-      <TabBar
-        label="Recent"
-        tabs={["All runs", "Running", "Succeeded", "Failed"]}
-        activeTab={activeFilter}
-        onTabClick={setActiveFilter}
-      />
+      <div className="px-16">
+        <TabBar
+          label="Recent"
+          tabs={["All runs", "Running", "Succeeded", "Failed"]}
+          activeTab={activeFilter}
+          onTabClick={setActiveFilter}
+        />
+      </div>
       <div className="px-16 py-8 grid grid-cols-4 gap-4">
         {runsLoading && filteredRuns.length === 0 ? (
           <div className="col-span-4 flex items-center justify-center py-16">

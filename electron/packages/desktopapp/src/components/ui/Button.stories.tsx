@@ -70,3 +70,19 @@ export const AsAction: Story = {
     </Button>
   ),
 };
+
+export const Disabled: Story = {
+  render: () => (
+    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <Button intent="primary" isDisabled onPress={() => {}}>
+        Primary
+      </Button>
+      <Button intent="secondary" isDisabled onPress={() => {}}>
+        Secondary
+      </Button>
+      <Button intent="ghost" isDisabled onPress={() => {}}>
+        Ghost
+      </Button>
+    </div>
+  ),
+};

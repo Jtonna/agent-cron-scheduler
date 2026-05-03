@@ -30,13 +30,16 @@ interface JobsListRowProps {
 /**
  * Compute the leading dot's state for a row:
  * - "running" if any recent run is in-flight
- * - "idle" if the job is disabled or has never run
- * - "failed" on a non-zero last exit code
- * - "success" otherwise
+ * - "idle" if the job is disabled
+ * - The most recent run's status (killed / warning / failed / success)
+ *   when we have one — runs are newest-first, so `runs[0]` is latest
+ * - Fallback to exit-code derivation if no recent runs are loaded
+ * - "idle" if the job has never run
  */
 function leadingState(job: Job, runs: AnyRun[] | undefined): JobState {
   if (runs && isRunning(runs)) return "running";
   if (!job.enabled) return "idle";
+  if (runs && runs.length > 0) return apiStatusToJobState(runs[0].status);
   if (job.last_exit_code !== null && job.last_exit_code !== 0) return "failed";
   if (job.last_run_at) return "success";
   return "idle";

@@ -76,6 +76,7 @@ import type {
   GlobalCostSummaryResponse,
   HealthResponse,
   Job,
+  JobCostSummaryResponse,
   RecentRunsResponse,
   RunsResponse,
 } from "./types";
@@ -92,6 +93,16 @@ export const api = {
 
   listJobs(): Promise<Job[]> {
     return request<Job[]>("/api/jobs");
+  },
+
+  getJob(id: string): Promise<Job> {
+    return request<Job>(`/api/jobs/${id}`);
+  },
+
+  getJobCostSummary(jobId: string, timeframe: string = "30d"): Promise<JobCostSummaryResponse> {
+    return request<JobCostSummaryResponse>(
+      `/api/jobs/${jobId}/cost-summary?timeframe=${encodeURIComponent(timeframe)}`,
+    );
   },
 
   listRecentRuns(limit: number = 20): Promise<RecentRunsResponse> {
