@@ -15,6 +15,7 @@ use agent_cron_scheduler::server::{self, AppState};
 use agent_cron_scheduler::storage::workflow_runs::WorkflowRunStore;
 use agent_cron_scheduler::storage::workflows::WorkflowStore;
 
+use chrono::Utc;
 use tokio::sync::{broadcast, Notify};
 use uuid::Uuid;
 
@@ -64,6 +65,9 @@ async fn spawn_test_server(
         workflow_event_tx,
         workflow_store,
         workflow_run_store,
+        kill_signals: std::sync::Arc::new(tokio::sync::RwLock::new(
+            std::collections::HashMap::new(),
+        )),
     });
 
     let router = server::create_router(Arc::clone(&state));
@@ -686,7 +690,389 @@ async fn test_trigger_persists_run_to_disk() {
     );
 }
 
-/// 13. Restart simulation: runs persisted by instance A are readable by instance B
+// ---------------------------------------------------------------------------
+// List workflow runs tests (ACS-18 follow-up)
+// ---------------------------------------------------------------------------
+
+/// Helper: insert N run records directly into the run store for a workflow.
+async fn insert_runs(
+    run_store: &Arc<dyn WorkflowRunStore>,
+    workflow_id: uuid::Uuid,
+    wf: &agent_cron_scheduler::models::workflow::Workflow,
+    count: usize,
+) -> Vec<uuid::Uuid> {
+    use agent_cron_scheduler::models::workflow::{RunStatus, WorkflowRun};
+    let mut run_ids = vec![];
+    for _ in 0..count {
+        // Small delay so UUIDv7 ordering is distinct.
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let run_id = uuid::Uuid::now_v7();
+        let run = WorkflowRun {
+            run_id,
+            workflow_id,
+            workflow_version: wf.version,
+            workflow_snapshot: wf.clone(),
+            started_at: Utc::now(),
+            finished_at: None,
+            status: RunStatus::Completed,
+            trigger_input: None,
+            steps: vec![],
+            total_cost_usd: None,
+            total_duration_ms: None,
+        };
+        run_store.create_run(run).await.expect("insert run");
+        run_ids.push(run_id);
+    }
+    run_ids
+}
+
+/// 14. GET /api/workflows/{id}/runs returns runs for the workflow (total=3).
+#[tokio::test]
+async fn test_list_runs_endpoint_returns_runs_for_workflow() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
+            .await;
+    let client = reqwest::Client::new();
+
+    // Create a workflow.
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("runs-test")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+
+    // Fetch the stored workflow for the snapshot.
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Insert 3 runs directly.
+    insert_runs(&run_store, wf_id, &wf, 3).await;
+
+    let resp = client
+        .get(format!("{}/api/workflows/{}/runs", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET runs");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(json["total"], 3);
+    assert_eq!(json["runs"].as_array().unwrap().len(), 3);
+}
+
+/// 15. GET /api/workflows/{id}/runs?limit=2&offset=1 returns exactly 2 runs.
+#[tokio::test]
+async fn test_list_runs_endpoint_pagination() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
+            .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("pagination-test")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+    insert_runs(&run_store, wf_id, &wf, 5).await;
+
+    let resp = client
+        .get(format!(
+            "{}/api/workflows/{}/runs?limit=2&offset=1",
+            base_url, wf_id_str
+        ))
+        .send()
+        .await
+        .expect("GET runs paginated");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    // total still reflects all 5 runs
+    assert_eq!(json["total"], 5);
+    // but only 2 returned for this page
+    assert_eq!(json["runs"].as_array().unwrap().len(), 2);
+}
+
+/// Kill-endpoint test: trigger a long-running workflow, POST /kill, verify Killed status.
+#[tokio::test]
+async fn test_kill_endpoint_terminates_running_step() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Platform-appropriate long-sleep command.
+    #[cfg(windows)]
+    let sleep_cmd =
+        "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"";
+    #[cfg(not(windows))]
+    let sleep_cmd = "sleep 30";
+
+    let wf = NewWorkflow {
+        name: "kill-me".to_string(),
+        schedule: "*/5 * * * *".to_string(),
+        timezone: None,
+        schedule_mode: Default::default(),
+        enabled: true,
+        steps: vec![shell_step("slow", sleep_cmd)],
+        input_schema: None,
+        default_input: None,
+        working_dir: None,
+        env_vars: None,
+        allow_concurrent: None,
+        on_failure: FailurePolicy::default(),
+    };
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&wf).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+    let run_id = trigger_json["run_id"].as_str().unwrap();
+
+    // Give the executor a moment to start.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Send the kill.
+    let kill_resp = client
+        .post(format!("{}/api/runs/{}/kill", base_url, run_id))
+        .send()
+        .await
+        .expect("POST /kill");
+    assert_eq!(
+        kill_resp.status(),
+        202,
+        "kill endpoint should return 202"
+    );
+
+    // Poll until the run finishes (should be well under 5s after kill).
+    let deadline =
+        tokio::time::Instant::now() + tokio::time::Duration::from_secs(8);
+    let mut final_status = String::new();
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "Run {} did not finish within 8s after kill (status: {})",
+                run_id, final_status
+            );
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        let run_resp = client
+            .get(format!("{}/api/runs/{}", base_url, run_id))
+            .send()
+            .await
+            .expect("GET run");
+        if run_resp.status() == 200 {
+            let run_json: serde_json::Value = run_resp.json().await.unwrap();
+            let status = run_json["status"].as_str().unwrap_or("").to_string();
+            match status.as_str() {
+                "Killed" | "Failed" | "Completed" => {
+                    final_status = status;
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    assert_eq!(
+        final_status, "Killed",
+        "run should finish with Killed status after kill signal"
+    );
+}
+
+/// Kill-endpoint 404 test: POST /kill for a non-existent run_id returns 404.
+#[tokio::test]
+async fn test_kill_endpoint_404_for_unknown_run() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    let unknown_run_id = Uuid::now_v7();
+    let resp = client
+        .post(format!("{}/api/runs/{}/kill", base_url, unknown_run_id))
+        .send()
+        .await
+        .expect("POST /kill for unknown run");
+
+    assert_eq!(resp.status(), 404, "expected 404 for unknown run_id");
+}
+
+/// 16. GET /api/workflows/{id}/runs returns runs in latest-first order.
+#[tokio::test]
+async fn test_list_runs_endpoint_returns_latest_first() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
+            .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("order-test")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+    // insert_runs returns run_ids in creation order (oldest first).
+    let run_ids = insert_runs(&run_store, wf_id, &wf, 3).await;
+
+    let resp = client
+        .get(format!("{}/api/workflows/{}/runs", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET runs")
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+
+    let runs = resp["runs"].as_array().unwrap();
+    // The API returns latest-first: runs[0] should be run_ids[2] (newest).
+    assert_eq!(
+        runs[0]["run_id"].as_str().unwrap(),
+        run_ids[2].to_string(),
+        "first result should be the newest run"
+    );
+    assert_eq!(
+        runs[2]["run_id"].as_str().unwrap(),
+        run_ids[0].to_string(),
+        "last result should be the oldest run"
+    );
+}
+
+/// 17. GET /api/workflows/nonexistent/runs returns 404.
+#[tokio::test]
+async fn test_list_runs_endpoint_404_for_unknown_workflow() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/workflows/nonexistent/runs", base_url))
+        .send()
+        .await
+        .expect("GET runs for unknown workflow");
+    assert_eq!(resp.status(), 404);
+}
+
+/// 18. GET /api/workflows/{id}/runs for a workflow with no runs returns empty array.
+#[tokio::test]
+async fn test_list_runs_endpoint_zero_runs_returns_empty_array() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
+            .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("no-runs-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+
+    let resp = client
+        .get(format!("{}/api/workflows/{}/runs", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET runs")
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+
+    assert_eq!(resp["total"], 0);
+    assert!(resp["runs"].as_array().unwrap().is_empty());
+}
+
+/// 19. GET /api/workflows/{name}/runs resolves the workflow by name, not UUID.
+#[tokio::test]
+async fn test_list_runs_resolves_workflow_by_name() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
+            .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("named-runs-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+    insert_runs(&run_store, wf_id, &wf, 2).await;
+
+    // Use the workflow name instead of its UUID.
+    let resp = client
+        .get(format!("{}/api/workflows/named-runs-wf/runs", base_url))
+        .send()
+        .await
+        .expect("GET runs by name")
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+
+    assert_eq!(resp["total"], 2);
+    assert_eq!(resp["runs"].as_array().unwrap().len(), 2);
+}
+
+/// 20. Restart simulation: runs persisted by instance A are readable by instance B
 ///     pointing at the same data_dir.
 #[tokio::test]
 async fn test_restart_simulation_run_persists() {

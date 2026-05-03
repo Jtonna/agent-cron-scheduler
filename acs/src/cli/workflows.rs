@@ -115,6 +115,24 @@ pub enum WorkflowsSubcommand {
         #[arg(long)]
         follow: bool,
     },
+
+    /// List runs for a workflow
+    Runs {
+        /// Workflow id (UUID) or name
+        name_or_id: String,
+
+        /// Max number of runs to return (default 20, max 100)
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+
+        /// Skip the first N runs
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // ===========================================================================
@@ -616,6 +634,102 @@ pub async fn cmd_trigger(
     Ok(())
 }
 
+/// acs workflows runs <name-or-id>
+pub async fn cmd_runs(
+    host: &str,
+    port: u16,
+    name_or_id: &str,
+    limit: usize,
+    offset: usize,
+    json: bool,
+) -> anyhow::Result<()> {
+    let client = Client::new();
+    let url = format!(
+        "{}/api/workflows/{}/runs?limit={}&offset={}",
+        base_url(host, port),
+        name_or_id,
+        limit,
+        offset
+    );
+
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| handle_request_error(e, host, port))?;
+
+    let status = response.status();
+
+    if status.as_u16() == 404 {
+        anyhow::bail!("Workflow not found: {}", name_or_id);
+    }
+
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse response: {}", e))?;
+
+    if !status.is_success() {
+        let message = body["message"].as_str().unwrap_or("Unknown error");
+        eprintln!("Error: {}", message);
+        std::process::exit(1);
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
+
+    let total = body["total"].as_u64().unwrap_or(0);
+    println!("Total runs: {}", total);
+
+    let empty_vec = vec![];
+    let runs = body["runs"].as_array().unwrap_or(&empty_vec);
+
+    if runs.is_empty() {
+        println!("No runs found.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<38}{:<12}{:<28}{:<14}{:<12}",
+        "RUN_ID", "STATUS", "STARTED", "DURATION_MS", "COST_USD"
+    );
+
+    for run in runs {
+        let run_id = run["run_id"].as_str().unwrap_or("?");
+        let run_status = run["status"].as_str().unwrap_or("?");
+
+        let started = match run["started_at"].as_str() {
+            Some(ts) => {
+                if let Ok(dt) = ts.parse::<DateTime<Utc>>() {
+                    format_relative_time(&dt)
+                } else {
+                    ts.to_string()
+                }
+            }
+            None => "-".to_string(),
+        };
+
+        let duration = match run["total_duration_ms"].as_u64() {
+            Some(ms) => ms.to_string(),
+            None => "-".to_string(),
+        };
+
+        let cost = match run["total_cost_usd"].as_f64() {
+            Some(c) => format!("{:.6}", c),
+            None => "-".to_string(),
+        };
+
+        println!(
+            "{:<38}{:<12}{:<28}{:<14}{:<12}",
+            run_id, run_status, started, duration, cost
+        );
+    }
+
+    Ok(())
+}
+
 /// Resolve a workflow name or UUID to its workflow_id string.
 async fn resolve_workflow_id(
     client: &Client,
@@ -826,6 +940,13 @@ pub async fn dispatch(cmd: &WorkflowsCmd, host: &str, port: u16) -> anyhow::Resu
             )
             .await
         }
+
+        WorkflowsSubcommand::Runs {
+            name_or_id,
+            limit,
+            offset,
+            json,
+        } => cmd_runs(host, port, name_or_id, *limit, *offset, *json).await,
     }
 }
 
@@ -1402,5 +1523,56 @@ mod tests {
         }
         let json: Value = serde_json::from_str(&data).unwrap();
         assert_eq!(json["output"].as_str().unwrap(), "hello world");
+    }
+
+    // -----------------------------------------------------------------------
+    // Argument parsing: workflows runs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cli_workflows_runs_parses() {
+        let cli =
+            Cli::try_parse_from(["acs", "workflows", "runs", "my-wf", "--limit", "10", "--offset", "5", "--json"])
+                .expect("Should parse workflows runs with all flags");
+        match &cli.command {
+            Some(crate::cli::Commands::Workflows(cmd)) => match &cmd.subcommand {
+                WorkflowsSubcommand::Runs {
+                    name_or_id,
+                    limit,
+                    offset,
+                    json,
+                } => {
+                    assert_eq!(name_or_id, "my-wf");
+                    assert_eq!(*limit, 10);
+                    assert_eq!(*offset, 5);
+                    assert!(json);
+                }
+                other => panic!("Expected Runs, got: {:?}", other),
+            },
+            other => panic!("Expected Workflows, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cli_workflows_runs_default_limit_offset() {
+        let cli = Cli::try_parse_from(["acs", "workflows", "runs", "my-wf"])
+            .expect("Should parse workflows runs with no flags");
+        match &cli.command {
+            Some(crate::cli::Commands::Workflows(cmd)) => match &cmd.subcommand {
+                WorkflowsSubcommand::Runs {
+                    name_or_id,
+                    limit,
+                    offset,
+                    json,
+                } => {
+                    assert_eq!(name_or_id, "my-wf");
+                    assert_eq!(*limit, 20);
+                    assert_eq!(*offset, 0);
+                    assert!(!json);
+                }
+                other => panic!("Expected Runs, got: {:?}", other),
+            },
+            other => panic!("Expected Workflows, got: {:?}", other),
+        }
     }
 }

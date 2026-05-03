@@ -706,6 +706,7 @@ pub async fn start_daemon(
         workflow_event_tx: workflow_event_tx.clone(),
         workflow_store,
         workflow_run_store: Arc::clone(&workflow_run_store),
+        kill_signals: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     // Start Workflow Scheduler

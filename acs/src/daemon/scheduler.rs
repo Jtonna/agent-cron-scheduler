@@ -278,6 +278,7 @@ impl WorkflowScheduler {
                                     trigger,
                                     sink,
                                     Some(event_tx),
+                                    None,
                                 ).await;
 
                                 // Persist the final run state.

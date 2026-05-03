@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::pty::{NoPtySpawner, PtySpawner};
 use crate::workflow::agents::impl_for;
-use crate::workflow::step::{Step, StepContext, StepError, StepOutput};
+use crate::workflow::step::{wait_for_kill, Step, StepContext, StepError, StepOutput};
 use crate::workflow::template;
 
 pub use crate::models::workflow::AgentStep;
@@ -165,6 +165,9 @@ async fn execute_with_spawner(
     tokio::pin!(timeout_fut);
 
     let mut timed_out = false;
+    let mut killed = false;
+
+    let kill_rx = ctx.kill_rx.clone();
 
     loop {
         tokio::select! {
@@ -195,6 +198,17 @@ async fn execute_with_spawner(
                 }
                 break;
             }
+            _ = wait_for_kill(kill_rx.clone()) => {
+                killed = true;
+                if let Some(pid) = child_pid {
+                    tracing::info!(
+                        step_id = %step.common.id,
+                        "Kill signal received, terminating process tree (PID: {})", pid
+                    );
+                    crate::process_kill::kill_process_tree(pid).await;
+                }
+                break;
+            }
         }
     }
 
@@ -205,7 +219,7 @@ async fn execute_with_spawner(
     )
     .await;
 
-    let exit_code: Option<i32> = if timed_out {
+    let exit_code: Option<i32> = if timed_out || killed {
         drop(output_rx);
         None
     } else {
@@ -232,6 +246,10 @@ async fn execute_with_spawner(
         .write_step_end(&step.common.id, exit_code, Utc::now())
         .await
         .map_err(StepError::Io)?;
+
+    if killed {
+        return Err(StepError::Killed);
+    }
 
     if timed_out {
         return Err(StepError::Timeout(timeout_secs.unwrap_or(0)));
@@ -346,6 +364,7 @@ mod tests {
             working_dir: None,
             env: HashMap::new(),
             event_tx: None,
+            kill_rx: None,
         }
     }
 

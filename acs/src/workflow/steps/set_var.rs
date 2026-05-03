@@ -138,6 +138,7 @@ mod tests {
             working_dir: None,
             env: HashMap::new(),
             event_tx: None,
+            kill_rx: None,
         }
     }
 

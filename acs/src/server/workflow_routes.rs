@@ -14,12 +14,12 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::AppState;
@@ -352,6 +352,7 @@ pub async fn trigger_workflow(
 
     let event_tx = state.workflow_event_tx.clone();
     let run_store = Arc::clone(&state.workflow_run_store);
+    let kill_signals = Arc::clone(&state.kill_signals);
 
     // Spawn the workflow run in the background.
     tokio::spawn(async move {
@@ -385,6 +386,7 @@ pub async fn trigger_workflow(
             params,
             log_sink,
             Some(event_tx),
+            Some(kill_signals),
         )
         .await;
 
@@ -451,8 +453,19 @@ pub async fn get_workflow_run(
 // POST /api/runs/{run_id}/kill
 // ---------------------------------------------------------------------------
 //
-// Sets status=Killed on the persisted run. Actual process-tree kill wiring
-// (SIGKILL / job object termination) is deferred to a future phase.
+// Terminates a running workflow run:
+//   1. Looks up the kill_signals registry and sends `true` so that the
+//      running step's select! loop terminates the process tree immediately.
+//   2. Updates the persisted run record to status=Killed so that polling
+//      callers see the right state right away.
+//
+// Race note: if the run finishes between step 1 and step 2, the executor
+// will have already written the final status (Completed/Failed).  The
+// handler's update_run call here would then overwrite that with Killed.
+// This is an acceptable race — the kill was requested while the run was
+// believed to be running and arrived marginally late.  The executor also
+// removes the registry entry before writing its final status, so step 1
+// would have been a no-op in that scenario.
 
 pub async fn kill_workflow_run(
     State(state): State<Arc<AppState>>,
@@ -470,14 +483,30 @@ pub async fn kill_workflow_run(
         }
     };
 
+    // 1. Check that the run exists (and return 404 early if not).
     match state.workflow_run_store.get_run(run_id).await {
         Ok(Some(mut run)) => {
-            if run.status == RunStatus::Running {
+            // 2. Send kill signal to the executor (best-effort — the entry may
+            //    be absent if the run already finished between the get_run call
+            //    and here).
+            if let Some(kill_tx) = state.kill_signals.read().await.get(&run_id) {
+                let _ = kill_tx.send(true);
                 tracing::info!(
-                    "Kill requested for workflow run {} (in-memory flag; \
-                     actual process kill wiring deferred)",
+                    "Kill signal sent to executor for run {}",
                     run_id
                 );
+            } else {
+                tracing::info!(
+                    "Kill signal requested for run {} but no active executor entry \
+                     (run may have already finished)",
+                    run_id
+                );
+            }
+
+            // 3. Update the persisted record if it is still Running, so that
+            //    pollers see Killed immediately without waiting for the executor
+            //    to write its final status.
+            if run.status == RunStatus::Running {
                 run.status = RunStatus::Killed;
                 run.finished_at = Some(Utc::now());
                 if let Err(e) = state.workflow_run_store.update_run(&run).await {
@@ -508,6 +537,64 @@ pub async fn kill_workflow_run(
             .into_response()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/workflows/{id}/runs
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ListRunsQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct ListRunsResponse {
+    runs: Vec<WorkflowRun>,
+    total: usize,
+}
+
+pub async fn list_workflow_runs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<ListRunsQuery>,
+) -> impl IntoResponse {
+    let workflow = match resolve_workflow(&state, &id).await {
+        Ok(w) => w,
+        Err((status, body)) => return (status, body).into_response(),
+    };
+
+    let limit = params.limit.unwrap_or(20).min(100);
+    let offset = params.offset.unwrap_or(0);
+
+    let runs = match state.workflow_run_store.list_runs(workflow.id, limit, offset).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Failed to list runs for workflow {}: {}", workflow.id, e);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to list runs: {}", e),
+            )
+            .into_response();
+        }
+    };
+
+    let total = match state.workflow_run_store.count_runs(workflow.id).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!("Failed to count runs for workflow {}: {}", workflow.id, e);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to count runs: {}", e),
+            )
+            .into_response();
+        }
+    };
+
+    (StatusCode::OK, Json(ListRunsResponse { runs, total })).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -782,6 +869,7 @@ mod tests {
             workflow_event_tx,
             workflow_store: wf_store,
             workflow_run_store: run_store,
+            kill_signals: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         })
     }
 

@@ -4,18 +4,21 @@ pub mod routes;
 pub mod sse;
 pub mod workflow_routes;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::routing::{get, post};
 use axum::Router;
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::{broadcast, Notify, RwLock};
 use tower_http::cors::{Any, CorsLayer};
+use uuid::Uuid;
 
 use crate::daemon::events::WorkflowEvent;
 use crate::models::DaemonConfig;
 use crate::storage::workflow_runs::WorkflowRunStore;
 use crate::storage::workflows::WorkflowStore;
+use crate::workflow::step::KillSender;
 
 /// Shared application state for the Axum server.
 pub struct AppState {
@@ -29,6 +32,12 @@ pub struct AppState {
     pub workflow_store: Arc<dyn WorkflowStore>,
     /// Persistent workflow run store.
     pub workflow_run_store: Arc<dyn WorkflowRunStore>,
+    /// Registry of kill signal senders for in-flight workflow runs.
+    ///
+    /// Keyed by `run_id`. The executor inserts an entry when a run starts and
+    /// removes it when the run finishes. The kill endpoint looks up the sender
+    /// and sends `true` to terminate the running step tree.
+    pub kill_signals: Arc<RwLock<HashMap<Uuid, KillSender>>>,
 }
 
 /// Create the Axum router with all routes.
@@ -50,6 +59,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/workflows/{id}/trigger",
             post(workflow_routes::trigger_workflow),
+        )
+        .route(
+            "/api/workflows/{id}/runs",
+            get(workflow_routes::list_workflow_runs),
         )
         .route(
             "/api/runs/{run_id}",

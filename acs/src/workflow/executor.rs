@@ -3,14 +3,14 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use serde_json::json;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch, RwLock};
 use uuid::Uuid;
 
 use crate::daemon::events::WorkflowEvent;
 use crate::models::workflow::{
     FailurePolicy, RunStatus, StepDef, StepRun, TriggerParams, Workflow, WorkflowRun,
 };
-use crate::workflow::step::{LogSink, Step, StepContext, StepError, StepOutput};
+use crate::workflow::step::{KillSender, LogSink, Step, StepContext, StepError, StepOutput};
 use crate::workflow::template;
 
 /// Helper: send a `WorkflowEvent` on the optional broadcast channel.
@@ -494,6 +494,10 @@ fn kind_from_common(_common: &crate::models::workflow::StepDefCommon) -> String 
 /// `log_sink` receives structured step markers and raw output chunks.
 /// `event_tx` is an optional broadcast channel for `WorkflowEvent` SSE streaming.
 ///   Pass `None` in tests or contexts that don't require live events.
+/// `kill_signals` is an optional registry of kill senders keyed by run_id.
+///   When provided, a new `watch::channel(false)` is inserted at the start and
+///   removed when the run completes.  Pass `None` in tests or contexts that
+///   don't require kill support.
 ///
 /// Note: `StepOutput` chunk events (`WorkflowEvent::StepOutput`) are deferred to
 /// phase 6, where they will be wired into the log sink's streaming path.
@@ -503,9 +507,17 @@ pub async fn run_workflow(
     trigger: TriggerParams,
     log_sink: Arc<dyn LogSink>,
     event_tx: Option<broadcast::Sender<WorkflowEvent>>,
+    kill_signals: Option<Arc<RwLock<HashMap<Uuid, KillSender>>>>,
 ) -> WorkflowRun {
     let snapshot = workflow.clone();
     let started_at = Utc::now();
+
+    // Create kill channel for this run.  The sender is stored in the registry
+    // (if provided) so the kill endpoint can signal it later.
+    let (kill_tx, kill_rx) = watch::channel(false);
+    if let Some(ref registry) = kill_signals {
+        registry.write().await.insert(run_id, kill_tx);
+    }
 
     // Emit RunStarted before executing any steps.
     emit(event_tx.as_ref(), WorkflowEvent::RunStarted {
@@ -547,6 +559,7 @@ pub async fn run_workflow(
         working_dir,
         env,
         event_tx: event_tx.clone(),
+        kill_rx: Some(kill_rx),
     };
 
     let mut step_runs: Vec<StepRun> = Vec::new();
@@ -566,6 +579,13 @@ pub async fn run_workflow(
     .await;
 
     let finished_at = Utc::now();
+
+    // Remove the kill sender from the registry now that the run has finished.
+    // This also drops the sender, which signals any remaining receivers that
+    // no kill will arrive (they receive a RecvError on next `changed()` call).
+    if let Some(ref registry) = kill_signals {
+        registry.write().await.remove(&run_id);
+    }
 
     // Determine final status.
     let status = if killed {
@@ -843,7 +863,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed, "expected Completed");
         assert_eq!(run.steps.len(), 3, "expected 3 step runs");
@@ -871,7 +891,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         assert_eq!(run.status, RunStatus::Failed, "expected Failed");
         // The failing step is recorded; the skipped step is NOT recorded.
@@ -893,7 +913,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         // Overall status is Failed (aborted=true), but cleanup ran.
         assert_eq!(run.status, RunStatus::Failed);
@@ -916,7 +936,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         // No abort happened, so overall Completed.
         assert_eq!(run.status, RunStatus::Completed, "expected Completed despite step failure");
@@ -968,7 +988,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
         // Expected step_runs: set_choice, m1 (synthetic), branch_a
@@ -1019,7 +1039,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
 
@@ -1066,7 +1086,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
 
@@ -1111,7 +1131,7 @@ mod tests {
             })],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         assert_eq!(run.status, RunStatus::Failed);
         let step = &run.steps[0];
@@ -1154,7 +1174,7 @@ mod tests {
             })],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         // The step should fail (no `claude` CLI in test env), but NOT with "not implemented".
         assert_eq!(run.status, RunStatus::Failed);
@@ -1181,7 +1201,7 @@ mod tests {
         );
         workflow.default_input = Some(json!({"x": 42}));
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
         // The step should have run with x=42
@@ -1204,7 +1224,7 @@ mod tests {
         workflow.default_input = Some(json!({"x": 42}));
 
         let trigger = input_trigger(json!({"x": 99}));
-        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.trigger_input, Some(json!({"x": 99})));
@@ -1236,7 +1256,7 @@ mod tests {
             target_step: None,
         };
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, Arc::clone(&sink) as Arc<dyn LogSink>, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, Arc::clone(&sink) as Arc<dyn LogSink>, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
         // Verify through the mock log sink chunks that FOO=b and BAR=c appear
@@ -1271,7 +1291,7 @@ mod tests {
             target_step: None,
         };
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
     }
@@ -1284,7 +1304,7 @@ mod tests {
         let workflow = make_workflow("meta", vec![shell_step("s1", "echo hi")]);
         let run_id = Uuid::now_v7();
 
-        let run = run_workflow(&workflow, run_id, empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, run_id, empty_trigger(), sink, None, None).await;
 
         assert_eq!(run.run_id, run_id);
         assert_eq!(run.workflow_id, workflow.id);
@@ -1300,7 +1320,7 @@ mod tests {
         let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
         let workflow = make_workflow("cost_none", vec![shell_step("s1", "echo hi")]);
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         assert!(
             run.total_cost_usd.is_none(),
@@ -1353,6 +1373,7 @@ mod tests {
             empty_trigger(),
             wrapped_sink,
             Some(event_tx),
+            None,
         )
         .await;
 
@@ -1421,5 +1442,157 @@ mod tests {
                 step_id
             );
         }
+    }
+
+    // ── Test 17: Kill signal aborts a long-running step ───────────────────────
+
+    #[tokio::test]
+    async fn test_kill_signal_aborts_long_running_step() {
+        use std::collections::HashMap as StdHashMap;
+        use tokio::sync::RwLock;
+
+        // Use a platform-appropriate long-sleep command.
+        #[cfg(windows)]
+        let sleep_cmd = "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"";
+        #[cfg(not(windows))]
+        let sleep_cmd = "sleep 30";
+
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow("kill_test", vec![shell_step("long_step", sleep_cmd)]);
+        let run_id = Uuid::now_v7();
+
+        // Create a real kill_signals registry.
+        let registry: Arc<RwLock<StdHashMap<Uuid, crate::workflow::step::KillSender>>> =
+            Arc::new(RwLock::new(StdHashMap::new()));
+
+        let registry_clone = Arc::clone(&registry);
+        let run_id_clone = run_id;
+
+        // Spawn a task that sends the kill signal after 200ms.
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if let Some(tx) = registry_clone.read().await.get(&run_id_clone) {
+                let _ = tx.send(true);
+            }
+        });
+
+        let start = std::time::Instant::now();
+        let run = run_workflow(
+            &workflow,
+            run_id,
+            empty_trigger(),
+            sink,
+            None,
+            Some(registry),
+        )
+        .await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(run.status, RunStatus::Killed, "run should be Killed");
+        assert!(
+            elapsed.as_secs() < 10,
+            "run should finish well under 10s after kill (elapsed: {:?})",
+            elapsed
+        );
+    }
+
+    // ── Test 18: Kill signal only affects the target run ──────────────────────
+
+    #[tokio::test]
+    async fn test_kill_signal_only_affects_target_run() {
+        use std::collections::HashMap as StdHashMap;
+        use tokio::sync::RwLock;
+
+        // Shared registry for both runs.
+        let registry: Arc<RwLock<StdHashMap<Uuid, crate::workflow::step::KillSender>>> =
+            Arc::new(RwLock::new(StdHashMap::new()));
+
+        #[cfg(windows)]
+        let sleep_cmd = "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"";
+        #[cfg(not(windows))]
+        let sleep_cmd = "sleep 30";
+
+        // Run A: long-running — will be killed.
+        let run_id_a = Uuid::now_v7();
+        let sink_a = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow_a = make_workflow("kill_a", vec![shell_step("step_a", sleep_cmd)]);
+        let registry_a = Arc::clone(&registry);
+
+        // Run B: fast echo — should complete normally.
+        let run_id_b = Uuid::now_v7();
+        let sink_b = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow_b = make_workflow("echo_b", vec![shell_step("step_b", "echo hello")]);
+        let registry_b = Arc::clone(&registry);
+
+        // Kill-sender task for run A only.
+        let registry_kill = Arc::clone(&registry);
+        let kill_run_id = run_id_a;
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if let Some(tx) = registry_kill.read().await.get(&kill_run_id) {
+                let _ = tx.send(true);
+            }
+        });
+
+        // Run both concurrently.
+        let (run_a, run_b) = tokio::join!(
+            run_workflow(
+                &workflow_a,
+                run_id_a,
+                empty_trigger(),
+                sink_a,
+                None,
+                Some(registry_a),
+            ),
+            run_workflow(
+                &workflow_b,
+                run_id_b,
+                empty_trigger(),
+                sink_b,
+                None,
+                Some(registry_b),
+            ),
+        );
+
+        assert_eq!(run_a.status, RunStatus::Killed, "run A should be Killed");
+        assert_eq!(
+            run_b.status,
+            RunStatus::Completed,
+            "run B should be Completed"
+        );
+    }
+
+    // ── Test 19: Kill after run completion is a no-op ─────────────────────────
+
+    #[tokio::test]
+    async fn test_kill_after_run_completion_no_op() {
+        use std::collections::HashMap as StdHashMap;
+        use tokio::sync::RwLock;
+
+        let registry: Arc<RwLock<StdHashMap<Uuid, crate::workflow::step::KillSender>>> =
+            Arc::new(RwLock::new(StdHashMap::new()));
+
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow("nop_kill", vec![shell_step("fast", "echo done")]);
+        let run_id = Uuid::now_v7();
+
+        // Run to completion.
+        let run = run_workflow(
+            &workflow,
+            run_id,
+            empty_trigger(),
+            sink,
+            None,
+            Some(Arc::clone(&registry)),
+        )
+        .await;
+
+        // The run should have completed normally.
+        assert_eq!(run.status, RunStatus::Completed);
+
+        // After the run finishes, the registry entry is removed.
+        // Sending kill now should be a no-op (entry gone, no panic).
+        let entry = registry.read().await.get(&run_id).cloned();
+        assert!(entry.is_none(), "registry entry should be removed after run");
     }
 }

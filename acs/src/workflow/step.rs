@@ -5,8 +5,17 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
+
+/// Channel types used to signal a run should be killed.
+///
+/// `watch` is used because:
+///   - Multiple receivers can clone from a single sender (one per step).
+///   - The latest value is always immediately available via `borrow()`.
+///   - Dropping all senders automatically signals shutdown to receivers.
+pub type KillSender = watch::Sender<bool>;
+pub type KillReceiver = watch::Receiver<bool>;
 
 /// Cost / usage data extracted from an agent step's output.
 /// (Phase 4 will populate this from streaming NDJSON parsers.)
@@ -65,6 +74,42 @@ pub struct StepContext {
     /// Optional broadcast sender for `WorkflowEvent` SSE streaming.
     /// `None` in tests and contexts that don't require event broadcasting.
     pub event_tx: Option<broadcast::Sender<crate::daemon::events::WorkflowEvent>>,
+    /// Optional kill signal receiver. When `Some`, steps poll this for a `true`
+    /// value and abort with `StepError::Killed` when signalled.
+    /// `None` in tests and contexts that don't wire up the kill registry.
+    pub kill_rx: Option<KillReceiver>,
+}
+
+/// A future that resolves when the kill receiver is signalled with `true`.
+///
+/// Returns immediately if the current value is already `true` (i.e., kill was
+/// sent before this step started). Never resolves if `kill_rx` is `None` or if
+/// the sender is dropped without sending `true` (sender-dropped means the run
+/// finished normally before a kill arrived).
+pub async fn wait_for_kill(kill_rx: Option<KillReceiver>) {
+    match kill_rx {
+        None => std::future::pending().await,
+        Some(mut rx) => loop {
+            if *rx.borrow() {
+                return;
+            }
+            match rx.changed().await {
+                Ok(()) => {
+                    if *rx.borrow() {
+                        return;
+                    }
+                    // Value changed back to false — shouldn't happen in normal
+                    // usage but handle defensively by waiting for next change.
+                }
+                Err(_) => {
+                    // Sender dropped without setting true — run finished
+                    // normally; never resolve.
+                    std::future::pending::<()>().await;
+                    return;
+                }
+            }
+        },
+    }
 }
 
 #[async_trait]

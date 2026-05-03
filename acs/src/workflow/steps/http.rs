@@ -5,7 +5,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 pub use crate::models::workflow::HttpStep;
-use crate::workflow::step::{Step, StepContext, StepError, StepOutput};
+use crate::workflow::step::{wait_for_kill, Step, StepContext, StepError, StepOutput};
 use crate::workflow::template;
 
 #[async_trait]
@@ -74,24 +74,37 @@ impl Step for HttpStep {
             builder = builder.body(b.clone());
         }
 
-        // 5. Apply timeout and send
+        // 5. Apply timeout and send, racing against kill signal.
         let timeout_secs = self.common.timeout_secs.filter(|&s| s > 0);
+        let kill_rx = ctx.kill_rx.clone();
+
         let resp = if let Some(secs) = timeout_secs {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(secs),
-                builder.send(),
-            )
-            .await
-            {
-                Ok(result) => result
-                    .map_err(|e| StepError::Internal(format!("http request failed: {}", e)))?,
-                Err(_) => return Err(StepError::Timeout(secs)),
+            tokio::select! {
+                result = tokio::time::timeout(
+                    std::time::Duration::from_secs(secs),
+                    builder.send(),
+                ) => {
+                    match result {
+                        Ok(r) => r.map_err(|e| StepError::Internal(format!("http request failed: {}", e)))?,
+                        Err(_) => return Err(StepError::Timeout(secs)),
+                    }
+                }
+                _ = wait_for_kill(kill_rx) => {
+                    tracing::info!(step_id = %self.common.id, "Kill signal received, cancelling HTTP request");
+                    // Dropping the request future cancels the in-flight reqwest request.
+                    return Err(StepError::Killed);
+                }
             }
         } else {
-            builder
-                .send()
-                .await
-                .map_err(|e| StepError::Internal(format!("http request failed: {}", e)))?
+            tokio::select! {
+                result = builder.send() => {
+                    result.map_err(|e| StepError::Internal(format!("http request failed: {}", e)))?
+                }
+                _ = wait_for_kill(kill_rx) => {
+                    tracing::info!(step_id = %self.common.id, "Kill signal received, cancelling HTTP request");
+                    return Err(StepError::Killed);
+                }
+            }
         };
 
         // 7. Capture response
@@ -282,6 +295,7 @@ mod tests {
             working_dir: None,
             env: HashMap::new(),
             event_tx: None,
+            kill_rx: None,
         }
     }
 

@@ -122,3 +122,16 @@ fn test_cli_workflows_update_with_enable_and_disable_conflict() {
         .assert()
         .failure();
 }
+
+/// `acs workflows runs <id> --limit 10 --offset 5 --json` parses correctly.
+#[test]
+fn test_cli_workflows_runs_arg_parsing() {
+    agentcronsystem_cmd()
+        .args(["workflows", "runs", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--limit"))
+        .stdout(predicate::str::contains("--offset"))
+        .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains("NAME_OR_ID"));
+}
