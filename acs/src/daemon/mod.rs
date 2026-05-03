@@ -1,8 +1,7 @@
-// Daemon module - Phase 2+ implementation
-// Sub-modules for events, executor, scheduler, and service.
+// Daemon module - Phase 6+ implementation (workflow-native runtime)
+// Sub-modules for events, scheduler, and service.
 
 pub mod events;
-pub mod executor;
 pub mod scheduler;
 pub mod service;
 
@@ -13,17 +12,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
 use tokio::sync::{broadcast, Notify, RwLock};
 use tracing;
 use uuid::Uuid;
 
-use crate::daemon::events::JobEvent;
-use crate::daemon::executor::{extract_cost_from_log, Executor, KillReason, RunHandle};
-use crate::daemon::scheduler::Scheduler;
-use crate::models::{DaemonConfig, RunStatus};
+use crate::models::DaemonConfig;
 use crate::server::{self, AppState};
-use crate::storage::LogStore;
+use crate::daemon::events::WorkflowEvent;
 
 // ---------------------------------------------------------------------------
 // PidFile — exclusive PID file acquisition
@@ -369,54 +364,6 @@ pub fn resolve_data_dir(override_dir: Option<&Path>) -> PathBuf {
     }
 }
 
-/// Remove log directories for jobs that no longer exist in the job store.
-///
-/// Scans the `logs/` directory for subdirectories named after job UUIDs,
-/// compares against the known job IDs, and removes orphaned directories.
-pub async fn cleanup_orphaned_logs(
-    data_dir: &Path,
-    job_store: &dyn crate::storage::JobStore,
-) -> Result<()> {
-    let logs_dir = data_dir.join("logs");
-    if !logs_dir.exists() {
-        return Ok(());
-    }
-
-    // Get known job IDs
-    let jobs = job_store
-        .list_jobs()
-        .await
-        .context("Failed to list jobs for orphan cleanup")?;
-    let known_ids: std::collections::HashSet<String> =
-        jobs.iter().map(|j| j.id.to_string()).collect();
-
-    // Scan the logs directory
-    let mut entries = tokio::fs::read_dir(&logs_dir)
-        .await
-        .context("Failed to read logs directory")?;
-
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
-            // Check if this is a valid UUID and if the job still exists
-            if Uuid::parse_str(dir_name).is_ok() && !known_ids.contains(dir_name) {
-                tracing::info!("Removing orphaned log directory: {}", dir_name);
-                if let Err(e) = tokio::fs::remove_dir_all(&path).await {
-                    tracing::warn!(
-                        "Failed to remove orphaned log directory {}: {}",
-                        dir_name,
-                        e
-                    );
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
 
 /// Create the required data directories under `data_dir`.
 pub async fn create_data_dirs(data_dir: &Path) -> Result<()> {
@@ -437,102 +384,19 @@ pub async fn create_data_dirs(data_dir: &Path) -> Result<()> {
 // Graceful shutdown
 // ---------------------------------------------------------------------------
 
-/// Perform the graceful shutdown sequence per SPEC Section 8:
+/// Perform the graceful shutdown sequence:
 ///
 /// 1. Stop accepting new HTTP connections       (handled by caller dropping server)
-/// 2. Stop scheduling new job runs              (handled by caller aborting scheduler)
-/// 3. Kill all running child processes (30s grace)
-/// 4. Update all in-flight JobRun records to Killed status
-/// 5. Flush all log files                       (implicit with LogStore)
-/// 6. Remove PID file and port file
-/// 7. Exit with code 0                          (handled by caller)
+/// 2. Stop scheduling new workflow runs         (handled by caller aborting scheduler)
+/// 3. Remove PID file and port file
+/// 4. Exit with code 0                          (handled by caller)
 pub async fn graceful_shutdown(
-    active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>,
-    log_store: Arc<dyn LogStore>,
     pid_file: Option<&PidFile>,
     port_file: Option<&PortFile>,
 ) {
     tracing::info!("Beginning graceful shutdown sequence...");
 
-    // Step 3: Kill all running processes with 30s grace period
-    let run_entries: Vec<(Uuid, Uuid)>;
-    {
-        let mut runs = active_runs.write().await;
-        run_entries = runs
-            .values()
-            .flat_map(|handles| handles.iter().map(|h| (h.job_id, h.run_id)))
-            .collect();
-
-        // Send kill signals to all active runs
-        for (_, handles) in runs.drain() {
-            for handle in handles {
-                let run_id = handle.run_id;
-                let _ = handle.kill_tx.send(KillReason::Shutdown);
-                // Wait up to 30s for the task to finish
-                let join_handle = handle.join_handle;
-                let timeout_result =
-                    tokio::time::timeout(std::time::Duration::from_secs(30), join_handle).await;
-
-                match timeout_result {
-                    Ok(Ok(())) => {
-                        tracing::info!("Run {} shut down gracefully", run_id);
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!("Run {} task failed during shutdown: {}", run_id, e);
-                    }
-                    Err(_) => {
-                        tracing::warn!("Run {} did not finish within 30s grace period", run_id);
-                    }
-                }
-            }
-        }
-    }
-
-    // Step 4: Update all in-flight JobRun records to Killed status
-    for (job_id, run_id) in &run_entries {
-        let (runs_list, _) = match log_store.list_runs(*job_id, 1000, 0).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("Failed to list runs for job {}: {}", job_id, e);
-                continue;
-            }
-        };
-
-        for run in runs_list {
-            if run.run_id == *run_id && run.status == RunStatus::Running {
-                let raw = log_store
-                    .read_log(*job_id, *run_id, None)
-                    .await
-                    .unwrap_or_default();
-                let cost = extract_cost_from_log(raw.as_bytes());
-                let killed_run = crate::models::JobRun {
-                    run_id: run.run_id,
-                    job_id: run.job_id,
-                    started_at: run.started_at,
-                    finished_at: Some(Utc::now()),
-                    status: RunStatus::Killed,
-                    exit_code: Some(-1),
-                    log_size_bytes: run.log_size_bytes,
-                    error: Some("Daemon shutting down".to_string()),
-                    trigger_params: run.trigger_params.clone(),
-                    total_cost_usd: cost.total_cost_usd,
-                    duration_ms: cost.duration_ms,
-                    num_turns: cost.num_turns,
-                    model: cost.model,
-                    usage: cost.usage,
-                };
-                if let Err(e) = log_store.update_run(&killed_run).await {
-                    tracing::error!("Failed to mark run {} as Killed: {}", run_id, e);
-                } else {
-                    tracing::info!("Marked run {} as Killed", run_id);
-                }
-            }
-        }
-    }
-
-    // Step 5: Flush all log files (implicit — LogStore writes are flushed)
-
-    // Step 6: Remove PID file and port file
+    // Remove PID file and port file
     if let Some(pf) = pid_file {
         if let Err(e) = pf.release() {
             tracing::error!("Failed to release PID file: {}", e);
@@ -720,6 +584,23 @@ pub async fn start_daemon(
     // Create data directories
     create_data_dirs(&data_dir).await?;
 
+    // Run migration: convert legacy jobs.json → workflows.json if needed
+    match crate::migration::migrate_if_needed(&data_dir).await {
+        Ok(crate::migration::MigrationResult::Migrated { count }) => {
+            tracing::info!("Migrated {} legacy job(s) to workflows format", count);
+        }
+        Ok(crate::migration::MigrationResult::AlreadyMigrated) => {
+            tracing::debug!("Migration skipped: workflows.json already exists");
+        }
+        Ok(crate::migration::MigrationResult::NotNeeded) => {
+            tracing::debug!("Migration not needed: no legacy jobs.json found");
+        }
+        Err(e) => {
+            tracing::error!("Migration failed: {}", e);
+            // Non-fatal: continue startup even if migration fails
+        }
+    }
+
     // Set up tracing: always stderr, optionally also daemon.log file
     {
         use tracing_subscriber::layer::SubscriberExt;
@@ -788,285 +669,50 @@ pub async fn start_daemon(
     let pid_file = PidFile::new(pid_file_path);
     pid_file.acquire()?;
 
-    // Initialize storage
-    let job_store = Arc::new(crate::storage::jobs::JsonJobStore::new(data_dir.clone()).await?)
-        as Arc<dyn crate::storage::JobStore>;
-
-    let log_store = Arc::new(crate::storage::logs::FsLogStore::new(data_dir.clone()).await?)
-        as Arc<dyn crate::storage::LogStore>;
-
-    // Clean up orphaned log directories
-    if let Err(e) = cleanup_orphaned_logs(&data_dir, job_store.as_ref()).await {
-        tracing::warn!("Failed to cleanup orphaned logs: {}", e);
-    }
-
-    // Rebuild manifests for jobs that predate the manifest system
-    let all_jobs = job_store.list_jobs().await.unwrap_or_default();
-    for job in &all_jobs {
-        match log_store.read_manifest(job.id).await {
-            Ok(None) => {
-                match log_store.rebuild_manifest(job.id).await {
-                    Ok(manifest) if manifest.total_runs > 0 => {
-                        tracing::info!(
-                            "Rebuilt manifest for job '{}' ({} runs)",
-                            job.name,
-                            manifest.total_runs
-                        );
-                    }
-                    Ok(_) => {} // No runs to rebuild
-                    Err(e) => {
-                        tracing::warn!("Failed to rebuild manifest for job '{}': {}", job.name, e);
-                    }
-                }
-            }
-            Ok(Some(_)) => {} // Manifest already exists
-            Err(e) => {
-                tracing::warn!("Failed to check manifest for job '{}': {}", job.name, e);
-            }
-        }
-    }
-
-    // Recover ghost runs — any run still marked Running from a previous session
-    // will never complete on its own. Mark them Killed so the UI is consistent.
-    for job in &all_jobs {
-        match log_store.list_runs(job.id, 50, 0).await {
-            Ok((runs, _total)) => {
-                for mut run in runs {
-                    if run.status == crate::models::RunStatus::Running {
-                        let raw = log_store
-                            .read_log(job.id, run.run_id, None)
-                            .await
-                            .unwrap_or_default();
-                        let cost = extract_cost_from_log(raw.as_bytes());
-                        run.total_cost_usd = cost.total_cost_usd;
-                        run.duration_ms = cost.duration_ms;
-                        run.num_turns = cost.num_turns;
-                        run.model = cost.model;
-                        run.usage = cost.usage;
-                        run.status = crate::models::RunStatus::Killed;
-                        run.exit_code = Some(-1);
-                        run.finished_at = Some(chrono::Utc::now());
-                        run.error =
-                            Some("Orphaned run — process not found on daemon restart".to_string());
-                        tracing::warn!(
-                            job_id = %job.id,
-                            run_id = %run.run_id,
-                            "Ghost run recovered: marking orphaned running run as Killed"
-                        );
-                        if let Err(e) = log_store.update_run(&run).await {
-                            tracing::warn!(
-                                job_id = %job.id,
-                                run_id = %run.run_id,
-                                "Failed to update ghost run: {}",
-                                e
-                            );
-                        }
-                        if let Err(e) = log_store.update_manifest(job.id, &run).await {
-                            tracing::warn!(
-                                job_id = %job.id,
-                                run_id = %run.run_id,
-                                "Failed to update manifest for ghost run: {}",
-                                e
-                            );
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to list runs for ghost run recovery (job '{}'): {}",
-                    job.name,
-                    e
-                );
-            }
-        }
-    }
-
-    // Create broadcast channel
-    let (event_tx, _event_rx) = broadcast::channel::<JobEvent>(config.broadcast_capacity);
-
-    // Create WorkflowEvent broadcast channel (same capacity as JobEvent).
-    let (workflow_event_tx, _workflow_event_rx) =
-        broadcast::channel::<crate::daemon::events::WorkflowEvent>(config.broadcast_capacity);
-
-    // Create scheduler notify
-    let scheduler_notify = Arc::new(Notify::new());
-
-    // Shutdown channel
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
-
-    // Active runs tracking
-    let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-
-    // Create dispatch channel (used by both scheduler and API trigger)
-    let (dispatch_tx, mut dispatch_rx) =
-        tokio::sync::mpsc::channel::<crate::models::DispatchRequest>(64);
-    let dispatch_tx_for_api = dispatch_tx.clone();
-
     // Initialize WorkflowStore
     let workflow_store = Arc::new(
         crate::storage::workflows::FsWorkflowStore::new(&data_dir).await?,
     ) as Arc<dyn crate::storage::workflows::WorkflowStore>;
 
-    // In-memory workflow runs map (phase 5: in-memory only; phase 6 will persist).
+    // In-memory workflow runs map.
     let workflow_runs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<crate::models::workflow::WorkflowRun>>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
+    // WorkflowEvent broadcast channel.
+    let (workflow_event_tx, _workflow_event_rx) =
+        broadcast::channel::<WorkflowEvent>(config.broadcast_capacity);
+
+    // Scheduler notify — woken whenever the workflow list changes.
+    let scheduler_notify = Arc::new(Notify::new());
+
+    // Shutdown channel
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
+
     // Create AppState
     let state = Arc::new(AppState {
-        job_store: Arc::clone(&job_store),
-        log_store: Arc::clone(&log_store),
-        event_tx: event_tx.clone(),
         scheduler_notify: Arc::clone(&scheduler_notify),
         config: Arc::clone(&config),
         start_time: Instant::now(),
-        active_runs: Arc::clone(&active_runs),
         shutdown_tx: Some(shutdown_tx.clone()),
-        dispatch_tx: Some(dispatch_tx_for_api),
         workflow_event_tx: workflow_event_tx.clone(),
         workflow_store,
         workflow_runs,
     });
 
-    // Create Executor
-    // NoPtySpawner uses plain std::process::Command with piped I/O for process spawning.
-    // This reliably handles EOF on all platforms.
-    let pty_spawner: Arc<dyn crate::pty::PtySpawner> = Arc::new(crate::pty::NoPtySpawner);
-    let executor = Executor::new(
-        event_tx.clone(),
-        Arc::clone(&log_store),
-        Arc::clone(&config),
-        pty_spawner,
-    );
-
-    // Start Scheduler
-    let sched_clock: Arc<dyn scheduler::Clock> = Arc::new(scheduler::SystemClock);
-    let scheduler = Scheduler::new(
-        Arc::clone(&job_store),
-        sched_clock,
+    // Start Workflow Scheduler
+    let wf_sched_clock: Arc<dyn scheduler::Clock> = Arc::new(scheduler::SystemClock);
+    let wf_scheduler = scheduler::WorkflowScheduler::new(
+        Arc::clone(&state.workflow_store),
+        wf_sched_clock,
         Arc::clone(&scheduler_notify),
-        dispatch_tx,
-        Arc::clone(&active_runs),
+        workflow_event_tx.clone(),
+        Arc::clone(&state.workflow_runs),
+        data_dir.clone(),
     );
 
-    let scheduler_handle = tokio::spawn(async move {
-        if let Err(e) = scheduler.run().await {
-            tracing::error!("Scheduler error: {}", e);
-        }
-    });
-
-    // Dispatch loop: receives jobs from scheduler and spawns them via executor
-    let dispatch_active_runs = Arc::clone(&active_runs);
-    let dispatch_handle = tokio::spawn(async move {
-        while let Some(request) = dispatch_rx.recv().await {
-            match executor
-                .spawn_job(
-                    &request.job,
-                    request.run_id,
-                    request.trigger_params.as_ref(),
-                )
-                .await
-            {
-                Ok(handle) => {
-                    let job_id = handle.job_id;
-                    let mut runs = dispatch_active_runs.write().await;
-                    let handles = runs.entry(job_id).or_insert_with(Vec::new);
-
-                    // Prune completed handles
-                    handles.retain(|h| !h.join_handle.is_finished());
-
-                    if request.job.allow_concurrent {
-                        handles.push(handle);
-                    } else {
-                        // Kill existing handles for non-concurrent jobs.
-                        // After sending the kill signal, spawn a detached task
-                        // to await each old join_handle with a timeout so the
-                        // executor has time to update the run status to Killed.
-                        // Dropping join_handle without awaiting would race the
-                        // executor's kill-handling path, potentially leaving
-                        // ghost "Running" entries.
-                        for old_handle in handles.drain(..) {
-                            let _ = old_handle.kill_tx.send(KillReason::Concurrent);
-                            let old_join = old_handle.join_handle;
-                            tokio::spawn(async move {
-                                match tokio::time::timeout(
-                                    std::time::Duration::from_secs(15),
-                                    old_join,
-                                )
-                                .await
-                                {
-                                    Ok(_) => {}
-                                    Err(_) => {
-                                        tracing::warn!(
-                                            "Kill cleanup timed out waiting for old run to finish"
-                                        );
-                                    }
-                                }
-                            });
-                        }
-                        handles.push(handle);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to spawn job {}: {}", request.job.name, e);
-                }
-            }
-        }
-    });
-
-    // Job metadata updater: listens for job events and updates job store metadata,
-    // and emits tracing log lines for job lifecycle events.
-    let updater_job_store = Arc::clone(&job_store);
-    let mut updater_rx = event_tx.subscribe();
-    let updater_handle = tokio::spawn(async move {
-        loop {
-            match updater_rx.recv().await {
-                Ok(JobEvent::Started {
-                    job_name, run_id, ..
-                }) => {
-                    tracing::info!("Job '{}' started (run: {})", job_name, run_id);
-                }
-                Ok(JobEvent::Completed {
-                    job_id,
-                    run_id,
-                    exit_code,
-                    timestamp,
-                }) => {
-                    tracing::info!("Job run {} completed (exit code: {})", run_id, exit_code);
-                    let update = crate::models::JobUpdate {
-                        last_run_at: Some(Some(timestamp)),
-                        last_exit_code: Some(Some(exit_code)),
-                        ..Default::default()
-                    };
-                    if let Err(e) = updater_job_store.update_job(job_id, update).await {
-                        tracing::error!("Failed to update job metadata after completion: {}", e);
-                    }
-                }
-                Ok(JobEvent::Failed {
-                    job_id,
-                    run_id,
-                    ref error,
-                    timestamp,
-                }) => {
-                    tracing::warn!("Job run {} failed: {}", run_id, error);
-                    let update = crate::models::JobUpdate {
-                        last_run_at: Some(Some(timestamp)),
-                        last_exit_code: Some(Some(-1)),
-                        ..Default::default()
-                    };
-                    if let Err(e) = updater_job_store.update_job(job_id, update).await {
-                        tracing::error!("Failed to update job metadata after failure: {}", e);
-                    }
-                }
-                Ok(_) => {} // Ignore other events (Output, JobChanged)
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("Job metadata updater lagged by {} events", n);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    break;
-                }
-            }
+    let wf_scheduler_handle = tokio::spawn(async move {
+        if let Err(e) = wf_scheduler.run().await {
+            tracing::error!("Workflow scheduler error: {}", e);
         }
     });
 
@@ -1100,8 +746,6 @@ pub async fn start_daemon(
     });
 
     // Wait for shutdown: Ctrl+C, SIGTERM (Unix), or API shutdown request.
-    // The API shutdown subscriber ensures `acs stop` actually terminates the process
-    // even when running headless (no console to send Ctrl+C).
     let mut api_shutdown_rx = shutdown_tx.subscribe();
 
     #[cfg(unix)]
@@ -1135,19 +779,11 @@ pub async fn start_daemon(
     // Send shutdown signal to HTTP server
     let _ = shutdown_tx.send(());
 
-    // Stop scheduler, dispatch loop, and updater
-    scheduler_handle.abort();
-    dispatch_handle.abort();
-    updater_handle.abort();
+    // Stop workflow scheduler
+    wf_scheduler_handle.abort();
 
-    // Run graceful shutdown sequence
-    graceful_shutdown(
-        Arc::clone(&active_runs),
-        Arc::clone(&log_store),
-        Some(&pid_file),
-        Some(&port_file),
-    )
-    .await;
+    // Run graceful shutdown sequence (remove PID/port files)
+    graceful_shutdown(Some(&pid_file), Some(&port_file)).await;
 
     // Wait for HTTP server to finish
     let _ = server_handle.await;
@@ -1162,105 +798,8 @@ pub async fn start_daemon(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::executor::RunHandle;
-    use crate::models::{JobRun, RunStatus};
-    use crate::storage::{JobStore, LogStore};
-    use async_trait::async_trait;
     use tempfile::TempDir;
-    use tokio::sync::RwLock;
 
-    // -----------------------------------------------------------------------
-    // InMemoryLogStore for shutdown tests
-    // -----------------------------------------------------------------------
-
-    struct InMemoryLogStore {
-        runs: RwLock<Vec<JobRun>>,
-        logs: RwLock<HashMap<(Uuid, Uuid), Vec<u8>>>,
-    }
-
-    impl InMemoryLogStore {
-        fn new() -> Self {
-            Self {
-                runs: RwLock::new(Vec::new()),
-                logs: RwLock::new(HashMap::new()),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl LogStore for InMemoryLogStore {
-        async fn create_run(&self, run: &JobRun) -> anyhow::Result<()> {
-            self.runs.write().await.push(run.clone());
-            Ok(())
-        }
-
-        async fn update_run(&self, run: &JobRun) -> anyhow::Result<()> {
-            let mut runs = self.runs.write().await;
-            if let Some(existing) = runs.iter_mut().find(|r| r.run_id == run.run_id) {
-                *existing = run.clone();
-            }
-            Ok(())
-        }
-
-        async fn append_log(&self, job_id: Uuid, run_id: Uuid, data: &[u8]) -> anyhow::Result<()> {
-            let mut logs = self.logs.write().await;
-            let entry = logs.entry((job_id, run_id)).or_default();
-            entry.extend_from_slice(data);
-            Ok(())
-        }
-
-        async fn read_log(
-            &self,
-            job_id: Uuid,
-            run_id: Uuid,
-            _tail: Option<usize>,
-        ) -> anyhow::Result<String> {
-            let logs = self.logs.read().await;
-            match logs.get(&(job_id, run_id)) {
-                Some(data) => Ok(String::from_utf8_lossy(data).to_string()),
-                None => Ok(String::new()),
-            }
-        }
-
-        async fn list_runs(
-            &self,
-            job_id: Uuid,
-            limit: usize,
-            offset: usize,
-        ) -> anyhow::Result<(Vec<JobRun>, usize)> {
-            let runs = self.runs.read().await;
-            let filtered: Vec<JobRun> = runs
-                .iter()
-                .filter(|r| r.job_id == job_id)
-                .cloned()
-                .collect();
-            let total = filtered.len();
-            let paginated = filtered.into_iter().skip(offset).take(limit).collect();
-            Ok((paginated, total))
-        }
-
-        async fn cleanup(&self, _job_id: Uuid, _max_files: usize) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn read_manifest(
-            &self,
-            _job_id: Uuid,
-        ) -> anyhow::Result<Option<crate::models::JobManifest>> {
-            Ok(None)
-        }
-
-        async fn update_manifest(&self, _job_id: Uuid, _run: &JobRun) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn rebuild_manifest(
-            &self,
-            job_id: Uuid,
-        ) -> anyhow::Result<crate::models::JobManifest> {
-            Ok(crate::models::JobManifest::new(job_id))
-        }
-    }
 
     // =======================================================================
     // 1. PidFile acquire creates file (exclusive create)
@@ -1374,496 +913,35 @@ mod tests {
     }
 
     // =======================================================================
-    // 5. Shutdown sequence marks running jobs as Killed
+    // 5. Shutdown removes PID and port files
     // =======================================================================
     #[tokio::test]
-    async fn test_shutdown_marks_running_jobs_as_killed() {
-        let log_store = Arc::new(InMemoryLogStore::new());
+    async fn test_shutdown_releases_pid_file_simple() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let pid_path = tmp_dir.path().join("test.pid");
 
-        let job_id = Uuid::now_v7();
-        let run_id = Uuid::now_v7();
+        let pid_file = PidFile::new(pid_path.clone());
+        pid_file.acquire().expect("acquire PID file");
 
-        // Create a Running job run in the log store
-        let running_run = JobRun {
-            run_id,
-            job_id,
-            started_at: Utc::now(),
-            finished_at: None,
-            status: RunStatus::Running,
-            exit_code: None,
-            log_size_bytes: 0,
-            error: None,
-            trigger_params: None,
-            total_cost_usd: None,
-            duration_ms: None,
-            num_turns: None,
-            model: None,
-            usage: None,
-        };
-        log_store.create_run(&running_run).await.unwrap();
+        assert!(pid_path.exists(), "PID file should exist before shutdown");
 
-        // Create a fake active run handle
-        let (kill_tx, _kill_rx) = tokio::sync::oneshot::channel::<KillReason>();
-        let join_handle = tokio::spawn(async {
-            // Simulate a long-running task that finishes quickly on shutdown
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        });
+        graceful_shutdown(Some(&pid_file), None).await;
 
-        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        active_runs.write().await.insert(
-            job_id,
-            vec![RunHandle {
-                run_id,
-                job_id,
-                join_handle,
-                kill_tx,
-            }],
-        );
-
-        // Run graceful shutdown (no PID file for this test)
-        graceful_shutdown(
-            Arc::clone(&active_runs),
-            Arc::clone(&log_store) as Arc<dyn LogStore>,
-            None,
-            None,
-        )
-        .await;
-
-        // Verify the run was marked as Killed
-        let runs = log_store.runs.read().await;
-        let run = runs
-            .iter()
-            .find(|r| r.run_id == run_id)
-            .expect("run exists");
-        assert_eq!(
-            run.status,
-            RunStatus::Killed,
-            "Running job should be marked as Killed during shutdown"
-        );
-        assert!(
-            run.finished_at.is_some(),
-            "Killed run should have a finished_at timestamp"
-        );
-        assert!(
-            run.error.is_some(),
-            "Killed run should have an error message"
-        );
-        assert!(
-            run.error.as_ref().unwrap().contains("shutting down"),
-            "Error should mention shutdown"
-        );
-        assert_eq!(
-            run.exit_code,
-            Some(-1),
-            "Killed run should have exit_code -1"
-        );
+        assert!(!pid_path.exists(), "PID file should be removed after shutdown");
     }
 
-    // =======================================================================
-    // 5b. Ghost run recovery marks orphaned Running runs as Killed
-    // =======================================================================
     #[tokio::test]
-    async fn test_ghost_run_recovery_marks_orphaned_runs() {
-        use crate::models::Job;
+    async fn test_shutdown_removes_port_file_simple() {
+        let tmp_dir = TempDir::new().expect("create temp dir");
+        let port_path = tmp_dir.path().join("agentcronsystem.port");
 
-        let log_store = Arc::new(InMemoryLogStore::new());
+        let port_file = PortFile::write_to(port_path.clone(), 8377).expect("write port file");
 
-        let job_id = Uuid::now_v7();
-        let run_id = Uuid::now_v7();
+        assert!(port_path.exists(), "Port file should exist before shutdown");
 
-        // Simulate a run that was left in Running state from a previous session
-        let orphaned_run = crate::models::JobRun {
-            run_id,
-            job_id,
-            started_at: Utc::now(),
-            finished_at: None,
-            status: RunStatus::Running,
-            exit_code: None,
-            log_size_bytes: 0,
-            error: None,
-            trigger_params: None,
-            total_cost_usd: None,
-            duration_ms: None,
-            num_turns: None,
-            model: None,
-            usage: None,
-        };
-        log_store.create_run(&orphaned_run).await.unwrap();
+        graceful_shutdown(None, Some(&port_file)).await;
 
-        // Build a minimal Job list to drive recovery (mirrors run_daemon logic)
-        let fake_job = Job {
-            id: job_id,
-            name: "ghost-test-job".to_string(),
-            schedule: "* * * * *".to_string(),
-            execution: crate::models::ExecutionType::ShellCommand("echo hi".to_string()),
-            enabled: true,
-            timezone: None,
-            working_dir: None,
-            env_vars: None,
-            timeout_secs: 0,
-            log_environment: false,
-            allow_concurrent: false,
-            schedule_mode: crate::models::ScheduleMode::default(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            last_run_at: None,
-            last_exit_code: None,
-            pre_hook: None,
-            post_hook: None,
-            pre_hook_script_type: None,
-            post_hook_script_type: None,
-            next_run_at: None,
-        };
-        let all_jobs = vec![fake_job];
-
-        // Write NDJSON cost data to the log store for the orphaned run
-        let ndjson = b"{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-sonnet-4-20250514\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":0.0342,\"duration_ms\":5000,\"num_turns\":3,\"usage\":{\"input_tokens\":1000,\"output_tokens\":500}}\n";
-        log_store
-            .append_log(job_id, run_id, ndjson)
-            .await
-            .expect("append_log should succeed");
-
-        // Execute the same ghost run recovery logic as run_daemon
-        for job in &all_jobs {
-            let (runs, _total) = log_store
-                .list_runs(job.id, 50, 0)
-                .await
-                .expect("list_runs should succeed");
-            for mut run in runs {
-                if run.status == RunStatus::Running {
-                    let raw = log_store
-                        .read_log(job.id, run.run_id, None)
-                        .await
-                        .unwrap_or_default();
-                    let cost = extract_cost_from_log(raw.as_bytes());
-                    run.total_cost_usd = cost.total_cost_usd;
-                    run.duration_ms = cost.duration_ms;
-                    run.num_turns = cost.num_turns;
-                    run.model = cost.model;
-                    run.usage = cost.usage;
-                    run.status = RunStatus::Killed;
-                    run.exit_code = Some(-1);
-                    run.finished_at = Some(Utc::now());
-                    run.error =
-                        Some("Orphaned run — process not found on daemon restart".to_string());
-                    log_store
-                        .update_run(&run)
-                        .await
-                        .expect("update_run should succeed");
-                }
-            }
-        }
-
-        // Verify recovery
-        let runs = log_store.runs.read().await;
-        let recovered = runs
-            .iter()
-            .find(|r| r.run_id == run_id)
-            .expect("run should exist");
-
-        assert_eq!(
-            recovered.status,
-            RunStatus::Killed,
-            "Orphaned run should be marked as Killed"
-        );
-        assert_eq!(
-            recovered.exit_code,
-            Some(-1),
-            "Orphaned run should have exit_code -1"
-        );
-        assert!(
-            recovered.finished_at.is_some(),
-            "Orphaned run should have a finished_at timestamp"
-        );
-        assert_eq!(
-            recovered.error.as_deref(),
-            Some("Orphaned run — process not found on daemon restart"),
-            "Orphaned run should have the correct error message"
-        );
-        assert_eq!(
-            recovered.total_cost_usd,
-            Some(0.0342),
-            "Orphaned run should have cost extracted from log"
-        );
-        assert_eq!(
-            recovered.model.as_deref(),
-            Some("claude-sonnet-4-20250514"),
-            "Orphaned run should have model extracted from log"
-        );
-        assert_eq!(
-            recovered.duration_ms,
-            Some(5000),
-            "Orphaned run should have duration_ms extracted from log"
-        );
-        assert_eq!(
-            recovered.num_turns,
-            Some(3),
-            "Orphaned run should have num_turns extracted from log"
-        );
-        assert!(
-            recovered.usage.is_some(),
-            "Orphaned run should have usage extracted from log"
-        );
-    }
-
-    // =======================================================================
-    // 5b-2. Ghost run recovery — no log data leaves cost fields as None
-    // =======================================================================
-    #[tokio::test]
-    async fn test_ghost_run_recovery_no_log_data() {
-        use crate::models::Job;
-
-        let log_store = Arc::new(InMemoryLogStore::new());
-
-        let job_id = Uuid::now_v7();
-        let run_id = Uuid::now_v7();
-
-        // Simulate an orphaned run with no associated log data
-        let orphaned_run = crate::models::JobRun {
-            run_id,
-            job_id,
-            started_at: Utc::now(),
-            finished_at: None,
-            status: RunStatus::Running,
-            exit_code: None,
-            log_size_bytes: 0,
-            error: None,
-            trigger_params: None,
-            total_cost_usd: None,
-            duration_ms: None,
-            num_turns: None,
-            model: None,
-            usage: None,
-        };
-        log_store.create_run(&orphaned_run).await.unwrap();
-
-        // Build a minimal Job list (no log data written)
-        let fake_job = Job {
-            id: job_id,
-            name: "ghost-no-log-test-job".to_string(),
-            schedule: "* * * * *".to_string(),
-            execution: crate::models::ExecutionType::ShellCommand("echo hi".to_string()),
-            enabled: true,
-            timezone: None,
-            working_dir: None,
-            env_vars: None,
-            timeout_secs: 0,
-            log_environment: false,
-            allow_concurrent: false,
-            schedule_mode: crate::models::ScheduleMode::default(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            last_run_at: None,
-            last_exit_code: None,
-            pre_hook: None,
-            post_hook: None,
-            pre_hook_script_type: None,
-            post_hook_script_type: None,
-            next_run_at: None,
-        };
-        let all_jobs = vec![fake_job];
-
-        // Execute the same ghost run recovery logic as run_daemon
-        for job in &all_jobs {
-            let (runs, _total) = log_store
-                .list_runs(job.id, 50, 0)
-                .await
-                .expect("list_runs should succeed");
-            for mut run in runs {
-                if run.status == RunStatus::Running {
-                    let raw = log_store
-                        .read_log(job.id, run.run_id, None)
-                        .await
-                        .unwrap_or_default();
-                    let cost = extract_cost_from_log(raw.as_bytes());
-                    run.total_cost_usd = cost.total_cost_usd;
-                    run.duration_ms = cost.duration_ms;
-                    run.num_turns = cost.num_turns;
-                    run.model = cost.model;
-                    run.usage = cost.usage;
-                    run.status = RunStatus::Killed;
-                    run.exit_code = Some(-1);
-                    run.finished_at = Some(Utc::now());
-                    run.error =
-                        Some("Orphaned run — process not found on daemon restart".to_string());
-                    log_store
-                        .update_run(&run)
-                        .await
-                        .expect("update_run should succeed");
-                }
-            }
-        }
-
-        // Verify recovery — status/exit_code/error set correctly
-        let runs = log_store.runs.read().await;
-        let recovered = runs
-            .iter()
-            .find(|r| r.run_id == run_id)
-            .expect("run should exist");
-
-        assert_eq!(
-            recovered.status,
-            RunStatus::Killed,
-            "Orphaned run should be marked as Killed"
-        );
-        assert_eq!(
-            recovered.exit_code,
-            Some(-1),
-            "Orphaned run should have exit_code -1"
-        );
-        assert!(
-            recovered.finished_at.is_some(),
-            "Orphaned run should have a finished_at timestamp"
-        );
-        assert_eq!(
-            recovered.error.as_deref(),
-            Some("Orphaned run — process not found on daemon restart"),
-            "Orphaned run should have the correct error message"
-        );
-        // Cost fields should all be None when no log data exists
-        assert!(
-            recovered.total_cost_usd.is_none(),
-            "total_cost_usd should be None when no log data"
-        );
-        assert!(
-            recovered.model.is_none(),
-            "model should be None when no log data"
-        );
-        assert!(
-            recovered.duration_ms.is_none(),
-            "duration_ms should be None when no log data"
-        );
-        assert!(
-            recovered.num_turns.is_none(),
-            "num_turns should be None when no log data"
-        );
-        assert!(
-            recovered.usage.is_none(),
-            "usage should be None when no log data"
-        );
-    }
-
-    // =======================================================================
-    // 5c. Ghost run recovery leaves non-Running runs unchanged
-    // =======================================================================
-    #[tokio::test]
-    async fn test_ghost_run_recovery_ignores_non_running_runs() {
-        use crate::models::Job;
-
-        let log_store = Arc::new(InMemoryLogStore::new());
-
-        let job_id = Uuid::now_v7();
-        let completed_run_id = Uuid::now_v7();
-        let killed_run_id = Uuid::now_v7();
-
-        // A Completed run — should not be touched
-        let completed_run = crate::models::JobRun {
-            run_id: completed_run_id,
-            job_id,
-            started_at: Utc::now(),
-            finished_at: Some(Utc::now()),
-            status: RunStatus::Completed,
-            exit_code: Some(0),
-            log_size_bytes: 0,
-            error: None,
-            trigger_params: None,
-            total_cost_usd: None,
-            duration_ms: None,
-            num_turns: None,
-            model: None,
-            usage: None,
-        };
-        // A previously-killed run — should not be touched
-        let killed_run = crate::models::JobRun {
-            run_id: killed_run_id,
-            job_id,
-            started_at: Utc::now(),
-            finished_at: Some(Utc::now()),
-            status: RunStatus::Killed,
-            exit_code: Some(-1),
-            log_size_bytes: 0,
-            error: Some("prior kill".to_string()),
-            trigger_params: None,
-            total_cost_usd: None,
-            duration_ms: None,
-            num_turns: None,
-            model: None,
-            usage: None,
-        };
-        log_store.create_run(&completed_run).await.unwrap();
-        log_store.create_run(&killed_run).await.unwrap();
-
-        let fake_job = Job {
-            id: job_id,
-            name: "ghost-ignore-test".to_string(),
-            schedule: "* * * * *".to_string(),
-            execution: crate::models::ExecutionType::ShellCommand("echo hi".to_string()),
-            enabled: true,
-            timezone: None,
-            working_dir: None,
-            env_vars: None,
-            timeout_secs: 0,
-            log_environment: false,
-            allow_concurrent: false,
-            schedule_mode: crate::models::ScheduleMode::default(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            last_run_at: None,
-            last_exit_code: None,
-            pre_hook: None,
-            post_hook: None,
-            pre_hook_script_type: None,
-            post_hook_script_type: None,
-            next_run_at: None,
-        };
-        let all_jobs = vec![fake_job];
-
-        // Run ghost recovery
-        for job in &all_jobs {
-            let (runs, _total) = log_store
-                .list_runs(job.id, 50, 0)
-                .await
-                .expect("list_runs should succeed");
-            for mut run in runs {
-                if run.status == RunStatus::Running {
-                    run.status = RunStatus::Killed;
-                    run.exit_code = Some(-1);
-                    run.finished_at = Some(Utc::now());
-                    run.error =
-                        Some("Orphaned run — process not found on daemon restart".to_string());
-                    log_store.update_run(&run).await.expect("update_run");
-                }
-            }
-        }
-
-        // Verify neither run was modified
-        let runs = log_store.runs.read().await;
-
-        let c = runs.iter().find(|r| r.run_id == completed_run_id).unwrap();
-        assert_eq!(
-            c.status,
-            RunStatus::Completed,
-            "Completed run should be unchanged"
-        );
-        assert_eq!(
-            c.exit_code,
-            Some(0),
-            "Completed run exit_code should be unchanged"
-        );
-        assert!(c.error.is_none(), "Completed run should have no error");
-
-        let k = runs.iter().find(|r| r.run_id == killed_run_id).unwrap();
-        assert_eq!(
-            k.status,
-            RunStatus::Killed,
-            "Previously-killed run status should be unchanged"
-        );
-        assert_eq!(
-            k.error.as_deref(),
-            Some("prior kill"),
-            "Previously-killed run error should be unchanged"
-        );
+        assert!(!port_path.exists(), "Port file should be removed after shutdown");
     }
 
     // =======================================================================
@@ -2066,393 +1144,6 @@ mod tests {
         }
     }
 
-    // =======================================================================
-    // Shutdown with PID file release
-    // =======================================================================
-    #[tokio::test]
-    async fn test_shutdown_releases_pid_file() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let pid_path = tmp_dir.path().join("test.pid");
-
-        let pid_file = PidFile::new(pid_path.clone());
-        pid_file.acquire().expect("acquire");
-
-        assert!(pid_path.exists(), "PID file should exist before shutdown");
-
-        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
-
-        graceful_shutdown(active_runs, log_store, Some(&pid_file), None).await;
-
-        assert!(
-            !pid_path.exists(),
-            "PID file should be removed after shutdown"
-        );
-    }
-
-    // =======================================================================
-    // Shutdown with no active runs (empty case)
-    // =======================================================================
-    #[tokio::test]
-    async fn test_shutdown_with_no_active_runs() {
-        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
-
-        // Should complete without error
-        graceful_shutdown(active_runs, log_store, None, None).await;
-    }
-
-    // =======================================================================
-    // PortFile tests
-    // =======================================================================
-
-    #[test]
-    fn test_portfile_write_creates_file() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("agentcronsystem.port");
-
-        let port_file = PortFile::write_to(port_path.clone(), 8377).expect("write port file");
-
-        assert!(port_path.exists(), "Port file should exist after write");
-
-        let content = std::fs::read_to_string(&port_path).expect("read port file");
-        assert_eq!(content, "8377", "Port file should contain the port number");
-
-        port_file.remove().expect("remove");
-    }
-
-    #[test]
-    fn test_portfile_read_returns_port() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("agentcronsystem.port");
-
-        std::fs::write(&port_path, "9999").expect("write port");
-
-        let port = PortFile::read_from(&port_path);
-        assert_eq!(port, Some(9999), "Should read the written port");
-    }
-
-    #[test]
-    fn test_portfile_read_returns_none_for_missing_file() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("nonexistent.port");
-
-        let port = PortFile::read_from(&port_path);
-        assert_eq!(port, None, "Should return None for missing file");
-    }
-
-    #[test]
-    fn test_portfile_read_returns_none_for_invalid_content() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("agentcronsystem.port");
-
-        std::fs::write(&port_path, "not-a-number").expect("write invalid");
-
-        let port = PortFile::read_from(&port_path);
-        assert_eq!(port, None, "Should return None for invalid content");
-    }
-
-    #[test]
-    fn test_portfile_read_with_data_dir() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("agentcronsystem.port");
-
-        std::fs::write(&port_path, "4567").expect("write port");
-
-        let port = PortFile::read(tmp_dir.path());
-        assert_eq!(port, Some(4567), "Should read port from data dir");
-    }
-
-    #[test]
-    fn test_portfile_remove_deletes_file() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("agentcronsystem.port");
-
-        let port_file = PortFile::write_to(port_path.clone(), 8080).expect("write");
-
-        assert!(port_path.exists(), "Port file should exist before remove");
-
-        port_file.remove().expect("remove");
-
-        assert!(
-            !port_path.exists(),
-            "Port file should NOT exist after remove"
-        );
-    }
-
-    #[test]
-    fn test_portfile_remove_is_idempotent() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("agentcronsystem.port");
-
-        let port_file = PortFile::write_to(port_path.clone(), 8080).expect("write");
-
-        port_file.remove().expect("first remove");
-        port_file
-            .remove()
-            .expect("second remove should also succeed");
-    }
-
-    #[test]
-    fn test_portfile_write_overwrites_existing() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("agentcronsystem.port");
-
-        let _pf1 = PortFile::write_to(port_path.clone(), 8000).expect("write first");
-        let content = std::fs::read_to_string(&port_path).expect("read");
-        assert_eq!(content, "8000");
-
-        let pf2 = PortFile::write_to(port_path.clone(), 9000).expect("write second");
-        let content = std::fs::read_to_string(&port_path).expect("read");
-        assert_eq!(content, "9000");
-
-        pf2.remove().expect("cleanup");
-    }
-
-    #[test]
-    fn test_portfile_path_accessor() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("agentcronsystem.port");
-
-        let port_file = PortFile::new(port_path.clone());
-        assert_eq!(port_file.path(), port_path.as_path());
-    }
-
-    #[tokio::test]
-    async fn test_shutdown_removes_port_file() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let port_path = tmp_dir.path().join("agentcronsystem.port");
-
-        let port_file = PortFile::write_to(port_path.clone(), 8377).expect("write");
-
-        assert!(port_path.exists(), "Port file should exist before shutdown");
-
-        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
-
-        graceful_shutdown(active_runs, log_store, None, Some(&port_file)).await;
-
-        assert!(
-            !port_path.exists(),
-            "Port file should be removed after shutdown"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_shutdown_removes_both_pid_and_port_files() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let pid_path = tmp_dir.path().join("test.pid");
-        let port_path = tmp_dir.path().join("agentcronsystem.port");
-
-        let pid_file = PidFile::new(pid_path.clone());
-        pid_file.acquire().expect("acquire PID file");
-
-        let port_file = PortFile::write_to(port_path.clone(), 8377).expect("write port file");
-
-        assert!(pid_path.exists(), "PID file should exist before shutdown");
-        assert!(port_path.exists(), "Port file should exist before shutdown");
-
-        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let log_store = Arc::new(InMemoryLogStore::new()) as Arc<dyn LogStore>;
-
-        graceful_shutdown(active_runs, log_store, Some(&pid_file), Some(&port_file)).await;
-
-        assert!(
-            !pid_path.exists(),
-            "PID file should be removed after shutdown"
-        );
-        assert!(
-            !port_path.exists(),
-            "Port file should be removed after shutdown"
-        );
-    }
-
-    // =======================================================================
-    // Orphaned log cleanup tests
-    // =======================================================================
-
-    struct InMemoryJobStore {
-        jobs: RwLock<Vec<crate::models::Job>>,
-    }
-
-    impl InMemoryJobStore {
-        fn new() -> Self {
-            Self {
-                jobs: RwLock::new(Vec::new()),
-            }
-        }
-
-        async fn add_job(&self, job: crate::models::Job) {
-            self.jobs.write().await.push(job);
-        }
-    }
-
-    #[async_trait]
-    impl crate::storage::JobStore for InMemoryJobStore {
-        async fn list_jobs(&self) -> anyhow::Result<Vec<crate::models::Job>> {
-            Ok(self.jobs.read().await.clone())
-        }
-        async fn get_job(&self, id: Uuid) -> anyhow::Result<Option<crate::models::Job>> {
-            Ok(self.jobs.read().await.iter().find(|j| j.id == id).cloned())
-        }
-        async fn find_by_name(&self, name: &str) -> anyhow::Result<Option<crate::models::Job>> {
-            Ok(self
-                .jobs
-                .read()
-                .await
-                .iter()
-                .find(|j| j.name == name)
-                .cloned())
-        }
-        async fn create_job(
-            &self,
-            _new: crate::models::NewJob,
-        ) -> anyhow::Result<crate::models::Job> {
-            unimplemented!()
-        }
-        async fn update_job(
-            &self,
-            _id: Uuid,
-            _update: crate::models::JobUpdate,
-        ) -> anyhow::Result<crate::models::Job> {
-            unimplemented!()
-        }
-        async fn delete_job(&self, _id: Uuid) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-    }
-
-    fn make_test_job(id: Uuid) -> crate::models::Job {
-        let now = Utc::now();
-        crate::models::Job {
-            id,
-            name: format!("test-{}", id),
-            schedule: "*/5 * * * *".to_string(),
-            execution: crate::models::ExecutionType::ShellCommand("echo hi".to_string()),
-            enabled: true,
-            timezone: None,
-            working_dir: None,
-            env_vars: None,
-            timeout_secs: 0,
-            log_environment: false,
-            allow_concurrent: false,
-            schedule_mode: crate::models::ScheduleMode::default(),
-            created_at: now,
-            updated_at: now,
-            last_run_at: None,
-            last_exit_code: None,
-            pre_hook: None,
-            post_hook: None,
-            pre_hook_script_type: None,
-            post_hook_script_type: None,
-            next_run_at: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_orphaned_logs_removes_unknown_dirs() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let data_dir = tmp_dir.path().to_path_buf();
-        let logs_dir = data_dir.join("logs");
-        tokio::fs::create_dir_all(&logs_dir)
-            .await
-            .expect("create logs dir");
-
-        let known_id = Uuid::now_v7();
-        let orphan_id = Uuid::now_v7();
-
-        // Create log directories for both known and orphaned jobs
-        tokio::fs::create_dir_all(logs_dir.join(known_id.to_string()))
-            .await
-            .expect("create known log dir");
-        tokio::fs::create_dir_all(logs_dir.join(orphan_id.to_string()))
-            .await
-            .expect("create orphan log dir");
-
-        // Write a file in the orphan dir to ensure it gets fully removed
-        tokio::fs::write(
-            logs_dir.join(orphan_id.to_string()).join("test.log"),
-            b"orphaned log data",
-        )
-        .await
-        .expect("write orphan log");
-
-        // Create a job store with only the known job
-        let job_store = InMemoryJobStore::new();
-        job_store.add_job(make_test_job(known_id)).await;
-
-        // Run cleanup
-        cleanup_orphaned_logs(&data_dir, &job_store)
-            .await
-            .expect("cleanup should succeed");
-
-        // Known job's log dir should still exist
-        assert!(
-            logs_dir.join(known_id.to_string()).exists(),
-            "Known job's log directory should be preserved"
-        );
-
-        // Orphaned job's log dir should be removed
-        assert!(
-            !logs_dir.join(orphan_id.to_string()).exists(),
-            "Orphaned log directory should be removed"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_orphaned_logs_preserves_non_uuid_dirs() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let data_dir = tmp_dir.path().to_path_buf();
-        let logs_dir = data_dir.join("logs");
-        tokio::fs::create_dir_all(&logs_dir)
-            .await
-            .expect("create logs dir");
-
-        // Create a non-UUID directory
-        tokio::fs::create_dir_all(logs_dir.join("not-a-uuid"))
-            .await
-            .expect("create non-uuid dir");
-
-        let job_store = InMemoryJobStore::new();
-        cleanup_orphaned_logs(&data_dir, &job_store)
-            .await
-            .expect("cleanup should succeed");
-
-        // Non-UUID directory should be preserved
-        assert!(
-            logs_dir.join("not-a-uuid").exists(),
-            "Non-UUID directories should not be touched"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_orphaned_logs_no_logs_dir() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let data_dir = tmp_dir.path().to_path_buf();
-
-        // No logs dir created -- should succeed silently
-        let job_store = InMemoryJobStore::new();
-        let result = cleanup_orphaned_logs(&data_dir, &job_store).await;
-        assert!(result.is_ok(), "Should succeed when logs dir doesn't exist");
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_orphaned_logs_empty_logs_dir() {
-        let tmp_dir = TempDir::new().expect("create temp dir");
-        let data_dir = tmp_dir.path().to_path_buf();
-        let logs_dir = data_dir.join("logs");
-        tokio::fs::create_dir_all(&logs_dir)
-            .await
-            .expect("create logs dir");
-
-        let job_store = InMemoryJobStore::new();
-        let result = cleanup_orphaned_logs(&data_dir, &job_store).await;
-        assert!(result.is_ok(), "Should succeed with empty logs dir");
-    }
 
     // =======================================================================
     // SizeManagedWriter tests
@@ -2626,208 +1317,4 @@ mod tests {
     // Failed event sets last_exit_code to -1
     // =======================================================================
 
-    /// Test-only JobStore that supports update_job for exit code testing.
-    struct TestJobStore {
-        jobs: RwLock<Vec<crate::models::Job>>,
-    }
-
-    impl TestJobStore {
-        fn new() -> Self {
-            Self {
-                jobs: RwLock::new(Vec::new()),
-            }
-        }
-
-        async fn add_job(&self, job: crate::models::Job) {
-            self.jobs.write().await.push(job);
-        }
-    }
-
-    #[async_trait]
-    impl crate::storage::JobStore for TestJobStore {
-        async fn list_jobs(&self) -> anyhow::Result<Vec<crate::models::Job>> {
-            Ok(self.jobs.read().await.clone())
-        }
-
-        async fn get_job(&self, id: Uuid) -> anyhow::Result<Option<crate::models::Job>> {
-            Ok(self.jobs.read().await.iter().find(|j| j.id == id).cloned())
-        }
-
-        async fn find_by_name(&self, name: &str) -> anyhow::Result<Option<crate::models::Job>> {
-            Ok(self
-                .jobs
-                .read()
-                .await
-                .iter()
-                .find(|j| j.name == name)
-                .cloned())
-        }
-
-        async fn create_job(
-            &self,
-            _new: crate::models::NewJob,
-        ) -> anyhow::Result<crate::models::Job> {
-            unimplemented!()
-        }
-
-        async fn update_job(
-            &self,
-            id: Uuid,
-            update: crate::models::JobUpdate,
-        ) -> anyhow::Result<crate::models::Job> {
-            let mut jobs = self.jobs.write().await;
-            let job = jobs
-                .iter_mut()
-                .find(|j| j.id == id)
-                .ok_or_else(|| anyhow::anyhow!("Job not found"))?;
-
-            // Apply update
-            if let Some(last_run_at) = update.last_run_at {
-                job.last_run_at = last_run_at;
-            }
-            if let Some(last_exit_code) = update.last_exit_code {
-                job.last_exit_code = last_exit_code;
-            }
-
-            Ok(job.clone())
-        }
-
-        async fn delete_job(&self, _id: Uuid) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-    }
-
-    #[tokio::test]
-    async fn test_failed_event_sets_exit_code_minus_one() {
-        let job_store = Arc::new(TestJobStore::new());
-        let job_id = Uuid::now_v7();
-
-        // Create a test job with no exit code initially
-        let test_job = crate::models::Job {
-            id: job_id,
-            name: "test-job".to_string(),
-            schedule: "* * * * *".to_string(),
-            execution: crate::models::ExecutionType::ShellCommand("echo test".to_string()),
-            enabled: true,
-            timezone: None,
-            working_dir: None,
-            env_vars: None,
-            timeout_secs: 0,
-            log_environment: false,
-            allow_concurrent: false,
-            schedule_mode: crate::models::ScheduleMode::default(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            last_run_at: None,
-            last_exit_code: None,
-            pre_hook: None,
-            post_hook: None,
-            pre_hook_script_type: None,
-            post_hook_script_type: None,
-            next_run_at: None,
-        };
-        job_store.add_job(test_job).await;
-
-        // Create broadcast channel for events
-        let (event_tx, mut event_rx) = broadcast::channel::<JobEvent>(16);
-
-        // Spawn event handler (mimicking the updater task from run())
-        let updater_job_store = Arc::clone(&job_store);
-        let updater_handle = tokio::spawn(async move {
-            while let Ok(event) = event_rx.recv().await {
-                match event {
-                    JobEvent::Completed {
-                        job_id,
-                        exit_code,
-                        timestamp,
-                        ..
-                    } => {
-                        let update = crate::models::JobUpdate {
-                            last_run_at: Some(Some(timestamp)),
-                            last_exit_code: Some(Some(exit_code)),
-                            ..Default::default()
-                        };
-                        updater_job_store.update_job(job_id, update).await.unwrap();
-                    }
-                    JobEvent::Failed {
-                        job_id, timestamp, ..
-                    } => {
-                        let update = crate::models::JobUpdate {
-                            last_run_at: Some(Some(timestamp)),
-                            last_exit_code: Some(Some(-1)),
-                            ..Default::default()
-                        };
-                        updater_job_store.update_job(job_id, update).await.unwrap();
-                    }
-                    _ => {}
-                }
-            }
-        });
-
-        // Test sequence:
-        // 1. Completed event with exit code 0
-        let timestamp1 = Utc::now();
-        event_tx
-            .send(JobEvent::Completed {
-                job_id,
-                run_id: Uuid::now_v7(),
-                exit_code: 0,
-                timestamp: timestamp1,
-            })
-            .unwrap();
-
-        // Give the updater task time to process
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let job = job_store.get_job(job_id).await.unwrap().unwrap();
-        assert_eq!(
-            job.last_exit_code,
-            Some(0),
-            "After Completed event, last_exit_code should be 0"
-        );
-
-        // 2. Failed event
-        let timestamp2 = Utc::now();
-        event_tx
-            .send(JobEvent::Failed {
-                job_id,
-                run_id: Uuid::now_v7(),
-                error: "simulated failure".to_string(),
-                timestamp: timestamp2,
-            })
-            .unwrap();
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let job = job_store.get_job(job_id).await.unwrap().unwrap();
-        assert_eq!(
-            job.last_exit_code,
-            Some(-1),
-            "After Failed event, last_exit_code should be -1"
-        );
-
-        // 3. Another Completed event with exit code 0
-        let timestamp3 = Utc::now();
-        event_tx
-            .send(JobEvent::Completed {
-                job_id,
-                run_id: Uuid::now_v7(),
-                exit_code: 0,
-                timestamp: timestamp3,
-            })
-            .unwrap();
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let job = job_store.get_job(job_id).await.unwrap().unwrap();
-        assert_eq!(
-            job.last_exit_code,
-            Some(0),
-            "After second Completed event, last_exit_code should be restored to 0"
-        );
-
-        // Clean up
-        drop(event_tx);
-        updater_handle.await.unwrap();
-    }
 }

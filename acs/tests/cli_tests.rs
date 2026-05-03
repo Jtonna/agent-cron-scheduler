@@ -21,35 +21,16 @@ fn test_version_flag() {
 
 #[test]
 fn test_help_flag() {
+    // Phase 6: old job CLI commands removed; only daemon + workflow commands remain
     agentcronsystem_cmd()
         .arg("--help")
         .assert()
         .success()
         .stdout(predicate::str::contains("Agent Cron Scheduler"))
         .stdout(predicate::str::contains("start"))
-        .stdout(predicate::str::contains("add"))
-        .stdout(predicate::str::contains("list"))
-        .stdout(predicate::str::contains("remove"))
-        .stdout(predicate::str::contains("enable"))
-        .stdout(predicate::str::contains("disable"))
-        .stdout(predicate::str::contains("trigger"))
-        .stdout(predicate::str::contains("logs"))
         .stdout(predicate::str::contains("status"))
-        .stdout(predicate::str::contains("stop"));
-}
-
-#[test]
-fn test_add_help_shows_options() {
-    agentcronsystem_cmd()
-        .args(["add", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("--name"))
-        .stdout(predicate::str::contains("--schedule"))
-        .stdout(predicate::str::contains("--cmd"))
-        .stdout(predicate::str::contains("--script"))
-        .stdout(predicate::str::contains("--timezone"))
-        .stdout(predicate::str::contains("--env"));
+        .stdout(predicate::str::contains("stop"))
+        .stdout(predicate::str::contains("workflows"));
 }
 
 #[test]
@@ -62,16 +43,8 @@ fn test_start_help() {
         .stdout(predicate::str::contains("--config"));
 }
 
-#[test]
-fn test_logs_help() {
-    agentcronsystem_cmd()
-        .args(["logs", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("--follow"))
-        .stdout(predicate::str::contains("--tail"))
-        .stdout(predicate::str::contains("--run"));
-}
+// test_logs_help removed in Phase 6: `acs logs` command was deleted along with
+// the old job-based CLI surface. Log viewing is now done via workflow run logs.
 
 #[test]
 fn test_no_subcommand_shows_help() {

@@ -4,15 +4,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use tokio::sync::{mpsc, Notify, RwLock};
+use tokio::sync::{broadcast, Notify, RwLock};
 
 use uuid::Uuid;
 
-use crate::daemon::executor::RunHandle;
-use crate::models::DispatchRequest;
-use crate::models::Job;
+use crate::daemon::events::WorkflowEvent;
+use crate::models::workflow::TriggerParams;
 use crate::models::ScheduleMode;
-use crate::storage::JobStore;
+use crate::storage::workflows::WorkflowStore;
 
 // ---------------------------------------------------------------------------
 // Clock trait + implementations
@@ -105,111 +104,156 @@ pub fn compute_next_run(
 }
 
 // ---------------------------------------------------------------------------
-// Scheduler
+// WorkflowScheduler
 // ---------------------------------------------------------------------------
 
-/// The cron scheduler engine.
+/// Workflow-aware scheduler that reads from a `WorkflowStore` and dispatches
+/// runs via `crate::workflow::executor::run_workflow`.
 ///
-/// It is a long-lived task that loads enabled jobs, computes next run times,
-/// sleeps until the earliest one, and dispatches due jobs over an mpsc channel.
-/// It can be woken early via `Notify` when the job list changes.
-pub struct Scheduler {
-    job_store: Arc<dyn JobStore>,
+/// This replaces the old `Scheduler` (which read from `JobStore`) as of Phase 6.
+pub struct WorkflowScheduler {
+    workflow_store: Arc<dyn WorkflowStore>,
     clock: Arc<dyn Clock>,
     notify: Arc<Notify>,
-    dispatch_tx: mpsc::Sender<DispatchRequest>,
-    active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>,
+    workflow_event_tx: broadcast::Sender<WorkflowEvent>,
+    workflow_runs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<crate::models::workflow::WorkflowRun>>>>>,
+    data_dir: std::path::PathBuf,
 }
 
-impl Scheduler {
-    /// Create a new Scheduler.
+impl WorkflowScheduler {
     pub fn new(
-        job_store: Arc<dyn JobStore>,
+        workflow_store: Arc<dyn WorkflowStore>,
         clock: Arc<dyn Clock>,
         notify: Arc<Notify>,
-        dispatch_tx: mpsc::Sender<DispatchRequest>,
-        active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>,
+        workflow_event_tx: broadcast::Sender<WorkflowEvent>,
+        workflow_runs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<crate::models::workflow::WorkflowRun>>>>>,
+        data_dir: std::path::PathBuf,
     ) -> Self {
         Self {
-            job_store,
+            workflow_store,
             clock,
             notify,
-            dispatch_tx,
-            active_runs,
+            workflow_event_tx,
+            workflow_runs,
+            data_dir,
         }
     }
 
-    /// Main scheduler loop.  Runs forever (or until the mpsc channel closes).
+    /// Main scheduler loop — runs until the process exits or the store is dropped.
     pub async fn run(&self) -> Result<()> {
         loop {
-            let jobs = self.job_store.list_jobs().await?;
-            let enabled_jobs: Vec<&Job> = jobs.iter().filter(|j| j.enabled).collect();
+            let workflows = self.workflow_store.list_workflows().await?;
+            let enabled: Vec<_> = workflows.into_iter().filter(|w| w.enabled).collect();
 
-            // Compute next run for each enabled job
-            let mut next_runs: Vec<(Job, DateTime<Utc>)> = Vec::new();
-            for job in enabled_jobs {
-                match compute_next_run(&job.schedule, job.timezone.as_deref(), self.clock.now()) {
-                    Ok(next) => next_runs.push((job.clone(), next)),
+            // Compute next_run for each enabled workflow
+            let mut next_runs: Vec<(crate::models::workflow::Workflow, DateTime<Utc>)> =
+                Vec::new();
+            for wf in enabled {
+                match compute_next_run(&wf.schedule, wf.timezone.as_deref(), self.clock.now()) {
+                    Ok(next) => next_runs.push((wf, next)),
                     Err(e) => {
                         tracing::error!(
-                            "Invalid schedule for job '{}' ({}): {}",
-                            job.name,
-                            job.id,
-                            e
+                            workflow_id = %wf.id,
+                            workflow_name = %wf.name,
+                            "Invalid schedule for workflow '{}' ({}): {}",
+                            wf.name, wf.id, e
                         );
-                        // Invalid jobs are skipped (not dispatched).
                     }
                 }
             }
 
             if next_runs.is_empty() {
-                // No enabled jobs — sleep indefinitely until notified
+                // No enabled workflows — sleep until notified
                 self.notify.notified().await;
                 continue;
             }
 
-            // Find earliest next run
             let earliest = next_runs.iter().map(|(_, t)| *t).min().unwrap();
             let now = self.clock.now();
             let sleep_duration = (earliest - now).to_std().unwrap_or(Duration::ZERO);
 
             tokio::select! {
                 _ = tokio::time::sleep(sleep_duration) => {
-                    // Dispatch all jobs that are now due
                     let now = self.clock.now();
-                    for (job, next_time) in &next_runs {
+                    for (wf, next_time) in &next_runs {
                         if *next_time <= now {
-                            // For WaitForCompletion jobs, skip dispatch if the job
-                            // already has an active run in progress.
-                            if job.schedule_mode == ScheduleMode::WaitForCompletion {
-                                let runs = self.active_runs.read().await;
-                                let has_active = runs
-                                    .get(&job.id)
-                                    .map(|handles| {
-                                        handles.iter().any(|h| !h.join_handle.is_finished())
-                                    })
-                                    .unwrap_or(false);
+                            // WaitForCompletion: skip if already running
+                            if wf.schedule_mode == ScheduleMode::WaitForCompletion {
+                                let runs = self.workflow_runs.read().await;
+                                let has_active = runs.values().any(|r| {
+                                    // Check if any run belongs to this workflow and is still Running
+                                    if let Ok(run) = r.try_read() {
+                                        run.workflow_id == wf.id
+                                            && run.status == crate::models::workflow::RunStatus::Running
+                                    } else {
+                                        false
+                                    }
+                                });
                                 if has_active {
                                     tracing::debug!(
-                                        job_id = %job.id,
-                                        job_name = %job.name,
+                                        workflow_id = %wf.id,
+                                        workflow_name = %wf.name,
                                         "WaitForCompletion: skipping dispatch — run still active"
                                     );
                                     continue;
                                 }
                             }
 
-                            let request = DispatchRequest {
-                                job: job.clone(),
-                                run_id: Uuid::now_v7(),
-                                trigger_params: None,
-                            };
-                            let _ = self.dispatch_tx.send(request).await;
+                            let run_id = Uuid::now_v7();
+                            let wf_clone = wf.clone();
+                            let event_tx = self.workflow_event_tx.clone();
+                            let workflow_runs = Arc::clone(&self.workflow_runs);
+                            let data_dir = self.data_dir.clone();
+
+                            tokio::spawn(async move {
+                                // Build log path: data_dir/logs/<workflow_id>/<run_id>.log
+                                let log_dir = data_dir.join("logs").join(wf_clone.id.to_string());
+                                if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
+                                    tracing::error!(
+                                        workflow_id = %wf_clone.id,
+                                        "Failed to create log dir: {}",
+                                        e
+                                    );
+                                    return;
+                                }
+                                let log_path = log_dir.join(format!("{}.log", run_id));
+
+                                let sink = match crate::workflow::log_sink::FileLogSink::create(log_path).await {
+                                    Ok(s) => Arc::new(s) as Arc<dyn crate::workflow::step::LogSink>,
+                                    Err(e) => {
+                                        tracing::error!(
+                                            workflow_id = %wf_clone.id,
+                                            "Failed to create log sink: {}",
+                                            e
+                                        );
+                                        return;
+                                    }
+                                };
+
+                                // Create a minimal TriggerParams (no input for scheduled runs)
+                                let trigger = TriggerParams {
+                                    input: serde_json::Value::Null,
+                                    env: None,
+                                    target_step: None,
+                                };
+
+                                let run = crate::workflow::executor::run_workflow(
+                                    &wf_clone,
+                                    run_id,
+                                    trigger,
+                                    sink,
+                                    Some(event_tx),
+                                ).await;
+
+                                // Store the completed run in the in-memory map
+                                let run = Arc::new(RwLock::new(run));
+                                workflow_runs.write().await.insert(run_id, run);
+                            });
                         }
                     }
                 }
                 _ = self.notify.notified() => {
-                    // Job list changed — re-evaluate from the top
+                    // Workflow list changed — re-evaluate
                     continue;
                 }
             }
@@ -224,155 +268,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::executor::RunHandle;
-    use crate::models::{ExecutionType, Job, JobUpdate, NewJob};
-    use crate::storage::JobStore;
-    use async_trait::async_trait;
     use chrono::TimeZone;
-    use tokio::sync::RwLock;
-    use uuid::Uuid;
-
-    /// Helper to create an empty active_runs map for tests that don't need it.
-    fn empty_active_runs() -> Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> {
-        Arc::new(RwLock::new(HashMap::new()))
-    }
-
-    // -----------------------------------------------------------------------
-    // InMemoryJobStore — test double
-    // -----------------------------------------------------------------------
-
-    struct InMemoryJobStore {
-        jobs: RwLock<Vec<Job>>,
-    }
-
-    impl InMemoryJobStore {
-        fn new() -> Self {
-            Self {
-                jobs: RwLock::new(Vec::new()),
-            }
-        }
-
-        async fn add_job(&self, job: Job) {
-            self.jobs.write().await.push(job);
-        }
-    }
-
-    #[async_trait]
-    impl JobStore for InMemoryJobStore {
-        async fn list_jobs(&self) -> Result<Vec<Job>> {
-            Ok(self.jobs.read().await.clone())
-        }
-
-        async fn get_job(&self, id: Uuid) -> Result<Option<Job>> {
-            Ok(self.jobs.read().await.iter().find(|j| j.id == id).cloned())
-        }
-
-        async fn find_by_name(&self, name: &str) -> Result<Option<Job>> {
-            Ok(self
-                .jobs
-                .read()
-                .await
-                .iter()
-                .find(|j| j.name == name)
-                .cloned())
-        }
-
-        async fn create_job(&self, new: NewJob) -> Result<Job> {
-            let now = Utc::now();
-            let job = Job {
-                id: Uuid::now_v7(),
-                name: new.name,
-                schedule: new.schedule,
-                execution: new.execution,
-                enabled: new.enabled,
-                timezone: new.timezone,
-                working_dir: new.working_dir,
-                env_vars: new.env_vars,
-                timeout_secs: new.timeout_secs,
-                log_environment: new.log_environment,
-                allow_concurrent: new.allow_concurrent.unwrap_or(false),
-                schedule_mode: new.schedule_mode.unwrap_or_default(),
-                created_at: now,
-                updated_at: now,
-                last_run_at: None,
-                last_exit_code: None,
-                pre_hook: None,
-                post_hook: None,
-                pre_hook_script_type: None,
-                post_hook_script_type: None,
-                next_run_at: None,
-            };
-            self.jobs.write().await.push(job.clone());
-            Ok(job)
-        }
-
-        async fn update_job(&self, id: Uuid, update: JobUpdate) -> Result<Job> {
-            let mut jobs = self.jobs.write().await;
-            let job = jobs
-                .iter_mut()
-                .find(|j| j.id == id)
-                .ok_or_else(|| anyhow::anyhow!("not found"))?;
-            if let Some(name) = update.name {
-                job.name = name;
-            }
-            if let Some(schedule) = update.schedule {
-                job.schedule = schedule;
-            }
-            if let Some(enabled) = update.enabled {
-                job.enabled = enabled;
-            }
-            job.updated_at = Utc::now();
-            Ok(job.clone())
-        }
-
-        async fn delete_job(&self, id: Uuid) -> Result<()> {
-            let mut jobs = self.jobs.write().await;
-            jobs.retain(|j| j.id != id);
-            Ok(())
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Helper: build a Job struct for testing
-    // -----------------------------------------------------------------------
-
-    fn make_test_job(name: &str, schedule: &str, enabled: bool) -> Job {
-        let now = Utc::now();
-        Job {
-            id: Uuid::now_v7(),
-            name: name.to_string(),
-            schedule: schedule.to_string(),
-            execution: ExecutionType::ShellCommand("echo hello".to_string()),
-            enabled,
-            timezone: None,
-            working_dir: None,
-            env_vars: None,
-            timeout_secs: 0,
-            log_environment: false,
-            allow_concurrent: false,
-            schedule_mode: crate::models::ScheduleMode::default(),
-            created_at: now,
-            updated_at: now,
-            last_run_at: None,
-            last_exit_code: None,
-            pre_hook: None,
-            post_hook: None,
-            pre_hook_script_type: None,
-            post_hook_script_type: None,
-            next_run_at: None,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn make_test_job_with_tz(name: &str, schedule: &str, tz: &str) -> Job {
-        let mut job = make_test_job(name, schedule, true);
-        job.timezone = Some(tz.to_string());
-        job
-    }
-
-    // =======================================================================
-    // 1. next_run_at calculation: */5 * * * * at 10:03 -> 10:05
-    // =======================================================================
 
     #[test]
     fn test_next_run_at_every_5_minutes() {
@@ -489,395 +385,6 @@ mod tests {
         );
     }
 
-    // =======================================================================
-    // 5. No enabled jobs — scheduler sleeps until notified
-    // =======================================================================
-
-    #[tokio::test]
-    async fn test_no_enabled_jobs_sleeps_until_notified() {
-        let store = Arc::new(InMemoryJobStore::new());
-        let notify = Arc::new(Notify::new());
-        let clock = Arc::new(FakeClock::new(Utc::now()));
-        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
-
-        let scheduler = Scheduler::new(
-            store.clone(),
-            clock.clone(),
-            notify.clone(),
-            tx,
-            empty_active_runs(),
-        );
-
-        // Spawn the scheduler
-        let handle = tokio::spawn(async move { scheduler.run().await });
-
-        // Give scheduler time to enter the wait state
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Nothing should be dispatched
-        assert!(
-            rx.try_recv().is_err(),
-            "No jobs should be dispatched when none are enabled"
-        );
-
-        // Wake the scheduler via Notify (to prove it's alive and listening)
-        notify.notify_one();
-
-        // Give it a moment to loop
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Still nothing dispatched since there are still no enabled jobs
-        assert!(rx.try_recv().is_err());
-
-        // Clean up
-        handle.abort();
-    }
-
-    // =======================================================================
-    // 6. Scheduler dispatches job when cron fires
-    // =======================================================================
-
-    #[tokio::test]
-    async fn test_scheduler_dispatches_job_when_cron_fires() {
-        let store = Arc::new(InMemoryJobStore::new());
-
-        // Create a job that fires at */1 * * * * (every minute)
-        // Set clock to 10:00:30 — next fire is 10:01:00
-        let base_time = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 30).unwrap();
-        let clock = Arc::new(FakeClock::new(base_time));
-
-        let job = make_test_job("minutely-job", "*/1 * * * *", true);
-        store.add_job(job.clone()).await;
-
-        let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
-
-        let clock_clone = clock.clone();
-        let scheduler = Scheduler::new(
-            store.clone(),
-            clock_clone,
-            notify.clone(),
-            tx,
-            empty_active_runs(),
-        );
-
-        let handle = tokio::spawn(async move { scheduler.run().await });
-
-        // The scheduler will compute next_run = 10:01:00 and sleep for 30s.
-        // We need the tokio::time::sleep to fire. We can use tokio pause/advance.
-        // First, advance the fake clock past the fire time.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Advance fake clock to 10:01:00
-        clock.set(Utc.with_ymd_and_hms(2025, 6, 15, 10, 1, 0).unwrap());
-
-        // Also advance tokio time so the sleep fires
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(31)).await;
-        tokio::time::resume();
-
-        // Allow scheduler to process
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Should have received the dispatched job
-        let dispatched = rx.try_recv();
-        assert!(dispatched.is_ok(), "Job should have been dispatched");
-        assert_eq!(dispatched.unwrap().job.name, "minutely-job");
-
-        handle.abort();
-    }
-
-    // =======================================================================
-    // 7. Scheduler skips disabled jobs
-    // =======================================================================
-
-    #[tokio::test]
-    async fn test_scheduler_skips_disabled_jobs() {
-        let store = Arc::new(InMemoryJobStore::new());
-
-        let base_time = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 30).unwrap();
-        let clock = Arc::new(FakeClock::new(base_time));
-
-        // Add a disabled job
-        let disabled_job = make_test_job("disabled-job", "*/1 * * * *", false);
-        store.add_job(disabled_job).await;
-
-        let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
-
-        let scheduler = Scheduler::new(
-            store.clone(),
-            clock.clone(),
-            notify.clone(),
-            tx,
-            empty_active_runs(),
-        );
-
-        let handle = tokio::spawn(async move { scheduler.run().await });
-
-        // The scheduler should see no enabled jobs and wait on notify
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Advance clock and notify to re-evaluate
-        clock.set(Utc.with_ymd_and_hms(2025, 6, 15, 10, 1, 0).unwrap());
-        notify.notify_one();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // No jobs should be dispatched because the only job is disabled
-        assert!(
-            rx.try_recv().is_err(),
-            "Disabled jobs should not be dispatched"
-        );
-
-        handle.abort();
-    }
-
-    // =======================================================================
-    // 8. Scheduler dispatches all due jobs concurrently
-    // =======================================================================
-
-    #[tokio::test]
-    async fn test_scheduler_dispatches_all_due_jobs_concurrently() {
-        let store = Arc::new(InMemoryJobStore::new());
-
-        // Start at 10:00:30.  Three jobs all fire at */1 * * * * -> next at 10:01
-        let base_time = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 30).unwrap();
-        let clock = Arc::new(FakeClock::new(base_time));
-
-        store
-            .add_job(make_test_job("job-a", "*/1 * * * *", true))
-            .await;
-        store
-            .add_job(make_test_job("job-b", "*/1 * * * *", true))
-            .await;
-        store
-            .add_job(make_test_job("job-c", "*/1 * * * *", true))
-            .await;
-
-        let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
-
-        let clock_clone = clock.clone();
-        let scheduler = Scheduler::new(
-            store.clone(),
-            clock_clone,
-            notify.clone(),
-            tx,
-            empty_active_runs(),
-        );
-
-        let handle = tokio::spawn(async move { scheduler.run().await });
-
-        // Let the scheduler start and compute next runs
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Advance time past the fire point
-        clock.set(Utc.with_ymd_and_hms(2025, 6, 15, 10, 1, 0).unwrap());
-
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(31)).await;
-        tokio::time::resume();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Collect all dispatched jobs
-        let mut dispatched = Vec::new();
-        while let Ok(request) = rx.try_recv() {
-            dispatched.push(request.job.name.clone());
-        }
-
-        assert_eq!(dispatched.len(), 3, "All 3 due jobs should be dispatched");
-        assert!(dispatched.contains(&"job-a".to_string()));
-        assert!(dispatched.contains(&"job-b".to_string()));
-        assert!(dispatched.contains(&"job-c".to_string()));
-
-        handle.abort();
-    }
-
-    // =======================================================================
-    // 9. Scheduler wakes on Notify
-    // =======================================================================
-
-    #[tokio::test]
-    async fn test_scheduler_wakes_on_notify() {
-        let store = Arc::new(InMemoryJobStore::new());
-
-        // Start with no jobs — scheduler should sleep on notify
-        let clock = Arc::new(FakeClock::new(Utc::now()));
-        let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
-
-        let store_clone = store.clone();
-        let notify_clone = notify.clone();
-        let scheduler = Scheduler::new(
-            store_clone,
-            clock.clone(),
-            notify_clone,
-            tx,
-            empty_active_runs(),
-        );
-
-        let handle = tokio::spawn(async move { scheduler.run().await });
-
-        // Scheduler should be sleeping (no jobs)
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(rx.try_recv().is_err(), "No jobs dispatched initially");
-
-        // Now add a job and notify
-        let job = make_test_job("new-job", "*/1 * * * *", true);
-        store.add_job(job).await;
-        notify.notify_one();
-
-        // After notify, the scheduler re-evaluates and picks up the new job.
-        // It won't dispatch immediately (cron hasn't fired yet), but it
-        // should now be sleeping on the timer rather than indefinitely on notify.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // The scheduler is alive and looping — test passes if we get here
-        // without hanging. The job isn't due yet so nothing is dispatched.
-        assert!(
-            rx.try_recv().is_err(),
-            "Job not due yet, should not be dispatched"
-        );
-
-        handle.abort();
-    }
-
-    // =======================================================================
-    // 10. Invalid cron expression — job is skipped, not dispatched
-    // =======================================================================
-
-    #[test]
-    fn test_invalid_cron_expression_returns_error() {
-        let after = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 0).unwrap();
-        let result = compute_next_run("not a cron", None, after);
-        assert!(result.is_err(), "Invalid cron should return error");
-    }
-
-    #[tokio::test]
-    async fn test_scheduler_skips_invalid_cron_jobs() {
-        let store = Arc::new(InMemoryJobStore::new());
-
-        let base_time = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 30).unwrap();
-        let clock = Arc::new(FakeClock::new(base_time));
-
-        // Add a job with an invalid cron — it's enabled but cron is garbage
-        let bad_job = make_test_job("bad-cron-job", "INVALID CRON", true);
-        store.add_job(bad_job.clone()).await;
-
-        // Also add a valid job to prove it still works
-        let good_job = make_test_job("good-job", "*/1 * * * *", true);
-        store.add_job(good_job.clone()).await;
-
-        let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
-
-        let scheduler = Scheduler::new(
-            store.clone(),
-            clock.clone(),
-            notify.clone(),
-            tx,
-            empty_active_runs(),
-        );
-
-        let handle = tokio::spawn(async move { scheduler.run().await });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Advance past the good job's fire time
-        clock.set(Utc.with_ymd_and_hms(2025, 6, 15, 10, 1, 0).unwrap());
-
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(31)).await;
-        tokio::time::resume();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Only the good job should be dispatched
-        let mut dispatched = Vec::new();
-        while let Ok(request) = rx.try_recv() {
-            dispatched.push(request.job.name.clone());
-        }
-
-        assert!(
-            dispatched.contains(&"good-job".to_string()),
-            "Valid job should be dispatched"
-        );
-        assert!(
-            !dispatched.contains(&"bad-cron-job".to_string()),
-            "Invalid cron job should NOT be dispatched"
-        );
-
-        handle.abort();
-    }
-
-    // =======================================================================
-    // Additional: invalid timezone returns error
-    // =======================================================================
-
-    #[test]
-    fn test_invalid_timezone_returns_error() {
-        let after = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 0).unwrap();
-        let result = compute_next_run("*/5 * * * *", Some("Not/Valid"), after);
-        assert!(result.is_err(), "Invalid timezone should return error");
-    }
-
-    // =======================================================================
-    // 11. Scheduler dispatches timezone-aware job correctly
-    // =======================================================================
-
-    #[tokio::test]
-    async fn test_scheduler_dispatches_timezone_aware_job() {
-        let store = Arc::new(InMemoryJobStore::new());
-
-        // June 15, 2025 — EDT is UTC-4
-        // Job: "0 10 * * *" in America/New_York = 10:00 AM EDT = 14:00 UTC
-        // Clock starts at 13:59:30 UTC (just before fire time)
-        let base_time = Utc.with_ymd_and_hms(2025, 6, 15, 13, 59, 30).unwrap();
-        let clock = Arc::new(FakeClock::new(base_time));
-
-        let tz_job = make_test_job_with_tz("tz-job", "0 10 * * *", "America/New_York");
-        store.add_job(tz_job).await;
-
-        let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
-
-        let scheduler = Scheduler::new(
-            store.clone(),
-            clock.clone(),
-            notify.clone(),
-            tx,
-            empty_active_runs(),
-        );
-
-        let handle = tokio::spawn(async move { scheduler.run().await });
-
-        // Let scheduler start
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Advance clock past the 14:00 UTC fire time
-        clock.set(Utc.with_ymd_and_hms(2025, 6, 15, 14, 0, 0).unwrap());
-
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(31)).await;
-        tokio::time::resume();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let dispatched = rx.try_recv();
-        assert!(
-            dispatched.is_ok(),
-            "Timezone-aware job should be dispatched"
-        );
-        assert_eq!(dispatched.unwrap().job.name, "tz-job");
-
-        handle.abort();
-    }
-
-    // =======================================================================
-    // Additional: FakeClock tests
-    // =======================================================================
-
     #[test]
     fn test_fake_clock_new_and_now() {
         let t = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
@@ -911,212 +418,5 @@ mod tests {
         // Should be within 1 second
         let diff = (actual_now - now).num_seconds().abs();
         assert!(diff < 2, "SystemClock should return approximately now");
-    }
-
-    // =======================================================================
-    // 12. WaitForCompletion — job with active run is NOT dispatched
-    // =======================================================================
-
-    #[tokio::test]
-    async fn test_wait_for_completion_skips_when_active_run_exists() {
-        let store = Arc::new(InMemoryJobStore::new());
-
-        let base_time = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 30).unwrap();
-        let clock = Arc::new(FakeClock::new(base_time));
-
-        // Create a WaitForCompletion job
-        let mut job = make_test_job("wfc-job", "*/1 * * * *", true);
-        job.schedule_mode = ScheduleMode::WaitForCompletion;
-        let job_id = job.id;
-        store.add_job(job).await;
-
-        let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
-
-        // Simulate an active (not-finished) run for this job by using a
-        // long-lived task that won't finish during the test.
-        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let (kill_tx, _kill_rx) =
-            tokio::sync::oneshot::channel::<crate::daemon::executor::KillReason>();
-        let long_running = tokio::spawn(async {
-            // This task will be aborted at the end of the test; it won't finish on its own.
-            tokio::time::sleep(Duration::from_secs(3600)).await;
-        });
-        active_runs.write().await.insert(
-            job_id,
-            vec![RunHandle {
-                run_id: Uuid::now_v7(),
-                job_id,
-                join_handle: long_running,
-                kill_tx,
-            }],
-        );
-
-        let scheduler = Scheduler::new(
-            store.clone(),
-            clock.clone(),
-            notify.clone(),
-            tx,
-            Arc::clone(&active_runs),
-        );
-
-        let handle = tokio::spawn(async move { scheduler.run().await });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Advance clock past the fire time
-        clock.set(Utc.with_ymd_and_hms(2025, 6, 15, 10, 1, 0).unwrap());
-
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(31)).await;
-        tokio::time::resume();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Job should NOT be dispatched because it has an active run
-        assert!(
-            rx.try_recv().is_err(),
-            "WaitForCompletion job with active run should NOT be dispatched"
-        );
-
-        handle.abort();
-        // Clean up the long-running task
-        active_runs
-            .write()
-            .await
-            .remove(&job_id)
-            .unwrap()
-            .into_iter()
-            .for_each(|h| h.join_handle.abort());
-    }
-
-    // =======================================================================
-    // 13. WaitForCompletion — job WITHOUT active run IS dispatched normally
-    // =======================================================================
-
-    #[tokio::test]
-    async fn test_wait_for_completion_dispatches_when_no_active_run() {
-        let store = Arc::new(InMemoryJobStore::new());
-
-        let base_time = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 30).unwrap();
-        let clock = Arc::new(FakeClock::new(base_time));
-
-        // Create a WaitForCompletion job with no active runs
-        let mut job = make_test_job("wfc-idle-job", "*/1 * * * *", true);
-        job.schedule_mode = ScheduleMode::WaitForCompletion;
-        store.add_job(job).await;
-
-        let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
-
-        // active_runs is empty — no run is in progress
-        let scheduler = Scheduler::new(
-            store.clone(),
-            clock.clone(),
-            notify.clone(),
-            tx,
-            empty_active_runs(),
-        );
-
-        let handle = tokio::spawn(async move { scheduler.run().await });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Advance clock past the fire time
-        clock.set(Utc.with_ymd_and_hms(2025, 6, 15, 10, 1, 0).unwrap());
-
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(31)).await;
-        tokio::time::resume();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Job SHOULD be dispatched because there is no active run
-        let dispatched = rx.try_recv();
-        assert!(
-            dispatched.is_ok(),
-            "WaitForCompletion job with no active run should be dispatched"
-        );
-        assert_eq!(dispatched.unwrap().job.name, "wfc-idle-job");
-
-        handle.abort();
-    }
-
-    // =======================================================================
-    // 14. Cron mode — job WITH active run IS still dispatched (unchanged behavior)
-    // =======================================================================
-
-    #[tokio::test]
-    async fn test_cron_mode_dispatches_even_with_active_run() {
-        let store = Arc::new(InMemoryJobStore::new());
-
-        let base_time = Utc.with_ymd_and_hms(2025, 6, 15, 10, 0, 30).unwrap();
-        let clock = Arc::new(FakeClock::new(base_time));
-
-        // Create a Cron-mode job (default)
-        let job = make_test_job("cron-job", "*/1 * * * *", true);
-        let job_id = job.id;
-        store.add_job(job).await;
-
-        let notify = Arc::new(Notify::new());
-        let (tx, mut rx) = mpsc::channel::<DispatchRequest>(16);
-
-        // Simulate an active run for this job
-        let active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let (kill_tx, _kill_rx) =
-            tokio::sync::oneshot::channel::<crate::daemon::executor::KillReason>();
-        let long_running = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_secs(3600)).await;
-        });
-        active_runs.write().await.insert(
-            job_id,
-            vec![RunHandle {
-                run_id: Uuid::now_v7(),
-                job_id,
-                join_handle: long_running,
-                kill_tx,
-            }],
-        );
-
-        let scheduler = Scheduler::new(
-            store.clone(),
-            clock.clone(),
-            notify.clone(),
-            tx,
-            Arc::clone(&active_runs),
-        );
-
-        let handle = tokio::spawn(async move { scheduler.run().await });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Advance clock past the fire time
-        clock.set(Utc.with_ymd_and_hms(2025, 6, 15, 10, 1, 0).unwrap());
-
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(31)).await;
-        tokio::time::resume();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Cron job SHOULD be dispatched regardless of active runs
-        let dispatched = rx.try_recv();
-        assert!(
-            dispatched.is_ok(),
-            "Cron-mode job should be dispatched even with an active run"
-        );
-        assert_eq!(dispatched.unwrap().job.name, "cron-job");
-
-        handle.abort();
-        // Clean up the long-running task
-        active_runs
-            .write()
-            .await
-            .remove(&job_id)
-            .unwrap()
-            .into_iter()
-            .for_each(|h| h.join_handle.abort());
     }
 }

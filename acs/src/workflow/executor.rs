@@ -648,7 +648,7 @@ mod tests {
         CaptureSpec, FailurePolicy, MatchStep, RunStatus, SetVarStep, ShellStep, StepDef,
         StepDefCommon, TriggerParams, Workflow,
     };
-    use crate::models::job::ScheduleMode;
+    use crate::models::workflow::ScheduleMode;
     use crate::workflow::step::{LogSink, StepOutput};
 
     use super::run_workflow;

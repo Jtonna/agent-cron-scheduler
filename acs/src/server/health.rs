@@ -23,10 +23,10 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
 
     let uptime = state.start_time.elapsed().as_secs();
 
-    let total_jobs = match state.job_store.list_jobs().await {
-        Ok(jobs) => {
-            let enabled = jobs.iter().filter(|j| j.enabled).count();
-            (enabled, jobs.len())
+    let (active_workflows, total_workflows) = match state.workflow_store.list_workflows().await {
+        Ok(wfs) => {
+            let enabled = wfs.iter().filter(|w| w.enabled).count();
+            (enabled, wfs.len())
         }
         Err(_) => (0, 0),
     };
@@ -41,8 +41,8 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
     let response = HealthResponse {
         status: "ok".to_string(),
         uptime_seconds: uptime,
-        active_jobs: total_jobs.0,
-        total_jobs: total_jobs.1,
+        active_jobs: active_workflows,
+        total_jobs: total_workflows,
         version: env!("CARGO_PKG_VERSION").to_string(),
         data_dir,
     };

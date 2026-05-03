@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::job::ScheduleMode;
+use crate::models::workflow::ScheduleMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {

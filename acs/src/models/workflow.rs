@@ -5,7 +5,15 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::errors::AcsError;
-use crate::models::job::ScheduleMode;
+
+// ─── ScheduleMode ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum ScheduleMode {
+    #[default]
+    Cron,
+    WaitForCompletion,
+}
 
 // ─── Workflow ────────────────────────────────────────────────────────────────
 

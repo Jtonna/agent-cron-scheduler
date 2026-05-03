@@ -478,18 +478,16 @@ pub async fn kill_workflow_run(
 
 #[cfg(test)]
 mod tests {
-    use crate::daemon::events::{JobEvent, WorkflowEvent};
+    use crate::daemon::events::WorkflowEvent;
     use crate::models::workflow::{
         CaptureSpec, FailurePolicy, NewWorkflow, ShellStep, StepDef, StepDefCommon, WorkflowUpdate,
     };
     use crate::models::DaemonConfig;
     use crate::storage::workflows::WorkflowStore;
-    use crate::storage::{JobStore, LogStore};
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use crate::models::workflow::Workflow;
-    use crate::models::{Job, JobManifest, JobRun, JobUpdate, NewJob};
     use http_body_util::BodyExt;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -498,35 +496,6 @@ mod tests {
     use tower::ServiceExt;
     use uuid::Uuid;
     use chrono::Utc;
-
-    // ── Minimal test stores ──────────────────────────────────────────────────
-
-    struct NoOpJobStore;
-
-    #[async_trait]
-    impl JobStore for NoOpJobStore {
-        async fn list_jobs(&self) -> anyhow::Result<Vec<Job>> { Ok(vec![]) }
-        async fn get_job(&self, _id: Uuid) -> anyhow::Result<Option<Job>> { Ok(None) }
-        async fn find_by_name(&self, _name: &str) -> anyhow::Result<Option<Job>> { Ok(None) }
-        async fn create_job(&self, _new: NewJob) -> anyhow::Result<Job> { unimplemented!() }
-        async fn update_job(&self, _id: Uuid, _update: JobUpdate) -> anyhow::Result<Job> { unimplemented!() }
-        async fn delete_job(&self, _id: Uuid) -> anyhow::Result<()> { unimplemented!() }
-    }
-
-    struct NoOpLogStore;
-
-    #[async_trait]
-    impl LogStore for NoOpLogStore {
-        async fn create_run(&self, _run: &JobRun) -> anyhow::Result<()> { Ok(()) }
-        async fn update_run(&self, _run: &JobRun) -> anyhow::Result<()> { Ok(()) }
-        async fn append_log(&self, _j: Uuid, _r: Uuid, _d: &[u8]) -> anyhow::Result<()> { Ok(()) }
-        async fn read_log(&self, _j: Uuid, _r: Uuid, _t: Option<usize>) -> anyhow::Result<String> { Ok(String::new()) }
-        async fn list_runs(&self, _j: Uuid, _l: usize, _o: usize) -> anyhow::Result<(Vec<JobRun>, usize)> { Ok((vec![], 0)) }
-        async fn cleanup(&self, _j: Uuid, _m: usize) -> anyhow::Result<()> { Ok(()) }
-        async fn read_manifest(&self, _j: Uuid) -> anyhow::Result<Option<JobManifest>> { Ok(None) }
-        async fn update_manifest(&self, _j: Uuid, _r: &JobRun) -> anyhow::Result<()> { Ok(()) }
-        async fn rebuild_manifest(&self, _j: Uuid) -> anyhow::Result<JobManifest> { Ok(JobManifest::new(_j)) }
-    }
 
     struct InMemoryWorkflowStore {
         workflows: RwLock<Vec<crate::models::workflow::Workflow>>,
@@ -649,18 +618,12 @@ mod tests {
     }
 
     fn make_state(wf_store: Arc<dyn WorkflowStore>) -> Arc<crate::server::AppState> {
-        let (event_tx, _) = broadcast::channel::<JobEvent>(256);
         let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(256);
         Arc::new(crate::server::AppState {
-            job_store: Arc::new(NoOpJobStore),
-            log_store: Arc::new(NoOpLogStore),
-            event_tx,
             scheduler_notify: Arc::new(Notify::new()),
             config: Arc::new(DaemonConfig::default()),
             start_time: Instant::now(),
-            active_runs: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
-            dispatch_tx: None,
             workflow_event_tx,
             workflow_store: wf_store,
             workflow_runs: Arc::new(RwLock::new(HashMap::new())),

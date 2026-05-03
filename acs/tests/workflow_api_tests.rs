@@ -7,49 +7,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use agent_cron_scheduler::daemon::events::{JobEvent, WorkflowEvent};
+use agent_cron_scheduler::daemon::events::WorkflowEvent;
 use agent_cron_scheduler::models::workflow::{
     CaptureSpec, FailurePolicy, NewWorkflow, ShellStep, StepDef, StepDefCommon, WorkflowUpdate,
 };
-use agent_cron_scheduler::models::{DaemonConfig, Job, JobManifest, JobRun, JobUpdate, NewJob};
+use agent_cron_scheduler::models::DaemonConfig;
 use agent_cron_scheduler::server::{self, AppState};
 use agent_cron_scheduler::storage::workflows::WorkflowStore;
-use agent_cron_scheduler::storage::{JobStore, LogStore};
 
-use async_trait::async_trait;
 use tokio::sync::{broadcast, Notify, RwLock};
 use uuid::Uuid;
-
-// ---------------------------------------------------------------------------
-// Minimal no-op JobStore / LogStore stubs
-// ---------------------------------------------------------------------------
-
-struct NoOpJobStore;
-
-#[async_trait]
-impl JobStore for NoOpJobStore {
-    async fn list_jobs(&self) -> anyhow::Result<Vec<Job>> { Ok(vec![]) }
-    async fn get_job(&self, _id: Uuid) -> anyhow::Result<Option<Job>> { Ok(None) }
-    async fn find_by_name(&self, _name: &str) -> anyhow::Result<Option<Job>> { Ok(None) }
-    async fn create_job(&self, _new: NewJob) -> anyhow::Result<Job> { unimplemented!() }
-    async fn update_job(&self, _id: Uuid, _update: JobUpdate) -> anyhow::Result<Job> { unimplemented!() }
-    async fn delete_job(&self, _id: Uuid) -> anyhow::Result<()> { unimplemented!() }
-}
-
-struct NoOpLogStore;
-
-#[async_trait]
-impl LogStore for NoOpLogStore {
-    async fn create_run(&self, _run: &JobRun) -> anyhow::Result<()> { Ok(()) }
-    async fn update_run(&self, _run: &JobRun) -> anyhow::Result<()> { Ok(()) }
-    async fn append_log(&self, _j: Uuid, _r: Uuid, _d: &[u8]) -> anyhow::Result<()> { Ok(()) }
-    async fn read_log(&self, _j: Uuid, _r: Uuid, _t: Option<usize>) -> anyhow::Result<String> { Ok(String::new()) }
-    async fn list_runs(&self, _j: Uuid, _l: usize, _o: usize) -> anyhow::Result<(Vec<JobRun>, usize)> { Ok((vec![], 0)) }
-    async fn cleanup(&self, _j: Uuid, _m: usize) -> anyhow::Result<()> { Ok(()) }
-    async fn read_manifest(&self, _j: Uuid) -> anyhow::Result<Option<JobManifest>> { Ok(None) }
-    async fn update_manifest(&self, _j: Uuid, _r: &JobRun) -> anyhow::Result<()> { Ok(()) }
-    async fn rebuild_manifest(&self, j: Uuid) -> anyhow::Result<JobManifest> { Ok(JobManifest::new(j)) }
-}
 
 // ---------------------------------------------------------------------------
 // In-memory WorkflowStore backed by FsWorkflowStore on a temp dir
@@ -75,22 +42,16 @@ async fn spawn_test_server(
     workflow_store: Arc<dyn WorkflowStore>,
     data_dir: std::path::PathBuf,
 ) -> (String, Arc<AppState>, tokio::task::JoinHandle<()>) {
-    let (event_tx, _) = broadcast::channel::<JobEvent>(4096);
     let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(4096);
 
     let mut config = DaemonConfig::default();
     config.data_dir = Some(data_dir);
 
     let state = Arc::new(AppState {
-        job_store: Arc::new(NoOpJobStore),
-        log_store: Arc::new(NoOpLogStore),
-        event_tx,
         scheduler_notify: Arc::new(Notify::new()),
         config: Arc::new(config),
         start_time: Instant::now(),
-        active_runs: Arc::new(RwLock::new(HashMap::new())),
         shutdown_tx: None,
-        dispatch_tx: None,
         workflow_event_tx,
         workflow_store,
         workflow_runs: Arc::new(RwLock::new(HashMap::new())),
