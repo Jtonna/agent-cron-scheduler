@@ -1,5 +1,6 @@
 pub mod jobs;
 pub mod logs;
+pub mod workflows;
 
 use anyhow::Result;
 use async_trait::async_trait;

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 /// Cost / usage data extracted from an agent step's output.
@@ -61,6 +62,9 @@ pub struct StepContext {
     pub log_sink: Arc<dyn LogSink>,
     pub working_dir: Option<PathBuf>,
     pub env: HashMap<String, String>,
+    /// Optional broadcast sender for `WorkflowEvent` SSE streaming.
+    /// `None` in tests and contexts that don't require event broadcasting.
+    pub event_tx: Option<broadcast::Sender<crate::daemon::events::WorkflowEvent>>,
 }
 
 #[async_trait]

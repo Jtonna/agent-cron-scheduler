@@ -7,13 +7,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use agent_cron_scheduler::daemon::events::JobEvent;
+use agent_cron_scheduler::daemon::events::{JobEvent, WorkflowEvent};
 use agent_cron_scheduler::daemon::executor::Executor;
+use agent_cron_scheduler::models::workflow::{NewWorkflow, Workflow, WorkflowUpdate};
 use agent_cron_scheduler::models::{
     DaemonConfig, DispatchRequest, ExecutionType, Job, JobManifest, JobRun, JobUpdate, NewJob,
 };
 use agent_cron_scheduler::pty::MockPtySpawner;
 use agent_cron_scheduler::server::{self, AppState};
+use agent_cron_scheduler::storage::workflows::WorkflowStore;
 use agent_cron_scheduler::storage::{JobStore, LogStore};
 
 use async_trait::async_trait;
@@ -292,11 +294,34 @@ impl LogStore for StoringLogStore {
 }
 
 // ---------------------------------------------------------------------------
+// Minimal no-op WorkflowStore for tests that don't exercise workflow routes
+// ---------------------------------------------------------------------------
+
+struct NoOpWorkflowStore;
+
+#[async_trait]
+impl WorkflowStore for NoOpWorkflowStore {
+    async fn list_workflows(&self) -> anyhow::Result<Vec<Workflow>> { Ok(vec![]) }
+    async fn get_workflow(&self, _id: Uuid) -> anyhow::Result<Option<Workflow>> { Ok(None) }
+    async fn find_by_name(&self, _name: &str) -> anyhow::Result<Option<Workflow>> { Ok(None) }
+    async fn create_workflow(&self, _new: NewWorkflow) -> anyhow::Result<Workflow> {
+        Err(anyhow::anyhow!("not implemented"))
+    }
+    async fn update_workflow(&self, _id: Uuid, _update: WorkflowUpdate) -> anyhow::Result<Workflow> {
+        Err(anyhow::anyhow!("not implemented"))
+    }
+    async fn delete_workflow(&self, _id: Uuid) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("not implemented"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helper to spawn a test server on a random port
 // ---------------------------------------------------------------------------
 
 async fn spawn_test_server() -> (String, tokio::task::JoinHandle<()>) {
     let (event_tx, _) = broadcast::channel::<JobEvent>(4096);
+    let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(4096);
     let state = Arc::new(AppState {
         job_store: Arc::new(InMemoryJobStore::new()),
         log_store: Arc::new(InMemoryLogStore::new()),
@@ -307,6 +332,9 @@ async fn spawn_test_server() -> (String, tokio::task::JoinHandle<()>) {
         active_runs: Arc::new(RwLock::new(HashMap::new())),
         shutdown_tx: None,
         dispatch_tx: None,
+        workflow_event_tx,
+        workflow_store: Arc::new(NoOpWorkflowStore),
+        workflow_runs: Arc::new(RwLock::new(HashMap::new())),
     });
 
     let router = server::create_router(state);
@@ -340,6 +368,7 @@ async fn spawn_test_server_with_executor(
     // Create dispatch channel
     let (dispatch_tx, mut dispatch_rx) = tokio::sync::mpsc::channel::<DispatchRequest>(64);
 
+    let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(4096);
     let state = Arc::new(AppState {
         job_store: Arc::new(InMemoryJobStore::new()),
         log_store: Arc::clone(&log_store) as Arc<dyn LogStore>,
@@ -350,6 +379,9 @@ async fn spawn_test_server_with_executor(
         active_runs: Arc::clone(&active_runs),
         shutdown_tx: None,
         dispatch_tx: Some(dispatch_tx),
+        workflow_event_tx,
+        workflow_store: Arc::new(NoOpWorkflowStore),
+        workflow_runs: Arc::new(RwLock::new(HashMap::new())),
     });
 
     // Executor using a MockPtySpawner that completes immediately with exit 0
@@ -732,6 +764,7 @@ async fn spawn_test_server_with_stores() -> (
     tokio::task::JoinHandle<()>,
 ) {
     let (event_tx, _) = broadcast::channel::<JobEvent>(4096);
+    let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(4096);
     let job_store = Arc::new(InMemoryJobStore::new());
     let log_store = Arc::new(InMemoryLogStore::new());
 
@@ -745,6 +778,9 @@ async fn spawn_test_server_with_stores() -> (
         active_runs: Arc::new(RwLock::new(HashMap::new())),
         shutdown_tx: None,
         dispatch_tx: None,
+        workflow_event_tx,
+        workflow_store: Arc::new(NoOpWorkflowStore),
+        workflow_runs: Arc::new(RwLock::new(HashMap::new())),
     });
 
     let router = server::create_router(state);

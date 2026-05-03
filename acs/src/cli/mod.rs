@@ -1,6 +1,7 @@
 pub mod daemon;
 pub mod jobs;
 pub mod logs;
+pub mod workflows;
 
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
@@ -215,6 +216,9 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Manage workflows
+    Workflows(workflows::WorkflowsCmd),
 }
 
 /// Build the base URL for the daemon HTTP API.
@@ -357,6 +361,7 @@ pub async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Some(Commands::Update { version, force }) => {
             daemon::cmd_update(version.as_deref(), *force).await
         }
+        Some(Commands::Workflows(cmd)) => workflows::dispatch(cmd, &cli.host, cli.port).await,
         None => {
             // No subcommand provided -- print help
             use clap::CommandFactory;

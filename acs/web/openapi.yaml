@@ -22,6 +22,10 @@ tags:
     description: Real-time server-sent events
   - name: System
     description: Daemon lifecycle and service management
+  - name: Workflows
+    description: CRUD operations for multi-step workflows
+  - name: WorkflowRuns
+    description: Workflow execution history and step-level detail
 
 paths:
   # -------------------------------------------------------------------------
@@ -718,6 +722,342 @@ paths:
                 service_installed: false
                 service_running: false
 
+  # -------------------------------------------------------------------------
+  # Workflows
+  # -------------------------------------------------------------------------
+  /api/workflows:
+    get:
+      operationId: listWorkflows
+      summary: List all workflows
+      description: |
+        Returns all configured workflows. Each returned workflow includes a
+        computed `next_run_at` field (if enabled).
+      tags: [Workflows]
+      responses:
+        "200":
+          description: Array of workflows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Workflow"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      operationId: createWorkflow
+      summary: Create a new workflow
+      description: |
+        Creates a new scheduled workflow. The `name` must be unique and must not
+        be a valid UUID. The `schedule` must be a valid cron expression. Must
+        contain at least one step. If `enabled` is omitted it defaults to `true`.
+      tags: [Workflows]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewWorkflow"
+            example:
+              name: deploy-pipeline
+              schedule: "0 3 * * *"
+              enabled: true
+              timezone: "America/New_York"
+              steps:
+                - kind: shell
+                  id: build
+                  command: "make build"
+                - kind: agent
+                  id: review
+                  agent_type: claude_code_cli
+                  prompt: "Review the build output and report issues."
+      responses:
+        "201":
+          description: Workflow created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          description: Validation error (invalid cron, empty name, UUID-like name, no steps, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: validation_error
+                message: "Workflow must have at least one step"
+        "409":
+          description: A workflow with the same name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: conflict
+                message: "A workflow with name 'deploy-pipeline' already exists"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/workflows/{id}:
+    get:
+      operationId: getWorkflow
+      summary: Get a workflow by ID or name
+      description: |
+        Retrieves a single workflow. The `{id}` parameter can be either a UUID
+        or the workflow's unique name. The response includes a computed
+        `next_run_at` field if the workflow is enabled.
+      tags: [Workflows]
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "200":
+          description: Workflow found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "404":
+          description: Workflow not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: not_found
+                message: "Workflow with id '550e8400-e29b-41d4-a716-446655440000' not found"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    patch:
+      operationId: updateWorkflow
+      summary: Partially update a workflow
+      description: |
+        Updates one or more fields of an existing workflow. Only the fields
+        included in the request body are modified; omitted fields remain
+        unchanged. Validates cron expressions and timezone strings when provided.
+        Name uniqueness is enforced (409 if the new name conflicts).
+      tags: [Workflows]
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkflowUpdate"
+            example:
+              schedule: "0 4 * * *"
+              enabled: false
+      responses:
+        "200":
+          description: Workflow updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Workflow not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Name conflict with an existing workflow
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: deleteWorkflow
+      summary: Delete a workflow
+      description: |
+        Deletes a workflow by ID or name. If the workflow has an active run it
+        will be killed before deletion. Returns 204 on success with no body.
+      tags: [Workflows]
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "204":
+          description: Workflow deleted (no content)
+        "404":
+          description: Workflow not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/workflows/{id}/trigger:
+    post:
+      operationId: triggerWorkflow
+      summary: Manually trigger a workflow
+      description: |
+        Dispatches an immediate execution of the workflow regardless of its cron
+        schedule. Optionally accepts per-invocation parameters (input JSON,
+        env overrides, target step). Returns 202 Accepted with a pre-generated
+        `run_id` and a `run_url` pointing to the run resource.
+      tags: [Workflows]
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      requestBody:
+        required: false
+        description: |
+          Optional trigger parameters. All fields are optional. When the body
+          is omitted or empty, the workflow runs with its default configuration.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerParamsV2"
+            example:
+              input:
+                target: production
+              env:
+                DEBUG: "1"
+              target_step: build
+      responses:
+        "202":
+          description: Workflow triggered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowTriggerResponse"
+              example:
+                run_id: "0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
+                workflow_id: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
+                workflow_version: 1
+                run_url: "/api/runs/0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
+        "400":
+          description: Invalid JSON in request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Workflow not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # -------------------------------------------------------------------------
+  # Workflow Runs
+  # -------------------------------------------------------------------------
+  /api/runs/{run_id}:
+    get:
+      operationId: getWorkflowRun
+      summary: Get a workflow run by ID
+      description: |
+        Returns the full WorkflowRun record including the workflow snapshot at
+        the time of execution and per-step run details.
+      tags: [WorkflowRuns]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          description: UUID of the workflow run.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Workflow run found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowRun"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: not_found
+                message: "Run with id '0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678' not found"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/runs/{run_id}/kill:
+    post:
+      operationId: killWorkflowRun
+      summary: Kill an active workflow run
+      description: |
+        Sends a kill signal to the specified active workflow run. Returns 202
+        Accepted if the kill signal was dispatched. Has no effect if the run
+        is already finished.
+      tags: [WorkflowRuns]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          description: UUID of the workflow run to kill.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "202":
+          description: Kill signal accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: Kill signal sent
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 # ===========================================================================
 # Components
 # ===========================================================================
@@ -728,6 +1068,14 @@ components:
       in: path
       required: true
       description: Job identifier — either a UUID or the job's unique name.
+      schema:
+        type: string
+
+    WorkflowId:
+      name: id
+      in: path
+      required: true
+      description: Workflow identifier — either a UUID or the workflow's unique name.
       schema:
         type: string
 
@@ -855,7 +1203,7 @@ components:
           example: false
         allow_concurrent:
           type: boolean
-          description: When true, multiple instances of this job can run simultaneously. Default: false.
+          description: "When true, multiple instances of this job can run simultaneously. Default: false."
           default: false
           example: false
         schedule_mode:
@@ -1471,3 +1819,738 @@ components:
           type: string
           description: Human-readable error description.
           example: "Job with id '550e8400-e29b-41d4-a716-446655440000' not found"
+
+    # -----------------------------------------------------------------------
+    # Workflow types (Phase 5 — additive, do not remove existing Job schemas)
+    # -----------------------------------------------------------------------
+
+    RunStatusV2:
+      type: string
+      enum: [Running, Completed, Failed, Killed]
+      description: |
+        Status of a workflow run or step run. Four variants (no CompletedWithWarnings).
+        - `Running` — currently executing
+        - `Completed` — finished successfully
+        - `Failed` — infrastructure or step-level failure
+        - `Killed` — manually killed or timed out
+
+    AgentType:
+      type: string
+      enum: [claude_code_cli]
+      description: |
+        Agent backend to use for an AgentStep.
+        - `claude_code_cli` — invoke the Claude Code CLI
+
+    CaptureSpec:
+      type: object
+      description: Controls how a step's stdout is captured and parsed.
+      properties:
+        stdout_max_bytes:
+          type: integer
+          format: int64
+          description: Maximum bytes of stdout to capture (default 65536 / 64 KB).
+          default: 65536
+          example: 65536
+        parser:
+          type: string
+          nullable: true
+          enum: [json, lines, raw]
+          description: |
+            Optional post-processing parser applied to captured stdout.
+            - `json` — parse as JSON
+            - `lines` — split into lines array
+            - `raw` — keep as-is (same as null)
+          example: json
+
+    FailurePolicy:
+      description: |
+        What to do when a step or workflow fails.
+        - `abort` (string) — stop immediately (default)
+        - `continue` (string) — skip failed step and proceed
+        - `retry` (object) — retry with exponential backoff
+      oneOf:
+        - type: string
+          enum: [abort]
+          description: Stop the workflow immediately on failure.
+        - type: string
+          enum: [continue]
+          description: Skip the failed step and continue with the next.
+        - type: object
+          required: [retry]
+          description: Retry the step with configurable attempts and backoff.
+          properties:
+            retry:
+              type: object
+              required: [attempts, backoff_ms]
+              properties:
+                attempts:
+                  type: integer
+                  format: int32
+                  description: Number of retry attempts.
+                  example: 3
+                backoff_ms:
+                  type: integer
+                  format: int64
+                  description: Milliseconds to wait between retries.
+                  example: 1000
+
+    StepDefCommon:
+      type: object
+      required: [id]
+      description: |
+        Fields shared by all StepDef variants. In JSON these are flattened to
+        the top level of each variant object (no "common" nesting).
+      properties:
+        id:
+          type: string
+          description: Unique step identifier within the workflow.
+          example: build
+        on_failure:
+          $ref: "#/components/schemas/FailurePolicy"
+          nullable: true
+          description: Step-level failure policy; overrides the workflow-level policy.
+        always_run:
+          type: boolean
+          default: false
+          description: When true, this step runs even if a previous step failed.
+          example: false
+        timeout_secs:
+          type: integer
+          format: int64
+          nullable: true
+          description: Step-level timeout in seconds; overrides workflow-level timeout.
+          example: 30
+        working_dir:
+          type: string
+          nullable: true
+          description: Working directory for this step. Overrides the workflow-level working_dir.
+          example: /workspace
+        env_vars:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: string
+          description: Environment variables for this step. Merged on top of workflow-level env_vars.
+          example:
+            STEP_ENV: value
+        capture:
+          $ref: "#/components/schemas/CaptureSpec"
+          description: Controls stdout capture behaviour for this step.
+
+    ShellStep:
+      allOf:
+        - $ref: "#/components/schemas/StepDefCommon"
+        - type: object
+          required: [kind, command]
+          properties:
+            kind:
+              type: string
+              enum: [shell]
+            command:
+              type: string
+              description: Shell command to execute.
+              example: "make build"
+            pass_stdin:
+              type: boolean
+              default: false
+              description: When true, pass the workflow's trigger input via stdin.
+              example: false
+
+    ScriptStep:
+      allOf:
+        - $ref: "#/components/schemas/StepDefCommon"
+        - type: object
+          required: [kind, path]
+          properties:
+            kind:
+              type: string
+              enum: [script]
+            path:
+              type: string
+              description: Path to the script file to execute.
+              example: "/usr/local/bin/deploy.sh"
+            script_type:
+              type: string
+              nullable: true
+              description: Interpreter to use (e.g. "bash", "python", "powershell"). Inferred from extension when null.
+              example: bash
+            args:
+              type: string
+              nullable: true
+              description: Extra arguments passed to the script.
+              example: "--verbose"
+            pass_stdin:
+              type: boolean
+              default: false
+              description: When true, pass the workflow's trigger input via stdin.
+              example: false
+
+    HttpStep:
+      allOf:
+        - $ref: "#/components/schemas/StepDefCommon"
+        - type: object
+          required: [kind, method, url]
+          properties:
+            kind:
+              type: string
+              enum: [http]
+            method:
+              type: string
+              description: HTTP method (GET, POST, PUT, PATCH, DELETE, etc.).
+              example: POST
+            url:
+              type: string
+              description: Target URL.
+              example: "https://api.example.com/deploy"
+            headers:
+              type: object
+              additionalProperties:
+                type: string
+              description: HTTP request headers.
+              example:
+                Authorization: "Bearer token"
+                Content-Type: "application/json"
+            body:
+              type: string
+              nullable: true
+              description: Request body as a string.
+              example: '{"env":"production"}'
+            expect_status:
+              type: array
+              items:
+                type: integer
+                format: int32
+              description: List of acceptable HTTP response status codes. Defaults to 200-299.
+              example: [200, 201]
+
+    MatchStep:
+      allOf:
+        - $ref: "#/components/schemas/StepDefCommon"
+        - type: object
+          required: [kind, expr, cases]
+          properties:
+            kind:
+              type: string
+              enum: [match]
+            expr:
+              type: string
+              description: Expression to evaluate (e.g. "${last_exit_code}").
+              example: "${last_exit_code}"
+            cases:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StepDef"
+              description: Map of pattern strings to arrays of steps to execute.
+              example:
+                "0":
+                  - kind: shell
+                    id: on-success
+                    command: "echo success"
+            default:
+              type: array
+              nullable: true
+              items:
+                $ref: "#/components/schemas/StepDef"
+              description: Steps to execute when no case matches.
+
+    SetVarStep:
+      allOf:
+        - $ref: "#/components/schemas/StepDefCommon"
+        - type: object
+          required: [kind, exports]
+          properties:
+            kind:
+              type: string
+              enum: [set_var]
+            exports:
+              type: object
+              additionalProperties:
+                type: string
+              description: Key/value pairs to export as workflow variables.
+              example:
+                BUILD_VERSION: "1.2.3"
+
+    AgentStep:
+      allOf:
+        - $ref: "#/components/schemas/StepDefCommon"
+        - type: object
+          required: [kind, agent_type, prompt]
+          properties:
+            kind:
+              type: string
+              enum: [agent]
+            agent_type:
+              $ref: "#/components/schemas/AgentType"
+            prompt:
+              type: string
+              description: Prompt text sent to the agent.
+              example: "Analyze the build output and report any issues."
+            command_template:
+              type: string
+              nullable: true
+              description: |
+                Custom command template to invoke the agent CLI. When null the
+                daemon uses its configured default for the agent type.
+              example: "claude --output-format json"
+
+    StepDef:
+      description: |
+        A workflow step definition. Discriminated by the `kind` field.
+        In JSON each variant is a flat object with `kind` plus the variant's
+        own fields plus the StepDefCommon fields all at the top level.
+      discriminator:
+        propertyName: kind
+        mapping:
+          shell: "#/components/schemas/ShellStep"
+          script: "#/components/schemas/ScriptStep"
+          http: "#/components/schemas/HttpStep"
+          match: "#/components/schemas/MatchStep"
+          set_var: "#/components/schemas/SetVarStep"
+          agent: "#/components/schemas/AgentStep"
+      oneOf:
+        - $ref: "#/components/schemas/ShellStep"
+        - $ref: "#/components/schemas/ScriptStep"
+        - $ref: "#/components/schemas/HttpStep"
+        - $ref: "#/components/schemas/MatchStep"
+        - $ref: "#/components/schemas/SetVarStep"
+        - $ref: "#/components/schemas/AgentStep"
+
+    Workflow:
+      type: object
+      required:
+        - id
+        - name
+        - version
+        - schedule
+        - enabled
+        - steps
+        - allow_concurrent
+        - on_failure
+        - created_at
+        - updated_at
+      description: A multi-step workflow managed by the ACS scheduler.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique workflow identifier (UUIDv7).
+          example: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
+        name:
+          type: string
+          description: Unique human-readable workflow name.
+          example: deploy-pipeline
+        version:
+          type: integer
+          format: int32
+          description: Monotonically incrementing version counter; bumped on every update.
+          example: 1
+        schedule:
+          type: string
+          description: Cron expression (5- or 6-field).
+          example: "0 3 * * *"
+        timezone:
+          type: string
+          nullable: true
+          description: IANA timezone name for cron evaluation. Null means UTC.
+          example: America/New_York
+        schedule_mode:
+          type: string
+          enum: [Cron, WaitForCompletion]
+          default: Cron
+          description: |
+            Controls scheduling behaviour.
+            - `Cron` — fire on every tick regardless of in-progress runs.
+            - `WaitForCompletion` — skip ticks while a run is active.
+          example: Cron
+        enabled:
+          type: boolean
+          description: Whether the workflow is scheduled for automatic execution.
+          example: true
+        steps:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/StepDef"
+          description: Ordered list of step definitions. Must be non-empty.
+        input_schema:
+          nullable: true
+          description: JSON Schema describing the expected shape of trigger input.
+          example: { "type": "object", "properties": { "target": { "type": "string" } } }
+        default_input:
+          nullable: true
+          description: Default trigger input JSON used for scheduled runs.
+          example: { "target": "production" }
+        working_dir:
+          type: string
+          nullable: true
+          description: Default working directory for all steps (can be overridden per-step).
+          example: /workspace
+        env_vars:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: string
+          description: Default environment variables for all steps.
+          example:
+            APP_ENV: production
+        allow_concurrent:
+          type: boolean
+          default: true
+          description: When true, multiple instances of this workflow can run concurrently.
+          example: true
+        on_failure:
+          $ref: "#/components/schemas/FailurePolicy"
+          description: Workflow-level failure policy applied when a step fails.
+        last_run_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of the last completed run, or null if never run.
+          example: "2024-01-16T03:00:00Z"
+        last_run_status:
+          $ref: "#/components/schemas/RunStatusV2"
+          nullable: true
+          description: Status of the last completed run, or null if never run.
+        last_run_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Run ID of the last run, or null if never run.
+          example: "01930000-0000-7000-8000-000000000001"
+        next_run_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Computed next scheduled run time. Present when the workflow is
+            enabled; null when disabled. Not persisted — calculated on read.
+          example: "2024-01-17T03:00:00Z"
+        created_at:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp when the workflow was created.
+          example: "2024-01-15T00:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp when the workflow was last modified.
+          example: "2024-01-15T12:00:00Z"
+
+    NewWorkflow:
+      type: object
+      required: [name, schedule, steps]
+      description: Request body for creating a new workflow.
+      properties:
+        name:
+          type: string
+          description: |
+            Unique workflow name. Must not be empty, whitespace-only, or a valid UUID.
+          example: deploy-pipeline
+        schedule:
+          type: string
+          description: Cron expression (5- or 6-field, validated on creation).
+          example: "0 3 * * *"
+        timezone:
+          type: string
+          nullable: true
+          description: IANA timezone name (e.g. "America/New_York"). Validated on creation.
+          example: America/New_York
+        schedule_mode:
+          type: string
+          enum: [Cron, WaitForCompletion]
+          default: Cron
+          description: Scheduling mode (default Cron).
+          example: Cron
+        enabled:
+          type: boolean
+          default: true
+          description: Whether the workflow starts enabled (default true).
+          example: true
+        steps:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/StepDef"
+          description: Ordered step definitions. Must contain at least one step.
+        input_schema:
+          nullable: true
+          description: JSON Schema for the trigger input.
+        default_input:
+          nullable: true
+          description: Default trigger input for scheduled runs.
+        working_dir:
+          type: string
+          nullable: true
+          description: Default working directory for all steps.
+          example: /workspace
+        env_vars:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: string
+          description: Default environment variables for all steps.
+        allow_concurrent:
+          type: boolean
+          nullable: true
+          description: |
+            Allow concurrent runs. When null/omitted, uses the daemon's
+            default_allow_concurrent config (workflows default to true).
+          example: true
+        on_failure:
+          $ref: "#/components/schemas/FailurePolicy"
+          description: Workflow-level failure policy. Defaults to abort.
+
+    WorkflowUpdate:
+      type: object
+      description: |
+        Partial update for a workflow. All fields are optional; only provided
+        fields are modified.
+      properties:
+        name:
+          type: string
+          description: New workflow name (must be unique and not a UUID).
+          example: deploy-pipeline-v2
+        schedule:
+          type: string
+          description: New cron expression (validated).
+          example: "0 4 * * *"
+        timezone:
+          type: string
+          nullable: true
+          description: New IANA timezone (validated). Null clears the timezone (uses UTC).
+          example: Europe/London
+        schedule_mode:
+          type: string
+          enum: [Cron, WaitForCompletion]
+          nullable: true
+          description: New scheduling mode.
+          example: WaitForCompletion
+        enabled:
+          type: boolean
+          description: Enable or disable the workflow.
+          example: false
+        steps:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/StepDef"
+          description: Replace the full step list (must be non-empty if provided).
+        input_schema:
+          nullable: true
+          description: Replace the input schema (null clears it).
+        default_input:
+          nullable: true
+          description: Replace the default input (null clears it).
+        working_dir:
+          type: string
+          nullable: true
+          description: New default working directory.
+          example: /opt/app
+        env_vars:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: string
+          description: Replace environment variables (null clears them).
+        allow_concurrent:
+          type: boolean
+          nullable: true
+          description: Set to true/false to change concurrency behaviour.
+          example: false
+        on_failure:
+          $ref: "#/components/schemas/FailurePolicy"
+          nullable: true
+          description: New workflow-level failure policy.
+
+    TriggerParamsV2:
+      type: object
+      description: |
+        Optional per-invocation parameters for triggering a workflow. Distinct
+        from the job-level TriggerParams — workflows accept structured JSON
+        input instead of a command-line args string.
+      properties:
+        input:
+          description: |
+            Structured JSON input passed as the workflow's trigger input.
+            Must conform to the workflow's `input_schema` when one is set.
+          example: { "target": "production" }
+        env:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: string
+          description: |
+            Per-trigger environment variables. Override the workflow's env_vars
+            for this single run (highest precedence).
+          example:
+            DEBUG: "1"
+        target_step:
+          type: string
+          nullable: true
+          description: |
+            Start execution from this step ID instead of the first step.
+            Useful for resuming or debugging a specific step.
+          example: deploy
+
+    WorkflowTriggerResponse:
+      type: object
+      required: [run_id, workflow_id, workflow_version, run_url]
+      description: Response returned when a workflow is triggered manually.
+      properties:
+        run_id:
+          type: string
+          format: uuid
+          description: Pre-generated run identifier (UUIDv7).
+          example: "0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
+        workflow_id:
+          type: string
+          format: uuid
+          description: ID of the workflow that was triggered.
+          example: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
+        workflow_version:
+          type: integer
+          format: int32
+          description: Version of the workflow at the time of triggering.
+          example: 1
+        run_url:
+          type: string
+          description: URL path to poll for run status.
+          example: "/api/runs/0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
+
+    StepRun:
+      type: object
+      required:
+        - step_index
+        - step_id
+        - kind
+        - status
+        - started_at
+        - log_byte_offset_start
+      description: Execution record for a single step within a WorkflowRun.
+      properties:
+        step_index:
+          type: integer
+          description: Zero-based position of the step in the workflow's step list.
+          example: 0
+        step_id:
+          type: string
+          description: The step's `id` field from the workflow definition.
+          example: build
+        kind:
+          type: string
+          description: The step variant kind (e.g. "shell", "agent").
+          example: shell
+        status:
+          $ref: "#/components/schemas/RunStatusV2"
+        started_at:
+          type: string
+          format: date-time
+          description: Timestamp when this step started executing.
+          example: "2024-01-16T03:00:00Z"
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp when this step finished, or null if still running.
+          example: "2024-01-16T03:00:05Z"
+        exit_code:
+          type: integer
+          format: int32
+          nullable: true
+          description: Process exit code for shell/script/agent steps.
+          example: 0
+        log_byte_offset_start:
+          type: integer
+          format: int64
+          description: Byte offset in the run's combined log file where this step's output starts.
+          example: 0
+        log_byte_offset_end:
+          type: integer
+          format: int64
+          nullable: true
+          description: Byte offset in the run's combined log file where this step's output ends.
+          example: 1024
+        cost_usd:
+          type: number
+          format: double
+          nullable: true
+          description: Cost in USD reported by the agent CLI (agent steps only).
+          example: 0.0042
+        error:
+          type: string
+          nullable: true
+          description: Error message if the step failed to start or errored.
+          example: null
+        output_summary:
+          nullable: true
+          description: Parsed output summary (JSON). Shape depends on the step's capture parser.
+          example: { "result": "ok" }
+
+    WorkflowRun:
+      type: object
+      required:
+        - run_id
+        - workflow_id
+        - workflow_version
+        - workflow_snapshot
+        - started_at
+        - status
+        - steps
+      description: |
+        A single execution record for a workflow, including the full workflow
+        definition snapshot and per-step results.
+      properties:
+        run_id:
+          type: string
+          format: uuid
+          description: Unique run identifier (UUIDv7).
+          example: "01930000-0000-7000-8000-000000000001"
+        workflow_id:
+          type: string
+          format: uuid
+          description: ID of the workflow that produced this run.
+          example: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
+        workflow_version:
+          type: integer
+          format: int32
+          description: Version of the workflow at the time this run was dispatched.
+          example: 1
+        workflow_snapshot:
+          $ref: "#/components/schemas/Workflow"
+          description: Full copy of the workflow definition at execution time.
+        started_at:
+          type: string
+          format: date-time
+          description: Timestamp when the run started.
+          example: "2024-01-16T03:00:00Z"
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp when the run finished, or null if still running.
+          example: "2024-01-16T03:00:30Z"
+        status:
+          $ref: "#/components/schemas/RunStatusV2"
+        trigger_input:
+          nullable: true
+          description: The JSON input value passed when the run was triggered. Null for scheduled runs with no default_input.
+          example: { "target": "production" }
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/StepRun"
+          description: Per-step execution results in order.
+        total_cost_usd:
+          type: number
+          format: double
+          nullable: true
+          description: Summed cost in USD across all agent steps.
+          example: 0.0342
+        total_duration_ms:
+          type: integer
+          format: int64
+          nullable: true
+          description: Total wall-clock duration in milliseconds.
+          example: 30000

@@ -345,6 +345,7 @@ mod tests {
             log_sink: sink,
             working_dir: None,
             env: HashMap::new(),
+            event_tx: None,
         }
     }
 

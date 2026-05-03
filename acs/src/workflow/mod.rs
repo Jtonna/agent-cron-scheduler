@@ -6,4 +6,5 @@ pub mod steps;
 pub mod template;
 
 pub use executor::run_workflow;
+pub use log_sink::FileLogSink;
 pub use step::{CostFragment, LogSink, Step, StepContext, StepError, StepOutput};

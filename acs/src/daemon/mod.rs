@@ -885,6 +885,10 @@ pub async fn start_daemon(
     // Create broadcast channel
     let (event_tx, _event_rx) = broadcast::channel::<JobEvent>(config.broadcast_capacity);
 
+    // Create WorkflowEvent broadcast channel (same capacity as JobEvent).
+    let (workflow_event_tx, _workflow_event_rx) =
+        broadcast::channel::<crate::daemon::events::WorkflowEvent>(config.broadcast_capacity);
+
     // Create scheduler notify
     let scheduler_notify = Arc::new(Notify::new());
 
@@ -900,6 +904,15 @@ pub async fn start_daemon(
         tokio::sync::mpsc::channel::<crate::models::DispatchRequest>(64);
     let dispatch_tx_for_api = dispatch_tx.clone();
 
+    // Initialize WorkflowStore
+    let workflow_store = Arc::new(
+        crate::storage::workflows::FsWorkflowStore::new(&data_dir).await?,
+    ) as Arc<dyn crate::storage::workflows::WorkflowStore>;
+
+    // In-memory workflow runs map (phase 5: in-memory only; phase 6 will persist).
+    let workflow_runs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<crate::models::workflow::WorkflowRun>>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+
     // Create AppState
     let state = Arc::new(AppState {
         job_store: Arc::clone(&job_store),
@@ -911,6 +924,9 @@ pub async fn start_daemon(
         active_runs: Arc::clone(&active_runs),
         shutdown_tx: Some(shutdown_tx.clone()),
         dispatch_tx: Some(dispatch_tx_for_api),
+        workflow_event_tx: workflow_event_tx.clone(),
+        workflow_store,
+        workflow_runs,
     });
 
     // Create Executor

@@ -3,13 +3,23 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use serde_json::json;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use crate::daemon::events::WorkflowEvent;
 use crate::models::workflow::{
     FailurePolicy, RunStatus, StepDef, StepRun, TriggerParams, Workflow, WorkflowRun,
 };
 use crate::workflow::step::{LogSink, Step, StepContext, StepError, StepOutput};
 use crate::workflow::template;
+
+/// Helper: send a `WorkflowEvent` on the optional broadcast channel.
+/// Failures (no receivers) are silently ignored.
+fn emit(tx: Option<&broadcast::Sender<WorkflowEvent>>, event: WorkflowEvent) {
+    if let Some(tx) = tx {
+        let _ = tx.send(event);
+    }
+}
 
 // ── Step dispatch helper ──────────────────────────────────────────────────────
 
@@ -77,6 +87,7 @@ async fn execute_steps(
 
         if !should_run {
             // Skipped steps are omitted from step_runs.
+            // Skipped steps do NOT emit StepStarted / StepCompleted events.
             continue;
         }
 
@@ -85,6 +96,20 @@ async fn execute_steps(
         // ── MatchStep: special handling ───────────────────────────────────────
 
         if let StepDef::Match(m) = step_def {
+            let step_index = ctx.step_index;
+            let run_id = ctx.run_id;
+            let workflow_id = ctx.workflow_id;
+
+            // Emit StepStarted for the synthetic match step.
+            emit(ctx.event_tx.as_ref(), WorkflowEvent::StepStarted {
+                run_id,
+                workflow_id,
+                step_index,
+                step_id: m.common.id.clone(),
+                kind: "match".to_string(),
+                started_at: Utc::now(),
+            });
+
             let sub = template::substitute(&m.expr, &ctx.input, &ctx.steps);
             for warn in &sub.warnings {
                 tracing::warn!(step_id = %m.common.id, "match expr warning: {}", warn);
@@ -122,6 +147,18 @@ async fn execute_steps(
                     "case_taken": case_taken
                 })),
             };
+
+            // Emit StepCompleted for the match step.
+            emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
+                run_id,
+                workflow_id,
+                step_index,
+                step_id: m.common.id.clone(),
+                exit_code: Some(0),
+                cost_usd: None,
+                finished_at: Utc::now(),
+            });
+
             step_runs.push(match_run);
 
             // Insert a placeholder so ${steps.<id>.*} can resolve.
@@ -155,6 +192,21 @@ async fn execute_steps(
 
         // ── Regular step execution ────────────────────────────────────────────
 
+        let step_index = ctx.step_index;
+        let run_id = ctx.run_id;
+        let workflow_id = ctx.workflow_id;
+        let step_kind = step_kind_str(step_def);
+
+        // Emit StepStarted before executing the step.
+        emit(ctx.event_tx.as_ref(), WorkflowEvent::StepStarted {
+            run_id,
+            workflow_id,
+            step_index,
+            step_id: common.id.clone(),
+            kind: step_kind.to_string(),
+            started_at: Utc::now(),
+        });
+
         let started_at = Utc::now();
         let effective_policy = common
             .on_failure
@@ -165,26 +217,76 @@ async fn execute_steps(
 
         match result {
             StepRunResult::Completed(run, output) => {
+                // Emit StepCompleted after successful execution.
+                emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
+                    run_id,
+                    workflow_id,
+                    step_index,
+                    step_id: common.id.clone(),
+                    exit_code: run.exit_code,
+                    cost_usd: run.cost_usd,
+                    finished_at: Utc::now(),
+                });
                 ctx.steps.insert(common.id.clone(), output);
                 step_runs.push(run);
             }
             StepRunResult::Failed(run) => {
+                // Emit StepCompleted with non-zero exit code or None.
+                emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
+                    run_id,
+                    workflow_id,
+                    step_index,
+                    step_id: common.id.clone(),
+                    exit_code: run.exit_code,
+                    cost_usd: run.cost_usd,
+                    finished_at: Utc::now(),
+                });
                 step_runs.push(run);
                 *aborted = true;
             }
             StepRunResult::FailedContinue(run, output) => {
                 // Insert the actual output (even though the step failed) so that
                 // downstream template references like ${steps.<id>.exit_code} resolve.
+                emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
+                    run_id,
+                    workflow_id,
+                    step_index,
+                    step_id: common.id.clone(),
+                    exit_code: run.exit_code,
+                    cost_usd: run.cost_usd,
+                    finished_at: Utc::now(),
+                });
                 ctx.steps.insert(common.id.clone(), output);
                 step_runs.push(run);
                 // Do NOT set aborted — continue policy means keep going.
             }
             StepRunResult::Killed(run) => {
+                emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
+                    run_id,
+                    workflow_id,
+                    step_index,
+                    step_id: common.id.clone(),
+                    exit_code: run.exit_code,
+                    cost_usd: run.cost_usd,
+                    finished_at: Utc::now(),
+                });
                 step_runs.push(run);
                 *killed = true;
                 *aborted = true; // stop further steps
             }
         }
+    }
+}
+
+/// Derive the step kind string from a `StepDef`.
+fn step_kind_str(def: &StepDef) -> &'static str {
+    match def {
+        StepDef::Shell(_) => "shell",
+        StepDef::Script(_) => "script",
+        StepDef::Http(_) => "http",
+        StepDef::Match(_) => "match",
+        StepDef::SetVar(_) => "set_var",
+        StepDef::Agent(_) => "agent",
     }
 }
 
@@ -379,14 +481,28 @@ fn kind_from_common(_common: &crate::models::workflow::StepDefCommon) -> String 
 ///
 /// `trigger` carries the initial input and any env overlay.
 /// `log_sink` receives structured step markers and raw output chunks.
+/// `event_tx` is an optional broadcast channel for `WorkflowEvent` SSE streaming.
+///   Pass `None` in tests or contexts that don't require live events.
+///
+/// Note: `StepOutput` chunk events (`WorkflowEvent::StepOutput`) are deferred to
+/// phase 6, where they will be wired into the log sink's streaming path.
 pub async fn run_workflow(
     workflow: &Workflow,
     run_id: Uuid,
     trigger: TriggerParams,
     log_sink: Arc<dyn LogSink>,
+    event_tx: Option<broadcast::Sender<WorkflowEvent>>,
 ) -> WorkflowRun {
     let snapshot = workflow.clone();
     let started_at = Utc::now();
+
+    // Emit RunStarted before executing any steps.
+    emit(event_tx.as_ref(), WorkflowEvent::RunStarted {
+        run_id,
+        workflow_id: workflow.id,
+        workflow_version: workflow.version,
+        started_at,
+    });
 
     // Resolve effective input: trigger.input if not Null, else workflow.default_input.
     let effective_input = if trigger.input.is_null() {
@@ -419,6 +535,7 @@ pub async fn run_workflow(
         log_sink,
         working_dir,
         env,
+        event_tx: event_tx.clone(),
     };
 
     let mut step_runs: Vec<StepRun> = Vec::new();
@@ -457,6 +574,42 @@ pub async fn run_workflow(
             None
         }
     };
+
+    // Emit RunCompleted or RunFailed.
+    match status {
+        RunStatus::Completed => {
+            emit(event_tx.as_ref(), WorkflowEvent::RunCompleted {
+                run_id,
+                workflow_id: workflow.id,
+                status: RunStatus::Completed,
+                total_cost_usd,
+                finished_at,
+            });
+        }
+        RunStatus::Failed | RunStatus::Killed => {
+            // Use the first error from step_runs as the failure message.
+            let error_msg = step_runs
+                .iter()
+                .find_map(|r| r.error.as_deref())
+                .unwrap_or("workflow run failed")
+                .to_string();
+            emit(event_tx.as_ref(), WorkflowEvent::RunFailed {
+                run_id,
+                workflow_id: workflow.id,
+                error: error_msg,
+                finished_at,
+            });
+        }
+        RunStatus::Running => {
+            // Should not happen at end of run_workflow; emit RunFailed defensively.
+            emit(event_tx.as_ref(), WorkflowEvent::RunFailed {
+                run_id,
+                workflow_id: workflow.id,
+                error: "unexpected Running status at end of run_workflow".to_string(),
+                finished_at,
+            });
+        }
+    }
 
     let total_duration_ms = (finished_at - started_at).num_milliseconds().max(0) as u64;
 
@@ -679,7 +832,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
 
         assert_eq!(run.status, RunStatus::Completed, "expected Completed");
         assert_eq!(run.steps.len(), 3, "expected 3 step runs");
@@ -707,7 +860,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
 
         assert_eq!(run.status, RunStatus::Failed, "expected Failed");
         // The failing step is recorded; the skipped step is NOT recorded.
@@ -729,7 +882,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
 
         // Overall status is Failed (aborted=true), but cleanup ran.
         assert_eq!(run.status, RunStatus::Failed);
@@ -752,7 +905,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
 
         // No abort happened, so overall Completed.
         assert_eq!(run.status, RunStatus::Completed, "expected Completed despite step failure");
@@ -804,7 +957,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
         // Expected step_runs: set_choice, m1 (synthetic), branch_a
@@ -855,7 +1008,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
 
@@ -902,7 +1055,7 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
 
@@ -947,7 +1100,7 @@ mod tests {
             })],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
 
         assert_eq!(run.status, RunStatus::Failed);
         let step = &run.steps[0];
@@ -990,7 +1143,7 @@ mod tests {
             })],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
 
         // The step should fail (no `claude` CLI in test env), but NOT with "not implemented".
         assert_eq!(run.status, RunStatus::Failed);
@@ -1018,7 +1171,7 @@ mod tests {
         );
         workflow.default_input = Some(json!({"x": 42}));
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
         // The step should have run with x=42
@@ -1041,7 +1194,7 @@ mod tests {
         workflow.default_input = Some(json!({"x": 42}));
 
         let trigger = input_trigger(json!({"x": 99}));
-        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.trigger_input, Some(json!({"x": 99})));
@@ -1073,7 +1226,7 @@ mod tests {
             target_step: None,
         };
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, Arc::clone(&sink) as Arc<dyn LogSink>).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, Arc::clone(&sink) as Arc<dyn LogSink>, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
         // Verify through the mock log sink chunks that FOO=b and BAR=c appear
@@ -1108,7 +1261,7 @@ mod tests {
             target_step: None,
         };
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
     }
@@ -1121,7 +1274,7 @@ mod tests {
         let workflow = make_workflow("meta", vec![shell_step("s1", "echo hi")]);
         let run_id = Uuid::now_v7();
 
-        let run = run_workflow(&workflow, run_id, empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, run_id, empty_trigger(), sink, None).await;
 
         assert_eq!(run.run_id, run_id);
         assert_eq!(run.workflow_id, workflow.id);
@@ -1137,7 +1290,7 @@ mod tests {
         let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
         let workflow = make_workflow("cost_none", vec![shell_step("s1", "echo hi")]);
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None).await;
 
         assert!(
             run.total_cost_usd.is_none(),

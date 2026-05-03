@@ -3,6 +3,7 @@ pub mod health;
 pub mod routes;
 pub mod sse;
 pub mod timeframe;
+pub mod workflow_routes;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,10 +15,12 @@ use tokio::sync::{broadcast, Notify, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
-use crate::daemon::events::JobEvent;
+use crate::daemon::events::{JobEvent, WorkflowEvent};
 use crate::daemon::executor::RunHandle;
+use crate::models::workflow::WorkflowRun;
 use crate::models::DaemonConfig;
 use crate::storage::{JobStore, LogStore};
+use crate::storage::workflows::WorkflowStore;
 
 /// Shared application state for the Axum server.
 pub struct AppState {
@@ -30,6 +33,13 @@ pub struct AppState {
     pub active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>,
     pub shutdown_tx: Option<tokio::sync::watch::Sender<()>>,
     pub dispatch_tx: Option<tokio::sync::mpsc::Sender<crate::models::DispatchRequest>>,
+    /// Broadcast sender for WorkflowEvent SSE stream.
+    pub workflow_event_tx: broadcast::Sender<WorkflowEvent>,
+    /// Workflow definition store.
+    pub workflow_store: Arc<dyn WorkflowStore>,
+    /// In-memory map of run_id → WorkflowRun (phase 5: in-memory only).
+    /// Phase 6 will persist runs to disk.
+    pub workflow_runs: Arc<RwLock<HashMap<Uuid, Arc<RwLock<WorkflowRun>>>>>,
 }
 
 /// Create the Axum router with all routes.
@@ -57,6 +67,35 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/runs/recent", get(routes::list_recent_runs))
         .route("/api/runs/{run_id}/log", get(routes::get_log))
         .route("/api/events", get(sse::sse_handler))
+        // ── Workflow routes ───────────────────────────────────────────────────
+        .route(
+            "/api/workflows",
+            get(workflow_routes::list_workflows).post(workflow_routes::create_workflow),
+        )
+        .route(
+            "/api/workflows/{id}",
+            get(workflow_routes::get_workflow)
+                .patch(workflow_routes::update_workflow)
+                .delete(workflow_routes::delete_workflow),
+        )
+        .route(
+            "/api/workflows/{id}/trigger",
+            post(workflow_routes::trigger_workflow),
+        )
+        .route(
+            "/api/runs/{run_id}",
+            get(workflow_routes::get_workflow_run),
+        )
+        .route(
+            "/api/runs/{run_id}/kill",
+            post(workflow_routes::kill_workflow_run),
+        )
+        // SSE for WorkflowEvent — mounted at /api/events/workflows to avoid
+        // clashing with the existing /api/events (JobEvent SSE).
+        .route(
+            "/api/events/workflows",
+            get(sse::workflow_events_handler),
+        )
         .route("/api/shutdown", post(routes::shutdown))
         .route("/api/restart", post(routes::restart))
         .route("/api/logs", get(routes::get_daemon_logs))
@@ -77,9 +116,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::events::JobEvent;
+    use crate::daemon::events::{JobEvent, WorkflowEvent};
     use crate::models::job::{ExecutionType, NewJob};
+    use crate::models::workflow::{NewWorkflow, Workflow, WorkflowUpdate};
     use crate::models::{Job, JobRun, JobUpdate, RunStatus};
+    use crate::storage::workflows::WorkflowStore;
     use crate::storage::{JobStore, LogStore};
     use async_trait::async_trait;
     use axum::body::Body;
@@ -87,6 +128,34 @@ mod tests {
     use chrono::Utc;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    // -----------------------------------------------------------------------
+    // InMemoryWorkflowStore - minimal test double for server/mod.rs tests
+    // -----------------------------------------------------------------------
+
+    struct InMemoryWorkflowStore;
+
+    #[async_trait]
+    impl WorkflowStore for InMemoryWorkflowStore {
+        async fn list_workflows(&self) -> anyhow::Result<Vec<Workflow>> {
+            Ok(vec![])
+        }
+        async fn get_workflow(&self, _id: Uuid) -> anyhow::Result<Option<Workflow>> {
+            Ok(None)
+        }
+        async fn find_by_name(&self, _name: &str) -> anyhow::Result<Option<Workflow>> {
+            Ok(None)
+        }
+        async fn create_workflow(&self, _new: NewWorkflow) -> anyhow::Result<Workflow> {
+            Err(anyhow::anyhow!("not implemented in test double"))
+        }
+        async fn update_workflow(&self, _id: Uuid, _update: WorkflowUpdate) -> anyhow::Result<Workflow> {
+            Err(anyhow::anyhow!("not implemented in test double"))
+        }
+        async fn delete_workflow(&self, _id: Uuid) -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("not implemented in test double"))
+        }
+    }
 
     // -----------------------------------------------------------------------
     // InMemoryJobStore - test double
@@ -322,6 +391,7 @@ mod tests {
 
     fn make_test_state() -> Arc<AppState> {
         let (event_tx, _) = broadcast::channel::<JobEvent>(4096);
+        let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(4096);
         Arc::new(AppState {
             job_store: Arc::new(InMemoryJobStore::new()),
             log_store: Arc::new(InMemoryLogStore::new()),
@@ -332,6 +402,9 @@ mod tests {
             active_runs: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             dispatch_tx: None,
+            workflow_event_tx,
+            workflow_store: Arc::new(InMemoryWorkflowStore),
+            workflow_runs: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -340,6 +413,7 @@ mod tests {
         log_store: Arc<dyn LogStore>,
     ) -> Arc<AppState> {
         let (event_tx, _) = broadcast::channel::<JobEvent>(4096);
+        let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(4096);
         Arc::new(AppState {
             job_store,
             log_store,
@@ -350,6 +424,9 @@ mod tests {
             active_runs: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             dispatch_tx: None,
+            workflow_event_tx,
+            workflow_store: Arc::new(InMemoryWorkflowStore),
+            workflow_runs: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -1458,6 +1535,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_job_broadcasts_event() {
         let (event_tx, mut event_rx) = broadcast::channel::<JobEvent>(4096);
+        let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(4096);
         let state = Arc::new(AppState {
             job_store: Arc::new(InMemoryJobStore::new()),
             log_store: Arc::new(InMemoryLogStore::new()),
@@ -1468,6 +1546,9 @@ mod tests {
             active_runs: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             dispatch_tx: None,
+            workflow_event_tx,
+            workflow_store: Arc::new(InMemoryWorkflowStore),
+            workflow_runs: Arc::new(RwLock::new(HashMap::new())),
         });
 
         let app = make_test_app(state);
@@ -1512,6 +1593,7 @@ mod tests {
         };
 
         let (event_tx, _) = broadcast::channel::<JobEvent>(4096);
+        let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(4096);
         let state = Arc::new(AppState {
             job_store: Arc::new(InMemoryJobStore::new()),
             log_store: Arc::new(InMemoryLogStore::new()),
@@ -1522,6 +1604,9 @@ mod tests {
             active_runs: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             dispatch_tx: None,
+            workflow_event_tx,
+            workflow_store: Arc::new(InMemoryWorkflowStore),
+            workflow_runs: Arc::new(RwLock::new(HashMap::new())),
         });
         let app = make_test_app(state);
 
