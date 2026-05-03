@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod executor;
 pub mod log_sink;
 pub mod step;

@@ -24,12 +24,8 @@ async fn dispatch_step(
         StepDef::Shell(s) => s.execute(ctx).await,
         StepDef::Script(s) => s.execute(ctx).await,
         StepDef::SetVar(s) => s.execute(ctx).await,
-        StepDef::Http(_) => Err(StepError::Internal(
-            "HttpStep not implemented in phase 3 (added in phase 4)".to_string(),
-        )),
-        StepDef::Agent(_) => Err(StepError::Internal(
-            "AgentStep not implemented in phase 3 (added in phase 4)".to_string(),
-        )),
+        StepDef::Http(s) => s.execute(ctx).await,
+        StepDef::Agent(s) => s.execute(ctx).await,
         // MatchStep is handled directly in execute_steps; this arm is unreachable.
         StepDef::Match(_) => Err(StepError::Internal(
             "MatchStep dispatched directly in execute_steps".to_string(),
@@ -921,28 +917,30 @@ mod tests {
         );
     }
 
-    // ── Test 9: HttpStep returns phase-not-implemented error ───────────────────
+    // ── Test 9: HttpStep is now dispatched (phase 4) — unreachable host fails ──
 
     #[tokio::test]
-    async fn test_executor_http_step_not_implemented() {
+    async fn test_executor_http_step_dispatched() {
         use crate::models::workflow::HttpStep;
 
         let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
 
+        // Port 1 is almost always closed/refused; we just want to confirm the
+        // Http arm is dispatched (not returning "not implemented in phase 3").
         let workflow = make_workflow(
-            "http_unimpl",
+            "http_dispatched",
             vec![StepDef::Http(HttpStep {
                 common: StepDefCommon {
                     id: "http1".to_string(),
                     on_failure: None,
                     always_run: false,
-                    timeout_secs: None,
+                    timeout_secs: Some(2),
                     working_dir: None,
                     env_vars: None,
                     capture: CaptureSpec::default(),
                 },
                 method: "GET".to_string(),
-                url: "https://example.com".to_string(),
+                url: "http://127.0.0.1:1/unreachable".to_string(),
                 headers: HashMap::new(),
                 body: None,
                 expect_status: vec![200],
@@ -955,23 +953,27 @@ mod tests {
         let step = &run.steps[0];
         assert_eq!(step.status, RunStatus::Failed);
         let err = step.error.as_ref().unwrap();
+        // Must NOT contain the old phase-3 stub message
         assert!(
-            err.contains("not implemented in phase 3"),
-            "expected phase-3 note in error: {}",
+            !err.contains("not implemented in phase 3"),
+            "HttpStep should be implemented now, got: {}",
             err
         );
     }
 
-    // ── Test 10: AgentStep returns phase-not-implemented error ────────────────
+    // ── Test 10: AgentStep is now dispatched (phase 4) ────────────────────────
+    // AgentStep no longer returns a "not implemented" error; it now calls execute().
+    // Since `claude` CLI is not available in the test environment, it will fail
+    // with a spawn error — but crucially not with a "not implemented" Internal error.
 
     #[tokio::test]
-    async fn test_executor_agent_step_not_implemented() {
+    async fn test_executor_agent_step_dispatched() {
         use crate::models::workflow::{AgentStep, AgentType};
 
         let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
 
         let workflow = make_workflow(
-            "agent_unimpl",
+            "agent_dispatched",
             vec![StepDef::Agent(AgentStep {
                 common: StepDefCommon {
                     id: "ag1".to_string(),
@@ -990,13 +992,17 @@ mod tests {
 
         let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink).await;
 
+        // The step should fail (no `claude` CLI in test env), but NOT with "not implemented".
         assert_eq!(run.status, RunStatus::Failed);
-        let err = run.steps[0].error.as_ref().unwrap();
-        assert!(
-            err.contains("not implemented in phase 3"),
-            "expected phase-3 note in error: {}",
-            err
-        );
+        if let Some(err) = run.steps[0].error.as_ref() {
+            assert!(
+                !err.contains("not implemented in phase 3"),
+                "AgentStep should no longer return a phase-3 not-implemented error, got: {}",
+                err
+            );
+        }
+        // The step ran (was dispatched), so there should be exactly 1 step run.
+        assert_eq!(run.steps.len(), 1);
     }
 
     // ── Test 11: workflow.default_input applied when trigger.input is Null ────
