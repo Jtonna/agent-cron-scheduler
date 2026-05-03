@@ -3,6 +3,7 @@ pub mod dispatch;
 pub mod job;
 pub mod manifest;
 pub mod run;
+pub mod workflow;
 
 pub use config::DaemonConfig;
 pub use dispatch::{DispatchRequest, TriggerParams};
