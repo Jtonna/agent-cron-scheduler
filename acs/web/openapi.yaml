@@ -4,8 +4,8 @@ info:
   description: |
     REST API for the Agent Cron Scheduler (ACS) daemon.
 
-    ACS is a cron-like job scheduler with a built-in HTTP API and web UI.
-    Jobs can be identified by either their UUID or their unique name in all
+    ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
+    Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
   version: "3.1.0"
   license:
@@ -14,18 +14,14 @@ info:
 tags:
   - name: Health
     description: Daemon health and readiness checks
-  - name: Jobs
-    description: CRUD operations for scheduled jobs
-  - name: Runs
-    description: Job execution history and logs
-  - name: Events
-    description: Real-time server-sent events
-  - name: System
-    description: Daemon lifecycle and service management
   - name: Workflows
     description: CRUD operations for multi-step workflows
   - name: WorkflowRuns
     description: Workflow execution history and step-level detail
+  - name: Events
+    description: Real-time server-sent events
+  - name: System
+    description: Daemon lifecycle and service management
 
 paths:
   # -------------------------------------------------------------------------
@@ -35,7 +31,7 @@ paths:
     get:
       operationId: healthCheck
       summary: Health check
-      description: Returns daemon health status including uptime, job counts, and version.
+      description: Returns daemon health status including uptime, workflow counts, and version.
       tags: [Health]
       responses:
         "200":
@@ -51,676 +47,6 @@ paths:
                 total_jobs: 8
                 version: "3.1.0"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
-
-  # -------------------------------------------------------------------------
-  # Jobs
-  # -------------------------------------------------------------------------
-  /api/jobs:
-    get:
-      operationId: listJobs
-      summary: List all jobs
-      description: |
-        Returns all configured jobs. Optionally filter by enabled status.
-        Each returned job includes a computed `next_run_at` field (if enabled).
-      tags: [Jobs]
-      parameters:
-        - name: enabled
-          in: query
-          required: false
-          description: Filter jobs by enabled/disabled status.
-          schema:
-            type: boolean
-      responses:
-        "200":
-          description: Array of jobs
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Job"
-        "500":
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-    post:
-      operationId: createJob
-      summary: Create a new job
-      description: |
-        Creates a new scheduled job. The `name` must be unique and must not be a
-        valid UUID. The `schedule` must be a valid cron expression. If `enabled`
-        is omitted it defaults to `true`.
-      tags: [Jobs]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/NewJob"
-            example:
-              name: backup-db
-              schedule: "0 2 * * *"
-              execution:
-                type: ShellCommand
-                value: "pg_dump mydb > /backups/mydb.sql"
-              enabled: true
-              timezone: "America/New_York"
-              timeout_secs: 300
-      responses:
-        "201":
-          description: Job created successfully
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Job"
-        "400":
-          description: Validation error (invalid cron, empty name, UUID-like name, etc.)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                error: validation_error
-                message: "Invalid cron expression '* * *': ..."
-        "409":
-          description: A job with the same name already exists
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                error: conflict
-                message: "A job with name 'backup-db' already exists"
-        "500":
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /api/jobs/{id}:
-    get:
-      operationId: getJob
-      summary: Get a job by ID or name
-      description: |
-        Retrieves a single job. The `{id}` parameter can be either a UUID or
-        the job's unique name. The response includes a computed `next_run_at`
-        field if the job is enabled.
-      tags: [Jobs]
-      parameters:
-        - $ref: "#/components/parameters/JobId"
-      responses:
-        "200":
-          description: Job found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Job"
-        "404":
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                error: not_found
-                message: "Job with id '550e8400-e29b-41d4-a716-446655440000' not found"
-        "500":
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-    patch:
-      operationId: updateJob
-      summary: Partially update a job
-      description: |
-        Updates one or more fields of an existing job. Only the fields included
-        in the request body are modified; omitted fields remain unchanged.
-        Validates cron expressions and timezone strings when provided. Name
-        uniqueness is enforced (409 if the new name conflicts with another job).
-      tags: [Jobs]
-      parameters:
-        - $ref: "#/components/parameters/JobId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/JobUpdate"
-            example:
-              schedule: "0 3 * * *"
-              enabled: false
-      responses:
-        "200":
-          description: Job updated successfully
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Job"
-        "400":
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "409":
-          description: Name conflict with an existing job
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-    delete:
-      operationId: deleteJob
-      summary: Delete a job
-      description: |
-        Deletes a job by ID or name. If the job has an active run it will be
-        killed before deletion. Returns 204 on success with no body.
-      tags: [Jobs]
-      parameters:
-        - $ref: "#/components/parameters/JobId"
-      responses:
-        "204":
-          description: Job deleted (no content)
-        "404":
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /api/jobs/{id}/enable:
-    post:
-      operationId: enableJob
-      summary: Enable a job
-      description: Sets the job's `enabled` field to `true` and notifies the scheduler.
-      tags: [Jobs]
-      parameters:
-        - $ref: "#/components/parameters/JobId"
-      responses:
-        "200":
-          description: Job enabled
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Job"
-        "404":
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /api/jobs/{id}/disable:
-    post:
-      operationId: disableJob
-      summary: Disable a job
-      description: Sets the job's `enabled` field to `false` and notifies the scheduler.
-      tags: [Jobs]
-      parameters:
-        - $ref: "#/components/parameters/JobId"
-      responses:
-        "200":
-          description: Job disabled
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Job"
-        "404":
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /api/jobs/{id}/trigger:
-    post:
-      operationId: triggerJob
-      summary: Manually trigger a job
-      description: |
-        Dispatches an immediate execution of the job regardless of its cron
-        schedule. Optionally accepts per-invocation parameters that override
-        job defaults for a single run. An empty body preserves backward
-        compatibility. Returns 202 Accepted if the job was dispatched, along
-        with a pre-generated `run_id`.
-      tags: [Jobs]
-      parameters:
-        - $ref: "#/components/parameters/JobId"
-      requestBody:
-        required: false
-        description: |
-          Optional trigger parameters. All fields are optional. When the body
-          is omitted or empty, the job runs with its default configuration.
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/TriggerParams"
-            example:
-              args: "--full --verbose"
-              env:
-                MODE: manual
-                DEBUG: "1"
-              input: "yes"
-      responses:
-        "202":
-          description: Job triggered
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TriggerResponse"
-              example:
-                message: Job triggered
-                job_id: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
-                job_name: backup-db
-                run_id: "0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
-        "400":
-          description: Invalid JSON in request body
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                error: validation_error
-                message: "Invalid trigger body: expected value at line 1 column 1"
-        "404":
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Internal server error (dispatch failed)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /api/jobs/{id}/kill:
-    post:
-      operationId: killJob
-      summary: Kill active run(s) for a job
-      description: |
-        Sends a kill signal to one or all active runs for the specified job.
-        If `run_id` is provided, only that specific run is killed. If omitted,
-        all currently active runs for the job are killed.
-      tags: [Jobs]
-      parameters:
-        - $ref: "#/components/parameters/JobId"
-        - name: run_id
-          in: query
-          required: false
-          description: Specific run ID to kill. If omitted, all active runs for the job are killed.
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: Kill signal sent
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/KillResponse"
-              example:
-                message: Kill signal sent
-                run_id: "01930000-0000-7000-8000-000000000001"
-                job_id: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
-        "404":
-          description: Job or run not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                error: not_found
-                message: "Job with id 'backup-db' not found"
-
-  # -------------------------------------------------------------------------
-  # Runs
-  # -------------------------------------------------------------------------
-  /api/runs/recent:
-    get:
-      operationId: listRecentRuns
-      summary: List recent runs across all jobs
-      description: |
-        Returns the most recent runs across all jobs, ordered by start time
-        descending. Each entry includes all standard `JobRun` fields plus the
-        `job_name` of the job that produced the run.
-      tags: [Runs]
-      parameters:
-        - name: limit
-          in: query
-          required: false
-          description: Maximum number of runs to return (default 20).
-          schema:
-            type: integer
-            default: 20
-            minimum: 1
-      responses:
-        "200":
-          description: Recent runs
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RecentRunsResponse"
-        "500":
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /api/jobs/{id}/runs:
-    get:
-      operationId: listRuns
-      summary: List runs for a job
-      description: |
-        Returns a paginated list of execution runs for the specified job.
-        Supports filtering by run status.
-      tags: [Runs]
-      parameters:
-        - $ref: "#/components/parameters/JobId"
-        - name: limit
-          in: query
-          required: false
-          description: Maximum number of runs to return (default 20).
-          schema:
-            type: integer
-            default: 20
-            minimum: 1
-        - name: offset
-          in: query
-          required: false
-          description: Number of runs to skip for pagination (default 0).
-          schema:
-            type: integer
-            default: 0
-            minimum: 0
-        - name: status
-          in: query
-          required: false
-          description: Filter by run status (Running, Completed, Failed, Killed). Case-insensitive.
-          schema:
-            type: string
-            enum: [Running, Completed, Failed, Killed]
-      responses:
-        "200":
-          description: Paginated list of runs
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RunListResponse"
-        "404":
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /api/runs/{run_id}/log:
-    get:
-      operationId: getRunLog
-      summary: Get log output for a run
-      description: |
-        Returns the raw log output (stdout + stderr) for a specific run as
-        plain text. Optionally return only the last N lines with `?tail=N`.
-      tags: [Runs]
-      parameters:
-        - name: run_id
-          in: path
-          required: true
-          description: UUID of the run.
-          schema:
-            type: string
-            format: uuid
-        - name: tail
-          in: query
-          required: false
-          description: Return only the last N lines of output.
-          schema:
-            type: integer
-            minimum: 1
-        - name: format
-          in: query
-          required: false
-          description: Reserved for future use (e.g. "ansi").
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Log content as plain text
-          content:
-            text/plain:
-              schema:
-                type: string
-              example: |
-                2024-01-15T02:00:01Z Starting backup...
-                2024-01-15T02:01:30Z Backup completed successfully.
-        "400":
-          description: Invalid run_id format
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                error: validation_error
-                message: Invalid run_id format
-        "404":
-          description: Log not found for the given run
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  # -------------------------------------------------------------------------
-  # Events (SSE)
-  # -------------------------------------------------------------------------
-  /api/events:
-    get:
-      operationId: streamEvents
-      summary: Subscribe to real-time events (SSE)
-      description: |
-        Opens a Server-Sent Events stream for real-time job execution events.
-        Events include `started`, `output`, `completed`, `failed`, and
-        `job_changed`. Optionally filter by `job_id` and/or `run_id`.
-
-        Each SSE frame has an `event:` field (lowercase type name) and a `data:`
-        field containing a JSON object with `"event"` (PascalCase type name) and
-        `"data"` (the actual event payload) keys. For example:
-
-            event: started
-            data: {"event":"Started","data":{"job_id":"...","run_id":"...","job_name":"...","timestamp":"..."}}
-
-        This structure comes from the serde `#[serde(tag = "event", content = "data")]`
-        attribute on the `JobEvent` enum. API consumers should parse
-        `JSON.parse(event.data).data` to access event fields.
-
-        Invalid UUID values for `job_id` or `run_id` filters are silently ignored
-        (treated as no filter applied).
-
-        The server sends a keepalive comment (`: keepalive`) every 15 seconds.
-      tags: [Events]
-      parameters:
-        - name: job_id
-          in: query
-          required: false
-          description: Filter events to a specific job (UUID).
-          schema:
-            type: string
-            format: uuid
-        - name: run_id
-          in: query
-          required: false
-          description: Filter events to a specific run (UUID).
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: SSE event stream
-          content:
-            text/event-stream:
-              schema:
-                type: string
-                description: |
-                  Server-Sent Events stream. Each event has an `event` field
-                  (type name) and a `data` field (JSON payload).
-
-                  Event types:
-                  - `started` — a job run has begun
-                  - `output` — incremental stdout/stderr output
-                  - `completed` — a job run finished successfully
-                  - `failed` — a job run failed
-                  - `job_changed` — a job was added, updated, removed, enabled, or disabled
-
-  # -------------------------------------------------------------------------
-  # System
-  # -------------------------------------------------------------------------
-  /api/logs:
-    get:
-      operationId: getDaemonLogs
-      summary: Get daemon logs
-      description: |
-        Returns the daemon's own log file (`daemon.log`) as plain text.
-        If the log file does not exist yet, returns a placeholder message.
-        Supports `?tail=N` to return only the last N lines.
-      tags: [System]
-      parameters:
-        - name: tail
-          in: query
-          required: false
-          description: Return only the last N lines.
-          schema:
-            type: integer
-            minimum: 1
-        - name: format
-          in: query
-          required: false
-          description: Reserved for future use.
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Daemon log content as plain text
-          content:
-            text/plain:
-              schema:
-                type: string
-              example: |
-                2024-01-15T02:00:00Z INFO  acs::daemon - Daemon started
-                2024-01-15T02:00:01Z INFO  acs::server - Listening on 0.0.0.0:3000
-        "500":
-          description: Failed to read log file
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /api/shutdown:
-    post:
-      operationId: shutdown
-      summary: Shut down the daemon
-      description: Initiates a graceful shutdown of the daemon process.
-      tags: [System]
-      responses:
-        "200":
-          description: Shutdown initiated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
-              example:
-                message: Shutdown initiated
-
-  /api/restart:
-    post:
-      operationId: restart
-      summary: Restart the daemon
-      description: |
-        Spawns a new daemon process and then shuts down the current one after a
-        short delay (500ms) to allow the response to be sent.
-      tags: [System]
-      responses:
-        "200":
-          description: Restart initiated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
-              example:
-                message: Restart initiated
-        "500":
-          description: Failed to spawn new process or determine executable path
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /api/service/status:
-    get:
-      operationId: serviceStatus
-      summary: Get OS service status
-      description: |
-        Returns platform information and whether ACS is installed/running as
-        an OS-level service (Windows service, macOS launchd, or Linux systemd).
-      tags: [System]
-      responses:
-        "200":
-          description: Service status
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ServiceStatusResponse"
-              example:
-                platform: windows
-                service_installed: false
-                service_running: false
 
   # -------------------------------------------------------------------------
   # Workflows
@@ -784,7 +110,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Workflow"
         "400":
-          description: Validation error (invalid cron, empty name, UUID-like name, no steps, etc.)
+          description: |
+            Validation error (invalid cron, empty name, UUID-like name, no steps, etc.).
+            Note: invalid cron expressions currently return `500` (known code issue);
+            other validation errors return `422` with `error: "validation_error"`.
           content:
             application/json:
               schema:
@@ -925,21 +254,23 @@ paths:
       summary: Manually trigger a workflow
       description: |
         Dispatches an immediate execution of the workflow regardless of its cron
-        schedule. Optionally accepts per-invocation parameters (input JSON,
-        env overrides, target step). Returns 202 Accepted with a pre-generated
-        `run_id` and a `run_url` pointing to the run resource.
+        schedule. Accepts per-invocation parameters (input JSON, env overrides,
+        target step). Returns 202 Accepted with a pre-generated `run_id`.
+        The request body is required (handler uses `Json<TriggerParams>`);
+        send `{"input": null}` to trigger with `workflow.default_input`.
       tags: [Workflows]
       parameters:
         - $ref: "#/components/parameters/WorkflowId"
       requestBody:
-        required: false
+        required: true
         description: |
-          Optional trigger parameters. All fields are optional. When the body
-          is omitted or empty, the workflow runs with its default configuration.
+          Trigger parameters. The body is required. Send `{"input": null}` to
+          use the workflow's `default_input`. Sending `{}` causes 422 because
+          `input` is required at the wire level.
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/TriggerParamsV2"
+              $ref: "#/components/schemas/TriggerParams"
             example:
               input:
                 target: production
@@ -957,7 +288,6 @@ paths:
                 run_id: "0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
                 workflow_id: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
                 workflow_version: 1
-                run_url: "/api/runs/0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
         "400":
           description: Invalid JSON in request body
           content:
@@ -1098,13 +428,9 @@ paths:
             format: uuid
       responses:
         "202":
-          description: Kill signal accepted
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
-              example:
-                message: Kill signal sent
+          description: |
+            Kill signal accepted. Response body is empty — the handler returns
+            `StatusCode::ACCEPTED` with no body (not a `MessageResponse`).
         "404":
           description: Run not found
           content:
@@ -1118,19 +444,172 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  # -------------------------------------------------------------------------
+  # Events (SSE)
+  # -------------------------------------------------------------------------
+  /api/events/workflows:
+    get:
+      operationId: streamWorkflowEvents
+      summary: Subscribe to real-time workflow events (SSE)
+      description: |
+        Opens a Server-Sent Events stream for real-time workflow execution
+        events. Supports optional `run_id` and `workflow_id` query filters.
+
+        Each SSE frame has an `event:` field (snake_case type name) and a
+        `data:` field containing a JSON object tagged with `"type"` (PascalCase
+        variant name) plus the variant's fields. For example:
+
+            event: run_started
+            data: {"type":"RunStarted","run_id":"...","workflow_id":"...","workflow_version":1,"started_at":"..."}
+
+        This structure comes from the `#[serde(tag = "type")]` attribute on the
+        `WorkflowEvent` enum.
+
+        The server sends a keepalive comment (`: keepalive`) every 15 seconds.
+
+        Event types:
+        - `run_started` — a workflow run has begun. Fields: `run_id`, `workflow_id`, `workflow_version`, `started_at`
+        - `step_started` — a step within a run has begun. Fields: `run_id`, `workflow_id`, `step_index`, `step_id`, `kind`, `started_at`
+        - `step_output` — incremental stdout/stderr chunk from a running step. Fields: `run_id`, `workflow_id`, `step_index`, `step_id`, `data`, `timestamp`
+        - `step_completed` — a step finished (succeeded or failed). Fields: `run_id`, `workflow_id`, `step_index`, `step_id`, `exit_code`, `cost_usd`, `finished_at`
+        - `run_completed` — the run finished (all steps done). Fields: `run_id`, `workflow_id`, `status`, `total_cost_usd`, `finished_at`
+        - `run_failed` — the run terminated with an infrastructure error or was killed. Fields: `run_id`, `workflow_id`, `error`, `finished_at`
+        - `workflow_changed` — a workflow definition was created, updated, or deleted. Fields: `workflow_id`, `version`, `change_kind`
+      tags: [Events]
+      parameters:
+        - name: run_id
+          in: query
+          required: false
+          description: Filter events to a specific run (UUID).
+          schema:
+            type: string
+            format: uuid
+        - name: workflow_id
+          in: query
+          required: false
+          description: Filter events to a specific workflow (UUID).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Server-Sent Events stream. Each event has an `event` field
+                  (snake_case type name) and a `data` field (JSON payload).
+
+  # -------------------------------------------------------------------------
+  # System
+  # -------------------------------------------------------------------------
+  /api/logs:
+    get:
+      operationId: getDaemonLogs
+      summary: Get daemon logs
+      description: |
+        Returns the daemon's own log file (`daemon.log`) as plain text.
+        If the log file does not exist yet, returns a placeholder message.
+        Supports `?tail=N` to return only the last N lines.
+      tags: [System]
+      parameters:
+        - name: tail
+          in: query
+          required: false
+          description: Return only the last N lines.
+          schema:
+            type: integer
+            minimum: 1
+        - name: format
+          in: query
+          required: false
+          description: Reserved for future use.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Daemon log content as plain text
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                2024-01-15T02:00:00Z INFO  acs::daemon - Daemon started
+                2024-01-15T02:00:01Z INFO  acs::server - Listening on 0.0.0.0:3000
+        "500":
+          description: Failed to read log file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/shutdown:
+    post:
+      operationId: shutdown
+      summary: Shut down the daemon
+      description: Initiates a graceful shutdown of the daemon process.
+      tags: [System]
+      responses:
+        "200":
+          description: Shutdown initiated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: Shutdown initiated
+
+  /api/restart:
+    post:
+      operationId: restart
+      summary: Restart the daemon
+      description: |
+        Spawns a new daemon process and then shuts down the current one after a
+        short delay (500ms) to allow the response to be sent.
+      tags: [System]
+      responses:
+        "200":
+          description: Restart initiated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: Restart initiated
+        "500":
+          description: Failed to spawn new process or determine executable path
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/service/status:
+    get:
+      operationId: serviceStatus
+      summary: Get OS service status
+      description: |
+        Returns platform information and whether ACS is installed/running as
+        an OS-level service (Windows service, macOS launchd, or Linux systemd).
+      tags: [System]
+      responses:
+        "200":
+          description: Service status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceStatusResponse"
+              example:
+                platform: windows
+                service_installed: false
+                service_running: false
+
 # ===========================================================================
 # Components
 # ===========================================================================
 components:
   parameters:
-    JobId:
-      name: id
-      in: path
-      required: true
-      description: Job identifier — either a UUID or the job's unique name.
-      schema:
-        type: string
-
     WorkflowId:
       name: id
       in: path
@@ -1158,11 +637,11 @@ components:
           example: 3600
         active_jobs:
           type: integer
-          description: Number of enabled jobs.
+          description: Count of enabled workflows. Field name retains legacy 'jobs' naming for compatibility; value is a workflow count.
           example: 5
         total_jobs:
           type: integer
-          description: Total number of jobs (enabled + disabled).
+          description: Total number of registered workflows (enabled + disabled). Field name retains legacy 'jobs' naming for compatibility; value is a workflow count.
           example: 8
         version:
           type: string
@@ -1174,725 +653,21 @@ components:
           example: "C:\\Users\\J\\AppData\\Local\\acs\\data"
 
     # -----------------------------------------------------------------------
-    # Execution type (tagged union)
-    # -----------------------------------------------------------------------
-    ExecutionType:
-      type: object
-      required: [type, value]
-      description: |
-        Tagged union describing how a job is executed. The `type` field selects
-        the variant and `value` carries the command string or script path.
-      properties:
-        type:
-          type: string
-          enum: [ShellCommand, ScriptFile]
-          description: |
-            - `ShellCommand` — run a shell command (via the system shell).
-            - `ScriptFile` — execute a script file by path.
-        value:
-          type: string
-          description: The command string or path to the script file.
-      example:
-        type: ShellCommand
-        value: "echo hello world"
-
-    # -----------------------------------------------------------------------
-    # Job
-    # -----------------------------------------------------------------------
-    Job:
-      type: object
-      required:
-        - id
-        - name
-        - schedule
-        - execution
-        - enabled
-        - timeout_secs
-        - log_environment
-        - allow_concurrent
-        - created_at
-        - updated_at
-      properties:
-        id:
-          type: string
-          format: uuid
-          description: Unique job identifier (UUIDv7).
-          example: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
-        name:
-          type: string
-          description: Unique human-readable job name.
-          example: backup-db
-        schedule:
-          type: string
-          description: Cron expression (5- or 6-field).
-          example: "0 2 * * *"
-        execution:
-          $ref: "#/components/schemas/ExecutionType"
-        enabled:
-          type: boolean
-          description: Whether the job is scheduled for automatic execution.
-          example: true
-        timezone:
-          type: string
-          nullable: true
-          description: IANA timezone name for cron evaluation. Null means UTC.
-          example: America/New_York
-        working_dir:
-          type: string
-          nullable: true
-          description: Working directory for the job process.
-          example: /home/user/project
-        env_vars:
-          type: object
-          nullable: true
-          additionalProperties:
-            type: string
-          description: Extra environment variables passed to the job process.
-          example:
-            DATABASE_URL: "postgres://localhost/mydb"
-        timeout_secs:
-          type: integer
-          format: int64
-          description: Maximum execution time in seconds (0 = no timeout).
-          default: 0
-          example: 300
-        log_environment:
-          type: boolean
-          description: Whether to log the full environment at job start.
-          default: false
-          example: false
-        allow_concurrent:
-          type: boolean
-          description: "When true, multiple instances of this job can run simultaneously. Default: false."
-          default: false
-          example: false
-        schedule_mode:
-          type: string
-          enum: [Cron, WaitForCompletion]
-          default: Cron
-          description: |
-            Controls how the scheduler handles timing. 'Cron' fires on every cron tick
-            regardless. 'WaitForCompletion' skips ticks while a run is active.
-          example: Cron
-        created_at:
-          type: string
-          format: date-time
-          description: ISO 8601 timestamp when the job was created.
-          example: "2024-01-15T00:00:00Z"
-        updated_at:
-          type: string
-          format: date-time
-          description: ISO 8601 timestamp when the job was last modified.
-          example: "2024-01-15T12:00:00Z"
-        last_run_at:
-          type: string
-          format: date-time
-          nullable: true
-          description: Timestamp of the last completed run, or null if never run.
-          example: "2024-01-16T02:00:00Z"
-        last_exit_code:
-          type: integer
-          format: int32
-          nullable: true
-          description: Exit code of the last completed run, or null if never run.
-          example: 0
-        next_run_at:
-          type: string
-          format: date-time
-          nullable: true
-          description: |
-            Computed next scheduled run time. Always present in the JSON response;
-            set to a datetime when the job is enabled, null when disabled.
-            This field is not persisted and is calculated on read.
-          example: "2024-01-17T02:00:00Z"
-        pre_hook:
-          type: string
-          nullable: true
-          description: "Shell command to run before job execution. Inherits from global default_pre_hook if not set. Pre-hook failure blocks the job."
-        post_hook:
-          type: string
-          nullable: true
-          description: "Shell command to run after job execution. Inherits from global default_post_hook if not set. Receives ACS_JOB_EXIT_CODE env var. Post-hook failure results in CompletedWithWarnings status."
-        pre_hook_script_type:
-          type: string
-          nullable: true
-          enum: [shell, batch, python, powershell]
-          description: "Script type for pre-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
-        post_hook_script_type:
-          type: string
-          nullable: true
-          enum: [shell, batch, python, powershell]
-          description: "Script type for post-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
-
-    # -----------------------------------------------------------------------
-    # NewJob (create request body)
-    # -----------------------------------------------------------------------
-    NewJob:
-      type: object
-      required: [name, schedule, execution]
-      properties:
-        name:
-          type: string
-          description: |
-            Unique job name. Must not be empty, whitespace-only, or a valid UUID.
-          example: backup-db
-        schedule:
-          type: string
-          description: Cron expression (5- or 6-field, validated on creation).
-          example: "0 2 * * *"
-        execution:
-          $ref: "#/components/schemas/ExecutionType"
-        enabled:
-          type: boolean
-          description: Whether the job starts enabled (default true).
-          default: true
-          example: true
-        timezone:
-          type: string
-          description: IANA timezone name (e.g. "America/New_York"). Validated on creation.
-          example: America/New_York
-        working_dir:
-          type: string
-          description: Working directory for the job process.
-          example: /home/user/project
-        env_vars:
-          type: object
-          additionalProperties:
-            type: string
-          description: Extra environment variables passed to the job process.
-          example:
-            NODE_ENV: production
-        timeout_secs:
-          type: integer
-          format: int64
-          description: Maximum execution time in seconds (0 = no timeout, default 0).
-          default: 0
-          example: 300
-        log_environment:
-          type: boolean
-          description: Whether to log the full environment at job start (default false).
-          default: false
-          example: false
-        allow_concurrent:
-          type: boolean
-          nullable: true
-          description: When true, allow concurrent runs. When null/omitted, uses the daemon's default_allow_concurrent config.
-          example: false
-        schedule_mode:
-          type: string
-          enum: [Cron, WaitForCompletion]
-          description: |
-            Controls how the scheduler handles timing. 'Cron' fires on every cron tick
-            regardless. 'WaitForCompletion' skips ticks while a run is active.
-            When null/omitted, defaults to Cron.
-          example: Cron
-        pre_hook:
-          type: string
-          description: "Shell command to run before job execution. Pre-hook failure blocks the job."
-        post_hook:
-          type: string
-          description: "Shell command to run after job execution. Receives ACS_JOB_EXIT_CODE env var. Post-hook failure results in CompletedWithWarnings status."
-        pre_hook_script_type:
-          type: string
-          nullable: true
-          enum: [shell, batch, python, powershell]
-          description: "Script type for pre-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
-        post_hook_script_type:
-          type: string
-          nullable: true
-          enum: [shell, batch, python, powershell]
-          description: "Script type for post-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
-
-    # -----------------------------------------------------------------------
-    # JobUpdate (patch request body)
-    # -----------------------------------------------------------------------
-    JobUpdate:
-      type: object
-      description: |
-        Partial update for a job. All fields are optional; only provided fields
-        are modified.
-      properties:
-        name:
-          type: string
-          description: New job name (must be unique and not a UUID).
-          example: backup-db-v2
-        schedule:
-          type: string
-          description: New cron expression (validated).
-          example: "0 3 * * *"
-        execution:
-          $ref: "#/components/schemas/ExecutionType"
-        enabled:
-          type: boolean
-          description: Enable or disable the job.
-          example: false
-        timezone:
-          type: string
-          description: New IANA timezone (validated).
-          example: Europe/London
-        working_dir:
-          type: string
-          description: New working directory.
-          example: /opt/app
-        env_vars:
-          type: object
-          additionalProperties:
-            type: string
-          description: Replace environment variables.
-        timeout_secs:
-          type: integer
-          format: int64
-          description: New timeout in seconds.
-          example: 600
-        log_environment:
-          type: boolean
-          description: Whether to log environment on run start.
-        allow_concurrent:
-          type: boolean
-          nullable: true
-          description: Set to true/false to change concurrency behavior.
-        schedule_mode:
-          type: string
-          enum: [Cron, WaitForCompletion]
-          nullable: true
-          description: |
-            Controls how the scheduler handles timing. 'Cron' fires on every cron tick
-            regardless. 'WaitForCompletion' skips ticks while a run is active.
-            When null/omitted, the existing value is preserved.
-          example: WaitForCompletion
-        pre_hook:
-          type: string
-          nullable: true
-          description: "Shell command to run before job execution. Pre-hook failure blocks the job."
-        post_hook:
-          type: string
-          nullable: true
-          description: "Shell command to run after job execution. Receives ACS_JOB_EXIT_CODE env var. Post-hook failure results in CompletedWithWarnings status."
-        pre_hook_script_type:
-          type: string
-          nullable: true
-          enum: [shell, batch, python, powershell]
-          description: "Script type for pre-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
-        post_hook_script_type:
-          type: string
-          nullable: true
-          enum: [shell, batch, python, powershell]
-          description: "Script type for post-hook. When set, hook content is saved as a temp file and executed via the appropriate interpreter. When null, hook is executed as a shell command."
-
-    # -----------------------------------------------------------------------
-    # JobRun
-    # -----------------------------------------------------------------------
-    JobRun:
-      type: object
-      required: [run_id, job_id, started_at, status, log_size_bytes]
-      properties:
-        run_id:
-          type: string
-          format: uuid
-          description: Unique run identifier (UUIDv7).
-          example: "01930000-0000-7000-8000-000000000001"
-        job_id:
-          type: string
-          format: uuid
-          description: ID of the job this run belongs to.
-          example: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
-        started_at:
-          type: string
-          format: date-time
-          description: Timestamp when the run started.
-          example: "2024-01-16T02:00:00Z"
-        finished_at:
-          type: string
-          format: date-time
-          nullable: true
-          description: Timestamp when the run finished, or null if still running.
-          example: "2024-01-16T02:01:30Z"
-        status:
-          $ref: "#/components/schemas/RunStatus"
-        exit_code:
-          type: integer
-          format: int32
-          nullable: true
-          description: Process exit code, or null if still running or failed to start.
-          example: 0
-        log_size_bytes:
-          type: integer
-          format: int64
-          description: Size of the captured log output in bytes.
-          example: 1024
-        error:
-          type: string
-          nullable: true
-          description: Error message if the run failed to start or was killed.
-          example: null
-        trigger_params:
-          $ref: "#/components/schemas/TriggerParams"
-          description: >
-            Optional trigger parameters used for this run.
-            Only present when the run was manually triggered with
-            per-invocation parameters. Omitted when null.
-        total_cost_usd:
-          type: number
-          format: double
-          nullable: true
-          description: Total cost in USD from Claude CLI.
-          example: 0.0342
-        duration_ms:
-          type: integer
-          format: int64
-          nullable: true
-          description: CLI-reported execution duration in milliseconds.
-          example: 5000
-        num_turns:
-          type: integer
-          format: int32
-          nullable: true
-          description: Number of conversation turns.
-          example: 3
-        model:
-          type: string
-          nullable: true
-          description: Primary model used.
-          example: claude-3-5-sonnet-20241022
-        usage:
-          type: object
-          nullable: true
-          description: Full token usage data from Claude CLI.
-          example: { "input_tokens": 1500, "output_tokens": 800 }
-
-    # -----------------------------------------------------------------------
     # RunStatus enum
     # -----------------------------------------------------------------------
     RunStatus:
       type: string
-      enum: [Running, Completed, CompletedWithWarnings, Failed, Killed]
-      description: |
-        Current status of a job run:
-        - `Running` — the process is currently executing
-        - `Completed` — the process exited with an exit code (including non-zero) and post-hook succeeded (if present)
-        - `CompletedWithWarnings` — the process exited successfully but post-hook failed
-        - `Failed` — an infrastructure error prevented normal completion (spawn failure, process wait failure, timeout, or task join error)
-        - `Killed` — the process was manually killed or timed out
-
-    # -----------------------------------------------------------------------
-    # RunListResponse (paginated)
-    # -----------------------------------------------------------------------
-    RunListResponse:
-      type: object
-      required: [runs, total, limit, offset]
-      properties:
-        runs:
-          type: array
-          items:
-            $ref: "#/components/schemas/JobRun"
-        total:
-          type: integer
-          description: Total number of runs for this job (before pagination).
-          example: 42
-        limit:
-          type: integer
-          description: Requested page size.
-          example: 20
-        offset:
-          type: integer
-          description: Requested offset.
-          example: 0
-
-    # -----------------------------------------------------------------------
-    # Kill response
-    # -----------------------------------------------------------------------
-    KillResponse:
-      type: object
-      required: [message]
-      properties:
-        message:
-          type: string
-          description: Human-readable confirmation that the kill signal was sent.
-          example: Kill signal sent
-        run_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: The run ID that was killed, if a specific run was targeted.
-          example: "01930000-0000-7000-8000-000000000001"
-        job_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: The job ID whose run(s) were killed.
-          example: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
-
-    # -----------------------------------------------------------------------
-    # RecentRunEntry / RecentRunsResponse
-    # -----------------------------------------------------------------------
-    RecentRunEntry:
-      allOf:
-        - $ref: "#/components/schemas/JobRun"
-        - type: object
-          required: [job_name]
-          properties:
-            job_name:
-              type: string
-              description: Human-readable name of the job that produced this run.
-              example: backup-db
-
-    RecentRunsResponse:
-      type: object
-      required: [runs, limit]
-      properties:
-        runs:
-          type: array
-          items:
-            $ref: "#/components/schemas/RecentRunEntry"
-          description: List of recent runs ordered by start time descending.
-        limit:
-          type: integer
-          description: The maximum number of runs that were requested.
-          example: 20
-
-    # -----------------------------------------------------------------------
-    # Trigger response
-    # -----------------------------------------------------------------------
-    TriggerParams:
-      type: object
-      description: |
-        Optional per-invocation parameters for triggering a job. All fields
-        are optional. When omitted, the job runs with its default configuration.
-      properties:
-        args:
-          type: string
-          description: |
-            Extra arguments appended to the job's command string for this run.
-            For a ShellCommand with value "cmd", the effective command becomes
-            "cmd <args>". Same for ScriptFile.
-          example: "--full --verbose"
-        env:
-          type: object
-          additionalProperties:
-            type: string
-          description: |
-            Per-trigger environment variables. Override the job's env_vars for
-            this single run (highest precedence: inherited env < job env_vars
-            < trigger env).
-          example:
-            MODE: manual
-            DEBUG: "1"
-        input:
-          type: string
-          description: |
-            Data written to the process's stdin immediately after spawn, then
-            stdin is closed (EOF). Useful for commands that read from stdin.
-          example: "yes"
-
-    TriggerResponse:
-      type: object
-      required: [message, job_id, job_name, run_id]
-      properties:
-        message:
-          type: string
-          example: Job triggered
-        job_id:
-          type: string
-          format: uuid
-          example: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
-        job_name:
-          type: string
-          example: backup-db
-        run_id:
-          type: string
-          format: uuid
-          description: |
-            Pre-generated run identifier (UUIDv7). Available immediately in
-            the response without waiting for execution to begin. Can be used
-            to filter SSE events or poll for run status.
-          example: "0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
-
-    # -----------------------------------------------------------------------
-    # SSE event schemas
-    # -----------------------------------------------------------------------
-    SseEventStarted:
-      type: object
-      description: Emitted when a job run begins.
-      required: [event, data]
-      properties:
-        event:
-          type: string
-          enum: [started]
-        data:
-          type: object
-          required: [job_id, run_id, job_name, timestamp]
-          properties:
-            job_id:
-              type: string
-              format: uuid
-            run_id:
-              type: string
-              format: uuid
-            job_name:
-              type: string
-            timestamp:
-              type: string
-              format: date-time
-
-    SseEventOutput:
-      type: object
-      description: Emitted for incremental stdout/stderr output.
-      required: [event, data]
-      properties:
-        event:
-          type: string
-          enum: [output]
-        data:
-          type: object
-          required: [job_id, run_id, data, timestamp]
-          properties:
-            job_id:
-              type: string
-              format: uuid
-            run_id:
-              type: string
-              format: uuid
-            data:
-              type: string
-              description: Chunk of output text.
-            timestamp:
-              type: string
-              format: date-time
-
-    SseEventCompleted:
-      type: object
-      description: Emitted when a job run finishes successfully.
-      required: [event, data]
-      properties:
-        event:
-          type: string
-          enum: [completed]
-        data:
-          type: object
-          required: [job_id, run_id, exit_code, timestamp]
-          properties:
-            job_id:
-              type: string
-              format: uuid
-            run_id:
-              type: string
-              format: uuid
-            exit_code:
-              type: integer
-              format: int32
-            timestamp:
-              type: string
-              format: date-time
-
-    SseEventFailed:
-      type: object
-      description: Emitted when a job run fails.
-      required: [event, data]
-      properties:
-        event:
-          type: string
-          enum: [failed]
-        data:
-          type: object
-          required: [job_id, run_id, error, timestamp]
-          properties:
-            job_id:
-              type: string
-              format: uuid
-            run_id:
-              type: string
-              format: uuid
-            error:
-              type: string
-            timestamp:
-              type: string
-              format: date-time
-
-    SseEventJobChanged:
-      type: object
-      description: Emitted when a job is added, updated, removed, enabled, or disabled.
-      required: [event, data]
-      properties:
-        event:
-          type: string
-          enum: [job_changed]
-        data:
-          type: object
-          required: [job_id, change, timestamp]
-          properties:
-            job_id:
-              type: string
-              format: uuid
-            change:
-              $ref: "#/components/schemas/JobChangeKind"
-            timestamp:
-              type: string
-              format: date-time
-
-    JobChangeKind:
-      type: string
-      enum: [Added, Updated, Removed, Enabled, Disabled]
-      description: The kind of change that occurred on a job.
-
-    # -----------------------------------------------------------------------
-    # Service status
-    # -----------------------------------------------------------------------
-    ServiceStatusResponse:
-      type: object
-      required: [platform, service_installed, service_running]
-      properties:
-        platform:
-          type: string
-          enum: [windows, macos, linux]
-          description: Operating system platform.
-          example: windows
-        service_installed:
-          type: boolean
-          description: Whether ACS is installed as an OS service.
-          example: false
-        service_running:
-          type: boolean
-          description: Whether the OS service is currently running.
-          example: false
-
-    # -----------------------------------------------------------------------
-    # Generic responses
-    # -----------------------------------------------------------------------
-    MessageResponse:
-      type: object
-      required: [message]
-      properties:
-        message:
-          type: string
-          example: Shutdown initiated
-
-    ErrorResponse:
-      type: object
-      required: [error, message]
-      description: Standard error envelope returned by all error responses.
-      properties:
-        error:
-          type: string
-          description: Machine-readable error code.
-          example: not_found
-        message:
-          type: string
-          description: Human-readable error description.
-          example: "Job with id '550e8400-e29b-41d4-a716-446655440000' not found"
-
-    # -----------------------------------------------------------------------
-    # Workflow types (Phase 5 — additive, do not remove existing Job schemas)
-    # -----------------------------------------------------------------------
-
-    RunStatusV2:
-      type: string
       enum: [Running, Completed, Failed, Killed]
       description: |
-        Status of a workflow run or step run. Four variants (no CompletedWithWarnings).
+        Status of a workflow run or step run:
         - `Running` — currently executing
-        - `Completed` — finished successfully
-        - `Failed` — infrastructure or step-level failure
+        - `Completed` — finished successfully (all Abort steps succeeded; Continue steps may have failed)
+        - `Failed` — infrastructure or step-level failure terminated the run early
         - `Killed` — manually killed or timed out
+
+    # -----------------------------------------------------------------------
+    # Workflow types
+    # -----------------------------------------------------------------------
 
     AgentType:
       type: string
@@ -2270,7 +1045,7 @@ components:
           description: Timestamp of the last completed run, or null if never run.
           example: "2024-01-16T03:00:00Z"
         last_run_status:
-          $ref: "#/components/schemas/RunStatusV2"
+          $ref: "#/components/schemas/RunStatus"
           nullable: true
           description: Status of the last completed run, or null if never run.
         last_run_id:
@@ -2424,16 +1199,20 @@ components:
           nullable: true
           description: New workflow-level failure policy.
 
-    TriggerParamsV2:
+    TriggerParams:
       type: object
+      required: [input]
       description: |
-        Optional per-invocation parameters for triggering a workflow. Distinct
-        from the job-level TriggerParams — workflows accept structured JSON
-        input instead of a command-line args string.
+        Per-invocation parameters for triggering a workflow. The request body
+        is required (the handler uses `Json<TriggerParams>`, not
+        `Option<Json<...>>`). Send `{"input": null}` to trigger with
+        `workflow.default_input`; sending `{}` causes a 422 because `input`
+        is required at the wire level.
       properties:
         input:
           description: |
             Structured JSON input passed as the workflow's trigger input.
+            Required field. Pass `null` to fall back to `workflow.default_input`.
             Must conform to the workflow's `input_schema` when one is set.
           example: { "target": "production" }
         env:
@@ -2456,8 +1235,11 @@ components:
 
     WorkflowTriggerResponse:
       type: object
-      required: [run_id, workflow_id, workflow_version, run_url]
-      description: Response returned when a workflow is triggered manually.
+      required: [run_id, workflow_id, workflow_version]
+      description: |
+        Response returned when a workflow is triggered manually.
+        The actual `TriggerResponse` struct only has `run_id`, `workflow_id`,
+        and `workflow_version`. `run_url` is not returned by the handler.
       properties:
         run_id:
           type: string
@@ -2474,10 +1256,6 @@ components:
           format: int32
           description: Version of the workflow at the time of triggering.
           example: 1
-        run_url:
-          type: string
-          description: URL path to poll for run status.
-          example: "/api/runs/0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
 
     StepRun:
       type: object
@@ -2503,7 +1281,7 @@ components:
           description: The step variant kind (e.g. "shell", "agent").
           example: shell
         status:
-          $ref: "#/components/schemas/RunStatusV2"
+          $ref: "#/components/schemas/RunStatus"
         started_at:
           type: string
           format: date-time
@@ -2592,7 +1370,7 @@ components:
           description: Timestamp when the run finished, or null if still running.
           example: "2024-01-16T03:00:30Z"
         status:
-          $ref: "#/components/schemas/RunStatusV2"
+          $ref: "#/components/schemas/RunStatus"
         trigger_input:
           nullable: true
           description: The JSON input value passed when the run was triggered. Null for scheduled runs with no default_input.
@@ -2614,3 +1392,63 @@ components:
           nullable: true
           description: Total wall-clock duration in milliseconds.
           example: 30000
+
+    # -----------------------------------------------------------------------
+    # Service status
+    # -----------------------------------------------------------------------
+    ServiceStatusResponse:
+      type: object
+      required: [platform, service_installed, service_running]
+      properties:
+        platform:
+          type: string
+          enum: [windows, macos, linux]
+          description: Operating system platform.
+          example: windows
+        service_installed:
+          type: boolean
+          description: Whether ACS is installed as an OS service.
+          example: false
+        service_running:
+          type: boolean
+          description: Whether the OS service is currently running.
+          example: false
+
+    # -----------------------------------------------------------------------
+    # WorkflowChangeKind enum
+    # -----------------------------------------------------------------------
+    WorkflowChangeKind:
+      type: string
+      enum: [created, updated, deleted, enabled, disabled]
+      description: |
+        The kind of change applied to a workflow (serialized as snake_case):
+        - `created` — new workflow created via `POST /api/workflows`
+        - `updated` — existing workflow updated via `PATCH /api/workflows/{id}`
+        - `deleted` — workflow deleted via `DELETE /api/workflows/{id}`
+        - `enabled` — workflow enabled (scheduler/daemon internal)
+        - `disabled` — workflow disabled (scheduler/daemon internal)
+
+    # -----------------------------------------------------------------------
+    # Generic responses
+    # -----------------------------------------------------------------------
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          example: Shutdown initiated
+
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      description: Standard error envelope returned by all error responses.
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code.
+          example: not_found
+        message:
+          type: string
+          description: Human-readable error description.
+          example: "Workflow with id '550e8400-e29b-41d4-a716-446655440000' not found"

@@ -2,7 +2,7 @@
 
 ## 1. System Overview
 
-ACS is a cross-platform cron scheduling daemon written in Rust. It runs as a long-lived background process that manages scheduled jobs defined by cron expressions, executes them via child processes with piped I/O, and exposes a RESTful HTTP API for job management, log retrieval, and real-time event streaming via Server-Sent Events (SSE).
+ACS is a cross-platform cron scheduling daemon written in Rust. It runs as a long-lived background process that manages scheduled **workflows** defined by cron expressions, executes their steps via child processes with piped I/O, and exposes a RESTful HTTP API for workflow management, run retrieval, and real-time event streaming via Server-Sent Events (SSE).
 
 The system follows a layered architecture:
 
@@ -12,31 +12,34 @@ The system follows a layered architecture:
        v                          v
   +------------------------------------+
   |          HTTP Server (Axum)        |
-  |   routes, SSE, health, assets     |
+  |   workflow routes, SSE, health,    |
+  |   assets                           |
   +------------------------------------+
        |              |            |
        v              v            v
-  +---------+   +-----------+   +--------+
-  |Scheduler|-->| Executor  |   | Event  |
-  |         |   |           |   | Bus    |
-  +---------+   +-----------+   +--------+
+  +----------+  +----------+   +--------+
+  |Workflow  |->| Workflow |   | Event  |
+  |Scheduler |  | Executor |   | Bus    |
+  +----------+  +----------+   +--------+
        |              |            |
        v              v            v
   +------------------------------------+
   |        Storage Layer (Traits)      |
-  |     JobStore       LogStore        |
+  |  WorkflowStore   WorkflowRunStore  |
   +------------------------------------+
        |                   |
        v                   v
-  jobs.json         logs/<job_id>/*.log
+  workflows.json    runs/<workflow_id>/<run_id>.json
+                    logs/<workflow_id>/<run_id>.log
 ```
 
 ### High-Level Architecture
 
-- **Single-binary deployment**: The `acs` binary serves as both the CLI client and the daemon server. The `main()` function parses CLI arguments and dispatches to the appropriate handler.
+- **Single-binary deployment**: The `acs` binary serves as both the CLI client and the daemon server. `main()` parses CLI arguments and dispatches to the appropriate handler (`acs/src/main.rs`).
 - **Async runtime**: Built on Tokio, with the runtime created explicitly in `main()` via `tokio::runtime::Runtime::new()`.
-- **Trait-based storage**: All persistence is behind `JobStore` and `LogStore` traits, with concrete implementations using JSON files and filesystem logs.
-- **Event-driven**: A broadcast channel propagates `JobEvent` variants to all subscribers (SSE clients, metadata updater, etc.).
+- **Trait-based storage**: All persistence is behind `WorkflowStore` and `WorkflowRunStore` traits, with concrete filesystem implementations.
+- **Event-driven**: A broadcast channel propagates `WorkflowEvent` variants to all subscribers (SSE clients, etc.).
+- **Workflow-native runtime**: The entire execution model is built around `Workflow` and `StepDef`. There is no separate `Job` concept.
 
 ---
 
@@ -46,45 +49,73 @@ The system follows a layered architecture:
 
 ```
 acs/src/
-  main.rs                     # Entry point: CLI parse + Tokio runtime
-  lib.rs                      # Module declarations
-  errors.rs                   # AcsError enum (thiserror)
+  main.rs                          # Entry point: CLI parse + Tokio runtime
+  lib.rs                           # Module declarations
+  errors.rs                        # AcsError enum (thiserror)
   cli/
-    mod.rs                    # Cli struct, Commands enum, dispatch()
-    daemon.rs                 # start/stop/status/restart/uninstall handlers
-    jobs.rs                   # add/remove/list/enable/disable/trigger handlers
-    logs.rs                   # logs command handler
+    mod.rs                         # Cli struct, Commands enum, dispatch()
+    daemon.rs                      # start/stop/status/restart/uninstall handlers
+    workflows.rs                   # workflow CRUD + trigger + runs subcommands
+    logs.rs                        # logs command handler
   daemon/
-    mod.rs                    # PidFile, PortFile, load_config(), start_daemon(),
-                              #   graceful_shutdown(), SizeManagedWriter,
-                              #   resolve_data_dir(), create_data_dirs(),
-                              #   cleanup_orphaned_logs(), is_process_alive()
-    scheduler.rs              # Scheduler, Clock trait, SystemClock, FakeClock,
-                              #   compute_next_run()
-    executor.rs               # Executor, RunHandle
-    events.rs                 # JobEvent enum, JobChangeKind enum
-    service.rs                # OS service registration (Windows/macOS/Linux)
+    mod.rs                         # PidFile, PortFile, load_config(), start_daemon(),
+                                   #   graceful_shutdown(), SizeManagedWriter,
+                                   #   resolve_data_dir(), create_data_dirs()
+    scheduler.rs                   # WorkflowScheduler, Clock trait, SystemClock,
+                                   #   FakeClock, compute_next_run()
+    events.rs                      # WorkflowEvent enum, WorkflowChangeKind enum
+    service.rs                     # OS service registration (Windows/macOS/Linux)
   server/
-    mod.rs                    # AppState, create_router()
-    routes.rs                 # REST API route handlers
-    sse.rs                    # SSE event streaming endpoint
-    health.rs                 # GET /health handler
-    assets.rs                 # Embedded static file serving (SPA fallback)
+    mod.rs                         # AppState, create_router()
+    workflow_routes.rs             # REST API route handlers for workflows and runs
+    routes.rs                      # Misc routes: shutdown, restart, daemon logs, service status
+    sse.rs                         # GET /api/events/workflows SSE handler
+    health.rs                      # GET /health handler
+    assets.rs                      # Embedded static file serving (SPA fallback)
   storage/
-    mod.rs                    # JobStore trait, LogStore trait
-    jobs.rs                   # JsonJobStore (JSON file persistence)
-    logs.rs                   # FsLogStore (filesystem log storage)
+    mod.rs                         # Re-exports (workflow_runs, workflows)
+    workflows.rs                   # WorkflowStore trait + FsWorkflowStore
+    workflow_runs.rs               # WorkflowRunStore trait + FsWorkflowRunStore
   models/
-    mod.rs                    # Re-exports
-    job.rs                    # Job, NewJob, JobUpdate, ExecutionType,
-                              #   validate_new_job(), validate_job_update()
-    run.rs                    # JobRun, RunStatus
-    config.rs                 # DaemonConfig
-    dispatch.rs               # DispatchRequest, TriggerParams
-  process_kill.rs               # Platform-specific process tree termination
+    mod.rs                         # Re-exports
+    workflow.rs                    # Workflow, StepDef enum + variants, StepDefCommon,
+                                   #   CaptureSpec, FailurePolicy, RunStatus,
+                                   #   WorkflowRun, StepRun, TriggerParams,
+                                   #   NewWorkflow, WorkflowUpdate, AgentType
+    config.rs                      # DaemonConfig
+  workflow/
+    mod.rs                         # Re-exports: run_workflow, FileLogSink,
+                                   #   EventEmittingLogSink, Step, StepContext,
+                                   #   StepOutput, StepError, CostFragment, LogSink
+    step.rs                        # Step trait, StepContext, StepOutput, StepError,
+                                   #   CostFragment, LogSink trait, KillSender/Receiver,
+                                   #   wait_for_kill()
+    executor.rs                    # run_workflow() — the step loop entry point;
+                                   #   MatchStep is handled inline in execute_steps()
+                                   #   rather than as a separate Step impl
+    template.rs                    # substitute() — ${input.*} and ${steps.*.*}
+    log_sink.rs                    # FileLogSink (concrete LogSink for combined run log)
+    event_log_sink.rs              # EventEmittingLogSink (LogSink wrapper for SSE chunks)
+    steps/
+      mod.rs                       # Sub-module declarations
+      shell.rs                     # ShellStep impl
+      script.rs                    # ScriptStep impl
+      http.rs                      # HttpStep impl
+      set_var.rs                   # SetVarStep impl
+      agent.rs                     # AgentStep impl
+    agents/
+      mod.rs                       # AgentImpl trait, AgentOutputParser trait,
+                                   #   AgentOutput, impl_for()
+      claude_code_cli.rs           # ClaudeCodeCli impl + ClaudeStreamParser
+  migration/
+    mod.rs                         # Migration trait, run_pending(), registry,
+                                   #   MigrationRunReport, state file I/O
+    legacy_types.rs                # Legacy Job/ExecutionType types (migration read only)
+    m001_jobs_to_workflows.rs      # JobsToWorkflows migration
+  process_kill.rs                  # kill_process_tree(), force_kill_process_tree()
   pty/
-    mod.rs                    # PtySpawner trait, PtyProcess trait,
-                              #   NoPtySpawner, MockPtySpawner
+    mod.rs                         # PtySpawner trait, PtyProcess trait,
+                                   #   NoPtySpawner, MockPtySpawner
 ```
 
 ### Module Responsibilities
@@ -92,136 +123,166 @@ acs/src/
 #### `cli` -- Command-Line Interface
 
 - **`cli::Cli`**: Top-level clap `Parser` struct with global options.
-- **`cli::Commands`**: Enum of all subcommands.
+- **`cli::Commands`**: Enum of all subcommands (`daemon`, `workflows`, `logs`, etc.).
 - **`cli::dispatch()`**: Routes parsed CLI commands to handler functions. Most commands communicate over HTTP to the daemon's REST API; `Start` either runs the daemon directly or spawns it.
+- **`cli::workflows`**: Subcommands for workflow CRUD, trigger, and run listing. Communicates with the daemon over the REST API.
 
 See [CLI Reference](cli-reference.md) for the full command documentation.
 
 #### `daemon` -- Daemon Lifecycle and Core Engine
 
-- **`daemon::start_daemon()`**: The master orchestration function. Acquires PID file, loads config, creates data directories, initializes storage, sets up channels, starts the Scheduler, Executor dispatch loop, metadata updater, and HTTP server, then waits for shutdown signals.
+- **`daemon::start_daemon()`**: The master orchestration function. Acquires PID file, loads config, creates data directories, runs pending migrations, initializes storage (`FsWorkflowStore`, `FsWorkflowRunStore`), sets up the broadcast channel, starts the `WorkflowScheduler`, and starts the HTTP server, then waits for shutdown signals.
 - **`daemon::PidFile`**: Manages an exclusive PID file (`agentcronsystem.pid`) to enforce single-instance. Uses `create_new(true)` for atomic creation with stale PID detection.
 - **`daemon::PortFile`**: Writes the actual bound port to `agentcronsystem.port` so CLI clients can discover the daemon.
 - **`daemon::load_config()`**: Loads `DaemonConfig` via a multi-level resolution order (see [Configuration](configuration.md)).
 - **`daemon::resolve_data_dir()`**: Resolves the data directory from CLI override, env var, or platform default (see [Configuration](configuration.md#data-directory-locations)).
-- **`daemon::graceful_shutdown()`**: Implements the shutdown sequence (see Section 3.4).
-- **`daemon::cleanup_orphaned_logs()`**: Removes log directories for deleted jobs on startup (see [Storage](storage.md#6-orphaned-log-cleanup)).
+- **`daemon::graceful_shutdown()`**: Removes PID and port files on daemon exit.
 
 #### `daemon::scheduler` -- Cron Scheduling Engine
 
-- **`Scheduler`**: Long-lived async task that polls enabled jobs from the `JobStore`, computes next run times using `compute_next_run()`, sleeps until the earliest due time, and dispatches due jobs over an `mpsc` channel.
+- **`WorkflowScheduler`**: Long-lived async task that polls enabled workflows from the `WorkflowStore`, computes next run times using `compute_next_run()`, sleeps until the earliest due time, and dispatches due workflows by calling `run_workflow()` directly (no intermediate dispatch channel). Each dispatch spawns a Tokio task, creates a `FileLogSink` wrapped in `EventEmittingLogSink`, persists an initial `Running` run record, and awaits the final `WorkflowRun` result for persistence.
 - **`Clock` trait**: Abstracts system time. Implementations: `SystemClock` (production), `FakeClock` (testing with controllable time).
-- **`compute_next_run()`**: Evaluates a cron expression using the `croner` crate. Supports optional IANA timezone via `chrono-tz` -- converts to local time, finds next occurrence, then converts back to UTC.
-
-#### `daemon::executor` -- Job Execution Engine
-
-- **`Executor`**: Spawns child processes for jobs. Each `spawn_job()` call creates a `JobRun` record, broadcasts a `Started` event, spawns the process via the `PtySpawner` trait, and manages the output/log pipeline.
-- **`RunHandle`**: Returned by `spawn_job()`. Contains `run_id`, `job_id`, `join_handle` (the Tokio task handle), and `kill_tx` (a oneshot channel carrying a `KillReason` enum to signal cancellation).
-- **`Executor::build_command()`**: Constructs a `portable_pty::CommandBuilder` from the job's `ExecutionType` (see [Job Management](job-management.md#execution-types) for platform-specific shell behavior).
+- **`compute_next_run()`**: Evaluates a cron expression using the `croner` crate. Supports optional IANA timezone via `chrono-tz` — converts to local time, finds next occurrence, then converts back to UTC.
 
 #### `daemon::events` -- Event System
 
-- **`JobEvent`**: Tagged enum with variants `Started`, `Output`, `Completed`, `Failed`, `JobChanged`. Each variant carries `job_id`, `run_id` (where applicable), a `timestamp`, and variant-specific data.
-- **`JobChangeKind`**: Enum with variants `Added`, `Updated`, `Removed`, `Enabled`, `Disabled`.
-- Events are serialized as JSON with `#[serde(tag = "event", content = "data")]` for SSE streaming.
-- `Output` data uses `Arc<str>` for zero-copy cloning across broadcast subscribers.
+- **`WorkflowEvent`**: Tagged enum (`#[serde(tag = "type")]`) with variants `RunStarted`, `StepStarted`, `StepOutput`, `StepCompleted`, `RunCompleted`, `RunFailed`, `WorkflowChanged`. Each variant carries `run_id`, `workflow_id`, step-level fields where applicable, and timestamps.
+- **`WorkflowChangeKind`**: Enum with variants `Created`, `Updated`, `Deleted`, `Enabled`, `Disabled`.
+- `StepOutput.data` uses `Arc<str>` for zero-copy cloning across broadcast subscribers.
 
 #### `server` -- HTTP Server
 
-- **`AppState`**: Central shared state struct holding `job_store`, `log_store`, `event_tx`, `scheduler_notify`, `config`, `start_time`, `active_runs`, `shutdown_tx`, and `dispatch_tx`.
-- **`create_router()`**: Builds the Axum `Router` with all API routes, CORS middleware (permissive), and a fallback to embedded static assets. Routes include: job CRUD (`/api/jobs`, `/api/jobs/{id}`), enable/disable (`/api/jobs/{id}/enable`, `/api/jobs/{id}/disable`), trigger (`/api/jobs/{id}/trigger`), runs (`/api/jobs/{id}/runs`), run logs (`/api/runs/{run_id}/log`), SSE (`/api/events`), health (`/health`), shutdown (`/api/shutdown`), restart (`/api/restart`), daemon logs (`/api/logs`), and service status (`/api/service/status`).
+- **`AppState`**: Central shared state holding `workflow_store`, `workflow_run_store`, `workflow_event_tx`, `scheduler_notify`, `config`, `start_time`, `kill_signals`, and `shutdown_tx`.
+- **`create_router()`**: Builds the Axum `Router` with all API routes, permissive CORS middleware, and a fallback to embedded static assets. Routes: workflow CRUD (`/api/workflows`, `/api/workflows/{id}`), trigger (`/api/workflows/{id}/trigger`), runs list (`/api/workflows/{id}/runs`), run detail (`/api/runs/{run_id}`), kill (`/api/runs/{run_id}/kill`), SSE (`/api/events/workflows`), health (`/health`), shutdown (`/api/shutdown`), restart (`/api/restart`), daemon logs (`/api/logs`), service status (`/api/service/status`).
 - See [API Reference](api-reference.md) for the full endpoint specification.
-- Error responses use consistent `{ "error": "...", "message": "..." }` JSON format.
 
 #### `storage` -- Persistence Layer
 
-- **`JobStore` trait**: Async trait with methods `list_jobs`, `get_job`, `find_by_name`, `create_job`, `update_job`, `delete_job`.
-- **`LogStore` trait**: Async trait with methods `create_run`, `update_run`, `append_log`, `read_log`, `list_runs`, `cleanup`.
-- **`JsonJobStore`**: Concrete `JobStore` using JSON file persistence with in-memory cache.
-- **`FsLogStore`**: Concrete `LogStore` using filesystem-based per-job log directories.
+- **`WorkflowStore` trait**: Async trait with `list_workflows`, `get_workflow`, `find_by_name`, `create_workflow`, `update_workflow`, `delete_workflow`. (`acs/src/storage/workflows.rs`)
+- **`FsWorkflowStore`**: Concrete `WorkflowStore` using `workflows.json` with in-memory `RwLock<Vec<Workflow>>` cache. Corrupted JSON triggers a timestamped backup and empty start.
+- **`WorkflowRunStore` trait**: Async trait with `create_run`, `update_run`, `get_run`, `list_runs(workflow_id, limit, offset)`, `count_runs`, `delete_run`. (`acs/src/storage/workflow_runs.rs`)
+- **`FsWorkflowRunStore`**: Concrete `WorkflowRunStore` persisting each run as `<data_dir>/runs/<workflow_id>/<run_id>.json`. Maintains an index file (`<data_dir>/runs/index.json`) mapping `run_id → workflow_id` for O(1) lookup. On index corruption, falls back to a directory scan and creates a timestamped backup.
 
 See [Storage](storage.md) for implementation details.
 
 #### `models` -- Data Types
 
-- **`Job`**: Core job struct with identity, scheduling, execution config, and lifecycle metadata. Includes optional `pre_hook`/`post_hook` fields for shell commands or script-type execution (controlled by `pre_hook_script_type`/`post_hook_script_type`). See [Job Management](job-management.md) for the full field reference.
-- **`NewJob`**: Input struct for job creation. **`JobUpdate`**: Partial update struct with all optional fields.
-- **`ExecutionType`**: Tagged enum: `ShellCommand(String)` or `ScriptFile(String)`.
-- **`ScheduleMode`**: Enum controlling concurrency behavior for scheduled runs: `Cron` (default — always dispatch when due, regardless of active runs) or `WaitForCompletion` (skip dispatch if a run for this job is already active).
-- **`TriggerParams`**: Optional per-invocation overrides for manual triggers: `args` (extra command arguments), `env` (per-trigger environment variables), `input` (stdin data).
-- **`DispatchRequest`**: Wraps a `Job`, a pre-generated `run_id` (UUIDv7), and an optional `TriggerParams` for the dispatch channel.
-- **`JobRun`**: Run record. **`RunStatus`**: Enum with `Running`, `Completed`, `Failed`, `Killed`.
-- **`DaemonConfig`**: Configuration struct with serde defaults. See [Configuration](configuration.md) for the full field reference.
+- **`Workflow`**: Core struct with identity, scheduling, steps, and lifecycle metadata. `next_run_at` is computed at runtime and never persisted (`#[serde(skip_deserializing)]`).
+- **`NewWorkflow`** / **`WorkflowUpdate`**: Input structs for creation and partial update.
+- **`StepDef`**: Tagged enum (`#[serde(tag = "kind", rename_all = "snake_case")]`) with variants `Shell`, `Script`, `Http`, `Match`, `SetVar`, `Agent`. Each variant embeds `StepDefCommon` via `#[serde(flatten)]`.
+- **`StepDefCommon`**: Shared fields: `id`, `on_failure`, `always_run`, `timeout_secs`, `working_dir`, `env_vars`, `capture`.
+- **`ScheduleMode`**: `Cron` (default — always dispatch when due) or `WaitForCompletion` (skip dispatch if a run of this workflow is already active).
+- **`TriggerParams`**: Per-invocation overrides: `input` (replaces `workflow.default_input` for one run), `env` (merges onto `workflow.env_vars`), `target_step` (optional step routing).
+- **`WorkflowRun`** / **`StepRun`**: Run record types. `WorkflowRun.workflow_snapshot` is a full copy of the `Workflow` definition at trigger time.
+- **`RunStatus`**: `Running | Completed | Failed | Killed`.
+- **`FailurePolicy`**: `Abort | Continue | Retry { attempts, backoff_ms }`.
+- **`AgentType`**: `ClaudeCodeCli` (extensible via new variants).
+- **`DaemonConfig`**: Configuration struct with serde defaults. See [Configuration](configuration.md).
+
+#### `workflow` -- Workflow Runtime
+
+- **`run_workflow()`** (`acs/src/workflow/executor.rs`): Public entry point. Takes a `&Workflow`, a pre-generated `run_id`, `TriggerParams`, an `Arc<dyn LogSink>`, an optional `broadcast::Sender<WorkflowEvent>`, and an optional kill-signals registry. Returns a fully-populated `WorkflowRun`. Emits `RunStarted` before execution; emits `RunCompleted` for `Completed` status, `RunFailed` for both `Failed` AND `Killed` status.
+- **`execute_steps()`**: Internal recursive function. Walks steps in order, evaluating `always_run` / `aborted` / `killed` flags. Handles `MatchStep` inline by evaluating the expression template and recursing into the chosen branch. Emits `StepStarted` and `StepCompleted` events per step.
+- **`run_step_with_policy()`**: Wraps `dispatch_step()` with retry logic. Retry exhaustion is treated as `Abort`.
+- **`Step` trait** (`acs/src/workflow/step.rs`): `fn kind() -> &'static str; async fn execute(ctx: &mut StepContext) -> Result<StepOutput, StepError>`. Implemented by each step kind.
+- **`StepContext`**: Mutable execution context passed to each step. Carries `input`, accumulated `steps` outputs, `log_sink`, `env`, `working_dir`, `event_tx`, and `kill_rx`.
+- **`LogSink` trait**: `write_step_start`, `write_chunk`, `write_step_end`, plus a defaulted `set_current_step`. Implemented by `FileLogSink` and wrapped by `EventEmittingLogSink`.
+- **`template::substitute()`** (`acs/src/workflow/template.rs`): Single-pass `${...}` substitution. Namespaces: `input.<dotted.path>` and `steps.<step_id>.(stdout|exit_code|exports.<name>)`. Missing references resolve to empty string with a logged warning.
+
+#### `workflow::steps` -- Step Implementations
+
+- **`ShellStep`**: Spawns `/bin/sh -c <command>` (Unix) or `cmd.exe /C <command>` (Windows) via `NoPtySpawner`. Template-substitutes `command`. Participates in `tokio::select!` with `wait_for_kill` and an optional timeout.
+- **`ScriptStep`**: Runs a script file via interpreter selected from `script_type`. Same PTY/timeout/kill machinery as `ShellStep`.
+- **`HttpStep`**: Uses `reqwest`. Template-substitutes `url`, header values, and `body`. Validates response status against `expect_status`. Kill is implemented by dropping the in-flight future via `tokio::select!`.
+- **`SetVarStep`**: Pure context mutation; no subprocess. Template-substitutes each `exports` value and inserts into `ctx.steps` as named exports. Never fails.
+- **`MatchStep`**: Handled directly by `execute_steps()` in the executor rather than through the `Step` trait dispatch, because it needs to recursively call `execute_steps()` on its chosen branch.
+- **`AgentStep`**: Resolves `AgentType` to an `AgentImpl` via `agents::impl_for()`, builds the command string (substituting the prompt into the `command_template`), spawns via `NoPtySpawner`, and streams output through `AgentOutputParser::parse_chunk()`. On completion calls `finalize()` to extract `AgentOutput` (cost, final message). Participates in kill/timeout select.
+
+#### `workflow::agents` -- Agent Module
+
+- **`AgentImpl` trait**: `fn default_command_template(&self) -> &str; fn output_parser(&self) -> Box<dyn AgentOutputParser>`.
+- **`AgentOutputParser` trait**: `fn parse_chunk(chunk: &[u8]); fn finalize(self: Box<Self>) -> AgentOutput`.
+- **`AgentOutput`**: `cost: Option<CostFragment>`, `final_message: Option<String>`. Note: `CostFragment` is defined in `acs/src/workflow/step.rs`, not in `agents/mod.rs`.
+- **`ClaudeCodeCli`** (`acs/src/workflow/agents/claude_code_cli.rs`): Default command template is `claude -p "${prompt}" --output-format stream-json --verbose --dangerously-skip-permissions`. Parser (`ClaudeStreamParser`) buffers partial lines, processes `type=system` (model extraction) and `type=result` (cost, duration, turns, final message) NDJSON records, and accumulates totals across multiple invocations.
+
+#### `workflow::log_sink` -- Log Sinks
+
+- **`FileLogSink`** (`acs/src/workflow/log_sink.rs`): Writes to a single combined file per run at `<data_dir>/logs/<workflow_id>/<run_id>.log` in append mode. Emits versioned step-boundary markers:
+  ```
+  ===== ACS-<VERSION>:STEP:<step_id>:START:<iso8601> =====
+  <stdout/stderr chunks>
+  ===== ACS-<VERSION>:STEP:<step_id>:END:exit=<code>:<iso8601> =====
+  ```
+  `write_step_start` returns the byte offset before the marker; `write_step_end` returns the offset after.
+- **`EventEmittingLogSink`** (`acs/src/workflow/event_log_sink.rs`): Wraps any `LogSink`. On `write_chunk`, also emits `WorkflowEvent::StepOutput` on the broadcast channel. Tracks `current_step` (index + id) via `set_current_step`, which the executor calls before each step. If `set_current_step` was never called, chunk events are silently skipped.
 
 #### `pty` -- Process Spawning Abstraction
 
-- **`PtySpawner` trait**: `fn spawn(&self, cmd: CommandBuilder, rows: u16, cols: u16) -> anyhow::Result<Box<dyn PtyProcess>>`.
-- **`PtyProcess` trait**: `fn read()`, `fn kill()`, `fn wait()`, `fn write_stdin()`, `fn close_stdin()`, `fn pid()` for managing spawned processes. The `write_stdin()` and `close_stdin()` methods have default no-op implementations and are used to support `TriggerParams.input` (stdin piping). The `pid()` method has a default `None` implementation and returns the OS process ID for process tree kill.
-- **`NoPtySpawner`**: Production implementation using `std::process::Command` with piped stdout/stderr.
+- **`PtySpawner` trait**: `fn spawn(cmd: CommandBuilder, rows: u16, cols: u16) -> anyhow::Result<Box<dyn PtyProcess>>`.
+- **`PtyProcess` trait**: `read()`, `kill()`, `wait()`, `write_stdin()`, `close_stdin()`, `pid()`. `write_stdin()`/`close_stdin()`/`pid()` have default no-op/None implementations.
+- **`NoPtySpawner`**: Production implementation using `std::process::Command` with piped stdout/stderr. On Windows uses `raw_arg()` to bypass Rust's MSVC quoting. On Unix uses `setsid()` to create a new process group (PGID == child PID). On Windows uses `CREATE_NEW_PROCESS_GROUP`. Both enable `kill_process_tree()` to target the full tree.
 - **`MockPtySpawner`**: Test double with configurable output and exit codes.
 
 #### `process_kill` -- Process Tree Termination
 
-- **`kill_process_tree(pid)`**: Gracefully terminates an entire process tree. On Unix, sends SIGTERM to the process group (via `killpg`), polls for up to 5 seconds, then escalates to SIGKILL. On Windows, delegates directly to `force_kill_process_tree` (no graceful equivalent).
-- **`force_kill_process_tree(pid)`**: Immediately force-kills a process tree. On Unix, sends SIGKILL to the process group (with fallback to single-PID kill). On Windows, runs `taskkill /T /F /PID`.
+- **`kill_process_tree(pid)`** (`acs/src/process_kill.rs`): Gracefully terminates an entire process tree. On Unix: SIGTERM to process group, polls 5 s, escalates to SIGKILL. On Windows: delegates to `force_kill_process_tree` (no graceful equivalent).
+- **`force_kill_process_tree(pid)`**: On Unix: SIGKILL to process group with fallback to single-PID kill. On Windows: `taskkill /T /F /PID`.
 
 #### `errors` -- Error Types
 
-- **`AcsError`**: `thiserror`-based enum with variants: `NotFound`, `Conflict`, `Validation`, `Storage`, `Internal`, `Cron`, `Pty`, `Timeout`.
-- Implements `From<std::io::Error>`, `From<serde_json::Error>`, `From<uuid::Error>` for ergonomic error conversion.
+- **`AcsError`**: `thiserror`-based enum with variants: `NotFound`, `Conflict`, `Validation`, `Storage`, `Internal`, `Cron`, `Pty`, `Timeout`. Implements `From<std::io::Error>`, `From<serde_json::Error>`, `From<uuid::Error>`.
+
+#### `migration` -- Data Migration
+
+- **`Migration` trait** (`acs/src/migration/mod.rs`): `fn name() -> &'static str; async fn run(data_dir) -> Result<bool, AcsError>`. `Ok(true)` = work done; `Ok(false)` = nothing to do (idempotent).
+- **`run_pending()`**: Called at daemon startup. Reads `<data_dir>/migrations.json` for already-applied names. For each unapplied migration in the registry, calls `run()`. Writes state atomically after each `Ok(true)`. Stops on first error (partial progress is preserved).
+- **Registry** (ordered): `m001_jobs_to_workflows::JobsToWorkflows`.
+- **`legacy_types`** (`acs/src/migration/legacy_types.rs`): Read-only legacy `Job` and `ExecutionType` structs used only by the migration code to deserialize old `jobs.json` files.
 
 ---
 
-## 3. Data Flow
+## 3. Run Lifecycle
 
 ### 3.1 Startup Sequence
 
-The `start_daemon()` function in `daemon::mod.rs` orchestrates startup:
+`start_daemon()` in `acs/src/daemon/mod.rs` orchestrates startup:
 
 ```
-1.  load_config()           -- Load DaemonConfig (5-level resolution)
-2.  Apply CLI overrides     -- host_override, port_override
-3.  resolve_data_dir()      -- Determine data directory
-4.  create_data_dirs()      -- Ensure data/, data/logs/, data/scripts/ exist
-5.  Set up tracing          -- Truncate daemon.log to zero on startup (via
-                                std::fs::File::create), then separately open with
-                                SizeManagedWriter (appends, auto-drops oldest 25%
-                                when file exceeds 1 GB). Falls back to stderr-only on error.
-6.  PidFile::acquire()      -- Exclusive PID file (agentcronsystem.pid)
-7.  JsonJobStore::new()     -- Load jobs.json into memory cache
-8.  FsLogStore::new()       -- Initialize logs directory
-9.  cleanup_orphaned_logs() -- Remove log dirs for deleted jobs
-9a. Ghost run recovery      -- Scans all jobs for runs stuck in `Running`
-                                status from a previous daemon session.
-                                Reads the run's log file to extract any
-                                accumulated cost/usage data before marking.
-                                Marks them as `Killed` with exit_code `-1`
-                                and error 'Orphaned run — process not found
-                                on daemon restart'.
-10. broadcast::channel()    -- Create event bus (capacity from config)
-11. Notify::new()           -- Create scheduler wake signal
-12. watch::channel()        -- Create shutdown signal
-13. mpsc::channel(64)       -- Create dispatch channel (scheduler -> executor)
-14. Build AppState           -- Aggregate all shared state
-15. Executor::new()          -- Create executor with NoPtySpawner
-16. Scheduler::new()         -- Create scheduler
-17. tokio::spawn(scheduler)  -- Start scheduler loop
-18. tokio::spawn(dispatch)   -- Start dispatch loop (recv jobs, call executor)
-19. tokio::spawn(updater)    -- Start metadata updater (listen for events)
-20. TcpListener::bind()      -- Bind HTTP server
-21. PortFile::write_to()     -- Write actual port to agentcronsystem.port
-22. tokio::spawn(server)     -- Start Axum server with graceful shutdown
-23. Wait for signal          -- Ctrl+C, SIGTERM (Unix), or API shutdown
+1.  load_config()                  — Load DaemonConfig (5-level resolution)
+2.  Apply CLI overrides            — host_override, port_override
+3.  resolve_data_dir()             — Determine data directory
+4.  create_data_dirs()             — Ensure data/, data/logs/, data/scripts/ exist
+5.  migration::run_pending()       — Run any unapplied numbered migrations
+6.  Set up tracing                 — Truncate daemon.log on startup, then open with
+                                     SizeManagedWriter (auto-drops oldest 25% at 1 GB).
+                                     Falls back to stderr-only on error.
+7.  PidFile::acquire()             — Exclusive PID file (agentcronsystem.pid)
+8.  FsWorkflowStore::new()         — Load workflows.json into memory cache
+9.  FsWorkflowRunStore::new()      — Load runs index from disk
+10. broadcast::channel()           — Create WorkflowEvent bus (capacity from config)
+11. Notify::new()                  — Create scheduler wake signal
+12. watch::channel()               — Create shutdown signal
+13. Build AppState                  — Aggregate all shared state + kill_signals registry
+14. WorkflowScheduler::new()        — Create scheduler
+15. tokio::spawn(scheduler.run())   — Start scheduler loop
+16. TcpListener::bind()             — Bind HTTP server
+17. PortFile::write_to()            — Write actual port to agentcronsystem.port
+18. tokio::spawn(server)            — Start Axum server with graceful shutdown
+19. Wait for signal                 — Ctrl+C, SIGTERM (Unix), or API shutdown
+20. shutdown_tx.send()              — Signal HTTP server to stop
+21. wf_scheduler_handle.abort()     — Stop scheduler
+22. graceful_shutdown()             — Remove PID and port files
+23. Await server_handle             — Wait for HTTP server to finish
 ```
 
-### 3.2 Job Scheduling Flow
+### 3.2 Workflow Scheduling Flow
 
 ```
-                  Scheduler::run() loop
+              WorkflowScheduler::run() loop
                          |
-            1. job_store.list_jobs()
+            1. workflow_store.list_workflows()
                          |
-            2. Filter enabled jobs
+            2. Filter enabled workflows
                          |
             3. compute_next_run() for each
                          |
@@ -231,230 +292,397 @@ The `start_daemon()` function in `daemon::mod.rs` orchestrates startup:
      |                                        |
   tokio::time::sleep(duration)         notify.notified()
      |                                        |
-  5. Re-check clock, dispatch         Re-loop from step 1
-     due jobs via dispatch_tx.send()
-     (as DispatchRequest with
-      pre-generated run_id)
-     |
-     v
-  Dispatch loop receives DispatchRequest
-     |
-  executor.spawn_job(&job, run_id, trigger_params)
-     |
-  RunHandle stored in active_runs
+  5. Re-check clock, for each due wf:   Re-loop from step 1
+     a. If WaitForCompletion: check
+        workflow_run_store for active
+        runs; skip if found.
+     b. Generate run_id (Uuid::now_v7())
+     c. tokio::spawn(async move {
+          run_store.create_run(initial)
+          create log_dir + FileLogSink
+          wrap in EventEmittingLogSink
+          build TriggerParams (empty input)
+          run_workflow(wf, run_id, trigger,
+            sink, event_tx, kill_signals=None)
+          run_store.update_run(final_run)
+        })
 ```
 
-When the job list changes (create/update/delete via API), the route handler calls `scheduler_notify.notify_one()` to wake the scheduler, causing it to re-evaluate all enabled jobs from the top.
+When the workflow list changes (create/update/delete via API), the route handler calls `scheduler_notify.notify_one()` to wake the scheduler.
 
-> **Note — `WaitForCompletion` mode**: For jobs with `schedule_mode: WaitForCompletion`, the scheduler checks the `active_runs` map before dispatching. If the job has any active (non-finished) runs, the scheduler skips that job for the current tick. This prevents overlapping executions for long-running jobs without blocking the scheduler loop.
+**Note:** Scheduler-dispatched runs pass `kill_signals: None` to `run_workflow`, so their kill_tx is not registered. `POST /api/runs/{id}/kill` cannot signal cron-fired runs to terminate; it can only mark the persistent record (which the executor will then overwrite on natural completion).
 
-### 3.3 Job Execution Flow
+### 3.3 Workflow Execution Flow (run_workflow)
+
+`run_workflow()` in `acs/src/workflow/executor.rs`:
 
 ```
-executor.spawn_job(&job, run_id, trigger_params)
+run_workflow(workflow, run_id, trigger, log_sink, event_tx, kill_signals)
     |
-    1. Use pre-generated run_id (UUIDv7, from DispatchRequest)
-    2. Create JobRun {status: Running} in log_store
-    3. Broadcast JobEvent::Started
-    4. build_command() -> CommandBuilder
-    |   - If trigger_params.args is set, append to command string:
-    |     "{base_command} {args}" for both ShellCommand and ScriptFile
-    5. Create oneshot kill channel (kill_tx, kill_rx)
+    1. Clone workflow as snapshot for WorkflowRun.workflow_snapshot
+    2. Create watch::channel(false) for kill signal (KillSender/KillReceiver)
+    3. Insert KillSender into kill_signals registry (if provided)
+    4. Emit WorkflowEvent::RunStarted
+    5. Resolve effective_input: trigger.input if not Null, else workflow.default_input
+    6. Merge env: workflow.env_vars ← overlaid by trigger.env (trigger wins)
+    7. Build StepContext { input, steps: {}, log_sink, env, working_dir,
+                           event_tx, kill_rx }
     |
-    tokio::spawn(async move {
+    execute_steps(workflow.steps, ..., &mut ctx, &mut step_runs,
+                  &mut aborted, &mut killed)
         |
-        6. pty_spawner.spawn(cmd, rows, cols)
-        |   (NoPtySpawner: std::process::Command with piped I/O)
-        |   - If trigger_params.env is set, merge into process env
-        |     (precedence: inherited < job.env_vars < trigger.env)
-        |
-        7. Optionally dump environment (if log_environment)
-        8. Write command header ("$ <effective_cmd>\n") to log
-        |   (includes trigger args if present)
-        |
-        8a. If trigger_params.input is set:
-        |    Write input data to process stdin, then close stdin (EOF)
-        |
-        9. Create mpsc::channel(256) for log writer
-        10. Spawn log writer task (async: recv bytes, append to log_store)
-        10a. Extract PID from PtyProcess::pid() for process tree kill
-        11. Spawn blocking PTY read loop (spawn_blocking)
-        |    reads 8192-byte chunks, sends via mpsc to async side
-        |
-        12. Output forwarding loop:
-            tokio::select! {
-                chunk from output_rx  -> broadcast Output event + send to log writer
-                kill_rx               -> call kill_process_tree(pid), set killed=true, break
-                timeout_fut           -> call kill_process_tree(pid), set timed_out=true, break
-            }
-        |
-        13. Drop log_tx (signals log writer to finish)
-        14. Await read_handle with 10s safety timeout (get exit status)
-        15. Await log_writer_handle (get total_bytes)
-        |
-        16. Determine outcome:
-            - timed_out  -> update run to Failed, broadcast Failed
-            - killed     -> process tree terminated via kill_process_tree(pid),
-                            update run to Killed, broadcast Failed
-              (kill_tx is sent to signal cancellation; old join handles are
-               spawned as detached tasks with a 15-second timeout to ensure
-               the executor task has time to update the run status to Killed
-               before the handle is dropped)
-            - Ok(status) -> update run to Completed, broadcast Completed
-            - Err(e)     -> update run to Failed, broadcast Failed
-        |
-        17. log_store.cleanup(job_id, max_log_files)
-    })
+        For each StepDef:
+          a. Check should_run: if aborted||killed, only run if always_run=true
+          b. Increment ctx.step_index
+          c. If MatchStep: evaluate expr template, look up branch, recurse;
+             emit StepStarted + StepCompleted for synthetic MatchStep entry
+          d. Else: emit StepStarted; call log_sink.set_current_step();
+             run_step_with_policy(step_def, ctx, effective_policy, started_at)
+               → dispatch_step() → step.execute(ctx)
+             On Completed: insert StepOutput into ctx.steps; push StepRun
+             On Failed (Abort): push StepRun; set aborted=true
+             On Failed (Continue): insert output into ctx.steps; push StepRun
+             On Killed: push StepRun; set killed=true; set aborted=true
+             Emit StepCompleted event
     |
-    Return RunHandle { run_id, job_id, join_handle, kill_tx }
+    8. Remove KillSender from registry (drops sender; receivers see RecvError)
+    9. Determine final status: Killed > Failed (aborted) > Completed
+    10. Sum total_cost_usd across AgentStep step runs
+    11. Emit RunCompleted (or RunFailed for Failed/Killed)
+    12. Return WorkflowRun { run_id, workflow_snapshot, steps, status,
+                             total_cost_usd, total_duration_ms, ... }
 ```
 
-A separate **metadata updater** task subscribes to the broadcast channel and updates job-level metadata on `Completed` and `Failed` events by calling `job_store.update_job()`. On `Completed`, it sets both `last_run_at` and `last_exit_code`. On `Failed`, it sets only `last_run_at` (not `last_exit_code`, since infrastructure failures have no process exit code).
+### 3.4 Step Execution (Shell/Script)
 
-### 3.4 Shutdown Sequence
+Each `ShellStep::execute()` / `ScriptStep::execute()` follows a shared pattern:
+
+```
+1. Template-substitute command (or path + args)
+2. Build CommandBuilder from command string
+3. pty_spawner.spawn(cmd, rows, cols) → NoPtySpawner uses std::process::Command
+   - Merge env: inherited < workflow.env_vars < trigger.env
+   - Unix: setsid() creates new session with PGID == child PID
+   - Windows: CREATE_NEW_PROCESS_GROUP; raw_arg() bypasses MSVC quoting
+4. log_sink.write_step_start(step_id, started_at) → records byte offset
+5. Create mpsc::channel(256) for output forwarding
+6. tokio::task::spawn_blocking: read stdout/stderr in 8192-byte chunks,
+   send via mpsc
+7. Output forwarding loop (tokio::select!):
+   chunk from output_rx → log_sink.write_chunk(data)
+   wait_for_kill(kill_rx) → kill_process_tree(pid); return StepError::Killed
+   timeout_fut (if timeout_secs set) → kill_process_tree(pid); return StepError::Timeout
+8. Await read_handle (exit status)
+9. log_sink.write_step_end(step_id, exit_code, finished_at) → records byte offset
+10. Return StepOutput { exit_code, stdout: captured_output, exports: {}, cost: None }
+```
+
+### 3.5 Shutdown Sequence
 
 Triggered by Ctrl+C, SIGTERM (Unix), or `POST /api/shutdown`:
 
 ```
-1. Send () on watch::Sender      -- Signals HTTP server to stop accepting connections
-2. scheduler_handle.abort()       -- Stop scheduling new runs
-3. dispatch_handle.abort()        -- Stop dispatching new runs
-4. updater_handle.abort()         -- Stop metadata updater
-5. graceful_shutdown():
-   a. Lock active_runs (write)
-   b. For each active RunHandle:
-      - Send () on kill_tx         -- Signal task to stop
-      - Await join_handle with 30s timeout
-   c. For each in-flight run:
-      - Reads the run's log file to extract cost data before updating
-      - Update JobRun to Killed status with finished_at and error message
-   d. PidFile::release()           -- Remove agentcronsystem.pid
-   e. PortFile::remove()           -- Remove agentcronsystem.port
-6. Await server_handle             -- Wait for HTTP server to finish
-7. Exit with code 0
+1. shutdown_tx.send(())        — Signals HTTP server to stop accepting connections
+2. wf_scheduler_handle.abort() — Stop scheduling new runs
+3. graceful_shutdown():
+   a. PidFile::release()       — Remove agentcronsystem.pid
+   b. PortFile::remove()       — Remove agentcronsystem.port
+4. Await server_handle         — Wait for HTTP server to finish
+5. Exit with code 0
 ```
+
+Note: in-flight workflow runs are not explicitly killed on shutdown. The kill-signals registry allows individual runs to be killed via `POST /api/runs/{run_id}/kill`, but graceful shutdown does not iterate the registry. In-flight processes will be terminated when the daemon process exits.
 
 ---
 
-## 4. Concurrency Model
+## 4. Data Model
 
-ACS uses several Tokio async primitives to coordinate between components:
+### `Workflow` (`acs/src/models/workflow.rs`)
 
-### 4.1 Broadcast Channel -- Event Bus
+The only top-level scheduled entity. Owns schedule, steps, and runtime configuration.
 
-```rust
-let (event_tx, _event_rx) = broadcast::channel::<JobEvent>(config.broadcast_capacity);
-```
-
-- **Purpose**: Fan-out of `JobEvent` variants to multiple subscribers.
-- **Capacity**: Configurable via `DaemonConfig::broadcast_capacity` (default 4096).
-- **Producers**: `Executor` (Started, Output, Completed, Failed), API route handlers (JobChanged).
-- **Consumers**: SSE handler (streams to HTTP clients), metadata updater task, any new subscriber via `event_tx.subscribe()`.
-- **Backpressure**: Slow consumers receive `RecvError::Lagged(n)` and skip missed events.
-- **Clone semantics**: `JobEvent::Output` uses `Arc<str>` for the data payload, making broadcast clones cheap (pointer copy, not data copy).
-
-### 4.2 MPSC Channel -- Job Dispatch
-
-```rust
-let (dispatch_tx, dispatch_rx) = tokio::sync::mpsc::channel::<DispatchRequest>(64);
-```
-
-- **Purpose**: Delivers due jobs from the Scheduler to the dispatch loop, which calls `Executor::spawn_job()`.
-- **Capacity**: 64 pending dispatch requests.
-- **Message type**: `DispatchRequest { job: Job, run_id: Uuid, trigger_params: Option<TriggerParams> }`. The `run_id` is pre-generated by the sender (UUIDv7) so that the trigger API can return it immediately. `trigger_params` carries optional per-invocation overrides (args, env, stdin input) for manual triggers.
-- **Producers**: `Scheduler::run()` sends due jobs (with `trigger_params: None`); API trigger endpoint sends manually-triggered jobs with an optional `TriggerParams` via a cloned `dispatch_tx`.
-- **Consumer**: Single dispatch loop task that calls `executor.spawn_job()` with the dispatch request and stores the resulting `RunHandle` in `active_runs`.
-
-### 4.3 Notify -- Scheduler Wake
-
-```rust
-let scheduler_notify = Arc::new(Notify::new());
-```
-
-- **Purpose**: Wakes the Scheduler when the job list changes so it can re-evaluate schedules.
-- **Producers**: API route handlers call `scheduler_notify.notify_one()` after create/update/delete/enable/disable operations.
-- **Consumer**: `Scheduler::run()` uses `tokio::select!` between `tokio::time::sleep(duration)` and `notify.notified()`.
-
-### 4.4 Watch Channel -- Shutdown Signal
-
-```rust
-let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-```
-
-- **Purpose**: Broadcasts a shutdown signal to the HTTP server's graceful shutdown handler.
-- **Producers**: `start_daemon()` sends `()` after receiving Ctrl+C, SIGTERM, or API shutdown.
-- **Consumer**: Axum's `with_graceful_shutdown()` awaits `shutdown_rx.changed()`. Also used by the main loop via `shutdown_tx.subscribe()` to detect API-initiated shutdown.
-
-### 4.5 Oneshot Channel -- Per-Run Kill Signal
-
-```rust
-let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<KillReason>();
-```
-
-- **Purpose**: Allows cancellation of a specific running job.
-- **One per run**: Created inside `Executor::spawn_job()`, with `kill_tx` stored in the `RunHandle`.
-- **Producer**: `graceful_shutdown()` sends `KillReason::Shutdown` to kill all active runs; `POST /api/jobs/{id}/kill` sends `KillReason::Manual`; concurrent run handling sends `KillReason::Concurrent`.
-- **Consumer**: The execution task's `tokio::select!` loop breaks on `kill_rx`, setting `killed = true`.
-
-### 4.6 RwLock -- Shared State Protection
-
-```rust
-// Job store cache
-cache: RwLock<Vec<Job>>              // inside JsonJobStore
-
-// Active runs tracking
-active_runs: Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>  // in AppState
-```
-
-- **`JsonJobStore::cache`**: Tokio `RwLock<Vec<Job>>`. Read lock for `list_jobs`, `get_job`, `find_by_name`. Write lock for `create_job`, `update_job`, `delete_job` (each followed by `persist()` to disk).
-- **`active_runs`**: Tokio `RwLock<HashMap<Uuid, Vec<RunHandle>>>`, keyed by `job_id` (not `run_id`). Each job maps to a `Vec` of active run handles, supporting concurrent runs. Write lock when inserting new handles (dispatch loop) or draining during shutdown. Read lock potentially for status queries.
-
-### 4.7 Arc Sharing
-
-All major components are shared via `Arc`:
-
-| Resource | Type | Shared Between |
+| Field | Type | Notes |
 |---|---|---|
-| `job_store` | `Arc<dyn JobStore>` | AppState, Scheduler, metadata updater |
-| `log_store` | `Arc<dyn LogStore>` | AppState, Executor, graceful_shutdown |
-| `config` | `Arc<DaemonConfig>` | AppState, Executor |
-| `scheduler_notify` | `Arc<Notify>` | AppState, Scheduler |
-| `active_runs` | `Arc<RwLock<HashMap<Uuid, Vec<RunHandle>>>>` | AppState, dispatch loop, graceful_shutdown |
-| `event_tx` | `broadcast::Sender<JobEvent>` | AppState, Executor, Scheduler, metadata updater |
-| `pty_spawner` | `Arc<dyn PtySpawner>` | Executor |
+| `id` | `Uuid` | UUIDv7, time-ordered |
+| `name` | `String` | Unique slug |
+| `version` | `u32` | Bumps on definition change |
+| `schedule` | `String` | Cron expression |
+| `timezone` | `Option<String>` | IANA timezone, e.g. `"America/New_York"` |
+| `schedule_mode` | `ScheduleMode` | `Cron` (default) or `WaitForCompletion` |
+| `enabled` | `bool` | Whether the scheduler fires this workflow |
+| `steps` | `Vec<StepDef>` | Ordered list of step definitions |
+| `input_schema` | `Option<Value>` | JSON Schema for trigger payload validation |
+| `default_input` | `Option<Value>` | Baseline input for cron-fired runs |
+| `working_dir` | `Option<String>` | Workflow-level default for steps |
+| `env_vars` | `Option<HashMap<String,String>>` | Workflow-level default |
+| `allow_concurrent` | `bool` | Default `true`; set `false` to prevent parallel runs |
+| `on_failure` | `FailurePolicy` | Workflow-level default applied to steps that don't specify their own |
+| `last_run_at` / `last_run_status` / `last_run_id` | optional | Updated after each run |
+| `next_run_at` | `Option<DateTime<Utc>>` | Computed, not persisted (`skip_deserializing`) |
 
-### 4.8 Blocking Work
+### `StepDef` -- Step Variants
 
-PTY/process output reading is performed in `tokio::task::spawn_blocking()` because `std::process::ChildStdout::read()` is a blocking call. The blocking task sends output chunks to the async side via an `mpsc::channel(256)`.
+```
+StepDef (tag = "kind")
+├── Shell(ShellStep)       { common, command, pass_stdin }
+├── Script(ScriptStep)     { common, path, script_type, args, pass_stdin }
+├── Http(HttpStep)         { common, method, url, headers, body, expect_status }
+├── Match(MatchStep)       { common, expr, cases: HashMap<String, Vec<StepDef>>, default }
+├── SetVar(SetVarStep)     { common, exports: HashMap<String, String> }
+└── Agent(AgentStep)       { common, agent_type, prompt, command_template }
+```
+
+`StepDefCommon` (flattened into every variant): `id`, `on_failure`, `always_run`, `timeout_secs`, `working_dir`, `env_vars`, `capture: CaptureSpec { stdout_max_bytes, parser }`.
+
+### `WorkflowRun` and `StepRun`
+
+`WorkflowRun` is a complete, self-contained record of a single execution:
+
+| Field | Notes |
+|---|---|
+| `workflow_snapshot` | Full `Workflow` definition copied at trigger time — runs are audit-complete without on-disk workflow file |
+| `trigger_input` | Actual input used (after default vs. trigger replace) |
+| `steps` | `Vec<StepRun>` in execution order (not definition order; `MatchStep` branches are flattened) |
+| `total_cost_usd` | Sum of `AgentStep` costs; `None` if no agent steps ran |
+| `total_duration_ms` | Wall-clock duration of the run |
+
+`StepRun` per step:
+
+| Field | Notes |
+|---|---|
+| `step_index` | Position in the execution timeline |
+| `kind` | `"shell"` \| `"script"` \| `"http"` \| `"match"` \| `"set_var"` \| `"agent"` |
+| `log_byte_offset_start` / `_end` | Byte range in the combined run log file for fast UI indexing |
+| `cost_usd` | Populated only by `AgentStep` |
+| `output_summary` | Captured stdout if structured; `MatchStep` uses this for `evaluated` + `case_taken` |
+
+### `RunStatus`
+
+`Running | Completed | Failed | Killed` (PascalCase in JSON via `#[serde(rename_all = "PascalCase")]`).
+
+### `FailurePolicy`
+
+`abort | continue | retry { attempts, backoff_ms }` (snake_case in JSON). Default is `abort`. `retry` exhaustion is treated as `abort`.
 
 ---
 
-## 5. Key Design Decisions
+## 5. Concurrency
 
-### 5.1 Trait-Based Storage
+### 5.1 `allow_concurrent` Flag
 
-Storage interfaces are async traits (`JobStore`, `LogStore`) behind `Arc<dyn ...>`. This decouples business logic from persistence, enables in-memory test doubles without touching the filesystem, and leaves open the possibility of future storage backends (e.g., SQLite).
+`Workflow.allow_concurrent` is stored on the workflow definition but is **not currently enforced by the scheduler**. Concurrency control is driven exclusively by `schedule_mode: WaitForCompletion` (the scheduler checks `workflow_run_store.list_runs` for active runs and skips dispatch if found). The `allow_concurrent` field is reserved for future enforcement.
 
-### 5.2 PID File Locking
+### 5.2 Kill Channel — `watch<bool>`
 
-Single-instance enforcement uses `create_new(true)` (maps to `O_EXCL`/`CREATE_NEW`) for atomic filesystem locking. Stale PID files are detected by checking process liveness (`kill(pid, 0)` on Unix, `OpenProcess` + `GetExitCodeProcess` on Windows). The Windows check uses `GetExitCodeProcess` to handle zombie-handle scenarios where `OpenProcess` succeeds on a dead process because another process still holds a handle. Restart overlap is tolerated via 10-second retry loop.
+Kill signals use `tokio::sync::watch::channel(false)`:
 
-### 5.3 Piped I/O over PTY
+- **Why `watch` (not `oneshot`)**: Multiple receivers can clone from a single sender (one per step in a multi-step run). The latest value is always immediately available via `borrow()`.
+- **Per-run**: `run_workflow()` creates a `watch::channel(false)` at the start of each run. The `KillSender` is stored in `AppState.kill_signals` (an `Arc<RwLock<HashMap<Uuid, KillSender>>>`). The `KillReceiver` is cloned into each step's `StepContext`.
+- **Signalling**: `POST /api/runs/{run_id}/kill` looks up the sender in the registry and calls `tx.send(true)`.
+- **Step behavior**: Each subprocess step wraps its output loop in `tokio::select!` against `wait_for_kill(kill_rx)`. On kill, calls `kill_process_tree(pid)` and returns `StepError::Killed`.
+- **Cleanup**: `run_workflow()` removes the sender from the registry after the run finishes. Dropping the sender signals any remaining receivers (they see `RecvError` on next `changed()` call).
 
-The production `NoPtySpawner` uses `std::process::Command` with piped stdout, stderr, and stdin rather than a real PTY. Both stdout and stderr are read by the `PtyProcess::read()` implementation and merged into the unified output stream. Piped I/O reliably delivers EOF on all platforms, avoiding platform-specific PTY issues. On Windows, `NoPtySpawner::spawn()` uses `raw_arg()` to bypass Rust's MSVC quoting for `cmd.exe` compatibility. Each spawned child process is placed in a new process group: on Unix via `setsid()` (creating a new session with PGID == child PID), on Windows via `CREATE_NEW_PROCESS_GROUP`. This enables `process_kill::kill_process_tree()` to terminate the entire process tree rather than just the immediate child.
+### 5.3 Broadcast Channel -- Event Bus
 
-### 5.4 Atomic File Persistence
+```rust
+let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(config.broadcast_capacity);
+```
 
-`JsonJobStore` uses write-to-temp-then-rename for crash safety. Corrupted `jobs.json` is backed up to `.bak` and the store starts empty. The same pattern is used for `daemon.log` truncation.
+- **Capacity**: Configurable via `DaemonConfig::broadcast_capacity` (default 4096).
+- **Producers**: `run_workflow()` (RunStarted, StepStarted, StepCompleted, RunCompleted, RunFailed), `EventEmittingLogSink` (StepOutput per chunk), API route handlers (WorkflowChanged).
+- **Consumers**: SSE handler (`GET /api/events/workflows`), any subscriber via `event_tx.subscribe()`.
+- **Backpressure**: Slow consumers receive `RecvError::Lagged(n)` and skip missed events.
+- **`Arc<str>`**: `StepOutput.data` uses `Arc<str>` for zero-copy cloning.
 
-### 5.5 Event-Driven Architecture
+### 5.4 Notify -- Scheduler Wake
 
-The broadcast channel enables fan-out of `JobEvent` variants to SSE clients, the metadata updater, and any future subscriber. `Arc<str>` in output events makes broadcast cloning cheap. Slow subscribers receive `Lagged` errors rather than blocking producers.
+`Arc<Notify>` wakes the `WorkflowScheduler` when the workflow list changes (create/update/delete/enable/disable). Route handlers call `scheduler_notify.notify_one()`.
 
-### 5.6 Timezone-Aware Scheduling
+### 5.5 Watch Channel -- Shutdown Signal
 
-Cron expressions are evaluated in the job's IANA timezone via `chrono-tz`: convert UTC to local, find next cron occurrence, convert back to UTC. DST transitions are handled by the `croner` crate.
+`tokio::sync::watch::channel(())` broadcasts the shutdown signal to the HTTP server's graceful shutdown handler (`with_graceful_shutdown`) and is also subscribed to by the main loop to detect API-initiated shutdowns.
 
-### 5.7 UUIDv7 Identifiers
+### 5.6 Shared-State Primitives
 
-All IDs use `Uuid::now_v7()` for natural time-ordering, uniqueness without coordination, and monotonically increasing values.
+Note: `FsWorkflowRunStore::index` uses `Arc<Mutex<RunIndex>>` (not `RwLock`), because index mutations (create/delete) are always exclusive. `FsWorkflowStore` and `AppState::kill_signals` use `RwLock` to allow concurrent reads.
+
+| Resource | Type |
+|---|---|
+| `FsWorkflowStore::inner` | `tokio::sync::RwLock<Vec<Workflow>>` |
+| `FsWorkflowRunStore::index` | `Arc<tokio::sync::Mutex<HashMap<Uuid, Uuid>>>` |
+| `AppState::kill_signals` | `Arc<tokio::sync::RwLock<HashMap<Uuid, KillSender>>>` |
+
+### 5.7 Blocking Work
+
+PTY/process output reading uses `tokio::task::spawn_blocking()` because `ChildStdout::read()` is a blocking call. The blocking task sends chunks to the async side via `mpsc::channel(256)`.
+
+---
+
+## 6. Failure Model
+
+### Step-Level
+
+Each step's `on_failure` (or the workflow-level default `workflow.on_failure`) governs what happens when a step exits non-zero or returns `StepError`:
+
+| Policy | Behavior |
+|---|---|
+| `Abort` (default) | Record `StepRun` as `Failed`, set `aborted=true`. Subsequent steps are skipped unless `always_run=true`. Run status becomes `Failed`. |
+| `Continue` | Record `StepRun` as `Failed`, insert output into `ctx.steps` for downstream templates, continue to next step. Run status remains `Completed` if no `Abort`-policy steps also fail. |
+| `Retry { attempts, backoff_ms }` | Retry up to `attempts` times with `backoff_ms` delay. Non-zero exits and `StepError` variants (except `Killed`) trigger retry. All retries exhausted → treated as `Abort`. `StepError::Killed` is always terminal. |
+
+### `always_run`
+
+Steps with `always_run: true` execute even when the run is in the `aborted` or `killed` state. Useful for cleanup/notification steps (analogous to `post_hook` in the pre-refactor model). Steps with `always_run: false` (default) are silently skipped after an abort.
+
+### `StepError` Variants
+
+`Spawn` (process could not start), `Io`, `Timeout(secs)`, `Template` (substitution failure), `Killed`, `Internal`. Non-zero exit codes are NOT `StepError` — they are returned as `StepOutput { exit_code: Some(non_zero) }` and the failure policy is then applied.
+
+---
+
+## 7. Process Spawning
+
+### `NoPtySpawner` (production)
+
+Uses `std::process::Command` with piped stdout and stderr (both merged into the read stream by the `PtyProcess` implementation). Piped I/O reliably delivers EOF on all platforms.
+
+**Unix**: New session via `setsid()`, making PGID == child PID. Allows `killpg(pid, signal)` to terminate the entire process tree.
+
+**Windows**: `CREATE_NEW_PROCESS_GROUP` flag. `raw_arg()` bypasses Rust's MSVC quoting so `cmd.exe /C <command>` receives the string verbatim.
+
+### `kill_process_tree(pid)` (`acs/src/process_kill.rs`)
+
+Async function used by all subprocess step impls when a kill or timeout fires:
+- **Unix**: SIGTERM to process group → poll 5 s (50 × 100 ms) → SIGKILL if still alive.
+- **Windows**: delegates to `force_kill_process_tree` immediately (`taskkill /T /F /PID`).
+
+### `MockPtySpawner` (tests)
+
+Test double with configurable output bytes and exit code, used by all step unit tests.
+
+---
+
+## 8. Storage Layout
+
+On-disk layout under `data_dir` (default: platform data dir / `agent-cron-scheduler`):
+
+```
+data_dir/
+  agentcronsystem.pid          # Exclusive PID file
+  agentcronsystem.port         # Bound port (written after bind, removed on shutdown)
+  daemon.log                   # Daemon tracing output; auto-truncated at 1 GB
+  config.json                  # Optional; loaded if present
+  workflows.json               # FsWorkflowStore persistence (JSON array of Workflow)
+  migrations.json              # Applied migration names: { "applied": [...] }
+  logs/
+    <workflow_id>/
+      <run_id>.log             # Combined step output with ACS marker lines
+  runs/
+    index.json                 # { run_id: workflow_id, ... } for O(1) lookup
+    <workflow_id>/
+      <run_id>.json            # WorkflowRun JSON (persisted atomically)
+  scripts/                     # User script files (referenced by ScriptStep.path)
+```
+
+The log file format uses versioned step-boundary markers:
+```
+===== ACS-<VERSION>:STEP:<step_id>:START:<iso8601> =====
+<stdout/stderr interleaved>
+===== ACS-<VERSION>:STEP:<step_id>:END:exit=<code>:<iso8601> =====
+```
+
+`StepRun.log_byte_offset_start` and `.log_byte_offset_end` index into the combined log for fast per-step log retrieval in the UI.
+
+Cross-reference: [Storage](storage.md).
+
+---
+
+## 9. Migration
+
+The migration system (`acs/src/migration/`) supports forward-only, numbered data migrations.
+
+**State file**: `<data_dir>/migrations.json` stores the set of applied migration names. On corruption, the state is treated as empty (re-running migrations is safe because each implements an idempotent contract).
+
+**Runner (`run_pending()`)**: Called at every daemon startup before storage initialization. Reads the state file, iterates the registry in order, and for each unapplied migration:
+1. Calls `migration.run(data_dir)`.
+2. If `Ok(true)` (work done): adds name to the applied set, writes state atomically (write-to-tmp, rename).
+3. If `Ok(false)` (nothing to do): skips without writing state.
+4. If `Err`: stops immediately; partial progress is preserved.
+
+**Current migrations**:
+
+| Name | File | What it does |
+|---|---|---|
+| `m001_jobs_to_workflows` | `m001_jobs_to_workflows.rs` | Reads `jobs.json` (legacy). For each `Job`: creates a `Workflow` with the same schedule/name/timezone/etc. Synthesizes steps from `pre_hook` → `ShellStep("pre_hook", always_run=false)`, `execution` → `ShellStep`/`ScriptStep("main")`, `post_hook` → `ShellStep("post_hook", always_run=true)`. Preserves the original `Job.allow_concurrent` value (does not force it to `false`). Writes `workflows.json`. Renames `jobs.json` to `jobs.json.migrated.<ts>`. Returns `Ok(false)` on fresh install (no `jobs.json`). |
+
+**Adding a new migration**: Create `src/migration/mNNN_<name>.rs`, implement `Migration`, append to `registry()` in `mod.rs`.
+
+---
+
+## 10. Testing Strategy
+
+### Unit Tests (in-module, `cargo test --lib`)
+
+- **`daemon/mod.rs`**: PidFile acquire/release/stale-detection, PortFile, `graceful_shutdown`, `create_data_dirs`, `load_config`, `resolve_data_dir`, `SizeManagedWriter` truncation behavior.
+- **`daemon/scheduler.rs`**: `compute_next_run()` with UTC and timezone; DST spring-forward and fall-back; `FakeClock` behavior.
+- **`daemon/events.rs`**: `WorkflowEvent` serde round-trips per variant, `Arc<str>` cheap clone, broadcast send/receive/lag.
+- **`workflow/executor.rs`**: Multi-step happy path, abort-on-failure (skips subsequent), `always_run` cleanup after abort, Continue policy, MatchStep happy path / default branch / no-match no-op, HttpStep dispatched, AgentStep dispatched, default_input application, trigger input override, env overlay, kill signal aborts long-running step, kill only affects target run, kill after completion is no-op.
+- **`workflow/template.rs`**: `input.*` substitution (flat, nested, missing), `steps.*.*` (stdout string, stdout structured, exit_code, exports), edge cases (unclosed brace, empty path, missing step, literal `$` without brace).
+- **`workflow/log_sink.rs`**: Marker ordering, byte offsets, binary chunk preservation, `None` exit code renders as `-1`, sequential offsets across steps.
+- **`workflow/event_log_sink.rs`**: `set_current_step` propagates to chunk events, chunk includes run_id + workflow_id, no panic on zero subscribers, chunk before `set_current_step` emits nothing, inner sink still receives chunks, `set_current_step` overwrite, forwarded to inner.
+- **`workflow/steps/shell.rs`** and **`script.rs`**: Cross-platform (`#[cfg(unix)]` + `#[cfg(windows)]` mirrors). Tests cover exit-code capture, output capture, timeout, env vars, template substitution, pass_stdin.
+- **`storage/workflows.rs`**: CRUD, find_by_name, not-found, conflict, corruption recovery.
+- **`storage/workflow_runs.rs`**: create/update/get/list/count/delete, pagination, index rebuild on corruption.
+- **`migration/mod.rs`**: State read/write round-trip, corruption tolerance, all-migrations run on fresh install, already-applied skipped, not-needed goes to `skipped_not_needed`, stops at first failure, idempotent, atomic write (no `.tmp` leftover), real-registry smoke test.
+- **`errors.rs`**: Display formatting for all `AcsError` variants, `From<>` impls.
+- **`process_kill.rs`**: Kill of dead PID does not panic (both `kill_process_tree` and `force_kill_process_tree`).
+
+### Integration Tests (`cargo test --tests`)
+
+- **`tests/workflow_api_tests.rs`** (21 tests): Full HTTP round-trip tests via a real in-process daemon. Covers workflow CRUD, trigger, run retrieval, kill endpoint, SSE event ordering, run snapshot integrity, concurrent runs, WaitForCompletion mode.
+- **`tests/cli_tests.rs`** (9 tests): CLI subcommand integration tests (daemon start/stop, `acs workflows list`, `acs workflows runs`, etc.).
+
+### Test Counts (as of ACS-18 completion)
+
+- `cargo test --lib`: 427 pass
+- `cargo test --tests`: 30 pass (9 cli + 21 workflow_api)
+
+---
+
+## 11. Key Design Decisions
+
+### 11.1 Workflow-Only Model
+
+There is no separate `Job` concept. A `Workflow` owns its schedule, steps, and all runtime configuration. The pre-refactor `pre_hook`/`post_hook` model is superseded by `always_run` steps, which are explicit in the workflow definition and visible in run records.
+
+### 11.2 Workflow Snapshot in Run Records
+
+`WorkflowRun.workflow_snapshot` is a full copy of the `Workflow` at trigger time. Runs are self-contained for audit and replay. `GET /api/runs/{id}` never depends on the current on-disk workflow file. This also permits one-off ad-hoc runs via `POST /api/workflows/{id}/trigger` with inline definition overrides.
+
+### 11.3 Trait-Based Abstractions
+
+Storage (`WorkflowStore`, `WorkflowRunStore`), process spawning (`PtySpawner`, `PtyProcess`), step execution (`Step`), log writing (`LogSink`), agent I/O (`AgentImpl`, `AgentOutputParser`), and time (`Clock`) are all behind traits with `Arc<dyn ...>`. This decouples business logic from implementation, enables in-memory/mock test doubles, and keeps the extension surface minimal (new agent = one new file + one enum variant).
+
+### 11.4 Streaming Cost Extraction
+
+Agent cost data is extracted inline during the step's output streaming via `AgentOutputParser::parse_chunk()`, not post-hoc from logs. `ClaudeStreamParser` (`acs/src/workflow/agents/claude_code_cli.rs`) buffers partial NDJSON lines, processes `type=system` and `type=result` records, and accumulates totals. A `ShellStep` that happens to call `claude -p` directly does not get cost tracking — cost tracking is opt-in via `AgentStep`.
+
+### 11.5 EventEmittingLogSink Decorator
+
+Real-time stdout streaming to SSE clients is implemented as a `LogSink` wrapper (`EventEmittingLogSink`) rather than a parallel channel in each step implementation. Steps write to `LogSink` normally; the wrapper intercepts `write_chunk` calls and emits `WorkflowEvent::StepOutput` on the broadcast channel. `set_current_step()` propagates the active step's index and id so each chunk event is correctly tagged.
+
+### 11.6 PID File Locking
+
+Single-instance enforcement uses `create_new(true)` (`O_EXCL`/`CREATE_NEW`). Stale PID files (process dead) are removed and re-acquired. Live conflicts retry for up to 10 s (20 × 500 ms) to tolerate restart overlap. Windows adds a `GetExitCodeProcess` check because `OpenProcess` can succeed on a dead process that still has a handle open (zombie-handle scenario observed in production).
+
+### 11.7 Piped I/O over PTY
+
+`NoPtySpawner` uses `std::process::Command` with piped stdout/stderr rather than a real PTY. Both streams are merged into a single read stream by the `PtyProcess` implementation. Piped I/O reliably delivers EOF on all platforms and avoids platform-specific PTY issues. Each child process is placed in a new process group (Unix: `setsid()`; Windows: `CREATE_NEW_PROCESS_GROUP`) to enable tree-wide kill.
+
+### 11.8 Atomic File Persistence
+
+`FsWorkflowStore` uses write-to-temp-then-rename for crash-safe persistence. Corrupted `workflows.json` triggers a timestamped backup. `FsWorkflowRunStore` uses the same pattern for individual run JSON files and the index file. `SizeManagedWriter` (daemon.log) uses the same pattern for log rotation.
+
+### 11.9 Numbered Migration System
+
+Migrations are forward-only, numbered files (`mNNN_<name>.rs`) with a stable name as their identifier. The state file (`migrations.json`) is written atomically after each applied migration, so progress is preserved on partial failure. Idempotent contract (`Ok(false)` when nothing to do) means re-running migrations on an already-migrated install is safe.

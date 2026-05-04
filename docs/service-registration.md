@@ -59,7 +59,7 @@ fn is_service_registered() -> bool {
 
 ### Stop
 
-> **Note:** `stop_service()` is not applicable for registry-based auto-start. `acs stop` first attempts a graceful shutdown via the HTTP API (`POST /api/shutdown`). If the API is unreachable, it falls back to a PID-based kill via `taskkill /F /PID <pid>`.
+> **Note:** `stop_service()` is not applicable for registry-based auto-start. `acs stop` first attempts a graceful shutdown via the HTTP API (`POST /api/shutdown`). If the API is unreachable, the stop attempt fails with a connection error (there is no automatic PID-based fallback on Windows). To forcibly terminate the daemon when the API is unreachable, use `acs stop --force`, which reads the PID file and calls `taskkill /F /PID <pid>`.
 
 ### Uninstall (Unregister)
 

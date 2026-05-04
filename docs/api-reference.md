@@ -12,36 +12,33 @@ All request and response bodies use JSON (`Content-Type: application/json`) unle
 
 - [Conventions](#conventions)
 - [Error Response Format](#error-response-format)
-- [Job Identifier Resolution](#job-identifier-resolution)
+- [Workflow Identifier Resolution](#workflow-identifier-resolution)
 - [Endpoints](#endpoints)
   - [GET /health](#get-health)
-  - [GET /api/jobs](#get-apijobs)
-  - [POST /api/jobs](#post-apijobs)
-  - [GET /api/jobs/{id}](#get-apijobsid)
-  - [PATCH /api/jobs/{id}](#patch-apijobsid)
-  - [DELETE /api/jobs/{id}](#delete-apijobsid)
-  - [POST /api/jobs/{id}/enable](#post-apijobsidenable)
-  - [POST /api/jobs/{id}/disable](#post-apijobsiddisable)
-  - [POST /api/jobs/{id}/trigger](#post-apijobsidtrigger)
-  - [POST /api/jobs/{id}/kill](#post-apijobsidkill)
-  - [GET /api/jobs/{id}/runs](#get-apijobsidruns)
-  - [GET /api/jobs/{id}/cost-summary](#get-apijobsidcost-summary)
-  - [GET /api/jobs/{id}/manifest](#get-apijobsidmanifest)
-  - [GET /api/costs/summary](#get-apicostssummary)
-  - [GET /api/runs/recent](#get-apirunsrecent)
-  - [GET /api/runs/{run_id}/log](#get-apirunsrun_idlog)
-  - [GET /api/events](#get-apievents)
+  - [GET /api/workflows](#get-apiworkflows)
+  - [POST /api/workflows](#post-apiworkflows)
+  - [GET /api/workflows/{id}](#get-apiworkflowsid)
+  - [PATCH /api/workflows/{id}](#patch-apiworkflowsid)
+  - [DELETE /api/workflows/{id}](#delete-apiworkflowsid)
+  - [POST /api/workflows/{id}/trigger](#post-apiworkflowsidtrigger)
+  - [GET /api/workflows/{id}/runs](#get-apiworkflowsidruns)
+  - [GET /api/runs/{run_id}](#get-apirunsrun_id)
+  - [POST /api/runs/{run_id}/kill](#post-apirunsrun_idkill)
+  - [GET /api/events/workflows](#get-apieventsworkflows)
   - [POST /api/shutdown](#post-apishutdown)
   - [POST /api/restart](#post-apirestart)
   - [GET /api/logs](#get-apilogs)
   - [GET /api/service/status](#get-apiservicestatus)
 - [Data Models](#data-models)
-  - [Job](#job)
-  - [NewJob](#newjob)
-  - [JobUpdate](#jobupdate)
-  - [ExecutionType](#executiontype)
+  - [Workflow](#workflow)
+  - [NewWorkflow](#newworkflow)
+  - [WorkflowUpdate](#workflowupdate)
+  - [StepDef](#stepdef)
+  - [StepDefCommon](#stepdefcommon)
+  - [FailurePolicy](#failurepolicy)
   - [TriggerParams](#triggerparams)
-  - [JobRun](#jobrun)
+  - [WorkflowRun](#workflowrun)
+  - [StepRun](#steprun)
   - [RunStatus](#runstatus)
 - [SSE Event Types](#sse-event-types)
 - [Validation Rules](#validation-rules)
@@ -69,25 +66,26 @@ All error responses share a consistent JSON structure:
 
 ### Error Codes
 
-| `error` value       | Typical HTTP Status | Description                                      |
-|----------------------|---------------------|--------------------------------------------------|
-| `not_found`          | 404                 | The requested resource does not exist             |
-| `validation_error`   | 400                 | Request body or parameters failed validation      |
+| `error` value       | Typical HTTP Status | Description                                        |
+|----------------------|---------------------|----------------------------------------------------|
+| `not_found`          | 404                 | The requested resource does not exist              |
+| `validation_error`   | 422                 | Request body or parameters failed validation       |
 | `conflict`           | 409                 | A resource with the same unique key already exists |
 | `internal_error`     | 500                 | An unexpected server-side error occurred           |
+| `bad_request`        | 400                 | Malformed request (e.g., invalid UUID path param)  |
 
 ---
 
-## Job Identifier Resolution
+## Workflow Identifier Resolution
 
 All endpoints that accept an `{id}` path parameter support two lookup strategies:
 
-1. **UUID** -- If the value parses as a valid UUID, the job is looked up by its `id` field.
-2. **Name** -- If UUID parsing fails, the value is treated as a job name and looked up via `find_by_name`.
+1. **UUID** -- If the value parses as a valid UUID, the workflow is looked up by its `id` field.
+2. **Name** -- If UUID parsing fails, the value is treated as a workflow name (slug) and looked up via `find_by_name`.
 
-This means you can use either `GET /api/jobs/01941234-5678-7abc-def0-123456789abc` or `GET /api/jobs/my-backup-job` interchangeably.
+This means you can use either `GET /api/workflows/01941234-5678-7abc-def0-123456789abc` or `GET /api/workflows/my-pipeline` interchangeably.
 
-If neither lookup finds a matching job, a `404 not_found` error is returned.
+If neither lookup finds a matching workflow, a `404 not_found` error is returned.
 
 ---
 
@@ -95,7 +93,7 @@ If neither lookup finds a matching job, a `404 not_found` error is returned.
 
 ### GET /health
 
-Returns the daemon health status including uptime and job counts.
+Returns the daemon health status including uptime and workflow counts.
 
 **Request:** No body, no query parameters.
 
@@ -111,666 +109,25 @@ Returns the daemon health status including uptime and job counts.
   "uptime_seconds": 3600,
   "active_jobs": 5,
   "total_jobs": 8,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "data_dir": "/home/user/.local/share/agent-cron-scheduler"
 }
 ```
 
-| Field            | Type    | Description                                   |
-|------------------|---------|-----------------------------------------------|
-| `status`         | string  | Always `"ok"` when the server is responsive   |
-| `uptime_seconds` | integer | Seconds since the daemon process started       |
-| `active_jobs`    | integer | Number of enabled jobs                         |
-| `total_jobs`     | integer | Total number of jobs (enabled + disabled)      |
-| `version`        | string  | ACS version string                             |
+| Field            | Type    | Description                                                                               |
+|------------------|---------|-------------------------------------------------------------------------------------------|
+| `status`         | string  | Always `"ok"` when the server is responsive                                               |
+| `uptime_seconds` | integer | Seconds since the daemon process started                                                  |
+| `active_jobs`    | integer | Number of enabled workflows (field name is legacy; reflects enabled workflow count)       |
+| `total_jobs`     | integer | Total number of workflows (field name is legacy; reflects all workflows enabled+disabled) |
+| `version`        | string  | ACS version string                                                                        |
 | `data_dir`       | string  | Filesystem path to the data directory. Returns `"unknown"` if not explicitly configured. |
 
 ---
 
-### GET /api/jobs
+### GET /api/workflows
 
-List all jobs, optionally filtered by enabled status.
-
-**Query Parameters:**
-
-| Parameter | Type | Required | Default | Description                        |
-|-----------|------|----------|---------|------------------------------------|
-| `enabled` | bool | No       | (none)  | Filter by enabled state: `true` or `false`. Omit to return all jobs. |
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 200 OK | Returns a JSON array of Job objects |
-| 500 Internal Server Error | Storage failure |
-
-```json
-[
-  {
-    "id": "01941234-5678-7abc-def0-123456789abc",
-    "name": "my-backup",
-    "schedule": "0 2 * * *",
-    "execution": {
-      "type": "ShellCommand",
-      "value": "backup.sh"
-    },
-    "enabled": true,
-    "timezone": "America/New_York",
-    "working_dir": "/home/user",
-    "env_vars": { "BACKUP_DIR": "/mnt/backup" },
-    "timeout_secs": 3600,
-    "log_environment": false,
-    "allow_concurrent": false,
-    "schedule_mode": "Cron",
-    "pre_hook": null,
-    "post_hook": null,
-    "pre_hook_script_type": null,
-    "post_hook_script_type": null,
-    "created_at": "2025-01-15T10:30:00Z",
-    "updated_at": "2025-01-15T10:30:00Z",
-    "last_run_at": "2025-01-16T02:00:00Z",
-    "last_exit_code": 0,
-    "next_run_at": "2025-01-17T02:00:00Z"
-  }
-]
-```
-
-The `next_run_at` field is computed at runtime for enabled jobs and is `null` for disabled jobs.
-
----
-
-### POST /api/jobs
-
-Create a new scheduled job.
-
-**Request Body:** [NewJob](#newjob) JSON object.
-
-```json
-{
-  "name": "my-backup",
-  "schedule": "0 2 * * *",
-  "execution": {
-    "type": "ShellCommand",
-    "value": "backup.sh"
-  },
-  "enabled": true,
-  "timezone": "America/New_York",
-  "working_dir": "/home/user",
-  "env_vars": { "BACKUP_DIR": "/mnt/backup" },
-  "timeout_secs": 3600,
-  "log_environment": false,
-  "allow_concurrent": true,
-  "schedule_mode": "Cron",
-  "pre_hook": null,
-  "post_hook": null,
-  "pre_hook_script_type": null,
-  "post_hook_script_type": null
-}
-```
-
-| Field            | Type                            | Required | Default | Description                                          |
-|------------------|---------------------------------|----------|---------|------------------------------------------------------|
-| `name`           | string                          | Yes      |         | Unique human-readable name. Cannot be empty, whitespace-only, or a valid UUID. |
-| `schedule`       | string                          | Yes      |         | Cron expression. Standard 5-field cron syntax. |
-| `execution`      | [ExecutionType](#executiontype) | Yes      |         | What to execute when the job triggers.               |
-| `enabled`        | bool                            | No       | `true`  | Whether the job is active for scheduling.            |
-| `timezone`       | string                          | No       | `null`  | IANA timezone name (e.g., `"America/New_York"`, `"Europe/London"`, `"UTC"`). |
-| `working_dir`    | string                          | No       | `null`  | Working directory for the command.                   |
-| `env_vars`       | object (string -> string)       | No       | `null`  | Environment variables to set for the command.        |
-| `timeout_secs`   | integer (u64)                   | No       | `0`     | Maximum execution time in seconds. `0` means no timeout. |
-| `log_environment`| bool                            | No       | `false` | Whether to log environment variables in the run output. |
-| `allow_concurrent`| boolean                        | No       | `null`  | Allow concurrent runs. Null uses daemon default. |
-| `schedule_mode`  | string                          | No       | (daemon default) | Controls scheduling behavior. One of `Cron` or `WaitForCompletion`. Null uses daemon's `default_schedule_mode` config. |
-| `pre_hook`       | string                          | No       | `null`  | Shell command to execute before the job runs.        |
-| `post_hook`      | string                          | No       | `null`  | Shell command to execute after the job completes.    |
-| `pre_hook_script_type` | string                    | No       | `null`  | Script type for the pre-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
-| `post_hook_script_type` | string                   | No       | `null`  | Script type for the post-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 201 Created | Job created successfully. Returns the full [Job](#job) object. |
-| 400 Bad Request | Validation failed (empty name, UUID name, invalid cron, invalid timezone). |
-| 409 Conflict | A job with the same `name` already exists. |
-| 500 Internal Server Error | Storage failure. |
-
-**Example success response (201):**
-
-```json
-{
-  "id": "01941234-5678-7abc-def0-123456789abc",
-  "name": "my-backup",
-  "schedule": "0 2 * * *",
-  "execution": {
-    "type": "ShellCommand",
-    "value": "backup.sh"
-  },
-  "enabled": true,
-  "timezone": "America/New_York",
-  "working_dir": "/home/user",
-  "env_vars": { "BACKUP_DIR": "/mnt/backup" },
-  "timeout_secs": 3600,
-  "log_environment": false,
-  "allow_concurrent": false,
-  "schedule_mode": "Cron",
-  "pre_hook": null,
-  "post_hook": null,
-  "pre_hook_script_type": null,
-  "post_hook_script_type": null,
-  "created_at": "2025-01-15T10:30:00Z",
-  "updated_at": "2025-01-15T10:30:00Z",
-  "last_run_at": null,
-  "last_exit_code": null,
-  "next_run_at": null
-}
-```
-
-**Example error response (400):**
-
-```json
-{
-  "error": "validation_error",
-  "message": "Cron error: Invalid cron expression 'not a cron': ..."
-}
-```
-
-**Example error response (409):**
-
-```json
-{
-  "error": "conflict",
-  "message": "A job with name 'my-backup' already exists"
-}
-```
-
-**Side effects:** Broadcasts a `JobChanged` SSE event with `change: "Added"` and notifies the scheduler to pick up the new job.
-
----
-
-### GET /api/jobs/{id}
-
-Retrieve a single job by UUID or name.
-
-**Path Parameters:**
-
-| Parameter | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| `id`      | string | Job UUID or job name (see [Job Identifier Resolution](#job-identifier-resolution)). |
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 200 OK | Returns the full [Job](#job) object. |
-| 404 Not Found | No job matching the given UUID or name. |
-| 500 Internal Server Error | Storage failure. |
-
-The `next_run_at` field is computed at runtime for enabled jobs.
-
-```json
-{
-  "id": "01941234-5678-7abc-def0-123456789abc",
-  "name": "my-backup",
-  "schedule": "0 2 * * *",
-  "execution": {
-    "type": "ShellCommand",
-    "value": "backup.sh"
-  },
-  "enabled": true,
-  "timezone": "America/New_York",
-  "working_dir": "/home/user",
-  "env_vars": { "BACKUP_DIR": "/mnt/backup" },
-  "timeout_secs": 3600,
-  "log_environment": false,
-  "allow_concurrent": false,
-  "schedule_mode": "Cron",
-  "pre_hook": null,
-  "post_hook": null,
-  "pre_hook_script_type": null,
-  "post_hook_script_type": null,
-  "created_at": "2025-01-15T10:30:00Z",
-  "updated_at": "2025-01-15T10:30:00Z",
-  "last_run_at": "2025-01-16T02:00:00Z",
-  "last_exit_code": 0,
-  "next_run_at": "2025-01-17T02:00:00Z"
-}
-```
-
----
-
-### PATCH /api/jobs/{id}
-
-Partially update an existing job. Only the fields you include in the request body will be changed.
-
-**Path Parameters:**
-
-| Parameter | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| `id`      | string | Job UUID or job name. |
-
-**Request Body:** [JobUpdate](#jobupdate) JSON object. All fields are optional.
-
-```json
-{
-  "name": "renamed-backup",
-  "schedule": "30 3 * * *",
-  "execution": {
-    "type": "ScriptFile",
-    "value": "/opt/scripts/backup.sh"
-  },
-  "enabled": false,
-  "timezone": "Europe/London",
-  "working_dir": "/opt",
-  "env_vars": { "MODE": "full" },
-  "timeout_secs": 7200,
-  "log_environment": true,
-  "allow_concurrent": true,
-  "schedule_mode": "WaitForCompletion",
-  "pre_hook": "echo 'Starting backup'",
-  "post_hook": "echo 'Backup complete'",
-  "pre_hook_script_type": "shell",
-  "post_hook_script_type": "shell"
-}
-```
-
-| Field            | Type                            | Required | Description                                |
-|------------------|---------------------------------|----------|--------------------------------------------|
-| `name`           | string                          | No       | New name. Same validation as creation.     |
-| `schedule`       | string                          | No       | New cron expression.                       |
-| `execution`      | [ExecutionType](#executiontype) | No       | New execution configuration.               |
-| `enabled`        | bool                            | No       | Enable or disable the job.                 |
-| `timezone`       | string                          | No       | New IANA timezone.                         |
-| `working_dir`    | string                          | No       | New working directory.                     |
-| `env_vars`       | object (string -> string)       | No       | New environment variables (replaces all).  |
-| `timeout_secs`   | integer (u64)                   | No       | New timeout in seconds.                    |
-| `log_environment`| bool                            | No       | New log_environment setting.               |
-| `allow_concurrent`| boolean\|null                  | No       | Set to true/false to change concurrency behavior |
-| `schedule_mode`  | string                          | No       | New scheduling mode. One of `Cron` or `WaitForCompletion`. |
-| `pre_hook`       | string                          | No       | New pre-execution hook command.            |
-| `post_hook`      | string                          | No       | New post-execution hook command.           |
-| `pre_hook_script_type` | string\|null              | No       | Script type for the pre-hook. Values: `shell`, `batch`, `python`, `powershell`. Set to `null` to switch back to shell command mode. |
-| `post_hook_script_type` | string\|null             | No       | Script type for the post-hook. Values: `shell`, `batch`, `python`, `powershell`. Set to `null` to switch back to shell command mode. |
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 200 OK | Job updated. Returns the full updated [Job](#job) object. |
-| 400 Bad Request | Validation failed on one or more fields. |
-| 404 Not Found | Job not found. |
-| 409 Conflict | Another job already has the requested `name`. |
-| 500 Internal Server Error | Storage failure. |
-
-**Side effects:** Broadcasts a `JobChanged` SSE event with `change: "Updated"` and notifies the scheduler.
-
----
-
-### DELETE /api/jobs/{id}
-
-Delete a job and kill all active runs (if any).
-
-**Path Parameters:**
-
-| Parameter | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| `id`      | string | Job UUID or job name. |
-
-**Request:** No body.
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 204 No Content | Job deleted successfully. No response body. |
-| 404 Not Found | Job not found. |
-| 500 Internal Server Error | Storage failure. |
-
-**Side effects:**
-- If the job has any active runs, all of them are killed via the kill channel.
-- Broadcasts a `JobChanged` SSE event with `change: "Removed"`.
-- Notifies the scheduler.
-
----
-
-### POST /api/jobs/{id}/enable
-
-Enable a previously disabled job.
-
-**Path Parameters:**
-
-| Parameter | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| `id`      | string | Job UUID or job name. |
-
-**Request:** No body.
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 200 OK | Returns the full updated [Job](#job) object with `enabled: true`. |
-| 404 Not Found | Job not found. |
-| 500 Internal Server Error | Storage failure. |
-
-**Side effects:** Broadcasts a `JobChanged` SSE event with `change: "Enabled"` and notifies the scheduler.
-
----
-
-### POST /api/jobs/{id}/disable
-
-Disable a job so it stops being scheduled.
-
-**Path Parameters:**
-
-| Parameter | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| `id`      | string | Job UUID or job name. |
-
-**Request:** No body.
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 200 OK | Returns the full updated [Job](#job) object with `enabled: false`. |
-| 404 Not Found | Job not found. |
-| 500 Internal Server Error | Storage failure. |
-
-**Side effects:** Broadcasts a `JobChanged` SSE event with `change: "Disabled"` and notifies the scheduler.
-
----
-
-### POST /api/jobs/{id}/trigger
-
-Manually trigger an immediate execution of the job, regardless of its cron schedule. Optionally accepts per-invocation parameters that override job defaults for a single run.
-
-**Path Parameters:**
-
-| Parameter | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| `id`      | string | Job UUID or job name. |
-
-**Request Body:** Optional [TriggerParams](#triggerparams) JSON object. An empty body (or no `Content-Type` header) preserves backward compatibility and triggers the job with its default configuration.
-
-```json
-{
-  "args": "--verbose --dry-run",
-  "env": {
-    "MODE": "manual",
-    "DEBUG": "1"
-  },
-  "input": "data sent to stdin"
-}
-```
-
-| Field   | Type                      | Required | Default | Description                                                              |
-|---------|---------------------------|----------|---------|--------------------------------------------------------------------------|
-| `args`  | string                    | No       | `null`  | Extra arguments appended to the job's command string for this run only.  |
-| `env`   | object (string -> string) | No       | `null`  | Per-trigger environment variables. Override job-level `env_vars` for this run. |
-| `input` | string                    | No       | `null`  | Data written to the process's stdin after spawn, then EOF.               |
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 202 Accepted | The job has been dispatched for execution. |
-| 400 Bad Request | Invalid JSON in request body. |
-| 404 Not Found | Job not found. |
-| 500 Internal Server Error | Failed to dispatch the job to the executor. |
-
-```json
-{
-  "message": "Job triggered",
-  "job_id": "01941234-5678-7abc-def0-123456789abc",
-  "job_name": "my-backup",
-  "run_id": "01941234-bbbb-7abc-def0-123456789abc"
-}
-```
-
-| Field      | Type          | Description                                    |
-|------------|---------------|------------------------------------------------|
-| `message`  | string        | Always `"Job triggered"`.                      |
-| `job_id`   | string (UUID) | The job that was triggered.                    |
-| `job_name` | string        | Human-readable job name.                       |
-| `run_id`   | string (UUID) | Pre-generated run identifier (UUIDv7). Can be used immediately to filter SSE events or poll for run status. |
-
-The `run_id` is generated before the job is dispatched, so it is available in the response without waiting for execution to begin.
-
-**Example request with trigger parameters:**
-
-```sh
-curl -X POST http://127.0.0.1:8377/api/jobs/my-backup/trigger \
-  -H "Content-Type: application/json" \
-  -d '{"args": "--full", "env": {"BACKUP_MODE": "full"}, "input": "yes"}'
-```
-
-**Example request without trigger parameters (backward compatible):**
-
-```sh
-curl -X POST http://127.0.0.1:8377/api/jobs/my-backup/trigger
-```
-
-**Example error response (400):**
-
-```json
-{
-  "error": "validation_error",
-  "message": "Invalid trigger body: expected value at line 1 column 1"
-}
-```
-
-**Trigger parameter behavior:**
-
-- **`args`**: Appended to the job's base command. For a `ShellCommand` with value `"backup.sh"` and trigger args `"--full"`, the effective command becomes `"backup.sh --full"`. The same concatenation applies to `ScriptFile` jobs.
-- **`env`**: Merged with the job's `env_vars`. Trigger environment variables take the highest precedence: inherited system env < job `env_vars` < trigger `env`.
-- **`input`**: Written to the spawned process's stdin immediately after launch, then stdin is closed (EOF). Useful for commands that read from stdin.
-
-**Edge case:** If the daemon's internal dispatch channel is not available (e.g., the scheduler/executor subsystem has not fully initialized), the endpoint still returns `202 Accepted` but the job will not actually execute. This is a transient condition that can occur during daemon startup.
-
----
-
-### POST /api/jobs/{id}/kill
-
-Send a kill signal to active run(s) for a job. When a `run_id` query parameter is provided, only that specific run is killed. When omitted, all active runs for the job are killed.
-
-**Path Parameters:**
-
-| Parameter | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| `id`      | string | Job UUID or job name (see [Job Identifier Resolution](#job-identifier-resolution)). |
-
-**Query Parameters:**
-
-| Parameter | Type   | Required | Default | Description                                                                       |
-|-----------|--------|----------|---------|-----------------------------------------------------------------------------------|
-| `run_id`  | string | No       | (none)  | UUID of the specific run to kill. If omitted, all active runs for the job are killed. |
-
-**Request:** No body.
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 200 OK | Kill signal sent successfully. |
-| 404 Not Found | Job not found, or the specified `run_id` is not an active run for this job. |
-
-**Response body when `run_id` is provided (200):**
-
-```json
-{
-  "message": "Kill signal sent",
-  "run_id": "01941234-aaaa-7abc-def0-123456789abc"
-}
-```
-
-**Response body when `run_id` is omitted (200):**
-
-```json
-{
-  "message": "Kill signal sent to all active runs",
-  "job_id": "01941234-5678-7abc-def0-123456789abc"
-}
-```
-
-| Field     | Type          | Description                                                                       |
-|-----------|---------------|-----------------------------------------------------------------------------------|
-| `message` | string        | Human-readable confirmation of the action taken.                                  |
-| `run_id`  | string (UUID) | Present when a specific run was targeted. The UUID of the run that was killed.    |
-| `job_id`  | string (UUID) | Present when no `run_id` was provided. The UUID of the job whose runs were killed. |
-
-**Example — kill a specific run:**
-
-```sh
-curl -X POST "http://127.0.0.1:8377/api/jobs/my-backup/kill?run_id=01941234-aaaa-7abc-def0-123456789abc"
-```
-
-**Example — kill all active runs for a job:**
-
-```sh
-curl -X POST http://127.0.0.1:8377/api/jobs/my-backup/kill
-```
-
-**Side effects:** Killed runs transition to the `Killed` [RunStatus](#runstatus). A `Killed` SSE event is broadcast for each terminated run.
-
----
-
-### GET /api/jobs/{id}/runs
-
-List execution runs for a specific job, with pagination.
-
-**Path Parameters:**
-
-| Parameter | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| `id`      | string | Job UUID or job name. |
-
-**Query Parameters:**
-
-| Parameter | Type    | Required | Default | Description                                     |
-|-----------|---------|----------|---------|-------------------------------------------------|
-| `limit`   | integer | No       | `20`    | Maximum number of runs to return.               |
-| `offset`  | integer | No       | `0`     | Number of runs to skip (for pagination).        |
-| `status`  | string  | No       | (none)  | Filter by run status. Case-insensitive. Accepted values: `running`, `completed`, `completed_with_warnings`, `failed`, `killed`. **Note:** The status filter is applied *after* pagination (`limit`/`offset`), so the returned list may contain fewer items than `limit` even if more matching runs exist. The `total` field reflects the pre-filter count. |
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 200 OK | Returns a paginated list of runs. |
-| 404 Not Found | Job not found. |
-| 500 Internal Server Error | Storage failure. |
-
-```json
-{
-  "runs": [
-    {
-      "run_id": "01941234-aaaa-7abc-def0-123456789abc",
-      "job_id": "01941234-5678-7abc-def0-123456789abc",
-      "started_at": "2025-01-16T02:00:00Z",
-      "finished_at": "2025-01-16T02:05:30Z",
-      "status": "Completed",
-      "exit_code": 0,
-      "log_size_bytes": 4096,
-      "error": null,
-      "total_cost_usd": 0.0042,
-      "duration_ms": 5312,
-      "num_turns": 3,
-      "model": "claude-sonnet-4-20250514",
-      "usage": {
-        "input_tokens": 1200,
-        "output_tokens": 340,
-        "cache_read_input_tokens": 800
-      }
-    }
-  ],
-  "total": 42,
-  "limit": 20,
-  "offset": 0
-}
-```
-
-| Field    | Type    | Description                                   |
-|----------|---------|-----------------------------------------------|
-| `runs`   | array   | Array of [JobRun](#jobrun) objects.           |
-| `total`  | integer | Total number of runs for this job (before pagination). |
-| `limit`  | integer | The limit that was applied.                   |
-| `offset` | integer | The offset that was applied.                  |
-
----
-
-### GET /api/jobs/{id}/cost-summary
-
-Returns a cost and usage summary for a specific job, filtered by timeframe.
-
-**Path Parameters:**
-
-| Parameter | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| `id`      | string | Job UUID or job name (see [Job Identifier Resolution](#job-identifier-resolution)). |
-
-**Query Parameters:**
-
-| Parameter   | Type   | Required | Default | Description                                                                                                      |
-|-------------|--------|----------|---------|------------------------------------------------------------------------------------------------------------------|
-| `timeframe` | string | No       | `30d`   | Filter window. Accepted values: `24h`, `7d`, `30d`, `90d`, `180d`, `365d`, `all`.                              |
-| `start`     | string | No       | (none)  | Custom range start date in `YYYY-MM-DD` format. Overrides `timeframe` when both `start` and `end` are provided. |
-| `end`       | string | No       | (none)  | Custom range end date in `YYYY-MM-DD` format. Overrides `timeframe` when both `start` and `end` are provided.   |
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 200 OK | Returns cost and usage summary for the job. |
-| 400 Bad Request | Invalid `timeframe` value or date format. |
-| 404 Not Found | Job not found. |
-| 500 Internal Server Error | Storage failure. |
-
-```json
-{
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "timeframe": "30d",
-  "summary": {
-    "total_runs": 156,
-    "total_cost_usd": 8.34,
-    "avg_cost_per_run": 0.0534,
-    "total_duration_ms": 3402000,
-    "total_input_tokens": 500000,
-    "total_output_tokens": 125000,
-    "total_cache_read_tokens": 200000,
-    "runs_by_status": { "Completed": 151, "Failed": 5 }
-  },
-  "data": [
-    { "date": "2025-03-02", "runs": 5, "cost": 0.28, "input_tokens": 12000, "output_tokens": 3000 }
-  ]
-}
-```
-
-| Field                              | Type    | Description                                                          |
-|------------------------------------|---------|----------------------------------------------------------------------|
-| `job_id`                           | string (UUID) | The job this summary is for.                                   |
-| `timeframe`                        | string  | The resolved timeframe label (reflects the `timeframe` parameter, or `custom` when a custom date range is used). |
-| `summary.total_runs`               | integer | Total number of runs in the timeframe.                               |
-| `summary.total_cost_usd`           | number  | Total cost in USD across all runs in the timeframe.                  |
-| `summary.avg_cost_per_run`         | number  | Average cost per run in USD.                                         |
-| `summary.total_duration_ms`        | integer | Total execution time in milliseconds across all runs.                |
-| `summary.total_input_tokens`       | integer | Total input tokens consumed across all runs.                         |
-| `summary.total_output_tokens`      | integer | Total output tokens produced across all runs.                        |
-| `summary.total_cache_read_tokens`  | integer | Total cache-read tokens across all runs.                             |
-| `summary.runs_by_status`           | object  | Map of [RunStatus](#runstatus) value to run count.                   |
-| `data`                             | array   | Daily breakdown. Each entry contains `date`, `runs`, `cost`, `input_tokens`, and `output_tokens`. |
-
----
-
-### GET /api/jobs/{id}/manifest
-
-Returns the raw manifest JSON for a job. Intended for debugging and admin inspection.
-
-**Path Parameters:**
-
-| Parameter | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| `id`      | string | Job UUID or job name (see [Job Identifier Resolution](#job-identifier-resolution)). |
+List all workflows.
 
 **Request:** No body, no query parameters.
 
@@ -778,200 +135,401 @@ Returns the raw manifest JSON for a job. Intended for debugging and admin inspec
 
 | Status | Description |
 |--------|-------------|
-| 200 OK | Returns the full `JobManifest` JSON object. If no manifest has been generated yet, returns a default empty manifest with the job's ID and zero values. |
-| 404 Not Found | Job not found. |
-| 500 Internal Server Error | Storage failure. |
+| 200 OK | Returns a JSON array of Workflow objects |
+| 500 Internal Server Error | Storage failure |
+
+```json
+[
+  {
+    "id": "01941234-5678-7abc-def0-123456789abc",
+    "name": "nightly-analysis",
+    "version": 1,
+    "schedule": "0 2 * * *",
+    "timezone": "America/New_York",
+    "schedule_mode": "Cron",
+    "enabled": true,
+    "steps": [
+      {
+        "kind": "shell",
+        "id": "fetch",
+        "command": "git pull origin main",
+        "pass_stdin": false,
+        "on_failure": null,
+        "always_run": false,
+        "timeout_secs": 60,
+        "working_dir": null,
+        "env_vars": null,
+        "capture": { "stdout_max_bytes": 65536, "parser": null }
+      }
+    ],
+    "input_schema": null,
+    "default_input": null,
+    "working_dir": "/workspace",
+    "env_vars": { "LANG": "en_US.UTF-8" },
+    "allow_concurrent": true,
+    "on_failure": "abort",
+    "last_run_at": "2025-01-16T02:00:00Z",
+    "last_run_status": "Completed",
+    "last_run_id": "01941234-aaaa-7abc-def0-123456789abc",
+    "next_run_at": "2025-01-17T02:00:00Z",
+    "created_at": "2025-01-15T10:30:00Z",
+    "updated_at": "2025-01-15T10:30:00Z"
+  }
+]
+```
+
+The `next_run_at` field is computed at runtime for enabled workflows and is `null` for disabled workflows. It is never persisted to disk; the serde annotation `skip_deserializing` ensures it is always re-derived on read.
 
 ---
 
-### GET /api/costs/summary
+### POST /api/workflows
 
-Returns an aggregated cost summary across all jobs, with convenience fields for today, the current week, and the current month, plus a top-cost jobs ranking.
+Create a new workflow.
 
-**Query Parameters:**
-
-| Parameter   | Type   | Required | Default | Description                                                                                                      |
-|-------------|--------|----------|---------|------------------------------------------------------------------------------------------------------------------|
-| `timeframe` | string | No       | `30d`   | Filter window. Accepted values: `24h`, `7d`, `30d`, `90d`, `180d`, `365d`, `all`.                              |
-| `start`     | string | No       | (none)  | Custom range start date in `YYYY-MM-DD` format. Overrides `timeframe` when both `start` and `end` are provided. |
-| `end`       | string | No       | (none)  | Custom range end date in `YYYY-MM-DD` format. Overrides `timeframe` when both `start` and `end` are provided.   |
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 200 OK | Returns the aggregated cost summary. |
-| 400 Bad Request | Invalid `timeframe` value or date format. |
-| 500 Internal Server Error | Storage failure. |
+**Request Body:** [NewWorkflow](#newworkflow) JSON object.
 
 ```json
 {
-  "timeframe": "30d",
-  "today_usd": 45.67,
-  "week_usd": 234.12,
-  "month_usd": 1205.49,
-  "today_tokens": { "input": 50000, "output": 12000 },
-  "top_jobs": [
-    { "job_id": "550e8400-...", "job_name": "nightly-analysis", "total_cost": 120.50, "total_runs": 30 }
+  "name": "nightly-analysis",
+  "schedule": "0 2 * * *",
+  "timezone": "America/New_York",
+  "schedule_mode": "Cron",
+  "enabled": true,
+  "steps": [
+    {
+      "kind": "shell",
+      "id": "run",
+      "command": "bash /opt/scripts/analyze.sh",
+      "timeout_secs": 3600
+    }
   ],
-  "daily_trend": [
-    { "date": "2025-03-31", "cost_usd": 15.23, "input_tokens": 30000, "output_tokens": 8000 }
-  ]
+  "working_dir": "/workspace",
+  "env_vars": { "LANG": "en_US.UTF-8" },
+  "allow_concurrent": false,
+  "on_failure": "abort"
 }
 ```
-
-| Field                    | Type    | Description                                                                                   |
-|--------------------------|---------|-----------------------------------------------------------------------------------------------|
-| `timeframe`              | string  | The resolved timeframe label.                                                                 |
-| `today_usd`              | number  | Total cost in USD for the current calendar day (UTC).                                         |
-| `week_usd`               | number  | Total cost in USD for the current calendar week (UTC).                                        |
-| `month_usd`              | number  | Total cost in USD for the current calendar month (UTC).                                       |
-| `today_tokens`           | object  | Token usage for today. Contains `input` (integer) and `output` (integer) fields.             |
-| `top_jobs`               | array   | Ranked list of jobs by total cost within the timeframe. Each entry contains `job_id`, `job_name`, `total_cost`, and `total_runs`. |
-| `daily_trend`            | array   | Day-by-day cost breakdown within the timeframe. Each entry contains `date`, `cost_usd`, `input_tokens`, and `output_tokens`. |
-
----
-
-### GET /api/runs/recent
-
-Returns recent runs across all jobs, sorted by `started_at` descending (most recent first).
-
-**Query Parameters:**
-
-| Parameter | Type    | Required | Default | Description                                       |
-|-----------|---------|----------|---------|---------------------------------------------------|
-| `limit`   | integer | No       | `20`    | Maximum number of runs to return.                 |
 
 **Response:**
 
 | Status | Description |
 |--------|-------------|
-| 200 OK | Returns a list of recent runs with their associated job names. |
+| 201 Created | Workflow created. Returns the full [Workflow](#workflow) object. |
+| 409 Conflict | A workflow with the same `name` already exists. |
+| 422 Unprocessable Entity | Validation failed (empty name, UUID name, invalid cron, invalid timezone, no steps, duplicate step ids, invalid capture parser). |
+| 500 Internal Server Error | Storage failure. |
+
+**Side effects:** Broadcasts a `WorkflowChanged` SSE event with `change_kind: "created"` and notifies the scheduler.
+
+---
+
+### GET /api/workflows/{id}
+
+Retrieve a single workflow by UUID or name.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description                                  |
+|-----------|--------|----------------------------------------------|
+| `id`      | string | Workflow UUID or name (see [Workflow Identifier Resolution](#workflow-identifier-resolution)). |
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns the full [Workflow](#workflow) object. |
+| 404 Not Found | No workflow matching the given UUID or name. |
+| 500 Internal Server Error | Storage failure. |
+
+---
+
+### PATCH /api/workflows/{id}
+
+Partially update an existing workflow. Only the fields you include in the request body will be changed. Changes to any of `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `input_schema`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure` bump `version`. Toggling `enabled` alone does NOT bump `version`.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description             |
+|-----------|--------|-------------------------|
+| `id`      | string | Workflow UUID or name.  |
+
+**Request Body:** [WorkflowUpdate](#workflowupdate) JSON object. All fields are optional.
+
+```json
+{
+  "schedule": "30 3 * * *",
+  "enabled": false,
+  "on_failure": "continue"
+}
+```
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns the full updated [Workflow](#workflow) object. |
+| 404 Not Found | Workflow not found. |
+| 409 Conflict | Another workflow already has the requested `name`. |
+| 422 Unprocessable Entity | Validation failed on one or more fields. |
+| 500 Internal Server Error | Storage failure. |
+
+**Side effects:** Broadcasts a `WorkflowChanged` SSE event with `change_kind: "updated"` and notifies the scheduler.
+
+---
+
+### DELETE /api/workflows/{id}
+
+Delete a workflow.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description             |
+|-----------|--------|-------------------------|
+| `id`      | string | Workflow UUID or name.  |
+
+**Request:** No body.
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 204 No Content | Workflow deleted. No response body. |
+| 404 Not Found | Workflow not found. |
+| 500 Internal Server Error | Storage failure. |
+
+**Side effects:** Broadcasts a `WorkflowChanged` SSE event with `change_kind: "deleted"`.
+
+---
+
+### POST /api/workflows/{id}/trigger
+
+Manually trigger an immediate execution of the workflow, regardless of its cron schedule. Optionally accepts per-invocation parameters.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description             |
+|-----------|--------|-------------------------|
+| `id`      | string | Workflow UUID or name.  |
+
+**Request Body:** [TriggerParams](#triggerparams) JSON object. Required (send `{"input": null}` to fall back to the workflow's `default_input`; sending `{}` causes a 422 because `TriggerParams.input` is required at the wire level).
+
+```json
+{
+  "input": { "repo": "myorg/myrepo", "branch": "main" },
+  "env": { "DEBUG": "1" },
+  "target_step": null
+}
+```
+
+| Field         | Type                      | Required | Default        | Description                                                                                                  |
+|---------------|---------------------------|----------|----------------|--------------------------------------------------------------------------------------------------------------|
+| `input`       | any JSON value            | Yes      |                | Replaces `workflow.default_input` for this run. All step templates referencing `${input.*}` receive these values. Pass `null` to fall back to the workflow's `default_input`; sending `{}` is stored as `{}` (an empty object, not the default). |
+| `env`         | object (string -> string) | No       | `null`         | Overlays onto `workflow.env_vars` for this run (merge, not replace). Trigger `env` wins on collision.       |
+| `target_step` | string                    | No       | `null`         | Optional step `id` to route stdin to. Rarely needed.                                                         |
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 202 Accepted | The workflow run has been dispatched. |
+| 404 Not Found | Workflow not found. |
+| 500 Internal Server Error | Failed to create run record or spawn the executor. |
+
+```json
+{
+  "run_id": "01941234-bbbb-7abc-def0-123456789abc",
+  "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+  "workflow_version": 1
+}
+```
+
+| Field              | Type          | Description                                                                 |
+|--------------------|---------------|-----------------------------------------------------------------------------|
+| `run_id`           | string (UUID) | Pre-generated run identifier. Use immediately with `GET /api/runs/{run_id}` or SSE filters. |
+| `workflow_id`      | string (UUID) | The workflow that was triggered.                                             |
+| `workflow_version` | integer       | The workflow version at trigger time (snapshotted into the run record).     |
+
+The run record is persisted to the `WorkflowRunStore` with `status: "Running"` **before** the background task begins, so `GET /api/runs/{run_id}` immediately after trigger always returns a result rather than 404.
+
+**Example:**
+
+```sh
+curl -X POST http://127.0.0.1:8377/api/workflows/nightly-analysis/trigger \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"branch": "feature/x"}, "env": {"DRY_RUN": "1"}}'
+```
+
+---
+
+### GET /api/workflows/{id}/runs
+
+List execution runs for a specific workflow, with pagination. Returns latest-first.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description             |
+|-----------|--------|-------------------------|
+| `id`      | string | Workflow UUID or name.  |
+
+**Query Parameters:**
+
+| Parameter | Type    | Required | Default | Description                                          |
+|-----------|---------|----------|---------|------------------------------------------------------|
+| `limit`   | integer | No       | `20`    | Maximum number of runs to return. Capped at `100`.   |
+| `offset`  | integer | No       | `0`     | Number of runs to skip (for pagination).             |
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns a paginated list of runs. |
+| 404 Not Found | Workflow not found. |
 | 500 Internal Server Error | Storage failure. |
 
 ```json
 {
   "runs": [
     {
-      "run_id": "01941234-aaaa-7abc-def0-123456789abc",
-      "job_id": "01941234-5678-7abc-def0-123456789abc",
+      "run_id": "01941234-bbbb-7abc-def0-123456789abc",
+      "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+      "workflow_version": 1,
+      "workflow_snapshot": { "...": "full Workflow object" },
       "started_at": "2025-01-16T02:00:00Z",
       "finished_at": "2025-01-16T02:05:30Z",
       "status": "Completed",
-      "exit_code": 0,
-      "log_size_bytes": 4096,
-      "error": null,
-      "total_cost_usd": 0.0042,
-      "duration_ms": 5312,
-      "num_turns": 3,
-      "model": "claude-sonnet-4-20250514",
-      "usage": {
-        "input_tokens": 1200,
-        "output_tokens": 340,
-        "cache_read_input_tokens": 800
-      },
-      "job_name": "my-backup"
+      "trigger_input": { "branch": "main" },
+      "steps": [
+        {
+          "step_index": 0,
+          "step_id": "run",
+          "kind": "shell",
+          "status": "Completed",
+          "started_at": "2025-01-16T02:00:01Z",
+          "finished_at": "2025-01-16T02:05:30Z",
+          "exit_code": 0,
+          "log_byte_offset_start": 0,
+          "log_byte_offset_end": 4096,
+          "cost_usd": null,
+          "error": null,
+          "output_summary": null
+        }
+      ],
+      "total_cost_usd": null,
+      "total_duration_ms": 330000
     }
   ],
-  "limit": 20
+  "total": 42
 }
 ```
 
-| Field    | Type    | Description                                                                                         |
-|----------|---------|-----------------------------------------------------------------------------------------------------|
-| `runs`   | array   | Array of run objects. Each entry contains all standard [JobRun](#jobrun) fields plus `job_name`.    |
-| `limit`  | integer | The limit that was applied.                                                                         |
-
-Each run entry in `runs` is a [JobRun](#jobrun) object extended with:
-
-| Field      | Type   | Description                           |
-|------------|--------|---------------------------------------|
-| `job_name` | string | Human-readable name of the parent job. |
-
-**Example:**
-
-```sh
-curl "http://127.0.0.1:8377/api/runs/recent?limit=10"
-```
+| Field   | Type    | Description                                              |
+|---------|---------|----------------------------------------------------------|
+| `runs`  | array   | Array of [WorkflowRun](#workflowrun) objects.           |
+| `total` | integer | Total number of runs for this workflow (before pagination). |
 
 ---
 
-### GET /api/runs/{run_id}/log
+### GET /api/runs/{run_id}
 
-Retrieve the output log for a specific run.
+Retrieve a single run record with full step-level detail.
 
 **Path Parameters:**
 
-| Parameter | Type   | Description                                      |
-|-----------|--------|--------------------------------------------------|
+| Parameter | Type   | Description                            |
+|-----------|--------|----------------------------------------|
 | `run_id`  | string | The run UUID. Must be a valid UUID (name lookup is not supported for runs). |
-
-**Query Parameters:**
-
-| Parameter | Type    | Required | Default | Description                                   |
-|-----------|---------|----------|---------|-----------------------------------------------|
-| `tail`    | integer | No       | (none)  | Return only the last N lines of the log.      |
-| `format`  | string  | No       | (none)  | Accepted but ignored; reserved for forward compatibility. |
 
 **Response:**
 
 | Status | Description |
 |--------|-------------|
-| 200 OK | Returns the log content as `text/plain`. |
-| 400 Bad Request | Invalid `run_id` format (not a valid UUID). |
-| 404 Not Found | No log found for the given run ID. |
+| 200 OK | Returns the full [WorkflowRun](#workflowrun) object. |
+| 400 Bad Request | `run_id` is not a valid UUID. |
+| 404 Not Found | No run found for the given UUID. |
 | 500 Internal Server Error | Storage failure. |
 
-The response body is plain text, not JSON. The `Content-Type` header is set to `text/plain`.
-
-```
-[2025-01-16T02:00:01Z] Starting backup...
-[2025-01-16T02:03:15Z] Copied 1,234 files
-[2025-01-16T02:05:30Z] Backup completed successfully
-```
+The response body is a [WorkflowRun](#workflowrun) object including the full `workflow_snapshot` (the complete workflow definition as it was at trigger time).
 
 ---
 
-### GET /api/events
+### POST /api/runs/{run_id}/kill
 
-Server-Sent Events (SSE) stream for real-time job execution and lifecycle events.
+Request cancellation of a running workflow run. Sends a kill signal to the currently-executing step and updates the persisted run record to `status: "Killed"`.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description                            |
+|-----------|--------|----------------------------------------|
+| `run_id`  | string | The run UUID. Must be a valid UUID.    |
+
+**Request:** No body.
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 202 Accepted | Kill signal sent (or best-effort if run already finished). |
+| 400 Bad Request | `run_id` is not a valid UUID. |
+| 404 Not Found | No run found for the given UUID. |
+| 500 Internal Server Error | Failed to update run record. |
+
+No response body on 202.
+
+**Behavior:**
+
+1. Looks up the run in the persistent store; returns 404 if not found.
+2. Sends `true` on the per-run kill channel, causing the executor's `select!` loop to call `kill_process_tree` on the running step's PID. `HttpStep` cancels its in-flight `reqwest` request by dropping the future.
+3. If the run is still `Running`, updates the persisted record to `status: "Killed"` and sets `finished_at` to now.
+
+**Race note:** If a run finishes between the kill lookup and the status update, the handler may overwrite the executor's final `Completed` or `Failed` status with `Killed`. This is documented and accepted behavior.
+
+---
+
+### GET /api/events/workflows
+
+Server-Sent Events (SSE) stream for real-time workflow execution and lifecycle events.
 
 **Query Parameters:**
 
-| Parameter | Type   | Required | Default | Description                                           |
-|-----------|--------|----------|---------|-------------------------------------------------------|
-| `job_id`  | string | No       | (none)  | Filter events to only those for this job UUID.        |
-| `run_id`  | string | No       | (none)  | Filter events to only those for this run UUID.        |
+| Parameter     | Type   | Required | Default | Description                                                         |
+|---------------|--------|----------|---------|---------------------------------------------------------------------|
+| `run_id`      | string | No       | (none)  | Filter events to only those for this run UUID.                      |
+| `workflow_id` | string | No       | (none)  | Filter events to only those for this workflow UUID.                 |
 
 Both filter parameters must be valid UUIDs if provided. Invalid UUIDs are silently ignored (no filtering applied for that parameter).
 
-**Important:** When a `run_id` filter is active, `JobChanged` events are **filtered out** because they do not carry a `run_id`. If you need both run-specific events and job lifecycle events, use only the `job_id` filter.
+**Important:** `WorkflowChanged` events carry a `workflow_id` but no `run_id`. When a `run_id` filter is active, `WorkflowChanged` events are **filtered out** because they do not carry a `run_id`. To receive both run-level events and workflow lifecycle events together, use only the `workflow_id` filter.
 
-**Response:** An SSE stream (`text/event-stream`). The connection is kept alive with a keepalive comment every 15 seconds.
+**Response:** An SSE stream (`text/event-stream`). The connection is kept alive with a keepalive comment every 15 seconds (text: `"keepalive"`).
 
 Each SSE message has:
-- `event:` -- the event type name (see [SSE Event Types](#sse-event-types))
-- `data:` -- a JSON-serialized `JobEvent` object
+- `event:` -- the event type name (snake_case, see [SSE Event Types](#sse-event-types))
+- `data:` -- a JSON-serialized `WorkflowEvent` object
 
 **Connection behavior:**
 - The stream stays open indefinitely until the client disconnects.
-- If the client falls behind (broadcast channel lag), a comment `lagged: some events were missed` is sent.
-- Keepalive messages are sent as SSE comments (`: keepalive`) every 15 seconds.
+- If the client falls behind (broadcast channel lag), a comment `lagged: some workflow events were missed` is sent.
 
 **Example SSE stream:**
 
 ```
-event: started
-data: {"event":"Started","data":{"job_id":"01941234-5678-7abc-def0-123456789abc","run_id":"01941234-aaaa-7abc-def0-123456789abc","job_name":"my-backup","timestamp":"2025-01-16T02:00:00Z"}}
+event: run_started
+data: {"type":"RunStarted","run_id":"...","workflow_id":"...","workflow_version":1,"started_at":"2025-01-16T02:00:00Z"}
 
-event: output
-data: {"event":"Output","data":{"job_id":"01941234-5678-7abc-def0-123456789abc","run_id":"01941234-aaaa-7abc-def0-123456789abc","data":"Starting backup...\n","timestamp":"2025-01-16T02:00:01Z"}}
+event: step_started
+data: {"type":"StepStarted","run_id":"...","workflow_id":"...","step_index":0,"step_id":"run","kind":"shell","started_at":"2025-01-16T02:00:01Z"}
 
-event: completed
-data: {"event":"Completed","data":{"job_id":"01941234-5678-7abc-def0-123456789abc","run_id":"01941234-aaaa-7abc-def0-123456789abc","exit_code":0,"timestamp":"2025-01-16T02:05:30Z"}}
+event: step_output
+data: {"type":"StepOutput","run_id":"...","workflow_id":"...","step_index":0,"step_id":"run","data":"Analyzing...\n","timestamp":"2025-01-16T02:00:02Z"}
 
-event: job_changed
-data: {"event":"JobChanged","data":{"job_id":"01941234-5678-7abc-def0-123456789abc","change":"Updated","timestamp":"2025-01-16T03:00:00Z"}}
+event: step_completed
+data: {"type":"StepCompleted","run_id":"...","workflow_id":"...","step_index":0,"step_id":"run","exit_code":0,"cost_usd":null,"finished_at":"2025-01-16T02:05:30Z"}
+
+event: run_completed
+data: {"type":"RunCompleted","run_id":"...","workflow_id":"...","status":"Completed","total_cost_usd":null,"finished_at":"2025-01-16T02:05:30Z"}
+
+event: workflow_changed
+data: {"type":"WorkflowChanged","workflow_id":"...","version":2,"change_kind":"updated"}
 
 ```
 
@@ -1031,7 +589,6 @@ Read the daemon's own log file (`daemon.log`).
 | Parameter | Type    | Required | Default | Description                              |
 |-----------|---------|----------|---------|------------------------------------------|
 | `tail`    | integer | No       | (none)  | Return only the last N lines of the log. |
-| `format`  | string  | No       | (none)  | Accepted but ignored; reserved for forward compatibility. |
 
 **Response:**
 
@@ -1070,339 +627,579 @@ Check the platform service installation and running status.
 }
 ```
 
-| Field              | Type    | Description                                              |
-|--------------------|---------|----------------------------------------------------------|
-| `platform`         | string  | One of `"windows"`, `"macos"`, or `"linux"`.             |
-| `service_installed`| bool    | Whether the system service is installed. Currently returns a static `false` value; actual service detection is not yet implemented. |
-| `service_running`  | bool    | Whether the system service is currently running. Currently returns a static `false` value. |
+| Field               | Type    | Description                                              |
+|---------------------|---------|----------------------------------------------------------|
+| `platform`          | string  | One of `"windows"`, `"macos"`, or `"linux"`.             |
+| `service_installed` | bool    | Whether the system service is installed. Currently returns a static `false`; actual service detection is not implemented. |
+| `service_running`   | bool    | Whether the system service is currently running. Currently returns a static `false`. |
 
 ---
 
 ## Data Models
 
-### Job
+### Workflow
 
-The full job object returned by GET, POST, and PATCH endpoints.
+The full workflow object returned by GET, POST (201), and PATCH (200) endpoints.
 
-| Field            | Type                            | Nullable | Description                                                  |
-|------------------|---------------------------------|----------|--------------------------------------------------------------|
-| `id`             | string (UUID)                   | No       | Unique identifier, auto-generated as UUIDv7.                |
-| `name`           | string                          | No       | Unique human-readable name.                                  |
-| `schedule`       | string                          | No       | Cron expression.                                             |
-| `execution`      | [ExecutionType](#executiontype) | No       | What to execute.                                             |
-| `enabled`        | bool                            | No       | Whether the job is scheduled.                                |
-| `timezone`       | string                          | Yes      | IANA timezone name, or `null` for UTC.                       |
-| `working_dir`    | string                          | Yes      | Working directory for the command, or `null`.                |
-| `env_vars`       | object (string -> string)       | Yes      | Environment variables map, or `null`.                        |
-| `timeout_secs`   | integer (u64)                   | No       | Max execution time in seconds. `0` = no timeout.            |
-| `log_environment`| bool                            | No       | Whether to log environment variables in run output.          |
-| `allow_concurrent`| boolean                        | No       | Whether multiple instances of this job can run simultaneously. |
-| `schedule_mode`  | string                          | No       | Controls scheduling behavior. One of `Cron` or `WaitForCompletion`. |
-| `pre_hook`       | string                          | Yes      | Shell command to execute before the job runs, or `null`.     |
-| `post_hook`      | string                          | Yes      | Shell command to execute after the job completes, or `null`. |
-| `pre_hook_script_type` | string \| null            | Yes      | Script type for the pre-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
-| `post_hook_script_type` | string \| null           | Yes      | Script type for the post-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
-| `created_at`     | string (ISO 8601)               | No       | When the job was created.                                    |
-| `updated_at`     | string (ISO 8601)               | No       | When the job was last modified.                              |
-| `last_run_at`    | string (ISO 8601)               | Yes      | When the job last ran, or `null` if never.                   |
-| `last_exit_code` | integer (i32)                   | Yes      | Exit code of the last run, or `null`.                        |
-| `next_run_at`    | string (ISO 8601)               | Yes      | Computed next scheduled run time. `null` in POST and PATCH responses (computed at runtime only for GET endpoints). `null` for disabled jobs. |
+| Field             | Type                                  | Nullable | Description                                                                        |
+|-------------------|---------------------------------------|----------|------------------------------------------------------------------------------------|
+| `id`              | string (UUID)                         | No       | Unique identifier, auto-generated as UUIDv7.                                       |
+| `name`            | string                                | No       | Unique human-readable name (slug).                                                 |
+| `version`         | integer (u32)                         | No       | Auto-incrementing version. Bumps when `name`, `schedule`, or `steps` change.       |
+| `schedule`        | string                                | No       | Cron expression (5-field standard syntax).                                         |
+| `timezone`        | string                                | Yes      | IANA timezone name, or `null` for UTC.                                             |
+| `schedule_mode`   | string                                | No       | One of `"Cron"` or `"WaitForCompletion"`. Default: `"Cron"`.                      |
+| `enabled`         | bool                                  | No       | Whether the workflow is scheduled.                                                 |
+| `steps`           | array of [StepDef](#stepdef)          | No       | Ordered list of step definitions. Must contain at least one step.                  |
+| `input_schema`    | object (JSON Schema)                  | Yes      | Optional JSON Schema for validating trigger input payloads.                        |
+| `default_input`   | any JSON value                        | Yes      | Baseline trigger payload used for cron-fired runs (or manual triggers with no body). |
+| `working_dir`     | string                                | Yes      | Default working directory for all steps (overridable per step).                    |
+| `env_vars`        | object (string -> string)             | Yes      | Default environment variables for all steps (merged with per-step `env_vars`).    |
+| `allow_concurrent`| bool                                  | No       | Whether multiple simultaneous runs of this workflow are permitted. Default: `true`.|
+| `on_failure`      | [FailurePolicy](#failurepolicy)       | No       | Default failure policy for steps that do not specify their own. Default: `"abort"`.|
+| `last_run_at`     | string (ISO 8601)                     | Yes      | When the workflow last ran, or `null` if never.                                    |
+| `last_run_status` | [RunStatus](#runstatus)               | Yes      | Status of the last run, or `null` if never.                                        |
+| `last_run_id`     | string (UUID)                         | Yes      | UUID of the last run, or `null` if never.                                          |
+| `next_run_at`     | string (ISO 8601)                     | Yes      | Computed next scheduled run time. `null` for disabled workflows. Never persisted; always computed at read time. |
+| `created_at`      | string (ISO 8601)                     | No       | When the workflow was created.                                                     |
+| `updated_at`      | string (ISO 8601)                     | No       | When the workflow was last modified.                                               |
 
-### NewJob
+---
 
-Request body for `POST /api/jobs`.
+### NewWorkflow
 
-| Field            | Type                            | Required | Default | Description                              |
-|------------------|---------------------------------|----------|---------|------------------------------------------|
-| `name`           | string                          | Yes      |         | Unique name. See [Validation Rules](#validation-rules). |
-| `schedule`       | string                          | Yes      |         | Cron expression.                         |
-| `execution`      | [ExecutionType](#executiontype) | Yes      |         | What to execute.                         |
-| `enabled`        | bool                            | No       | `true`  | Whether the job starts enabled.          |
-| `timezone`       | string                          | No       | `null`  | IANA timezone name.                      |
-| `working_dir`    | string                          | No       | `null`  | Working directory.                       |
-| `env_vars`       | object (string -> string)       | No       | `null`  | Environment variables.                   |
-| `timeout_secs`   | integer (u64)                   | No       | `0`     | Timeout in seconds (`0` = no timeout).   |
-| `log_environment`| bool                            | No       | `false` | Log environment variables.               |
-| `allow_concurrent`| boolean\|null                  | No       | `null`  | Allow concurrent runs. Null uses daemon default. |
-| `schedule_mode`  | string                          | No       | (daemon default) | Controls scheduling behavior. One of `Cron` or `WaitForCompletion`. Null uses daemon's `default_schedule_mode` config. |
-| `pre_hook`       | string                          | No       | `null`  | Shell command to execute before the job. |
-| `post_hook`      | string                          | No       | `null`  | Shell command to execute after the job.  |
-| `pre_hook_script_type` | string                    | No       | `null`  | Script type for the pre-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
-| `post_hook_script_type` | string                   | No       | `null`  | Script type for the post-hook. Values: `shell`, `batch`, `python`, `powershell`. `null` means shell command mode. |
+Request body for `POST /api/workflows`.
 
-### JobUpdate
+| Field            | Type                                  | Required | Default    | Description                                                         |
+|------------------|---------------------------------------|----------|------------|---------------------------------------------------------------------|
+| `name`           | string                                | Yes      |            | Unique name. See [Validation Rules](#validation-rules).             |
+| `schedule`       | string                                | Yes      |            | Cron expression (5-field).                                          |
+| `steps`          | array of [StepDef](#stepdef)          | Yes      |            | At least one step required.                                         |
+| `timezone`       | string                                | No       | `null`     | IANA timezone name.                                                 |
+| `schedule_mode`  | string                                | No       | `"Cron"`   | One of `"Cron"` or `"WaitForCompletion"`.                           |
+| `enabled`        | bool                                  | No       | `true`     | Whether the workflow starts enabled.                                |
+| `input_schema`   | object                                | No       | `null`     | JSON Schema for trigger input validation.                           |
+| `default_input`  | any JSON value                        | No       | `null`     | Default trigger payload.                                            |
+| `working_dir`    | string                                | No       | `null`     | Default working directory.                                          |
+| `env_vars`       | object (string -> string)             | No       | `null`     | Default environment variables.                                      |
+| `allow_concurrent`| bool                                 | No       | `true`     | Allow concurrent runs. `null` treated as `true`.                    |
+| `on_failure`     | [FailurePolicy](#failurepolicy)       | No       | `"abort"`  | Workflow-level default failure policy.                              |
 
-Request body for `PATCH /api/jobs/{id}`. All fields are optional; only included fields are updated.
+---
 
-| Field            | Type                            | Description                              |
-|------------------|---------------------------------|------------------------------------------|
-| `name`           | string                          | New name. Same validation as creation.   |
-| `schedule`       | string                          | New cron expression.                     |
-| `execution`      | [ExecutionType](#executiontype) | New execution config.                    |
-| `enabled`        | bool                            | New enabled state.                       |
-| `timezone`       | string                          | New IANA timezone.                       |
-| `working_dir`    | string                          | New working directory.                   |
-| `env_vars`       | object (string -> string)       | New environment variables (full replace).|
-| `timeout_secs`   | integer (u64)                   | New timeout in seconds.                  |
-| `log_environment`| bool                            | New log_environment flag.                |
-| `allow_concurrent`| boolean\|null                  | Set to true/false to change concurrency behavior. |
-| `schedule_mode`  | string                          | New scheduling mode. One of `Cron` or `WaitForCompletion`. |
-| `pre_hook`       | string                          | New pre-execution hook command.          |
-| `post_hook`      | string                          | New post-execution hook command.         |
-| `pre_hook_script_type` | string\|null              | Script type for the pre-hook. Values: `shell`, `batch`, `python`, `powershell`. Set to `null` to switch back to shell command mode. |
-| `post_hook_script_type` | string\|null             | Script type for the post-hook. Values: `shell`, `batch`, `python`, `powershell`. Set to `null` to switch back to shell command mode. |
+### WorkflowUpdate
 
-Note: The `last_run_at` and `last_exit_code` fields cannot be set via the API. They are updated internally by the executor.
+Request body for `PATCH /api/workflows/{id}`. All fields are optional; only included fields are updated.
 
-### ExecutionType
+| Field            | Type                                  | Description                                                              |
+|------------------|---------------------------------------|--------------------------------------------------------------------------|
+| `name`           | string                                | New name. Same validation as creation.                                   |
+| `schedule`       | string                                | New cron expression.                                                     |
+| `timezone`       | string                                | New IANA timezone.                                                       |
+| `schedule_mode`  | string                                | New scheduling mode.                                                     |
+| `enabled`        | bool                                  | Enable or disable the workflow.                                          |
+| `steps`          | array of [StepDef](#stepdef)          | Replace the entire step list. Must contain at least one step if provided.|
+| `input_schema`   | object                                | New JSON Schema for trigger input.                                       |
+| `default_input`  | any JSON value                        | New default trigger payload.                                             |
+| `working_dir`    | string                                | New default working directory.                                           |
+| `env_vars`       | object (string -> string)             | New default environment variables (full replacement).                    |
+| `allow_concurrent`| bool                                 | New concurrent-run setting.                                              |
+| `on_failure`     | [FailurePolicy](#failurepolicy)       | New workflow-level failure policy.                                       |
 
-A tagged union representing what the job executes. Serialized with `"type"` and `"value"` fields.
+Changes to any of `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `input_schema`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure` bump `version`. Toggling `enabled` alone does NOT bump `version`.
 
-**Variant: ShellCommand**
+> **Limitation:** `timezone`, `working_dir`, `default_input`, and `input_schema` cannot be cleared back to `null` via PATCH — sending `null` is indistinguishable from omitting the field. Send a non-null replacement to update them.
 
-Executes a shell command via the system shell.
+---
 
-```json
-{
-  "type": "ShellCommand",
-  "value": "echo hello && date"
-}
-```
+### StepDef
 
-**Variant: ScriptFile**
+A tagged union representing one step in a workflow. Serialized with a `"kind"` discriminator field.
 
-Executes a script file.
+All step variants include the [StepDefCommon](#stepdefcommon) fields flattened at the top level (there is no nested `"common"` key in the JSON).
+
+#### kind: shell
+
+Executes a command via the system shell (`/bin/sh -c` on Unix, `cmd.exe /C` on Windows).
 
 ```json
 {
-  "type": "ScriptFile",
-  "value": "/opt/scripts/deploy.sh"
+  "kind": "shell",
+  "id": "fetch",
+  "command": "git pull origin ${input.branch}",
+  "pass_stdin": false,
+  "timeout_secs": 60,
+  "on_failure": null,
+  "always_run": false,
+  "working_dir": null,
+  "env_vars": null,
+  "capture": { "stdout_max_bytes": 65536, "parser": null }
 }
 ```
+
+| Extra Field  | Type   | Default  | Description                                                                 |
+|--------------|--------|----------|-----------------------------------------------------------------------------|
+| `command`    | string | required | Shell command to execute. Supports template substitution.                   |
+| `pass_stdin` | bool   | `false`  | Pipe the previous step's stdout into this step's stdin.                     |
+
+#### kind: script
+
+Executes a script file with an optional interpreter.
+
+```json
+{
+  "kind": "script",
+  "id": "deploy",
+  "path": "/opt/scripts/deploy.sh",
+  "script_type": "shell",
+  "args": "--env ${input.env}",
+  "pass_stdin": false,
+  "timeout_secs": 300
+}
+```
+
+| Extra Field   | Type   | Default  | Description                                                                                      |
+|---------------|--------|----------|--------------------------------------------------------------------------------------------------|
+| `path`        | string | required | Path to the script file.                                                                         |
+| `script_type` | string | `null`   | Interpreter: `"shell"`, `"batch"`, `"python"`, `"powershell"`. `null` = infer from extension.  |
+| `args`        | string | `null`   | Arguments appended to the script invocation. Supports template substitution.                    |
+| `pass_stdin`  | bool   | `false`  | Pipe the previous step's stdout into this step's stdin.                                          |
+
+#### kind: http
+
+Makes an HTTP request using `reqwest`.
+
+```json
+{
+  "kind": "http",
+  "id": "notify",
+  "method": "POST",
+  "url": "https://hooks.example.com/notify",
+  "headers": { "Authorization": "Bearer ${input.token}" },
+  "body": "{\"status\": \"${steps.run.exit_code}\"}",
+  "expect_status": [200, 201],
+  "timeout_secs": 30
+}
+```
+
+| Extra Field     | Type                      | Default          | Description                                                              |
+|-----------------|---------------------------|------------------|--------------------------------------------------------------------------|
+| `method`        | string                    | required         | HTTP method: `"GET"`, `"POST"`, `"PUT"`, `"PATCH"`, `"DELETE"`.         |
+| `url`           | string                    | required         | Request URL. Supports template substitution.                             |
+| `headers`       | object (string -> string) | `{}`             | Request headers. Values support template substitution.                   |
+| `body`          | string                    | `null`           | Request body. Supports template substitution.                            |
+| `expect_status` | array of integer (u16)    | `[200..300)`     | HTTP status codes treated as success. Failure outside this list.         |
+
+#### kind: match
+
+Evaluates an expression and dispatches to one of several branches.
+
+```json
+{
+  "kind": "match",
+  "id": "route",
+  "expr": "${steps.run.exit_code}",
+  "cases": {
+    "0": [{ "kind": "shell", "id": "on-success", "command": "echo success" }],
+    "1": [{ "kind": "shell", "id": "on-failure", "command": "echo failure" }]
+  },
+  "default": [{ "kind": "shell", "id": "on-other", "command": "echo other" }]
+}
+```
+
+| Extra Field | Type                                          | Default  | Description                                                    |
+|-------------|-----------------------------------------------|----------|----------------------------------------------------------------|
+| `expr`      | string                                        | required | Template that evaluates to a string used for exact-match.      |
+| `cases`     | object (string -> array of [StepDef](#stepdef))| required | Named branches. The evaluated `expr` selects the branch.       |
+| `default`   | array of [StepDef](#stepdef)                  | `null`   | Branch taken when `expr` matches no case.                      |
+
+#### kind: set_var
+
+Sets named exports in the step context. No subprocess.
+
+```json
+{
+  "kind": "set_var",
+  "id": "prepare",
+  "exports": {
+    "TARGET_DIR": "/deploy/${input.env}",
+    "SESSION_ID": "${steps.agent.exports.session_id}"
+  }
+}
+```
+
+| Extra Field | Type                      | Default  | Description                                            |
+|-------------|---------------------------|----------|--------------------------------------------------------|
+| `exports`   | object (string -> string) | required | Named exports to set. Values support template substitution. |
+
+#### kind: agent
+
+First-class invocation of an AI agent (currently Claude Code CLI).
+
+```json
+{
+  "kind": "agent",
+  "id": "review",
+  "agent_type": "claude_code_cli",
+  "prompt": "Review the diff at ${steps.fetch.exports.diff_path} and summarize issues.",
+  "command_template": null,
+  "timeout_secs": 120
+}
+```
+
+| Extra Field        | Type   | Default  | Description                                                                                                |
+|--------------------|--------|----------|------------------------------------------------------------------------------------------------------------|
+| `agent_type`       | string | required | Agent to invoke. Currently only `"claude_code_cli"`.                                                       |
+| `prompt`           | string | required | Prompt string. Supports template substitution.                                                             |
+| `command_template` | string | `null`   | Override the default command template. `null` uses the built-in default for the agent type. Supports template substitution. |
+
+For `claude_code_cli`, the built-in default command template is:
+```
+claude -p "PROMPT_PLACEHOLDER" --output-format stream-json --verbose --dangerously-skip-permissions
+```
+
+Cost is captured per `AgentStep` via streaming NDJSON parsing and stored in `StepRun.cost_usd` / `WorkflowRun.total_cost_usd`.
+
+---
+
+### StepDefCommon
+
+Fields present (flattened) on every step variant.
+
+| Field          | Type                                      | Default  | Description                                                                           |
+|----------------|-------------------------------------------|----------|---------------------------------------------------------------------------------------|
+| `id`           | string                                    | required | Stable step handle (e.g., `"fetch"`, `"review"`). Must be unique across the workflow. |
+| `on_failure`   | [FailurePolicy](#failurepolicy) or `null` | `null`   | `null` = inherit `workflow.on_failure`.                                               |
+| `always_run`   | bool                                      | `false`  | Run this step even if a prior step aborted the run.                                   |
+| `timeout_secs` | integer (u64) or `null`                   | `null`   | Per-step timeout. `null` or `0` = no timeout.                                         |
+| `working_dir`  | string or `null`                          | `null`   | Overrides `workflow.working_dir` for this step.                                       |
+| `env_vars`     | object (string -> string) or `null`       | `null`   | Merged with `workflow.env_vars`; step values win on collision.                        |
+| `capture`      | object                                    | see below| Capture configuration.                                                                |
+
+**`capture` object:**
+
+| Field              | Type    | Default  | Description                                                     |
+|--------------------|---------|----------|-----------------------------------------------------------------|
+| `stdout_max_bytes` | integer | `65536`  | Maximum bytes of stdout to capture (64 KB default).             |
+| `parser`           | string  | `null`   | Output parser: `"json"`, `"lines"`, or `"raw"`. `null` = raw.  |
+
+---
+
+### FailurePolicy
+
+Controls what happens when a step fails. Serialized as a string or tagged object.
+
+| Variant  | JSON representation                                     | Description                                                  |
+|----------|---------------------------------------------------------|--------------------------------------------------------------|
+| `abort`  | `"abort"`                                               | (default) Stop the run immediately.                          |
+| `continue`| `"continue"`                                           | Record failure in context and continue to the next step.     |
+| `retry`  | `{"retry": {"attempts": 3, "backoff_ms": 1000}}`        | Retry the step up to `attempts` times with `backoff_ms` delay.|
+
+---
 
 ### TriggerParams
 
-Optional request body for `POST /api/jobs/{id}/trigger`. All fields are optional. When the entire body is omitted or empty, the job runs with its default configuration.
+Request body for `POST /api/workflows/{id}/trigger`.
 
-| Field   | Type                      | Required | Default | Description                                                              |
-|---------|---------------------------|----------|---------|--------------------------------------------------------------------------|
-| `args`  | string                    | No       | `null`  | Extra arguments appended to the job's command string. For a `ShellCommand` with value `"cmd"`, the effective command becomes `"cmd <args>"`. Same for `ScriptFile`. |
-| `env`   | object (string -> string) | No       | `null`  | Per-trigger environment variables. These override the job's `env_vars` for this single run (highest precedence: inherited env < job `env_vars` < trigger `env`). |
-| `input` | string                    | No       | `null`  | Data written to the process's stdin immediately after spawn. Stdin is then closed (EOF). |
+| Field         | Type                      | Required | Description                                                                                |
+|---------------|---------------------------|----------|--------------------------------------------------------------------------------------------|
+| `input`       | any JSON value            | Yes      | Trigger payload. Required at the wire level (`TriggerParams.input` must be present). Pass `null` to fall back to `workflow.default_input`; sending `{}` is stored as `{}` (empty object). |
+| `env`         | object (string -> string) | No       | Per-trigger environment variables. Merged onto `workflow.env_vars` (trigger wins on collision). |
+| `target_step` | string                    | No       | Route stdin to this step's `id`. Rarely needed.                                            |
 
-**Example:**
+**Template substitution:** Fields marked as "template" in step definitions support two namespaces wrapped in `${...}` syntax:
 
-```json
-{
-  "args": "--verbose --dry-run",
-  "env": {
-    "MODE": "manual"
-  },
-  "input": "confirm"
-}
+- `input.<path>` — dotted path into the trigger payload (e.g., `${input.repo}`, `${input.user.name}`).
+- `steps.<step_id>.<accessor>` — output from a prior step. Accessors: `stdout`, `exit_code`, `exports.<name>` (e.g., `${steps.fetch.stdout}`, `${steps.set_session.exports.session_id}`).
+
+Missing references substitute to empty string with a warning logged.
+
+---
+
+### WorkflowRun
+
+Represents a single execution of a workflow.
+
+| Field               | Type                           | Nullable | Description                                                                              |
+|---------------------|--------------------------------|----------|------------------------------------------------------------------------------------------|
+| `run_id`            | string (UUID)                  | No       | Unique run identifier (UUIDv7).                                                          |
+| `workflow_id`       | string (UUID)                  | No       | The workflow that was executed.                                                           |
+| `workflow_version`  | integer (u32)                  | No       | The workflow version at trigger time.                                                    |
+| `workflow_snapshot` | [Workflow](#workflow)          | No       | Full workflow definition snapshot taken at trigger time. Runs are self-contained.        |
+| `started_at`        | string (ISO 8601)              | No       | When the run started.                                                                    |
+| `finished_at`       | string (ISO 8601)              | Yes      | When the run finished, or `null` if still running.                                       |
+| `status`            | [RunStatus](#runstatus)        | No       | Current run status.                                                                      |
+| `trigger_input`     | any JSON value                 | Yes      | The trigger payload used for this run. `null` only when both `trigger.input` and `workflow.default_input` are absent (effective input is `Value::Null`); an explicit `{}` is stored as `{}`. |
+| `steps`             | array of [StepRun](#steprun)   | No       | Step execution records in runtime order (flattened; branch steps appear inline).        |
+| `total_cost_usd`    | number (f64)                   | Yes      | Summed cost across all `AgentStep` runs in USD. `null` if no agent steps ran.            |
+| `total_duration_ms` | integer (u64)                  | Yes      | Total wall-clock duration in milliseconds. `null` while running.                         |
+
+---
+
+### StepRun
+
+Represents the execution record for one step within a run.
+
+| Field                  | Type                    | Nullable | Description                                                                  |
+|------------------------|-------------------------|----------|------------------------------------------------------------------------------|
+| `step_index`           | integer (usize)         | No       | Position in the runtime execution timeline (0-based).                        |
+| `step_id`              | string                  | No       | Matches `StepDefCommon.id` from the workflow definition.                     |
+| `kind`                 | string                  | No       | Step kind: `"shell"`, `"script"`, `"http"`, `"match"`, `"set_var"`, `"agent"`. |
+| `status`               | [RunStatus](#runstatus) | No       | Execution status of this step.                                               |
+| `started_at`           | string (ISO 8601)       | No       | When the step started.                                                       |
+| `finished_at`          | string (ISO 8601)       | Yes      | When the step finished, or `null` if still running.                          |
+| `exit_code`            | integer (i32)           | Yes      | Process exit code, or `null` for non-process steps (`set_var`, `match`).     |
+| `log_byte_offset_start`| integer (u64)           | No       | Byte offset into the combined run log file where this step's output begins.  |
+| `log_byte_offset_end`  | integer (u64)           | Yes      | Byte offset where this step's output ends. `null` while the step is running. |
+| `cost_usd`             | number (f64)            | Yes      | Cost for this step in USD. Non-null only for `AgentStep`.                    |
+| `error`                | string                  | Yes      | Human-readable error description on failure, or `null`.                      |
+| `output_summary`       | any JSON value          | Yes      | Captured stdout if structured (when `capture.parser` is set), or `null`.     |
+
+**Combined run log file location:**
+```
+<data_dir>/logs/<workflow_id>/<run_id>.log
 ```
 
-### JobRun
+Log output is append-only with step boundary markers:
+```
+===== ACS-<VERSION>:STEP:<step_id>:START:<iso8601> =====
+<step stdout/stderr interleaved>
+===== ACS-<VERSION>:STEP:<step_id>:END:exit=<code>:<iso8601> =====
+```
 
-Represents a single execution of a job.
-
-| Field            | Type              | Nullable | Description                                    |
-|------------------|-------------------|----------|------------------------------------------------|
-| `run_id`         | string (UUID)     | No       | Unique run identifier (UUIDv7).               |
-| `job_id`         | string (UUID)     | No       | The job that was executed.                     |
-| `started_at`     | string (ISO 8601) | No       | When the run started.                          |
-| `finished_at`    | string (ISO 8601) | Yes      | When the run finished, or `null` if still running. |
-| `status`         | [RunStatus](#runstatus) | No  | Current run status.                            |
-| `exit_code`      | integer (i32)     | Yes      | `null` if not yet finished. Set to the process exit code for completed runs, or -1 for killed runs. |
-| `log_size_bytes` | integer (u64)     | No       | Size of the log output in bytes.               |
-| `error`          | string            | Yes      | Error message if the run failed to start (e.g., PTY spawn failure), or `null`. |
-| `trigger_params` | [TriggerParams](#triggerparams) | Yes | Trigger-time parameter overrides used for this run. Absent from the JSON response when `null` (omitted via `skip_serializing_if`). Only present when the run was triggered with per-invocation parameters. |
-| `total_cost_usd` | number (f64) | Yes | Total cost in USD aggregated across the main command and any pre/post hooks that produce NDJSON output, or absent when null. |
-| `duration_ms` | integer (u64) | Yes | CLI-reported execution duration in milliseconds, or absent when null. |
-| `num_turns` | integer (u32) | Yes | Number of conversation turns reported by the Claude CLI, or absent when null. |
-| `model` | string | Yes | Primary model used during the run, as reported by the Claude CLI, or absent when null. |
-| `usage` | object | Yes | Full token usage data from the Claude CLI result event (structure varies by provider), or absent when null. |
+---
 
 ### RunStatus
 
-A string enum representing the state of a job run.
+A string enum representing the state of a run or step.
 
-| Value                   | Description                                     |
-|-------------------------|-------------------------------------------------|
-| `Running`               | The job is currently executing.                 |
-| `Completed`             | The job finished with an exit code.             |
-| `CompletedWithWarnings` | The job completed successfully but the post-hook failed. |
-| `Failed`                | The job failed to start or encountered an error.|
-| `Killed`                | The job was forcefully terminated (daemon shutdown, job deletion, or user-initiated kill). |
+| Value       | JSON string     | Description                                                                                    |
+|-------------|-----------------|-----------------------------------------------------------------------------------------------|
+| `Running`   | `"Running"`     | Execution is in progress.                                                                     |
+| `Completed` | `"Completed"`   | Reached the end of all steps. Steps with `on_failure: continue` may have failed without aborting the run. |
+| `Failed`    | `"Failed"`      | Run terminated early due to a step abort, timeout, or infrastructure error.                   |
+| `Killed`    | `"Killed"`      | Externally terminated via `POST /api/runs/{run_id}/kill`, daemon shutdown, or concurrency policy. |
 
 ---
 
 ## SSE Event Types
 
-The SSE stream at `GET /api/events` emits the following event types. Each event is serialized as a tagged JSON object with `"event"` and `"data"` fields at the top level.
+The SSE stream at `GET /api/events/workflows` emits the following event types. Each event is a JSON object with a `"type"` field (used as the internal discriminator) and the event-specific fields at the same level.
 
-### started
+The SSE `event:` line uses the snake_case name; the JSON `"type"` field uses PascalCase.
 
-Emitted when a job run begins.
+### run_started
 
-SSE event name: `started`
+Emitted when a workflow run begins.
 
-```json
-{
-  "event": "Started",
-  "data": {
-    "job_id": "01941234-5678-7abc-def0-123456789abc",
-    "run_id": "01941234-aaaa-7abc-def0-123456789abc",
-    "job_name": "my-backup",
-    "timestamp": "2025-01-16T02:00:00Z"
-  }
-}
-```
-
-| Field      | Type   | Description                |
-|------------|--------|----------------------------|
-| `job_id`   | UUID   | The job being executed.    |
-| `run_id`   | UUID   | The new run identifier.    |
-| `job_name` | string | Human-readable job name.   |
-| `timestamp`| ISO 8601 | When the run started.    |
-
-### output
-
-Emitted when a job produces stdout/stderr output.
-
-SSE event name: `output`
+SSE event name: `run_started`
 
 ```json
 {
-  "event": "Output",
-  "data": {
-    "job_id": "01941234-5678-7abc-def0-123456789abc",
-    "run_id": "01941234-aaaa-7abc-def0-123456789abc",
-    "data": "Copying files...\n",
-    "timestamp": "2025-01-16T02:00:05Z"
-  }
+  "type": "RunStarted",
+  "run_id": "01941234-bbbb-7abc-def0-123456789abc",
+  "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+  "workflow_version": 1,
+  "started_at": "2025-01-16T02:00:00Z"
 }
 ```
 
-| Field      | Type   | Description                          |
-|------------|--------|--------------------------------------|
-| `job_id`   | UUID   | The job producing output.            |
-| `run_id`   | UUID   | The run producing output.            |
-| `data`     | string | The output text (may contain newlines). |
-| `timestamp`| ISO 8601 | When this output was captured.     |
+| Field              | Type     | Description                   |
+|--------------------|----------|-------------------------------|
+| `run_id`           | UUID     | The new run identifier.       |
+| `workflow_id`      | UUID     | The workflow being executed.  |
+| `workflow_version` | integer  | Version at trigger time.      |
+| `started_at`       | ISO 8601 | When the run started.         |
 
-### completed
+### step_started
 
-Emitted when a job run finishes successfully.
+Emitted when an individual step begins execution.
 
-SSE event name: `completed`
+SSE event name: `step_started`
 
 ```json
 {
-  "event": "Completed",
-  "data": {
-    "job_id": "01941234-5678-7abc-def0-123456789abc",
-    "run_id": "01941234-aaaa-7abc-def0-123456789abc",
-    "exit_code": 0,
-    "timestamp": "2025-01-16T02:05:30Z"
-  }
+  "type": "StepStarted",
+  "run_id": "01941234-bbbb-7abc-def0-123456789abc",
+  "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+  "step_index": 0,
+  "step_id": "fetch",
+  "kind": "shell",
+  "started_at": "2025-01-16T02:00:01Z"
 }
 ```
 
-| Field       | Type    | Description                           |
-|-------------|---------|---------------------------------------|
-| `job_id`    | UUID    | The job that completed.               |
-| `run_id`    | UUID    | The run that completed.               |
-| `exit_code` | integer | Process exit code.                    |
-| `timestamp` | ISO 8601 | When the run finished.              |
+| Field        | Type     | Description                                                       |
+|--------------|----------|-------------------------------------------------------------------|
+| `run_id`     | UUID     | The run containing this step.                                     |
+| `workflow_id`| UUID     | The workflow.                                                     |
+| `step_index` | integer  | Position in the execution timeline (0-based).                     |
+| `step_id`    | string   | Step identifier (matches `StepDefCommon.id`).                     |
+| `kind`       | string   | Step kind: `"shell"`, `"script"`, `"http"`, `"match"`, `"set_var"`, `"agent"`. |
+| `started_at` | ISO 8601 | When the step started.                                            |
 
-### failed
+### step_output
 
-Emitted when a job run fails (e.g., process could not start).
+Emitted on each stdout/stderr chunk from a running step. Streamed in real time via `EventEmittingLogSink`.
 
-SSE event name: `failed`
+SSE event name: `step_output`
 
 ```json
 {
-  "event": "Failed",
-  "data": {
-    "job_id": "01941234-5678-7abc-def0-123456789abc",
-    "run_id": "01941234-aaaa-7abc-def0-123456789abc",
-    "error": "PTY spawn failed: No such file or directory",
-    "timestamp": "2025-01-16T02:00:01Z"
-  }
+  "type": "StepOutput",
+  "run_id": "01941234-bbbb-7abc-def0-123456789abc",
+  "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+  "step_index": 0,
+  "step_id": "fetch",
+  "data": "From origin\nAlready up to date.\n",
+  "timestamp": "2025-01-16T02:00:02Z"
 }
 ```
 
-| Field      | Type   | Description                            |
-|------------|--------|----------------------------------------|
-| `job_id`   | UUID   | The job that failed.                   |
-| `run_id`   | UUID   | The run that failed.                   |
-| `error`    | string | Human-readable error description.      |
-| `timestamp`| ISO 8601 | When the failure was recorded.       |
+| Field        | Type     | Description                                      |
+|--------------|----------|--------------------------------------------------|
+| `run_id`     | UUID     | The run producing output.                        |
+| `workflow_id`| UUID     | The workflow.                                    |
+| `step_index` | integer  | Step position in the execution timeline.         |
+| `step_id`    | string   | Step identifier.                                 |
+| `data`       | string   | Output chunk (may contain newlines).             |
+| `timestamp`  | ISO 8601 | When this chunk was captured.                    |
 
-### job_changed
+### step_completed
 
-Emitted when a job's configuration or lifecycle state changes.
+Emitted when a step finishes (success, failure, or kill).
 
-SSE event name: `job_changed`
+SSE event name: `step_completed`
 
 ```json
 {
-  "event": "JobChanged",
-  "data": {
-    "job_id": "01941234-5678-7abc-def0-123456789abc",
-    "change": "Updated",
-    "timestamp": "2025-01-16T03:00:00Z"
-  }
+  "type": "StepCompleted",
+  "run_id": "01941234-bbbb-7abc-def0-123456789abc",
+  "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+  "step_index": 0,
+  "step_id": "fetch",
+  "exit_code": 0,
+  "cost_usd": null,
+  "finished_at": "2025-01-16T02:00:03Z"
 }
 ```
 
-| Field      | Type   | Description                            |
-|------------|--------|----------------------------------------|
-| `job_id`   | UUID   | The job that changed.                  |
-| `change`   | string | One of: `"Added"`, `"Updated"`, `"Removed"`, `"Enabled"`, `"Disabled"`. |
-| `timestamp`| ISO 8601 | When the change occurred.            |
+| Field        | Type     | Description                                                      |
+|--------------|----------|------------------------------------------------------------------|
+| `run_id`     | UUID     | The run.                                                         |
+| `workflow_id`| UUID     | The workflow.                                                    |
+| `step_index` | integer  | Step position in the execution timeline.                         |
+| `step_id`    | string   | Step identifier.                                                 |
+| `exit_code`  | integer or null | Process exit code. `null` for non-process steps.          |
+| `cost_usd`   | number or null  | Cost attributed to this step (non-null for `AgentStep` only). |
+| `finished_at`| ISO 8601 | When the step finished.                                          |
 
-**JobChangeKind values:**
+### run_completed
 
-| Value      | Triggered by                          |
-|------------|---------------------------------------|
-| `Added`    | `POST /api/jobs` (new job created)    |
-| `Updated`  | `PATCH /api/jobs/{id}`                |
-| `Removed`  | `DELETE /api/jobs/{id}`               |
-| `Enabled`  | `POST /api/jobs/{id}/enable`          |
-| `Disabled` | `POST /api/jobs/{id}/disable`         |
+Emitted when a workflow run finishes (any terminal status).
+
+SSE event name: `run_completed`
+
+```json
+{
+  "type": "RunCompleted",
+  "run_id": "01941234-bbbb-7abc-def0-123456789abc",
+  "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+  "status": "Completed",
+  "total_cost_usd": 0.0042,
+  "finished_at": "2025-01-16T02:05:30Z"
+}
+```
+
+| Field           | Type     | Description                                     |
+|-----------------|----------|-------------------------------------------------|
+| `run_id`        | UUID     | The run that finished.                          |
+| `workflow_id`   | UUID     | The workflow.                                   |
+| `status`        | string   | Final [RunStatus](#runstatus).                  |
+| `total_cost_usd`| number or null | Summed agent-step cost. `null` if none.   |
+| `finished_at`   | ISO 8601 | When the run finished.                          |
+
+### run_failed
+
+Emitted when a run fails due to an infrastructure error (spawn failure, executor panic, etc.) rather than a step-level failure.
+
+SSE event name: `run_failed`
+
+```json
+{
+  "type": "RunFailed",
+  "run_id": "01941234-bbbb-7abc-def0-123456789abc",
+  "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+  "error": "PTY spawn failed: No such file or directory",
+  "finished_at": "2025-01-16T02:00:01Z"
+}
+```
+
+| Field        | Type     | Description                            |
+|--------------|----------|----------------------------------------|
+| `run_id`     | UUID     | The run that failed.                   |
+| `workflow_id`| UUID     | The workflow.                          |
+| `error`      | string   | Human-readable error description.      |
+| `finished_at`| ISO 8601 | When the failure was recorded.         |
+
+### workflow_changed
+
+Emitted when a workflow's configuration changes.
+
+SSE event name: `workflow_changed`
+
+```json
+{
+  "type": "WorkflowChanged",
+  "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+  "version": 2,
+  "change_kind": "updated"
+}
+```
+
+| Field         | Type    | Description                                                       |
+|---------------|---------|-------------------------------------------------------------------|
+| `workflow_id` | UUID    | The workflow that changed.                                        |
+| `version`     | integer | Workflow version after the change.                                |
+| `change_kind` | string  | One of: `"created"`, `"updated"`, `"deleted"`, `"enabled"`, `"disabled"`. |
+
+**`change_kind` values:**
+
+| Value      | Triggered by                        |
+|------------|-------------------------------------|
+| `created`  | `POST /api/workflows`               |
+| `updated`  | `PATCH /api/workflows/{id}`         |
+| `deleted`  | `DELETE /api/workflows/{id}`        |
+| `enabled`  | (scheduler/daemon internal)         |
+| `disabled` | (scheduler/daemon internal)         |
 
 ---
 
 ## Validation Rules
 
-The following validation rules are enforced on job creation (`POST /api/jobs`) and update (`PATCH /api/jobs/{id}`):
+The following validation rules are enforced on workflow creation (`POST /api/workflows`) and update (`PATCH /api/workflows/{id}`):
 
 ### Name
 
 - Must not be empty or whitespace-only.
-- Must not be a valid UUID (to prevent ambiguity with the ID-or-name resolution).
-- Must be unique across all jobs. Uniqueness is checked explicitly before creation or rename.
+- Must not be a valid UUID (to prevent ambiguity with the UUID-or-name resolution).
+- Must be unique across all workflows.
 
 ### Schedule (Cron Expression)
 
-- Parsed and validated at submission time.
-- Uses standard 5-field cron syntax (`minute hour day-of-month month day-of-week`). See [Job Management](job-management.md#cron-expressions) for full syntax details.
-- Invalid expressions return a `400` with error code `validation_error` and a message starting with `"Cron error: ..."`.
+- Parsed and validated at submission time using 5-field standard cron syntax (`minute hour day-of-month month day-of-week`).
+- Invalid cron expressions currently return `500 Internal Server Error` due to a known issue in `map_store_error`. Other validation failures return `422 Unprocessable Entity` with `error: "validation_error"` and a message starting with `"Cron error: ..."`. Note: this documents current code behavior pending a fix.
 
 ### Timezone
 
 - Must be a valid IANA timezone name (e.g., `"America/New_York"`, `"Europe/London"`, `"UTC"`).
-- Invalid timezone strings return a `400` with a message containing `"Invalid timezone"`.
+- Invalid timezone strings return a `422` with a message containing `"timezone"`.
 
-### Timeout
+### Steps
 
-- The `timeout_secs` field is a `u64`. A value of `0` means no timeout.
+- Must contain at least one step.
+- All step `id` values must be unique across the entire workflow definition, including nested steps inside `MatchStep` branches.
 
-### Execution
+### Capture Parser
 
-- Must be one of the two tagged variants: `ShellCommand` or `ScriptFile`.
-- The `value` field is a string in both cases.
-- An invalid or missing `type` field will cause a JSON deserialization error (400).
+- The `capture.parser` field, when present, must be one of `"json"`, `"lines"`, or `"raw"`. Any other value returns a `422`.

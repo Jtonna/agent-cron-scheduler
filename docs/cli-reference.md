@@ -143,7 +143,7 @@ This command has no subcommand-specific options. Use the global `--verbose` (`-v
 - **Daemon Status** -- health status string (e.g., "ok")
 - **Data Dir** -- path to the data directory
 - **Web UI** -- URL for the web dashboard
-- **Jobs** -- count of active and total jobs
+- **Jobs** -- `active_jobs` (count of *enabled* workflows) and `total_jobs` (total registered workflows). Field names retain the legacy 'jobs' naming for compatibility; values are workflow counts.
 - **Uptime** -- human-readable uptime (e.g., "1d 2h 30m 15s")
 - **Version** -- daemon version string
 - **Update** -- indicates if an update is available with version number, or "up to date". Shows "(could not check)" if GitHub API is unreachable (only visible with `--verbose`)
@@ -266,7 +266,7 @@ agentcronsystem uninstall [OPTIONS]
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--purge` | | flag | `false` | Also remove all data (jobs, logs, the entire data directory) |
+| `--purge` | | flag | `false` | Also remove all data (workflows, logs, the entire data directory) |
 
 #### Behavior
 
@@ -290,140 +290,43 @@ agentcronsystem uninstall --purge
 
 ---
 
-## Job Commands
+## Workflows Commands
 
-### `agentcronsystem add`
+### `agentcronsystem workflows`
 
-Create a new scheduled job. Exactly one of `--cmd` or `--script` must be specified.
+Manage scheduled workflows. All subcommands communicate with the running daemon over HTTP.
 
 ```
-agentcronsystem add [OPTIONS] --name <NAME> --schedule <SCHEDULE>
-```
-
-#### Options
-
-| Option | Short | Type | Default | Description |
-|--------|-------|------|---------|-------------|
-| `--name` | `-n` | `String` | **required** | Job name (must be unique) |
-| `--schedule` | `-s` | `String` | **required** | Cron schedule expression (5-field) |
-| `--cmd` | `-c` | `String` | none | Shell command to execute (conflicts with `--script`) |
-| `--script` | | `String` | none | Script file path to execute (conflicts with `--cmd`). Paths are passed verbatim to the shell interpreter with no resolution relative to `data_dir/scripts/`. |
-| `--timezone` | | `String` | UTC | IANA timezone name (e.g., `America/New_York`) |
-| `--working-dir` | | `String` | none | Working directory for the command |
-| `--env` | `-e` | `String` | none | Environment variable in `KEY=VALUE` format (repeatable) |
-| `--concurrent` | | flag | `false` | Allow concurrent runs of this job |
-| `--pre-hook` | | `String` | none | Shell command to run before job execution |
-| `--post-hook` | | `String` | none | Shell command to run after job execution |
-| `--disabled` | | flag | `false` | Create the job in a disabled state |
-| `--log-env` | | flag | `false` | Include full environment variables in run logs |
-
-The schedule uses standard 5-field cron syntax. See [Job Management](job-management.md#cron-expressions) for format details and examples.
-
-#### Exit Codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Job created successfully |
-| 1 | Error (e.g., duplicate name, invalid schedule, daemon unreachable) |
-
-#### Examples
-
-```sh
-# Add a job that runs every minute
-agentcronsystem add -n heartbeat -s "* * * * *" -c "echo alive"
-
-# Add a daily backup job at 2:30 AM Eastern
-agentcronsystem add -n backup -s "30 2 * * *" -c "/usr/local/bin/backup.sh" --timezone America/New_York
-
-# Add a job with environment variables
-agentcronsystem add -n deploy -s "0 4 * * 1" -c "deploy.sh" -e "ENV=production" -e "VERBOSE=true"
-
-# Add a script-based job
-agentcronsystem add -n cleanup -s "0 * * * *" --script cleanup.sh
-
-# Add a job in disabled state with a working directory
-agentcronsystem add -n build -s "*/15 * * * *" -c "make build" --working-dir /home/user/project --disabled
-
-# Add a job with environment logging enabled
-agentcronsystem add -n audit -s "0 0 * * *" -c "run-audit.sh" --log-env
-
-# Add a job that allows concurrent runs
-agentcronsystem add -n long-report -s "*/5 * * * *" -c "run-report.sh" --concurrent
-
-# Add a job with pre and post hooks
-agentcronsystem add -n my-job -s "0 * * * *" -c "python script.py" --pre-hook "echo starting" --post-hook "echo done"
+agentcronsystem workflows <SUBCOMMAND>
 ```
 
 ---
 
-### `agentcronsystem remove`
+### `agentcronsystem workflows list`
 
-Remove a scheduled job by name or UUID. Prompts for confirmation unless `--yes` is provided.
-
-```
-agentcronsystem remove [OPTIONS] <JOB>
-```
-
-#### Arguments
-
-| Argument | Type | Description |
-|----------|------|-------------|
-| `<JOB>` | `String` | Job name or UUID |
-
-#### Options
-
-| Option | Short | Type | Default | Description |
-|--------|-------|------|---------|-------------|
-| `--yes` | | flag | `false` | Skip confirmation prompt |
-
-#### Exit Codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Job removed, or removal cancelled by user |
-| 1 | Error (e.g., job not found, daemon unreachable) |
-
-#### Examples
-
-```sh
-# Remove a job (interactive confirmation)
-agentcronsystem remove heartbeat
-
-# Remove without confirmation
-agentcronsystem remove heartbeat --yes
-
-# Remove by UUID
-agentcronsystem remove 550e8400-e29b-41d4-a716-446655440000 --yes
-```
-
----
-
-### `agentcronsystem list`
-
-List all scheduled jobs. By default shows all jobs in a table format.
+List all workflows. By default shows all workflows in a table format.
 
 ```
-agentcronsystem list [OPTIONS]
+agentcronsystem workflows list [OPTIONS]
 ```
 
 #### Options
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--enabled` | | flag | `false` | Show only enabled jobs (conflicts with `--disabled`) |
-| `--disabled` | | flag | `false` | Show only disabled jobs (conflicts with `--enabled`) |
+| `--enabled` | | flag | `false` | Show only enabled workflows (conflicts with `--disabled`) |
+| `--disabled` | | flag | `false` | Show only disabled workflows (conflicts with `--enabled`) |
 | `--json` | | flag | `false` | Output as JSON |
 
 #### Output Columns (Table Mode)
 
 | Column | Description |
 |--------|-------------|
-| NAME | Job name (truncated to 13 characters) |
-| SCHEDULE | Cron expression |
+| NAME | Workflow name. If name length > 15 chars, truncated to 12 chars and `...` appended (final display width 15). |
 | ENABLED | `true` or `false` |
+| SCHEDULE | Cron expression. If length > 19 chars, truncated to 16 chars and `...` appended (final display width 19). |
 | LAST RUN | Relative time of last execution |
 | NEXT RUN | Relative time of next scheduled execution |
-| LAST EXIT | Exit code of the most recent run |
 
 #### Exit Codes
 
@@ -435,228 +338,321 @@ agentcronsystem list [OPTIONS]
 #### Examples
 
 ```sh
-# List all jobs
-agentcronsystem list
+# List all workflows
+agentcronsystem workflows list
 
-# List only enabled jobs
-agentcronsystem list --enabled
+# List only enabled workflows
+agentcronsystem workflows list --enabled
 
-# List only disabled jobs
-agentcronsystem list --disabled
+# List only disabled workflows
+agentcronsystem workflows list --disabled
 
 # Output as JSON for scripting
-agentcronsystem list --json
+agentcronsystem workflows list --json
 ```
 
 ---
 
-### `agentcronsystem enable`
+### `agentcronsystem workflows get`
 
-Enable a disabled scheduled job so it resumes running on its cron schedule.
+Show one workflow by UUID or name.
 
 ```
-agentcronsystem enable <JOB>
+agentcronsystem workflows get [OPTIONS] <ID_OR_NAME>
 ```
 
 #### Arguments
 
 | Argument | Type | Description |
 |----------|------|-------------|
-| `<JOB>` | `String` | Job name or UUID |
-
-#### Exit Codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Job enabled successfully |
-| 1 | Error (e.g., job not found) |
-
-#### Examples
-
-```sh
-agentcronsystem enable backup
-agentcronsystem enable 550e8400-e29b-41d4-a716-446655440000
-```
-
----
-
-### `agentcronsystem disable`
-
-Disable a scheduled job so it stops running on its cron schedule. The job is not deleted and can be re-enabled later.
-
-```
-agentcronsystem disable <JOB>
-```
-
-#### Arguments
-
-| Argument | Type | Description |
-|----------|------|-------------|
-| `<JOB>` | `String` | Job name or UUID |
-
-#### Exit Codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Job disabled successfully |
-| 1 | Error (e.g., job not found) |
-
-#### Examples
-
-```sh
-agentcronsystem disable backup
-agentcronsystem disable 550e8400-e29b-41d4-a716-446655440000
-```
-
----
-
-### `agentcronsystem trigger`
-
-Manually trigger an immediate run of a job, regardless of its cron schedule. Optionally provide per-invocation parameters that override job defaults for a single run.
-
-```
-agentcronsystem trigger [OPTIONS] <JOB>
-```
-
-#### Arguments
-
-| Argument | Type | Description |
-|----------|------|-------------|
-| `<JOB>` | `String` | Job name or UUID |
+| `<ID_OR_NAME>` | `String` | Workflow UUID or name |
 
 #### Options
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--follow` | | flag | `false` | Follow the job output in real time via SSE (Server-Sent Events) |
-| `--args` | | `String` | none | Extra arguments appended to the job's command string for this run only |
-| `--env` | `-e` | `String` | none | Per-trigger environment variable in `KEY=VALUE` format (repeatable) |
-| `--input` | | `String` | none | Data sent to the process's stdin, then EOF |
+| `--json` | | flag | `false` | Output as JSON |
+
+#### Output Fields (Default Mode)
+
+Prints key/value lines including: ID, Name, Version, Schedule, Timezone (if set), Enabled, Steps (count), Last run (relative), Last status, Next run (relative), Created, Updated.
+
+#### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Workflow retrieved successfully |
+| 1 | Error (e.g., workflow not found, daemon unreachable) |
+
+#### Examples
+
+```sh
+# Show a workflow by name
+agentcronsystem workflows get my-pipeline
+
+# Show as JSON
+agentcronsystem workflows get my-pipeline --json
+
+# Show by UUID
+agentcronsystem workflows get 550e8400-e29b-41d4-a716-446655440000
+```
+
+---
+
+### `agentcronsystem workflows create`
+
+Create a new workflow from a JSON file or inline JSON string.
+
+```
+agentcronsystem workflows create [OPTIONS]
+```
+
+Exactly one of `--file` or `--json` must be provided.
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--file` | | `String` | none | Path to a JSON file containing the workflow definition (conflicts with `--json`) |
+| `--json` | | `String` | none | Inline JSON string containing the workflow definition (conflicts with `--file`) |
+
+#### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Workflow created successfully |
+| 1 | Error (e.g., duplicate name, invalid JSON, daemon unreachable) |
+
+#### Examples
+
+```sh
+# Create from a file
+agentcronsystem workflows create --file /path/to/workflow.json
+
+# Create from inline JSON
+agentcronsystem workflows create --json '{"name":"heartbeat","schedule":"* * * * *","steps":[{"kind":"shell","id":"ping","command":"echo alive"}]}'
+```
+
+---
+
+### `agentcronsystem workflows update`
+
+Update an existing workflow from a JSON file, inline JSON, or the convenience `--enable` / `--disable` flags. At least one of `--file`, `--json`, `--enable`, or `--disable` must be provided. If multiple are passed, precedence is: `--file` > `--json` > `--enable`/`--disable` (a code-level constraint at runtime, not enforced by clap).
+
+```
+agentcronsystem workflows update [OPTIONS] <ID_OR_NAME>
+```
+
+#### Arguments
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `<ID_OR_NAME>` | `String` | Workflow UUID or name |
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--file` | | `String` | none | Path to a JSON file containing the update fields (conflicts with `--json`) |
+| `--json` | | `String` | none | Inline JSON string containing the update fields (conflicts with `--file`) |
+| `--enable` | | flag | `false` | Convenience: set `enabled=true` (conflicts with `--disable`) |
+| `--disable` | | flag | `false` | Convenience: set `enabled=false` (conflicts with `--enable`) |
+
+#### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Workflow updated successfully |
+| 1 | Error (e.g., workflow not found, invalid JSON, daemon unreachable) |
+
+#### Examples
+
+```sh
+# Enable a workflow
+agentcronsystem workflows update my-pipeline --enable
+
+# Disable a workflow
+agentcronsystem workflows update my-pipeline --disable
+
+# Update from a file (partial patch — only supplied fields are changed)
+agentcronsystem workflows update my-pipeline --file /path/to/update.json
+
+# Update via inline JSON
+agentcronsystem workflows update my-pipeline --json '{"schedule":"0 3 * * *"}'
+```
+
+---
+
+### `agentcronsystem workflows delete`
+
+Delete a workflow. Prompts for confirmation unless `-y` is provided.
+
+```
+agentcronsystem workflows delete [OPTIONS] <ID_OR_NAME>
+```
+
+#### Arguments
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `<ID_OR_NAME>` | `String` | Workflow UUID or name |
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--yes` | `-y` | flag | `false` | Skip confirmation prompt |
+
+#### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Workflow deleted, or deletion cancelled by user |
+| 1 | Error (e.g., workflow not found, daemon unreachable) |
+
+#### Examples
+
+```sh
+# Delete with interactive confirmation
+agentcronsystem workflows delete my-pipeline
+
+# Delete without confirmation
+agentcronsystem workflows delete my-pipeline -y
+
+# Delete by UUID without confirmation
+agentcronsystem workflows delete 550e8400-e29b-41d4-a716-446655440000 -y
+```
+
+---
+
+### `agentcronsystem workflows trigger`
+
+Manually trigger an immediate run of a workflow, regardless of its cron schedule. Optionally provide per-invocation parameters.
+
+```
+agentcronsystem workflows trigger [OPTIONS] <ID_OR_NAME>
+```
+
+#### Arguments
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `<ID_OR_NAME>` | `String` | Workflow UUID or name |
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--input` | | `String` | none | Input JSON (any valid JSON value) — replaces the workflow's `default_input` for this run (conflicts with `--input-file`) |
+| `--input-file` | | `String` | none | Path to a file containing input JSON (conflicts with `--input`) |
+| `--env` | `-e` | `String` | none | Per-trigger environment variable in `KEY=VALUE` format (repeatable); merges with the workflow's `env_vars`, trigger values win on collision |
+| `--target-step` | | `String` | none | Step ID to start execution from (skips earlier steps) |
+| `--follow` | | flag | `false` | After triggering, stream SSE events until `RunCompleted` or `RunFailed` |
 
 #### Behavior
 
-- Without `--follow`: Triggers the job and returns immediately with a confirmation message that includes the run ID.
-- With `--follow`: Opens an SSE connection (filtered by `job_id`) before triggering the job (to avoid race conditions with fast-completing jobs), then streams output to stdout until the job completes or fails. Note: the stream filters by `job_id`, not `run_id`, so if multiple runs of the same job are active, their output may interleave.
+- **Without `--follow`**: Triggers the workflow and returns immediately with a confirmation message that includes the run ID.
+- **With `--follow`**: Opens an SSE connection (`/api/events/workflows?workflow_id=<id>`) before triggering (to avoid race conditions with fast-completing runs), then streams events to stdout until `RunCompleted` or `RunFailed`. Events are filtered by `run_id`; output from concurrent runs of the same workflow does not interleave.
 
-**Trigger parameter behavior:**
-
-- **`--args`**: Appended to the job's base command. For a job with command `"backup.sh"`, `--args="--full --verbose"` results in the effective command `"backup.sh --full --verbose"`. This applies to both `ShellCommand` and `ScriptFile` execution types.
-- **`--env` / `-e`**: Per-trigger environment variables in `KEY=VALUE` format. Can be repeated for multiple variables. These override the job's configured `env_vars` for this single run (precedence: inherited env < job `env_vars` < trigger env).
-- **`--input`**: The provided string is written to the spawned process's stdin immediately after launch, then stdin is closed (EOF). Useful for commands that read from stdin.
+**Template substitution.** Step fields that support templates use `${input.<path>}` to reference the trigger input and `${steps.<step_id>.<accessor>}` to reference prior step outputs. The `--input` value becomes the `input` namespace in those templates.
 
 #### Output
 
 Without `--follow`, the command prints:
 
 ```
-Job 'backup' triggered (run: 01941234-bbbb-7abc-def0-123456789abc).
+Workflow '<workflow_id>' triggered (run: <run_id>).
 ```
 
-The run ID can be used with `agentcronsystem logs <job> --run <run_id>` to view the output of this specific run.
+The placeholder is the UUID returned by the server (not the name passed on the CLI). With `--follow`, an additional line `Following events (run_id=<run_id>)...` is printed.
 
 #### Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Job triggered (and stream ended, if `--follow` was used). Note: exit code 0 indicates the CLI operation succeeded, not that the job itself succeeded. |
-| 1 | Error (e.g., job not found) |
+| 0 | Workflow triggered (and stream ended, if `--follow` was used). Note: exit code 0 indicates the CLI operation succeeded, not that the workflow itself succeeded. |
+| 1 | Error (e.g., workflow not found, invalid input JSON) |
 
 #### Examples
 
 ```sh
-# Trigger a job
-agentcronsystem trigger backup
+# Trigger a workflow
+agentcronsystem workflows trigger my-pipeline
 
-# Trigger and watch output in real time
-agentcronsystem trigger backup --follow
+# Trigger and stream events in real time
+agentcronsystem workflows trigger my-pipeline --follow
 
-# Trigger with extra arguments
-agentcronsystem trigger backup --args="--full --verbose"
+# Trigger with input JSON
+agentcronsystem workflows trigger my-pipeline --input '{"repo":"my-repo","branch":"main"}'
+
+# Trigger with input from a file
+agentcronsystem workflows trigger my-pipeline --input-file /path/to/payload.json
 
 # Trigger with per-run environment variables
-agentcronsystem trigger deploy -e "ENV=staging" -e "DRY_RUN=true"
+agentcronsystem workflows trigger my-pipeline -e "ENV=staging" -e "DRY_RUN=true"
 
-# Trigger with stdin input
-agentcronsystem trigger my-job --input "yes"
+# Start execution from a specific step
+agentcronsystem workflows trigger my-pipeline --target-step review
 
-# Combine all trigger parameters
-agentcronsystem trigger backup --args="--full" -e "MODE=manual" --input "confirm" --follow
+# Combine options
+agentcronsystem workflows trigger my-pipeline --input '{"prompt":"summarize"}' -e "MODEL=claude" --follow
 ```
 
 ---
 
-## Log Commands
+### `agentcronsystem workflows runs`
 
-### `agentcronsystem logs`
-
-View run history and log output for a specific job.
+List recent runs for a workflow.
 
 ```
-agentcronsystem logs [OPTIONS] <JOB>
+agentcronsystem workflows runs [OPTIONS] <NAME_OR_ID>
 ```
 
 #### Arguments
 
 | Argument | Type | Description |
 |----------|------|-------------|
-| `<JOB>` | `String` | Job name or UUID |
+| `<NAME_OR_ID>` | `String` | Workflow UUID or name |
 
 #### Options
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--follow` | | flag | `false` | Follow live output via SSE (Ctrl+C to stop) |
-| `--run` | | `String` | none | Specific run ID to view log output for |
-| `--last` | | `usize` | `20` (if omitted) | Show last N runs in the run list. Default applied in handler, not visible in `--help`. |
-| `--tail` | | `usize` | none | Show last N lines of log output (only with `--run`) |
+| `--limit` | | `usize` | `20` | Max number of runs to return (capped at 100 by the server) |
+| `--offset` | | `usize` | `0` | Skip the first N runs (for pagination) |
 | `--json` | | flag | `false` | Output as JSON |
 
-#### Modes of Operation
-
-1. **List runs** (default): When neither `--follow` nor `--run` is specified, displays a table of recent runs for the job, limited by `--last` (default 20).
-2. **View run log** (`--run <RUN_ID>`): Displays the full log output for a specific run. Use `--tail` to limit to the last N lines.
-3. **Follow live** (`--follow`): Opens an SSE stream and prints job output events in real time. Shows start markers, output text, completion status, and error messages. This is a long-lived stream that does not auto-terminate on job completion; use Ctrl+C to stop.
-
-#### Output Columns (Run List Mode)
+#### Output Columns (Table Mode)
 
 | Column | Description |
 |--------|-------------|
-| RUN ID | UUID of the run |
-| STARTED | Timestamp of when the run started |
-| STATUS | Run status (e.g., "completed", "failed", "running") |
-| EXIT | Exit code, or `-` if not applicable |
-| SIZE | Log file size in human-readable format |
+| RUN_ID | UUID of the run |
+| STATUS | Run status (`Running`, `Completed`, `Failed`, or `Killed`) |
+| STARTED | Relative time of when the run started |
+| DURATION_MS | Total duration in milliseconds, or `-` if still running |
+| COST_USD | Total cost in USD across all agent steps, or `-` if none |
 
 #### Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Logs retrieved successfully |
-| 1 | Error (e.g., job not found, run not found) |
+| 0 | Runs retrieved successfully |
+| 1 | Error (e.g., workflow not found, daemon unreachable) |
 
 #### Examples
 
 ```sh
-# List recent runs for a job (default: last 20)
-agentcronsystem logs backup
+# List last 20 runs (default)
+agentcronsystem workflows runs my-pipeline
 
-# List the last 5 runs
-agentcronsystem logs backup --last 5
+# List last 5 runs
+agentcronsystem workflows runs my-pipeline --limit 5
 
-# View log output for a specific run
-agentcronsystem logs backup --run 550e8400-e29b-41d4-a716-446655440000
+# Paginate: skip the first 20 and return the next 10
+agentcronsystem workflows runs my-pipeline --limit 10 --offset 20
 
-# View only the last 100 lines of a run's log
-agentcronsystem logs backup --run 550e8400-e29b-41d4-a716-446655440000 --tail 100
-
-# Follow live output for a job
-agentcronsystem logs backup --follow
-
-# Output run list as JSON
-agentcronsystem logs backup --json
-
-# Output a specific run's log as JSON
-agentcronsystem logs backup --run 550e8400-e29b-41d4-a716-446655440000 --json
+# Output as JSON
+agentcronsystem workflows runs my-pipeline --json
 ```
 
 ---
@@ -674,3 +670,28 @@ Use `agentcronsystem start` to start the daemon, or check that the `--host` and 
 ## Default Daemon Address
 
 The default daemon address is `http://127.0.0.1:8377`. Override this with the global `--host` and `--port` options, or use the `--port` (`-p`) flag on `agentcronsystem start` to launch the daemon on a different port.
+
+## Common Recipes
+
+```sh
+# Start the daemon and verify it is healthy
+agentcronsystem start
+agentcronsystem status
+
+# Create a workflow and trigger it immediately, watching live output
+agentcronsystem workflows create --file my-pipeline.json
+agentcronsystem workflows trigger my-pipeline --follow
+
+# Disable a workflow temporarily, then re-enable it
+agentcronsystem workflows update my-pipeline --disable
+agentcronsystem workflows update my-pipeline --enable
+
+# Inspect the last 10 runs of a workflow
+agentcronsystem workflows runs my-pipeline --limit 10
+
+# Delete a workflow without prompting
+agentcronsystem workflows delete my-pipeline -y
+
+# Connect to a remote daemon
+agentcronsystem --host 10.0.0.5 --port 8377 workflows list
+```

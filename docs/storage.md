@@ -1,281 +1,489 @@
 # Storage and Data Management
 
-This document describes how the Agent Cron Scheduler (ACS) persists jobs, run
-logs, daemon state, and configuration on disk.  All paths below are relative to
-the **data directory** (`{data_dir}`).
+This document describes how the Agent Cron Scheduler (ACS) persists workflows,
+run records, logs, daemon state, and configuration on disk after the ACS-18
+refactor.  All paths below are relative to the **data directory** (`{data_dir}`).
+
+For how the data directory is resolved (CLI flags, env vars, platform defaults),
+see [Configuration](configuration.md#data-directory-locations).
 
 ---
 
-## 1. Data Directory Layout
+## 1. Overview
+
+Storage is organised around two complementary concerns:
+
+* **Trait-based stores** — all persistence goes through an `async_trait`
+  interface.  Each trait has one filesystem implementation (`Fs*`) and can be
+  replaced by an in-memory mock for tests.
+* **Single rooted layout** — every file the daemon writes lives under a single
+  `data_dir` chosen at startup.  There is no global state outside that tree.
+
+The three active store traits after ACS-18 are:
+
+| Trait | Impl | What it stores |
+|---|---|---|
+| `WorkflowStore` | `FsWorkflowStore` | Workflow definitions (`workflows.json`) |
+| `WorkflowRunStore` | `FsWorkflowRunStore` | Per-run `WorkflowRun` records + index |
+| *(daemon)* | `SizeManagedWriter` | Daemon process log (`daemon.log`) |
+
+Log output from step execution is written directly by `FileLogSink` (not
+through a store trait).  Migration state is maintained in a standalone
+`migrations.json` file managed by the migration runner.
+
+---
+
+## 2. Data Directory Layout
 
 ```
 {data_dir}/
-├── agentcronsystem.pid  # Daemon PID file (exclusive creation prevents duplicate instances)
-├── agentcronsystem.port # TCP port the daemon is listening on
-├── config.json          # Daemon config (fallback location, priority 4 of 5; see configuration.md)
-├── daemon.log           # Daemon process log (size-managed, max 1 GB)
-├── jobs.json            # Authoritative list of all registered jobs
-├── scripts/             # Reserved directory (created on startup; not currently used for ScriptFile path resolution)
-└── logs/
-    └── {job_id}/        # One directory per job, named by UUID
-        ├── manifest.json         # Aggregated cost/token/runtime statistics across all runs
-        ├── {run_id}.log          # Combined process output for a single run
-        └── {run_id}.meta.json    # Structured metadata for a single run
+├── agentcronsystem.pid         # Daemon PID file (exclusive creation prevents duplicate instances)
+├── agentcronsystem.port        # TCP port the daemon is listening on
+├── config.json                 # Daemon config (fallback location; see configuration.md)
+├── daemon.log                  # Daemon process log (size-managed, max 1 GB)
+├── workflows.json              # Authoritative list of all workflow definitions
+├── migrations.json             # Applied-migration state for the numbered migration runner
+├── jobs.json.migrated.<ts>     # Backup of legacy jobs.json after m001 runs (unix timestamp suffix)
+├── scripts/                    # Reserved directory (created on startup; not currently used)
+├── logs/
+│   └── {workflow_id}/          # One directory per workflow, named by UUID
+│       └── {run_id}.log        # Combined step output for a single run (append-only)
+└── runs/
+    ├── index.json              # Map of run_id → workflow_id for O(1) lookup
+    └── {workflow_id}/          # One directory per workflow, named by UUID
+        └── {run_id}.json       # Full WorkflowRun record (pretty-printed JSON)
 ```
 
-For how the data directory is resolved (CLI flags, env vars, platform defaults), see
-[Configuration](configuration.md#data-directory-locations).
-
-On daemon startup the function `create_data_dirs()` ensures the top-level
-directory and both the `logs/` and `scripts/` subdirectories exist.
+On daemon startup, `create_data_dirs()` ensures the top-level directory and
+the `logs/` and `scripts/` subdirectories exist.  The `runs/` directory is
+created by `FsWorkflowRunStore::new()`.
 
 ---
 
-## 2. Job Storage (`JsonJobStore`)
+## 3. Atomic Writes Pattern
 
-**Source:** `acs/src/storage/jobs.rs`
+All three file-based stores use the same write strategy to prevent partial
+writes from leaving the data directory in a corrupt state:
 
-### Struct definition
+1. Serialize the new content.
+2. Write to a sibling `.tmp` file (e.g. `workflows.json.tmp`).
+3. Rename the `.tmp` file over the target file.
+
+On POSIX systems the rename is atomic.  On Windows, `tokio::fs::rename`
+performs a non-atomic replace, but this is still safer than writing in-place
+because the old file is only replaced after the new content is fully written.
+After a successful rename, no `.tmp` file remains on disk.
+
+The files that use this pattern:
+
+| Target | Temporary |
+|---|---|
+| `workflows.json` | `workflows.json.tmp` |
+| `runs/{workflow_id}/{run_id}.json` | `runs/{workflow_id}/{run_id}.json.tmp` |
+| `runs/index.json` | `runs/index.json.tmp` |
+| `migrations.json` | `migrations.json.tmp` |
+
+---
+
+## 4. Corruption Handling
+
+### workflows.json
+
+When `FsWorkflowStore::new()` reads `workflows.json` and encounters invalid
+JSON:
+
+1. The corrupted file is copied to `workflows.json.bak.<unix_timestamp>` (e.g.
+   `workflows.json.bak.1746288000`).
+2. A warning is logged via `tracing::warn!`.
+3. The store starts with an **empty** workflow list.
+
+The timestamped suffix means multiple corruption events produce distinct
+backups rather than overwriting each other.
+
+### runs/index.json
+
+When `FsWorkflowRunStore::new()` reads `runs/index.json` and encounters
+invalid JSON:
+
+1. The corrupted index is copied to `runs/index.json.bak.<unix_timestamp>`.
+2. A warning is logged.
+3. The runner **rebuilds** the index by scanning all
+   `runs/{workflow_id}/{run_id}.json` files on disk.  Only files whose parent
+   directory name is a valid UUID and whose filename stem is a valid UUID are
+   included.
+
+This means run history is never lost from a corrupt index; the index is always
+recoverable from the run files themselves.
+
+### migrations.json
+
+If `migrations.json` is missing or contains invalid JSON, `read_state()`
+returns an empty `HashSet`, treating the daemon as if no migrations have been
+applied.  **No backup file is created** (unlike `workflows.json` and
+`runs/index.json`); a corrupt state simply causes pending migrations to re-run
+(each migration's `run()` method must be idempotent).
+
+---
+
+## 5. WorkflowStore
+
+**Sources:** `acs/src/storage/mod.rs`, `acs/src/storage/workflows.rs`
+
+### Trait
 
 ```rust
-pub struct JsonJobStore {
-    file_path: PathBuf,    // {data_dir}/jobs.json
-    cache: RwLock<Vec<Job>>,
+#[async_trait]
+pub trait WorkflowStore: Send + Sync {
+    async fn list_workflows(&self) -> Result<Vec<Workflow>>;
+    async fn get_workflow(&self, id: Uuid) -> Result<Option<Workflow>>;
+    async fn find_by_name(&self, name: &str) -> Result<Option<Workflow>>;
+    async fn create_workflow(&self, new: NewWorkflow) -> Result<Workflow>;
+    async fn update_workflow(&self, id: Uuid, update: WorkflowUpdate) -> Result<Workflow>;
+    async fn delete_workflow(&self, id: Uuid) -> Result<()>;
 }
 ```
+
+| Method | Description |
+|---|---|
+| `list_workflows` | Returns all workflows. |
+| `get_workflow` | Looks up a single workflow by UUID; returns `None` if not found. |
+| `find_by_name` | Looks up a single workflow by name; returns `None` if not found. |
+| `create_workflow` | Validates, assigns a UUIDv7 ID, sets `version: 1`, persists, and returns the new workflow. |
+| `update_workflow` | Partial update; bumps `version` when any definition-affecting field changes. Returns `NotFound` or `Conflict` as appropriate. |
+| `delete_workflow` | Removes a workflow by UUID; returns `NotFound` if it does not exist. |
+
+### FsWorkflowStore
+
+```rust
+pub struct FsWorkflowStore {
+    path: PathBuf,           // {data_dir}/workflows.json
+    inner: RwLock<Vec<Workflow>>,
+}
+```
+
+All workflow data is held in a `tokio::sync::RwLock<Vec<Workflow>>`.  Reads
+acquire a read lock; mutations acquire a write lock.  After every mutation the
+full list is persisted to `workflows.json` via `persist()`.
 
 ### On-disk format
 
-`jobs.json` contains a pretty-printed JSON array of `Job` objects, serialized
-with `serde_json::to_string_pretty`.  Example:
+`workflows.json` is a pretty-printed JSON array of `Workflow` objects
+(`serde_json::to_string_pretty`).  The array may be empty (`[]`).
 
-```json
-[
-  {
-    "id": "01912345-6789-7abc-def0-123456789abc",
-    "name": "backup-db",
-    "schedule": "0 2 * * *",
-    "execution": { "type": "ShellCommand", "value": "pg_dump mydb > /backups/db.sql" },
-    "enabled": true,
-    "timezone": null,
-    "working_dir": null,
-    "env_vars": null,
-    "timeout_secs": 0,
-    "log_environment": false,
-    "pre_hook": null,
-    "pre_hook_script_type": null,
-    "post_hook": null,
-    "post_hook_script_type": null,
-    "created_at": "2025-06-01T12:00:00Z",
-    "updated_at": "2025-06-01T12:00:00Z",
-    "last_run_at": null,
-    "last_exit_code": null,
-    "next_run_at": null
-  }
-]
-```
+### Version bump rules
 
-Note: `next_run_at` is serialized to `jobs.json` but is always `null` on disk. It is skipped during deserialization (`#[serde(skip_deserializing)]`) and only computed at runtime in API response handlers.
+`update_workflow` tracks whether any **definition-affecting field** changed.
+Definition-affecting fields are: `steps`, `on_failure`, `input_schema`,
+`default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `schedule`,
+`schedule_mode`, `timezone`, and `name`.
 
-### In-memory caching
+The `enabled` flag is explicitly excluded — toggling a workflow on or off does
+not alter its definition and therefore does **not** bump `version`.
 
-All job data is held in a `tokio::sync::RwLock<Vec<Job>>`.  Reads acquire a
-**read lock**; mutations acquire a **write lock**.  After every mutation the
-full list is persisted to disk via `persist()`.
-
-### Thread safety
-
-`JsonJobStore` is `Send + Sync`.  The `RwLock` allows concurrent readers while
-serializing writers, making it safe for simultaneous API requests.
-
-### Atomic writes
-
-The `persist` method writes to a temporary file first, then renames it over the
-target:
-
-```rust
-async fn persist(&self, jobs: &[Job]) -> Result<()> {
-    let tmp_path = self.file_path.with_extension("json.tmp");
-    let json = serde_json::to_string_pretty(jobs)?;
-    tokio::fs::write(&tmp_path, json.as_bytes()).await?;
-    tokio::fs::rename(&tmp_path, &self.file_path).await?;
-    Ok(())
-}
-```
-
-The temporary file is `jobs.json.tmp`.  After a successful rename no `.tmp`
-file remains on disk.
-
-### Corruption recovery
-
-When `JsonJobStore::new()` loads `jobs.json` and encounters invalid JSON:
-
-1. The corrupted file is copied to `jobs.json.bak`.
-2. A warning is logged.
-3. The store starts with an **empty** job list.
-
-This prevents a single corrupted byte from permanently locking the user out of
-the system.
+Runtime metadata fields (`last_run_at`, `last_run_status`, `last_run_id`) are
+not present in `WorkflowUpdate` at all and cannot trigger a version bump.
 
 ### Duplicate name enforcement
 
-Both `create_job` and `update_job` check for name collisions among existing
-jobs, returning an `AcsError::Conflict` if a duplicate is found.
+Both `create_workflow` and `update_workflow` reject duplicate names among
+existing workflows, returning `AcsError::Conflict`.
 
 ---
 
-## 3. Log Storage (`FsLogStore`)
+## 6. WorkflowRunStore
 
-**Source:** `acs/src/storage/logs.rs`
+**Source:** `acs/src/storage/workflow_runs.rs`
 
-### Struct definition
+### Trait
 
 ```rust
-pub struct FsLogStore {
-    logs_dir: PathBuf,  // {data_dir}/logs/
+#[async_trait]
+pub trait WorkflowRunStore: Send + Sync {
+    async fn create_run(&self, run: WorkflowRun) -> Result<(), AcsError>;
+    async fn update_run(&self, run: &WorkflowRun) -> Result<(), AcsError>;
+    async fn get_run(&self, run_id: Uuid) -> Result<Option<WorkflowRun>, AcsError>;
+    async fn list_runs(
+        &self,
+        workflow_id: Uuid,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<WorkflowRun>, AcsError>;
+    async fn count_runs(&self, workflow_id: Uuid) -> Result<usize, AcsError>;
+    async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError>;
 }
 ```
 
-### Directory structure
-
-Each job gets its own subdirectory under `logs/`, named by the job's UUID.
-Inside that directory, each run produces two files:
-
-| File | Description |
+| Method | Description |
 |---|---|
-| `{run_id}.log` | Combined process output (stdout + stderr merged), appended incrementally. The executor prepends a `$ command` header line, and optionally an `=== Environment ===` block when `log_environment` is enabled on the job. |
-| `{run_id}.meta.json` | Structured metadata (`JobRun` struct as pretty-printed JSON) |
+| `create_run` | Writes the initial run file and updates the index. |
+| `update_run` | Atomically replaces the run file (uses index to locate the workflow directory). |
+| `get_run` | Uses index for O(1) lookup; reads and deserializes the run file. Returns `None` if not in index or file is absent. |
+| `list_runs` | Lists runs for a workflow, latest-first. `limit=0` returns all. Supports `offset` for pagination. Skips corrupted files with a warning. |
+| `count_runs` | Returns the number of run files in a workflow's directory. |
+| `delete_run` | Removes the run from the index (persisted atomically) and deletes the `.json` file. Also attempts to delete the matching `.log` file. **Known bug**: `delete_run` calls `path.with_extension("log")` on the run JSON path, producing `runs/{workflow_id}/{run_id}.log` — but actual run logs live at `logs/{workflow_id}/{run_id}.log`. The best-effort log delete therefore silently fails (the file isn't found at the expected path). Pending a code fix. |
 
-### Metadata file format (`{run_id}.meta.json`)
+### FsWorkflowRunStore
+
+```rust
+pub struct FsWorkflowRunStore {
+    runs_dir: PathBuf,           // {data_dir}/runs/
+    index: Arc<Mutex<RunIndex>>, // run_id → workflow_id (in-memory + on-disk)
+}
+```
+
+### Persistence paths
+
+Each run is stored as a pretty-printed JSON file:
+
+```
+{data_dir}/runs/{workflow_id}/{run_id}.json
+```
+
+The trigger handler persists the initial `Running` record synchronously before
+spawning the workflow executor, so `GET /api/runs/{id}` between trigger and
+execution start always returns the run rather than a 404.
+
+### Index file design
+
+`{data_dir}/runs/index.json` contains a flat JSON object mapping every known
+`run_id` (UUID string) to its `workflow_id` (UUID string):
 
 ```json
 {
-  "run_id": "019abcde-1234-7000-8000-aabbccddeeff",
-  "job_id": "01912345-6789-7abc-def0-123456789abc",
-  "started_at": "2025-06-15T02:00:00Z",
-  "finished_at": "2025-06-15T02:00:05Z",
-  "status": "Completed",
-  "exit_code": 0,
-  "log_size_bytes": 1024,
-  "error": null,
-  "trigger_params": {
-    "args": "--full",
-    "env": { "MODE": "manual" },
-    "input": null
-  },
-  "total_cost_usd": 0.0042,
-  "duration_ms": 4821,
-  "num_turns": 3,
-  "model": "claude-sonnet-4-20250514",
-  "usage": {
-    "input_tokens": 1200,
-    "output_tokens": 340,
-    "cache_read_input_tokens": 800
-  }
+  "019abcde-1234-7000-8000-aabbccddeeff": "01912345-6789-7abc-def0-123456789abc"
 }
 ```
 
-The `status` field is one of: `"Running"`, `"Completed"`, `"Failed"`, or
-`"Killed"`.
+This enables O(1) `get_run` lookups without scanning workflow subdirectories.
+The index is kept in sync with the in-memory `RunIndex` cache and written
+atomically after every `create_run` or `delete_run` operation.
 
-The `trigger_params` field is present only when the run was triggered manually
-with per-invocation parameters via `POST /api/jobs/{id}/trigger` or
-`acs trigger --args/--env/--input`. It is omitted (not serialized) when `null`,
-preserving backward compatibility with older metadata files. When present, it
-contains:
+### Latest-first ordering
 
-| Field   | Type                      | Description                                                      |
-|---------|---------------------------|------------------------------------------------------------------|
-| `args`  | string or null            | Extra arguments that were appended to the job's command string.  |
-| `env`   | object or null            | Per-trigger environment variables that were merged into the run. |
-| `input` | string or null            | Data that was written to the process's stdin.                    |
+`list_runs` sorts run IDs descending before applying `offset`/`limit`.  Run
+IDs are UUIDv7 values, which are monotonically time-ordered, so descending UUID
+order is equivalent to latest-first chronological order without reading any
+file contents.
 
-The following fields are populated when the Claude CLI reports cost/usage
-metadata. This includes output from the main command as well as pre-hooks and
-post-hooks — if multiple sources report cost data, the costs are summed. They
-are omitted from the JSON file entirely when not present, preserving backward
-compatibility with older metadata files.
+---
 
-| Field | Type | Description |
-|---|---|---|
-| `total_cost_usd` | number or absent | Total cost in USD as reported by the Claude CLI. |
-| `duration_ms` | integer or absent | CLI-reported execution duration in milliseconds. |
-| `num_turns` | integer or absent | Number of conversation turns in the Claude CLI session. |
-| `model` | string or absent | Primary model used during the Claude CLI session. |
-| `usage` | object or absent | Full token usage data as returned by the Claude CLI (schema is pass-through from the CLI and may vary by model/version). |
+## 7. FileLogSink
 
-### Append-mode writing
+**Source:** `acs/src/workflow/log_sink.rs`
 
-Log output is written incrementally as the job produces it.  `append_log` opens
-the file with `create(true).append(true)` and calls `write_all` followed by
-`flush`:
+`FileLogSink` is the concrete [`LogSink`] trait implementation that writes step
+output to a single combined log file per run.  It is **not** accessed through
+`WorkflowRunStore`; the daemon creates it directly and passes it to the
+workflow executor as an `Arc<dyn LogSink>`.
+
+### File location
+
+```
+{data_dir}/logs/{workflow_id}/{run_id}.log
+```
+
+The file is opened in **create + append** mode.  If the file already exists
+(e.g., the daemon resumed after a crash), new output is appended after existing
+content.  The initial byte offset is seeded from `metadata().len()` so position
+tracking remains accurate.
+
+### Marker format
+
+At the start and end of each step the executor calls `write_step_start` and
+`write_step_end`, which write delimiter lines that identify the step, the
+daemon version, and a timestamp:
+
+```
+===== ACS-<VERSION>:STEP:<step_id>:START:<iso8601> =====
+<step stdout and stderr interleaved>
+===== ACS-<VERSION>:STEP:<step_id>:END:exit=<code>:<iso8601> =====
+```
+
+`<VERSION>` is the value of the `CARGO_PKG_VERSION` environment variable
+compiled into the binary (e.g. `0.4.1`).  The version stamp lets log parsers
+handle format changes across daemon releases.
+
+When the exit code is unavailable (e.g., the step was killed before it could
+return), the code field is rendered as `-1`:
+
+```
+===== ACS-0.4.1:STEP:main:END:exit=-1:2026-05-02T14:30:00Z =====
+```
+
+### Byte-offset tracking
+
+`write_step_start` returns the file offset **before** the start marker is
+written.  `write_step_end` returns the file offset **after** the end marker is
+written.  The executor stores these offsets in `StepRun.log_byte_offset_start`
+and `StepRun.log_byte_offset_end` respectively, enabling fast random access to
+any step's output without scanning the entire file.
+
+---
+
+## 8. EventEmittingLogSink
+
+**Source:** `acs/src/workflow/event_log_sink.rs`
+
+`EventEmittingLogSink` is a `LogSink` wrapper that delegates all method calls
+to an inner `Arc<dyn LogSink>` while also emitting `WorkflowEvent::StepOutput`
+SSE events for every `write_chunk` call.  It has **no on-disk effect of its
+own** — it writes nothing directly to disk.
 
 ```rust
-async fn append_log(&self, job_id: Uuid, run_id: Uuid, data: &[u8]) -> Result<()> {
-    let job_dir = self.job_dir(job_id);
-    tokio::fs::create_dir_all(&job_dir)
-        .await
-        .context("Failed to create job log directory")?;
-    let log_path = self.log_path(job_id, run_id);
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .await?;
-    file.write_all(data).await?;
-    file.flush().await?;
-    Ok(())
+pub struct EventEmittingLogSink {
+    inner: Arc<dyn LogSink>,
+    event_tx: broadcast::Sender<WorkflowEvent>,
+    run_id: Uuid,
+    workflow_id: Uuid,
+    current_step: Mutex<Option<CurrentStep>>,
 }
 ```
 
-### Tail reading
+### Wiring
 
-`read_log` supports an optional `tail` parameter.  When provided, only the last
-`n` lines of the log file are returned.  When `None`, the entire file content
-is returned.  If the log file does not exist, an empty string is returned.
+Both the trigger handler and the cron scheduler wrap `FileLogSink::create(...)`
+in `EventEmittingLogSink::new(...)` before passing the sink to `run_workflow`.
+The inner `FileLogSink` handles persistence; the wrapper adds the live-stream
+layer.
 
-### Run listing and pagination
+### set_current_step
 
-`list_runs` reads all `.meta.json` files in a job's log directory, sorts them
-by `started_at` **descending** (newest first), and applies `offset` and `limit`
-for pagination.  It returns both the paginated slice and the **total** count of
-runs.
+The executor calls `set_current_step(step_index, step_id)` before invoking
+each step's `execute()`.  This updates the `current_step` field so that
+subsequent `write_chunk` calls emit events tagged with the correct
+`step_index` and `step_id`.  The call is forwarded to the inner sink (which
+ignores it by default via the `LogSink` trait's no-op implementation).
 
-Malformed `.meta.json` files are skipped with a warning rather than causing a
-hard error.
+### Chunk events
 
----
-
-## 4. Log Rotation
-
-**Source:** `acs/src/storage/logs.rs` -- `FsLogStore::cleanup()`
-
-The maximum number of retained runs per job is controlled by the `max_log_files_per_job`
-config field (see [Configuration](configuration.md#field-reference)). Note: `max_log_file_size`
-is defined in `DaemonConfig` but is **not currently enforced** at runtime.
-
-### Cleanup behavior
-
-The `cleanup` method is called after a job run completes.  It:
-
-1. Reads all `.meta.json` files in the job's log directory.
-2. If the count does not exceed `max_files` (i.e., `<= max_files`), returns immediately (no-op).
-3. Sorts runs by `started_at` **ascending** (oldest first).
-4. Computes `to_remove = runs.len() - max_files`.
-5. For each of the `to_remove` oldest runs, deletes both the `.meta.json` and
-   `.log` files.
-
-Malformed `.meta.json` files are skipped with a warning and are not counted
-toward the run total, so they will not be cleaned up by this method.
-
-This ensures the most recent runs are always preserved.
-
-If the job's log directory does not exist (the job has never run), cleanup
-succeeds silently.
+On every `write_chunk(data)`:
+1. If `set_current_step` has been called, a `WorkflowEvent::StepOutput` event
+   is sent on the broadcast channel with `run_id`, `workflow_id`, `step_index`,
+   `step_id`, the chunk data (lossy UTF-8), and a timestamp.
+2. If no subscribers are listening (the broadcast send returns an error), the
+   error is silently discarded — this never blocks or panics.
+3. The chunk is always forwarded to the inner sink regardless of whether an
+   event was emitted.
 
 ---
 
-## 5. Daemon Log Management (`SizeManagedWriter`)
+## 9. Migration System
+
+**Sources:** `acs/src/migration/mod.rs`,
+`acs/src/migration/m001_jobs_to_workflows.rs`,
+`acs/src/migration/legacy_types.rs`
+
+### Design
+
+Migrations are numbered files: `mNNN_<name>.rs` (the `m` prefix is required
+because Rust module names cannot start with a digit).  Each file contains a
+unit struct implementing the `Migration` trait:
+
+```rust
+#[async_trait]
+pub trait Migration: Send + Sync {
+    fn name(&self) -> &'static str;
+    async fn run(&self, data_dir: &Path) -> Result<bool, AcsError>;
+}
+```
+
+`run()` must be **idempotent** — re-running on already-migrated data must be a
+no-op.  It returns `Ok(true)` when work was performed, or `Ok(false)` when
+there was nothing to do.
+
+### State file
+
+Applied migration names are tracked in `{data_dir}/migrations.json`:
+
+```json
+{
+  "applied": ["m001_jobs_to_workflows"]
+}
+```
+
+`run_pending()` reads this file at daemon startup, skips already-applied
+migrations, and writes the updated state after each successful migration.
+Writes are atomic (`.tmp` + rename).
+
+If the file is missing, `read_state()` returns an empty set (fresh install).
+If the file is corrupt, `read_state()` logs a warning and returns an empty set
+(safe to re-run migrations; each is idempotent).
+
+### Runner behaviour
+
+`run_pending()` iterates the registry in order.  On the first migration error
+it stops and propagates the error; partial progress (applied migrations before
+the failure) is preserved in the state file.  Migrations that return
+`Ok(false)` (nothing to do) are recorded in `skipped_not_needed` but are
+**not** added to the applied set.
+
+### Adding a migration
+
+1. Create `acs/src/migration/mNNN_<name>.rs` (increment NNN).
+2. Implement `Migration` for a unit struct.
+3. Append `Box::new(mNNN_<name>::YourStruct)` to the `registry()` function in
+   `mod.rs`.
+
+---
+
+## 10. Backwards Compatibility — jobs.json
+
+Migration `m001_jobs_to_workflows` handles the transition from the pre-ACS-18
+`jobs.json` format.
+
+### Decision table
+
+| Condition | Action |
+|---|---|
+| `workflows.json` already exists | No-op (return `Ok(false)`) |
+| `jobs.json` does not exist | No-op — fresh install (return `Ok(false)`) |
+| Both conditions false | Read `jobs.json`, synthesise workflows, write `workflows.json`, rename `jobs.json` |
+
+### Backup file name
+
+After a successful migration, the original `jobs.json` is **renamed** (not
+deleted) to:
+
+```
+{data_dir}/jobs.json.migrated.<unix_timestamp>
+```
+
+For example: `jobs.json.migrated.1746288000`.  The file is never deleted
+automatically.  Multiple failed-then-retried migrations cannot produce duplicate
+backup names because the presence of `workflows.json` causes the migration to
+short-circuit as a no-op after the first successful run.
+
+### Step synthesis rules
+
+For each legacy `Job`, the synthesised `Workflow` preserves the original job's
+UUID so that existing log files (keyed by `job_id` / `workflow_id`) remain
+accessible without path changes.
+
+| Legacy field | Synthesised step |
+|---|---|
+| `pre_hook` (if present) | `ShellStep` with `id="pre_hook"`, `on_failure=Abort`, `always_run=false` |
+| `execution: ShellCommand(cmd)` | `ShellStep` with `id="main"`, `on_failure=Abort` |
+| `execution: ScriptFile(path)` | `ScriptStep` with `id="main"`, `script_type` inferred from extension |
+| `post_hook` (if present) | `ShellStep` with `id="post_hook"`, `on_failure=Abort`, `always_run=true` |
+
+> **Note:** The migration currently emits `ShellStep` for `pre_hook` and `post_hook` regardless of `pre_hook_script_type`/`post_hook_script_type`. The script-type fields are read from legacy jobs but not used to decide ShellStep vs ScriptStep — a code-level simplification.
+
+`job.timeout_secs` is copied to `common.timeout_secs` on all synthesised
+steps.  A value of `0` becomes `None` (no timeout).
+
+`job.last_exit_code` is mapped to `workflow.last_run_status`: `0` →
+`Completed`, any other value → `Failed`, absent → `None`.
+
+`job.allow_concurrent` is preserved verbatim.  The new-workflow default is
+`true`, but migrated entries keep whatever value the original job had.
+
+`script_type` is inferred from the file extension: `.sh`/`.bash` → `"shell"`,
+`.bat`/`.cmd` → `"batch"`, `.py` → `"python"`, `.ps1` → `"powershell"`.
+Unrecognised extensions → `None`.
+
+---
+
+## 11. Daemon Log Management (`SizeManagedWriter`)
 
 **Source:** `acs/src/daemon/mod.rs`
 
@@ -288,196 +496,27 @@ prevents unbounded growth.
 const DAEMON_LOG_MAX_BYTES: u64 = 1_073_741_824; // 1 GB
 ```
 
-### `SizeManagedWriter` struct
-
-```rust
-struct SizeManagedWriter {
-    file: std::fs::File,
-    path: PathBuf,
-    bytes_written: u64,
-    max_size: u64,
-}
-```
-
-### Behavior
+### Behaviour
 
 - Opens `daemon.log` in **create + append** mode.
-- Seeds `bytes_written` from the current file size so that truncation triggers
-  correctly even when the file already has content.
-- On every `write()` call, increments `bytes_written` by the number of bytes
-  written.
+- Seeds `bytes_written` from the current file size.
+- On every `write()` call, increments `bytes_written`.
 - When `bytes_written >= max_size`, triggers `truncate_oldest_quarter()`.
 
-### Truncation algorithm (`truncate_oldest_quarter`)
+### Truncation algorithm
 
 1. Reads the entire file content into memory.
-2. Calculates a 25% byte offset (`content.len() / 4`).
-3. Advances from the 25% offset to the **next newline boundary** so that no
-   line is cut in half.
-4. Writes the retained 75% portion to a temporary file (`daemon.log.tmp`).
+2. Calculates the 25% byte offset (`content.len() / 4`).
+3. Advances from that offset to the next newline so no line is cut in half.
+4. Writes the retained 75% to `daemon.log.tmp`.
 5. Renames the temporary file over `daemon.log` (atomic replace).
-6. Reopens the file in append mode and resets `bytes_written` to the retained
+6. Reopens the file in append mode; resets `bytes_written` to the retained
    size.
 
-If the file is empty, `bytes_written` is reset to zero and no I/O occurs.  If
-no newline is found after the 25% mark (degenerate single-line case), the
-entire content is kept.
+If the file is empty, `bytes_written` resets to zero with no I/O.  If no
+newline is found after the 25% mark, the entire content is kept.  If the cut
+point falls at or beyond the end of the content, the file is truncated to zero
+via a truncate-then-reopen without using the temporary file.
 
-If the cut point falls at or beyond the end of the content (e.g., the file
-shrank externally), the file is truncated to zero via a truncate-then-reopen
-sequence — the temporary file is **not** used in this case.
-
-### Startup behavior
-
-On daemon startup, `daemon.log` is **truncated to zero** (via
-`std::fs::File::create`) so each daemon session starts with a fresh log.  The
-`SizeManagedWriter` is then created and connected to the `tracing` framework
-via `tracing_appender::non_blocking`.
-
----
-
-## 6. Orphaned Log Cleanup
-
-**Source:** `acs/src/daemon/mod.rs` -- `cleanup_orphaned_logs()`
-
-When the daemon starts, it scans the `logs/` directory for subdirectories whose
-names are valid UUIDs.  For each such directory, it checks whether a
-corresponding job exists in the job store.  If the job has been deleted, the
-entire log directory (including all run files) is removed via
-`remove_dir_all`.
-
-### Rules
-
-- Only directories whose names parse as valid UUIDs are considered.
-- Non-UUID directories (e.g., `not-a-uuid`) are left untouched.
-- If the `logs/` directory does not exist, cleanup returns immediately.
-- Failures to remove individual orphaned directories are logged as warnings but
-  do not abort the cleanup of remaining directories.
-
----
-
-## 7. Storage Traits
-
-**Source:** `acs/src/storage/mod.rs`
-
-Both storage backends implement async traits, enabling testing with in-memory
-mock implementations.
-
-### `JobStore` trait
-
-```rust
-#[async_trait]
-pub trait JobStore: Send + Sync {
-    async fn list_jobs(&self) -> Result<Vec<Job>>;
-    async fn get_job(&self, id: Uuid) -> Result<Option<Job>>;
-    async fn find_by_name(&self, name: &str) -> Result<Option<Job>>;
-    async fn create_job(&self, new: NewJob) -> Result<Job>;
-    async fn update_job(&self, id: Uuid, update: JobUpdate) -> Result<Job>;
-    async fn delete_job(&self, id: Uuid) -> Result<()>;
-}
-```
-
-| Method | Description |
-|---|---|
-| `list_jobs` | Returns all jobs. |
-| `get_job` | Looks up a single job by UUID; returns `None` if not found. |
-| `find_by_name` | Looks up a single job by name; returns `None` if not found. |
-| `create_job` | Validates, assigns a UUIDv7 ID, persists, and returns the new job. |
-| `update_job` | Partial update of a job's fields; returns `NotFound` or `Conflict` errors as appropriate. |
-| `delete_job` | Removes a job by UUID; returns `NotFound` if the job does not exist. |
-
-### `LogStore` trait
-
-```rust
-#[async_trait]
-pub trait LogStore: Send + Sync {
-    async fn create_run(&self, run: &JobRun) -> Result<()>;
-    async fn update_run(&self, run: &JobRun) -> Result<()>;
-    async fn append_log(&self, job_id: Uuid, run_id: Uuid, data: &[u8]) -> Result<()>;
-    async fn read_log(&self, job_id: Uuid, run_id: Uuid, tail: Option<usize>) -> Result<String>;
-    async fn list_runs(
-        &self,
-        job_id: Uuid,
-        limit: usize,
-        offset: usize,
-    ) -> Result<(Vec<JobRun>, usize)>;
-    async fn cleanup(&self, job_id: Uuid, max_files: usize) -> Result<()>;
-    async fn read_manifest(&self, job_id: Uuid) -> Result<Option<JobManifest>>;
-    async fn update_manifest(&self, job_id: Uuid, run: &JobRun) -> Result<()>;
-    async fn rebuild_manifest(&self, job_id: Uuid) -> Result<JobManifest>;
-}
-```
-
-| Method | Description |
-|---|---|
-| `create_run` | Creates the job log directory (if needed) and writes the initial `.meta.json`. |
-| `update_run` | Overwrites the `.meta.json` with updated run metadata (e.g., after completion). |
-| `append_log` | Appends raw bytes to the run's `.log` file (creates the file on first call). |
-| `read_log` | Reads the full log or the last `tail` lines. Returns an empty string if the file is missing. |
-| `list_runs` | Lists all runs for a job with pagination; returns `(paginated_runs, total_count)`. |
-| `cleanup` | Removes the oldest runs beyond `max_files`, deleting both `.log` and `.meta.json` for each. |
-| `read_manifest` | Reads `manifest.json` for a job; returns `None` if the file is missing or cannot be parsed. |
-| `update_manifest` | Merges a completed run's data into the manifest, creating it if it does not exist. |
-| `rebuild_manifest` | Reconstructs the manifest by replaying all `.meta.json` files in the job's log directory. |
-
----
-
-## 8. Per-Job Manifest Files
-
-**Source:** `acs/src/storage/logs.rs`, `acs/src/models/manifest.rs`
-
-Each job maintains a `manifest.json` file that aggregates cost, token usage, and runtime statistics across all of its runs.
-
-### Location
-
-```
-{data_dir}/logs/{job_id}/manifest.json
-```
-
-### When updated
-
-`update_manifest` is called automatically after every run completes, regardless of outcome (success, failure, timeout, or kill). It reads the existing manifest (creating a new one if absent), merges the completed run via `JobManifest::merge_run`, and writes the result back atomically using a temp-file-then-rename pattern.
-
-If the manifest is missing or corrupt, `rebuild_manifest` reconstructs it by iterating all `.meta.json` files in the job's log directory and replaying each run through `merge_run`. This makes the manifest self-healing — it can always be regenerated from the source-of-truth run files.
-
-### Data structures
-
-```rust
-pub struct JobManifest {
-    pub job_id: Uuid,
-    pub version: u32,
-    pub updated_at: DateTime<Utc>,
-    pub total_runs: u64,
-    pub total_cost_usd: f64,
-    pub total_duration_ms: u64,
-    pub daily_buckets: BTreeMap<String, TimeBucket>,   // key: "YYYY-MM-DD"
-    pub weekly_buckets: BTreeMap<String, TimeBucket>,  // key: "YYYY-WNN" (ISO week)
-    pub monthly_buckets: BTreeMap<String, TimeBucket>, // key: "YYYY-MM"
-}
-
-pub struct TimeBucket {
-    pub runs: u64,
-    pub cost_usd: f64,
-    pub duration_ms: u64,
-    pub num_turns: u64,
-    pub models: BTreeMap<String, ModelUsageBucket>,
-}
-
-pub struct ModelUsageBucket {
-    pub runs: u64,
-    pub cost_usd: f64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_creation_input_tokens: u64,
-    pub cache_read_input_tokens: u64,
-}
-```
-
-`JobManifest` holds lifetime totals at the top level, plus three sets of time-bucketed `TimeBucket`s. Each `TimeBucket` further breaks down token usage per model via `ModelUsageBucket`. Runs that have no cost or usage data (e.g., non-Claude shell commands) are still counted in `runs` with zero values for the cost/token fields.
-
-All three struct types use `#[serde(default)]`, so older manifest files missing newer fields will deserialize safely with zero values rather than failing.
-
-### Atomic writes
-
-Manifests are written using the same temp-file-then-rename strategy as `jobs.json`: the updated manifest is serialized to `manifest.json.tmp`, then renamed over `manifest.json`. This ensures no partial writes are visible even if the process is interrupted mid-write.
-
+On daemon startup, `daemon.log` is **truncated to zero** so each daemon session
+starts with a fresh log.

@@ -10,8 +10,8 @@ Documentation for the Agent Cron Scheduler (ACS) -- a cross-platform cron schedu
 | [Configuration](configuration.md) | Config file format, field reference, config resolution order, data directory locations, environment variables. |
 | [CLI Reference](cli-reference.md) | All `agentcronsystem` subcommands: flags, options, exit codes, usage examples. |
 | [API Reference](api-reference.md) | REST API endpoints: routes, request/response formats, status codes, SSE events, data models. |
-| [Job Management](job-management.md) | Job model, execution types, cron expressions, timezone support, job lifecycle, validation rules. |
+| [Workflow Management](workflow-management.md) | Workflow model, step kinds (Shell/Script/Http/Match/SetVar/Agent), template substitution, run lifecycle, failure policies, cron expressions. |
 | [Service Registration](service-registration.md) | Platform-specific service setup: Windows Registry Run key, macOS launchd, Linux systemd. |
-| [Storage](storage.md) | On-disk persistence: JsonJobStore, FsLogStore, file formats, log rotation, daemon log management, storage traits. |
+| [Storage](storage.md) | On-disk persistence: WorkflowStore, WorkflowRunStore, FileLogSink, EventEmittingLogSink, atomic writes, corruption handling, migration system, daemon log management. |
 | [Troubleshooting](troubleshooting.md) | Common problems and solutions: startup issues, job execution, logs, data corruption, CLI errors. |
 | [Known Issues](KNOWN_ISSUES.md) | Remaining documentation issues identified during Round 3 audits; minor items that do not affect core accuracy. |
