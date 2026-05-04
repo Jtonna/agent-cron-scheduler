@@ -358,7 +358,15 @@ impl WorkflowRunStore for FsWorkflowRunStore {
         }
 
         // Remove the matching .log file if present (best-effort).
-        let log_path = run_path.with_extension("log");
+        // Logs live at <data_dir>/logs/<workflow_id>/<run_id>.log, not alongside the JSON.
+        let logs_dir = self
+            .runs_dir
+            .parent()
+            .unwrap_or(&self.runs_dir)
+            .join("logs");
+        let log_path = logs_dir
+            .join(workflow_id.to_string())
+            .join(format!("{}.log", run_id));
         if log_path.exists() {
             if let Err(e) = tokio::fs::remove_file(&log_path).await {
                 tracing::warn!(
@@ -680,7 +688,59 @@ mod tests {
         );
     }
 
-    // ── 9. test_index_corruption_handled ─────────────────────────────────────
+    // ── 9. test_delete_run_removes_log_file ──────────────────────────────────
+
+    #[tokio::test]
+    async fn test_delete_run_removes_log_file() {
+        let (store, tmp) = setup_store().await;
+        let workflow_id = Uuid::now_v7();
+        let run = make_run(workflow_id);
+        let run_id = run.run_id;
+
+        store.create_run(run).await.expect("create_run");
+
+        // Create a matching log file at the canonical logs/<workflow_id>/<run_id>.log path.
+        let log_dir = tmp
+            .path()
+            .join("logs")
+            .join(workflow_id.to_string());
+        tokio::fs::create_dir_all(&log_dir)
+            .await
+            .expect("create log dir");
+        let log_file = log_dir.join(format!("{}.log", run_id));
+        tokio::fs::write(&log_file, b"step output here")
+            .await
+            .expect("write log file");
+        assert!(log_file.exists(), "log file should exist before delete");
+
+        // Verify JSON record exists.
+        let run_file = tmp
+            .path()
+            .join("runs")
+            .join(workflow_id.to_string())
+            .join(format!("{}.json", run_id));
+        assert!(run_file.exists(), "run JSON file should exist before delete");
+
+        store.delete_run(run_id).await.expect("delete_run");
+
+        // Both JSON record AND log file should be gone.
+        assert!(
+            !run_file.exists(),
+            "Run JSON file should be removed after delete"
+        );
+        assert!(
+            !log_file.exists(),
+            "Run log file at logs/<workflow_id>/<run_id>.log should be removed after delete"
+        );
+
+        // Index should no longer contain the run.
+        assert!(
+            store.get_run(run_id).await.expect("get after delete").is_none(),
+            "get_run should return None after delete"
+        );
+    }
+
+    // ── 10. test_index_corruption_handled ────────────────────────────────────
 
     #[tokio::test]
     async fn test_index_corruption_handled() {
@@ -754,7 +814,7 @@ mod tests {
         );
     }
 
-    // ── 10. test_persistence_across_instances ─────────────────────────────────
+    // ── 11. test_persistence_across_instances ────────────────────────────────
 
     #[tokio::test]
     async fn test_persistence_across_instances() {

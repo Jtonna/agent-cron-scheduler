@@ -1,4 +1,4 @@
-# ACS Configuration Guide
+﻿# ACS Configuration Guide
 
 This document describes how to configure the Agent Cron Scheduler (ACS) daemon, including the config file format, field reference, CLI overrides, config file resolution, and examples.
 
@@ -33,7 +33,7 @@ The platform config directory is resolved using the `dirs::config_dir()` functio
 ### Important Behavior
 
 - Priority 1 (`--config`): If you explicitly pass a config file path and it does not exist, the daemon returns an error and does not start. This is the only priority level that fails on a missing file.
-- Priorities 2–4: If the resolved path does not exist, the daemon silently moves to the next priority level.
+- Priorities 2â€“4: If the resolved path does not exist, the daemon silently moves to the next priority level.
 - Priority 5: Always succeeds. The daemon runs with all default values.
 
 ## Field Reference
@@ -43,14 +43,12 @@ The platform config directory is resolved using the `dirs::config_dir()` functio
 | `host` | string | `"127.0.0.1"` | IP address the daemon HTTP server binds to. Use `"0.0.0.0"` to listen on all interfaces. |
 | `port` | integer (u16) | `8377` | TCP port the daemon HTTP server listens on. |
 | `data_dir` | string or null | `null` | Override the data directory path. When `null`, the platform default is used (see [Data Directory Locations](#data-directory-locations)). |
-| `max_log_files_per_job` | integer | `50` | Maximum number of log files retained per workflow run history entry. Older files are cleaned up automatically. (Field name retains 'job' naming for compatibility; counts apply to workflow run logs. Currently not enforced by the workflow log layer in the post-ACS-18 runtime — reserved for future use.) |
+| `max_log_files_per_job` | integer | `50` | Maximum number of log files retained per workflow run history entry. Older files are cleaned up automatically. (Field name retains 'job' naming for compatibility; counts apply to workflow run logs. Currently not enforced by the workflow log layer in the post-ACS-18 runtime â€” reserved for future use.) |
 | `max_log_file_size` | integer (bytes) | `10485760` (10 MB) | Maximum size in bytes for individual run log files. **(Not currently enforced; reserved for future use.)** |
 | `default_timeout_secs` | integer | `0` | Default step timeout in seconds. A value of `0` means no timeout. **(Reserved; not currently applied to workflow steps at runtime.)** |
 | `broadcast_capacity` | integer | `4096` | Capacity of the internal broadcast channel used for workflow events (SSE streaming). |
 | `pty_rows` | integer (u16) | `24` | Number of rows for the pseudo-terminal allocated to step processes. **(No effect; the production spawner uses piped I/O, not a PTY.)** |
 | `pty_cols` | integer (u16) | `80` | Number of columns for the pseudo-terminal allocated to step processes. **(No effect; the production spawner uses piped I/O, not a PTY.)** |
-| `default_pre_hook` | string or null | `null` | Accepted for backwards compatibility; has no runtime effect in the current release. See [Migration Note](#migration-note-fields-removed-in-acs-18). |
-| `default_post_hook` | string or null | `null` | Accepted for backwards compatibility; has no runtime effect in the current release. See [Migration Note](#migration-note-fields-removed-in-acs-18). |
 | `default_allow_concurrent` | bool | `false` | Reserved default concurrency setting. New workflows default to `allow_concurrent: true` regardless of this config field. This config field is reserved for a future feature that would override that default at daemon scope; it is currently not consumed. |
 | `default_schedule_mode` | string (`Cron` \| `WaitForCompletion`) | `"Cron"` | Reserved default schedule mode. **(Reserved; not currently applied to new workflows at runtime.)** |
 
@@ -92,7 +90,7 @@ The daemon's bind host is resolved with the following precedence (highest to low
 2. `host` value in the loaded config file
 3. Built-in default (`127.0.0.1`)
 
-> **Edge case:** Because the global `--host` flag uses `127.0.0.1` as its clap default, there is no way to distinguish between the user explicitly passing `--host 127.0.0.1` and not passing the flag at all. If your config file sets `host: "0.0.0.0"` and you run `agentcronsystem --host 127.0.0.1 start`, the config value (`0.0.0.0`) wins silently — the CLI flag is ignored because its value matches the default. To force `127.0.0.1` when the config sets a different host, remove or change the `host` field in the config file instead of relying on the CLI flag. (See `acs/src/cli/daemon.rs` lines 162–166.)
+> **Edge case:** Because the global `--host` flag uses `127.0.0.1` as its clap default, there is no way to distinguish between the user explicitly passing `--host 127.0.0.1` and not passing the flag at all. If your config file sets `host: "0.0.0.0"` and you run `agentcronsystem --host 127.0.0.1 start`, the config value (`0.0.0.0`) wins silently â€” the CLI flag is ignored because its value matches the default. To force `127.0.0.1` when the config sets a different host, remove or change the `host` field in the config file instead of relying on the CLI flag. (See `acs/src/cli/daemon.rs` lines 162â€“166.)
 
 For the full list of CLI options, see [CLI Reference](cli-reference.md).
 
@@ -128,7 +126,7 @@ On startup, the daemon ensures the data directory and its subdirectories (`logs/
 
 ## Examples
 
-### Minimal config — change only the port
+### Minimal config â€” change only the port
 
 ```json
 {
@@ -190,15 +188,3 @@ agentcronsystem start
 
 The daemon loads config from `/opt/acs/etc/config.json` and stores data under `/opt/acs/data/`.
 
-## Migration Note: Fields Removed in ACS-18
-
-The ACS-18 refactor replaced the single-command `Job` model with a multi-step `Workflow` model. Two global-hook config fields that only made sense in the old model are no longer functional:
-
-| Field | Status |
-|---|---|
-| `default_pre_hook` | Accepted by the config parser (no parse error) but has **no runtime effect**. Safe to remove from your config file. |
-| `default_post_hook` | Accepted by the config parser (no parse error) but has **no runtime effect**. Safe to remove from your config file. |
-
-If you are upgrading from a version prior to ACS-18 and your config file contains these fields, the daemon will start normally — the fields are silently ignored. You can remove them at your convenience.
-
-Per-workflow pre- and post-processing is now modelled as explicit `ShellStep` or `ScriptStep` entries within the workflow's `steps` array. See [API Reference](api-reference.md) for workflow definition details.

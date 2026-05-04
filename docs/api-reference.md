@@ -311,7 +311,7 @@ Manually trigger an immediate execution of the workflow, regardless of its cron 
 |-----------|--------|-------------------------|
 | `id`      | string | Workflow UUID or name.  |
 
-**Request Body:** [TriggerParams](#triggerparams) JSON object. Required (send `{"input": null}` to fall back to the workflow's `default_input`; sending `{}` causes a 422 because `TriggerParams.input` is required at the wire level).
+**Request Body:** [TriggerParams](#triggerparams) JSON object. Required (send `{"input": null}` or `{}` to fall back to the workflow's `default_input`; the `input` field defaults to `null` when omitted).
 
 ```json
 {
@@ -323,7 +323,7 @@ Manually trigger an immediate execution of the workflow, regardless of its cron 
 
 | Field         | Type                      | Required | Default        | Description                                                                                                  |
 |---------------|---------------------------|----------|----------------|--------------------------------------------------------------------------------------------------------------|
-| `input`       | any JSON value            | Yes      |                | Replaces `workflow.default_input` for this run. All step templates referencing `${input.*}` receive these values. Pass `null` to fall back to the workflow's `default_input`; sending `{}` is stored as `{}` (an empty object, not the default). |
+| `input`       | any JSON value            | No       | `null`         | Replaces `workflow.default_input` for this run. All step templates referencing `${input.*}` receive these values. When omitted or `null`, falls back to the workflow's `default_input`. Sending `{}` stores an empty object (not the default). |
 | `env`         | object (string -> string) | No       | `null`         | Overlays onto `workflow.env_vars` for this run (merge, not replace). Trigger `env` wins on collision.       |
 | `target_step` | string                    | No       | `null`         | Optional step `id` to route stdin to. Rarely needed.                                                         |
 
@@ -339,7 +339,8 @@ Manually trigger an immediate execution of the workflow, regardless of its cron 
 {
   "run_id": "01941234-bbbb-7abc-def0-123456789abc",
   "workflow_id": "01941234-5678-7abc-def0-123456789abc",
-  "workflow_version": 1
+  "workflow_version": 1,
+  "run_url": "/api/runs/01941234-bbbb-7abc-def0-123456789abc"
 }
 ```
 
@@ -348,6 +349,7 @@ Manually trigger an immediate execution of the workflow, regardless of its cron 
 | `run_id`           | string (UUID) | Pre-generated run identifier. Use immediately with `GET /api/runs/{run_id}` or SSE filters. |
 | `workflow_id`      | string (UUID) | The workflow that was triggered.                                             |
 | `workflow_version` | integer       | The workflow version at trigger time (snapshotted into the run record).     |
+| `run_url`          | string        | Convenience URL for the run: `/api/runs/{run_id}`.                          |
 
 The run record is persisted to the `WorkflowRunStore` with `status: "Running"` **before** the background task begins, so `GET /api/runs/{run_id}` immediately after trigger always returns a result rather than 404.
 
@@ -473,7 +475,9 @@ Request cancellation of a running workflow run. Sends a kill signal to the curre
 | 404 Not Found | No run found for the given UUID. |
 | 500 Internal Server Error | Failed to update run record. |
 
-No response body on 202.
+```json
+{"message": "Kill signal sent"}
+```
 
 **Behavior:**
 
@@ -903,7 +907,7 @@ Request body for `POST /api/workflows/{id}/trigger`.
 
 | Field         | Type                      | Required | Description                                                                                |
 |---------------|---------------------------|----------|--------------------------------------------------------------------------------------------|
-| `input`       | any JSON value            | Yes      | Trigger payload. Required at the wire level (`TriggerParams.input` must be present). Pass `null` to fall back to `workflow.default_input`; sending `{}` is stored as `{}` (empty object). |
+| `input`       | any JSON value            | No       | Trigger payload; optional, defaults to `null`. When `null` or omitted, falls back to `workflow.default_input`. Sending `{}` stores an empty object rather than falling back to `default_input`. |
 | `env`         | object (string -> string) | No       | Per-trigger environment variables. Merged onto `workflow.env_vars` (trigger wins on collision). |
 | `target_step` | string                    | No       | Route stdin to this step's `id`. Rarely needed.                                            |
 
@@ -1188,7 +1192,7 @@ The following validation rules are enforced on workflow creation (`POST /api/wor
 ### Schedule (Cron Expression)
 
 - Parsed and validated at submission time using 5-field standard cron syntax (`minute hour day-of-month month day-of-week`).
-- Invalid cron expressions currently return `500 Internal Server Error` due to a known issue in `map_store_error`. Other validation failures return `422 Unprocessable Entity` with `error: "validation_error"` and a message starting with `"Cron error: ..."`. Note: this documents current code behavior pending a fix.
+- Invalid cron expressions return `422 Unprocessable Entity` with `error: "validation_error"` and a message starting with `"Invalid cron expression ..."`. Other validation failures return `422` with the same error code.
 
 ### Timezone
 

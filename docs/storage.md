@@ -220,7 +220,7 @@ pub trait WorkflowRunStore: Send + Sync {
 | `get_run` | Uses index for O(1) lookup; reads and deserializes the run file. Returns `None` if not in index or file is absent. |
 | `list_runs` | Lists runs for a workflow, latest-first. `limit=0` returns all. Supports `offset` for pagination. Skips corrupted files with a warning. |
 | `count_runs` | Returns the number of run files in a workflow's directory. |
-| `delete_run` | Removes the run from the index (persisted atomically) and deletes the `.json` file. Also attempts to delete the matching `.log` file. **Known bug**: `delete_run` calls `path.with_extension("log")` on the run JSON path, producing `runs/{workflow_id}/{run_id}.log` — but actual run logs live at `logs/{workflow_id}/{run_id}.log`. The best-effort log delete therefore silently fails (the file isn't found at the expected path). Pending a code fix. |
+| `delete_run` | Removes the run from the index (persisted atomically) and deletes the `.json` file. Also attempts to delete the matching log file at `logs/{workflow_id}/{run_id}.log` (best-effort; logs a warning if the file is absent or cannot be removed). |
 
 ### FsWorkflowRunStore
 
@@ -461,12 +461,14 @@ accessible without path changes.
 
 | Legacy field | Synthesised step |
 |---|---|
-| `pre_hook` (if present) | `ShellStep` with `id="pre_hook"`, `on_failure=Abort`, `always_run=false` |
+| `pre_hook` (if present) with `pre_hook_script_type = null` or `"shell"` | `ShellStep` with `id="pre_hook"`, `on_failure=Abort`, `always_run=false` |
+| `pre_hook` (if present) with `pre_hook_script_type = "python"`, `"batch"`, or `"powershell"` | Hook body written to `migrated_scripts/{job_id}_pre_hook.{ext}`; `ScriptStep` with `id="pre_hook"`, `script_type` set, `always_run=false` |
 | `execution: ShellCommand(cmd)` | `ShellStep` with `id="main"`, `on_failure=Abort` |
 | `execution: ScriptFile(path)` | `ScriptStep` with `id="main"`, `script_type` inferred from extension |
-| `post_hook` (if present) | `ShellStep` with `id="post_hook"`, `on_failure=Abort`, `always_run=true` |
+| `post_hook` (if present) with `post_hook_script_type = null` or `"shell"` | `ShellStep` with `id="post_hook"`, `on_failure=Abort`, `always_run=true` |
+| `post_hook` (if present) with `post_hook_script_type = "python"`, `"batch"`, or `"powershell"` | Hook body written to `migrated_scripts/{job_id}_post_hook.{ext}`; `ScriptStep` with `id="post_hook"`, `script_type` set, `always_run=true` |
 
-> **Note:** The migration currently emits `ShellStep` for `pre_hook` and `post_hook` regardless of `pre_hook_script_type`/`post_hook_script_type`. The script-type fields are read from legacy jobs but not used to decide ShellStep vs ScriptStep — a code-level simplification.
+When a non-shell hook body is written to a script file, the `migrated_scripts/` directory is created under `{data_dir}` during the migration run. The script file content is identical to the original hook body from `jobs.json`.
 
 `job.timeout_secs` is copied to `common.timeout_secs` on all synthesised
 steps.  A value of `0` becomes `None` (no timeout).

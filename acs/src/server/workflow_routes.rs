@@ -67,7 +67,9 @@ fn map_store_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
                     message: msg.clone(),
                 }),
             ),
-            AcsError::Validation(msg) => (
+            // Both Validation and Cron errors are user-facing input problems
+            // that map to 422 Unprocessable Entity.
+            AcsError::Validation(msg) | AcsError::Cron(msg) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 Json(ErrorResponse {
                     error: "validation_error".to_string(),
@@ -298,6 +300,7 @@ struct TriggerResponse {
     run_id: Uuid,
     workflow_id: Uuid,
     workflow_version: u32,
+    run_url: String,
 }
 
 pub async fn trigger_workflow(
@@ -399,6 +402,7 @@ pub async fn trigger_workflow(
     (
         StatusCode::ACCEPTED,
         Json(TriggerResponse {
+            run_url: format!("/api/runs/{}", run_id),
             run_id,
             workflow_id,
             workflow_version,
@@ -467,6 +471,11 @@ pub async fn get_workflow_run(
 // removes the registry entry before writing its final status, so step 1
 // would have been a no-op in that scenario.
 
+#[derive(Serialize)]
+struct KillResponse {
+    message: &'static str,
+}
+
 pub async fn kill_workflow_run(
     State(state): State<Arc<AppState>>,
     Path(run_id_str): Path<String>,
@@ -519,7 +528,13 @@ pub async fn kill_workflow_run(
                     .into_response();
                 }
             }
-            StatusCode::ACCEPTED.into_response()
+            (
+                StatusCode::ACCEPTED,
+                Json(KillResponse {
+                    message: "Kill signal sent",
+                }),
+            )
+                .into_response()
         }
         Ok(None) => error_response(
             StatusCode::NOT_FOUND,
@@ -662,6 +677,8 @@ mod tests {
                 .cloned())
         }
         async fn create_workflow(&self, new: NewWorkflow) -> anyhow::Result<Workflow> {
+            // Mirror the real FsWorkflowStore: validate before persisting.
+            crate::models::workflow::validate_new_workflow(&new)?;
             let mut wfs = self.workflows.write().await;
             if wfs.iter().any(|w| w.name == new.name) {
                 return Err(crate::errors::AcsError::Conflict(format!(
@@ -1101,5 +1118,34 @@ mod tests {
         let json = body_json(resp.into_body()).await;
         assert_eq!(json["run_id"], run_id.to_string());
         assert_eq!(json["status"], "Running");
+    }
+
+    #[tokio::test]
+    async fn test_create_workflow_invalid_cron_returns_422() {
+        let state = make_state_default(Arc::new(InMemoryWorkflowStore::new()));
+        let app = crate::server::create_router(state);
+        // Use an invalid cron expression to trigger AcsError::Cron.
+        let mut bad_wf = make_new_workflow("bad-cron-wf");
+        bad_wf.schedule = "not a cron".to_string();
+        let body = serde_json::to_string(&bad_wf).unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflows")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["error"], "validation_error");
+        assert!(
+            json["message"].as_str().unwrap().contains("cron"),
+            "expected cron error in message, got: {}",
+            json["message"]
+        );
     }
 }

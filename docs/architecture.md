@@ -296,21 +296,25 @@ See [Storage](storage.md) for implementation details.
      a. If WaitForCompletion: check
         workflow_run_store for active
         runs; skip if found.
-     b. Generate run_id (Uuid::now_v7())
-     c. tokio::spawn(async move {
+     b. If allow_concurrent=false + Cron:
+        send kill to any active run, wait
+        up to 5 s for it to terminate.
+     c. Generate run_id (Uuid::now_v7())
+     d. tokio::spawn(async move {
           run_store.create_run(initial)
           create log_dir + FileLogSink
           wrap in EventEmittingLogSink
           build TriggerParams (empty input)
           run_workflow(wf, run_id, trigger,
-            sink, event_tx, kill_signals=None)
+            sink, event_tx,
+            kill_signals=Some(registry))
           run_store.update_run(final_run)
         })
 ```
 
 When the workflow list changes (create/update/delete via API), the route handler calls `scheduler_notify.notify_one()` to wake the scheduler.
 
-**Note:** Scheduler-dispatched runs pass `kill_signals: None` to `run_workflow`, so their kill_tx is not registered. `POST /api/runs/{id}/kill` cannot signal cron-fired runs to terminate; it can only mark the persistent record (which the executor will then overwrite on natural completion).
+Scheduler-dispatched runs register in the shared `kill_signals` registry, so `POST /api/runs/{id}/kill` works for cron-fired runs the same as for manually triggered runs.
 
 ### 3.3 Workflow Execution Flow (run_workflow)
 
@@ -450,7 +454,7 @@ StepDef (tag = "kind")
 
 | Field | Notes |
 |---|---|
-| `step_index` | Position in the execution timeline |
+| `step_index` | 1-based position in the runtime execution sequence, matching the `step_index` in `StepStarted` / `StepCompleted` SSE events |
 | `kind` | `"shell"` \| `"script"` \| `"http"` \| `"match"` \| `"set_var"` \| `"agent"` |
 | `log_byte_offset_start` / `_end` | Byte range in the combined run log file for fast UI indexing |
 | `cost_usd` | Populated only by `AgentStep` |
@@ -470,7 +474,11 @@ StepDef (tag = "kind")
 
 ### 5.1 `allow_concurrent` Flag
 
-`Workflow.allow_concurrent` is stored on the workflow definition but is **not currently enforced by the scheduler**. Concurrency control is driven exclusively by `schedule_mode: WaitForCompletion` (the scheduler checks `workflow_run_store.list_runs` for active runs and skips dispatch if found). The `allow_concurrent` field is reserved for future enforcement.
+`Workflow.allow_concurrent` controls what the scheduler does when a cron tick fires and a run for that workflow is already active.
+
+- **`allow_concurrent: true`** (default): dispatch proceeds immediately regardless of active runs. Multiple runs of the same workflow may execute in parallel.
+- **`allow_concurrent: false`** with `schedule_mode: Cron`: the scheduler looks up any `Running` run in the kill-signals registry, sends the kill signal, waits up to 5 seconds for it to terminate, then dispatches the new run.
+- **`schedule_mode: WaitForCompletion`**: the cron tick is skipped entirely if an active run exists. `allow_concurrent` has no additional effect in this mode — `WaitForCompletion` takes precedence.
 
 ### 5.2 Kill Channel — `watch<bool>`
 
@@ -613,7 +621,7 @@ The migration system (`acs/src/migration/`) supports forward-only, numbered data
 
 | Name | File | What it does |
 |---|---|---|
-| `m001_jobs_to_workflows` | `m001_jobs_to_workflows.rs` | Reads `jobs.json` (legacy). For each `Job`: creates a `Workflow` with the same schedule/name/timezone/etc. Synthesizes steps from `pre_hook` → `ShellStep("pre_hook", always_run=false)`, `execution` → `ShellStep`/`ScriptStep("main")`, `post_hook` → `ShellStep("post_hook", always_run=true)`. Preserves the original `Job.allow_concurrent` value (does not force it to `false`). Writes `workflows.json`. Renames `jobs.json` to `jobs.json.migrated.<ts>`. Returns `Ok(false)` on fresh install (no `jobs.json`). |
+| `m001_jobs_to_workflows` | `m001_jobs_to_workflows.rs` | Reads `jobs.json` (legacy). For each `Job`: creates a `Workflow` with the same schedule/name/timezone/etc. Synthesizes steps from `pre_hook` (if present and `pre_hook_script_type` is shell/null → `ShellStep("pre_hook", always_run=false)`; if non-shell type → hook body written to `migrated_scripts/{id}_pre_hook.{ext}` and a `ScriptStep` pointing at that file), `execution` → `ShellStep`/`ScriptStep("main")`, `post_hook` (same script_type logic, `always_run=true`). Creates `migrated_scripts/` directory when needed. Preserves the original `Job.allow_concurrent` value. Writes `workflows.json`. Renames `jobs.json` to `jobs.json.migrated.<ts>`. Returns `Ok(false)` on fresh install (no `jobs.json`). |
 
 **Adding a new migration**: Create `src/migration/mNNN_<name>.rs`, implement `Migration`, append to `registry()` in `mod.rs`.
 

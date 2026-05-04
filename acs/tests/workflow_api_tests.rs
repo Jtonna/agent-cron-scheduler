@@ -1183,3 +1183,162 @@ async fn test_restart_simulation_run_persists() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// ACS-18 API correctness tests
+// ---------------------------------------------------------------------------
+
+/// Trigger response includes run_url formatted as /api/runs/{run_id}.
+#[tokio::test]
+async fn test_trigger_response_includes_run_url() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
+            .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("run-url-test")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+
+    let run_id = trigger_json["run_id"].as_str().expect("run_id present");
+    let run_url = trigger_json["run_url"].as_str().expect("run_url present");
+    assert_eq!(
+        run_url,
+        format!("/api/runs/{}", run_id),
+        "run_url should be /api/runs/{{run_id}}"
+    );
+}
+
+/// POST /api/runs/{run_id}/kill returns 202 with JSON body {"message": "Kill signal sent"}.
+#[tokio::test]
+async fn test_kill_endpoint_returns_json_body() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    #[cfg(windows)]
+    let sleep_cmd = "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"";
+    #[cfg(not(windows))]
+    let sleep_cmd = "sleep 30";
+
+    let wf = NewWorkflow {
+        name: "kill-body-test".to_string(),
+        schedule: "*/5 * * * *".to_string(),
+        timezone: None,
+        schedule_mode: Default::default(),
+        enabled: true,
+        steps: vec![shell_step("slow", sleep_cmd)],
+        input_schema: None,
+        default_input: None,
+        working_dir: None,
+        env_vars: None,
+        allow_concurrent: None,
+        on_failure: FailurePolicy::default(),
+    };
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&wf).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+    let run_id = trigger_json["run_id"].as_str().unwrap();
+
+    // Give the executor a moment to start.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let kill_resp = client
+        .post(format!("{}/api/runs/{}/kill", base_url, run_id))
+        .send()
+        .await
+        .expect("POST /kill");
+    assert_eq!(kill_resp.status(), 202, "kill should return 202");
+
+    let kill_json: serde_json::Value = kill_resp
+        .json()
+        .await
+        .expect("kill response should be JSON");
+    assert_eq!(
+        kill_json["message"], "Kill signal sent",
+        "kill body should contain message"
+    );
+}
+
+/// POST /api/workflows/{id}/trigger with empty body `{}` succeeds (input defaults to null).
+#[tokio::test]
+async fn test_trigger_with_empty_body_succeeds() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
+            .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("empty-body-trigger")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let resp = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{}"#)
+        .send()
+        .await
+        .expect("trigger with empty body");
+
+    assert_eq!(
+        resp.status(),
+        202,
+        "triggering with {{}} body should succeed (input defaults to null)"
+    );
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert!(json["run_id"].is_string(), "run_id should be present");
+}

@@ -136,7 +136,7 @@ ACS registers itself as a user-level service for auto-start at login. See [Servi
 **Possible causes:**
 - **Missing shell:** Shell steps execute via `cmd.exe /C` on Windows or `/bin/sh -c` on Unix. If the shell is not available in the execution environment, spawning fails.
 - **Script file not found:** For Script steps, the script path must exist and be accessible by the daemon process at the time the step runs.
-- **Windows PowerShell scripts:** `.ps1` files are executed via `pwsh -File` (PowerShell 7+ Core). Users with only Windows PowerShell 5.1 (`powershell.exe`) will see spawn errors; install PowerShell 7+ to fix. Ensure the execution policy permits running scripts.
+- **Windows PowerShell scripts:** `.ps1` files are executed via `pwsh -File` when `pwsh` (PowerShell 7+ Core) is on the system PATH. If `pwsh` is not found, ACS falls back to `powershell.exe` (Windows PowerShell 5.1) automatically. Ensure the execution policy permits running scripts (`Set-ExecutionPolicy RemoteSigned` or `Bypass` for the current user).
 - **Permission issues:** The user running the ACS daemon must have execute permission on the command or script.
 
 **Solution:**
@@ -176,43 +176,27 @@ ACS registers itself as a user-level service for auto-start at login. See [Servi
 
 ---
 
-## 4. Workflow Runtime Caveats
+## 4. Workflow Runtime Notes
 
-These are known behavioral limitations grounded in the current implementation. They are not bugs but should be understood when building or debugging workflows.
+This section describes runtime behaviors that are relevant when building or debugging workflows.
 
-### Cron-Fired Runs Cannot Be Killed via the Kill Endpoint
+### Killing Cron-Fired Runs
 
-**Symptom:** `POST /api/runs/{id}/kill` returns 202 and the run record shows `Killed`, but the underlying process continues running to completion, after which the final status is overwritten with `Completed` or `Failed`.
+`POST /api/runs/{id}/kill` works for both manually triggered runs and cron-fired runs. The scheduler registers each dispatched run's kill sender in the shared `kill_signals` registry, so the kill endpoint can signal any run regardless of how it was started.
 
-**Cause:** The scheduler spawns cron-fired runs by calling `run_workflow` with `kill_signals: None` (`daemon/scheduler.rs`). With no kill registry entry, the kill endpoint's signal send is a no-op. The handler then writes `Killed` to the persistent run record, but the executor completes normally and calls `update_run` with its own final status (`Completed` or `Failed`), overwriting the `Killed` status.
+### `allow_concurrent: false` with `schedule_mode: Cron`
 
-**Manual-trigger runs** (via `POST /api/workflows/{id}/trigger`) pass the full `kill_signals` registry and are killable normally.
+When `allow_concurrent: false` and `schedule_mode` is `Cron`, the scheduler kills the in-progress run before dispatching the new tick's run. The scheduler sends the kill signal to the active run, waits up to 5 seconds for it to terminate, then dispatches the new run. If the active run does not terminate within 5 seconds, the new run is dispatched anyway.
 
-**Workaround:** To stop a cron-fired run you must kill the underlying OS process manually (find the PID in the daemon log) or restart the daemon.
+To skip dispatch instead of killing: set `schedule_mode` to `WaitForCompletion`. That mode skips any cron tick that fires while a run is active.
 
-### `allow_concurrent: false` Does Not Prevent Concurrent Cron Dispatches
+### `StepRun.step_index` in Run Records
 
-**Symptom:** Two cron-fired runs of the same workflow are executing at the same time even though `allow_concurrent` is set to `false` in the workflow definition.
+`StepRun.step_index` reflects the 1-based runtime execution order. The first step to execute in a run has `step_index: 1`, the second has `step_index: 2`, and so on. Branch steps inside a `MatchStep` continue the counter from where the match step left off. This value matches the `step_index` field in `StepStarted` and `StepCompleted` SSE events.
 
-**Cause:** `allow_concurrent` is stored on the `Workflow` model and serialized to disk, but the scheduler (`daemon/scheduler.rs`) does not check it before dispatching. Only `schedule_mode: WaitForCompletion` (checked at lines 181–204 of `scheduler.rs`) prevents a new dispatch when a previous run is still active.
+### `pass_stdin` Source Selection
 
-**Solution:** Set `schedule_mode` to `WaitForCompletion` on workflows that must not run concurrently. The `allow_concurrent` field is currently reserved for future enforcement.
-
-### `StepRun.step_index` Is Always 0 in Run Records
-
-**Symptom:** When reading a `WorkflowRun` via `GET /api/runs/{id}`, every entry in the `steps` array has `step_index: 0` regardless of the actual execution order.
-
-**Cause:** `make_step_run` and `make_failed_step_run` in `workflow/executor.rs` hardcode `step_index: 0` in the `StepRun` they construct. The actual runtime index is tracked in `StepContext.step_index` and used for SSE events, but is not carried into the persisted `StepRun` record.
-
-**Impact:** Step ordering in persisted run records must be inferred from the array order in `WorkflowRun.steps[]`, not from the `step_index` field. The SSE stream (`StepStarted` / `StepCompleted` events) does carry the correct non-zero `step_index`.
-
-### `pass_stdin` Source Selection Is Non-Deterministic for Multi-Step Pipelines
-
-**Symptom:** When using `pass_stdin: true` on a Shell or Script step that follows more than one prior step, the stdin content is unpredictable — sometimes it comes from the wrong upstream step.
-
-**Cause:** Both `ShellStep` and `ScriptStep` implement `pass_stdin` by calling `ctx.steps.values().last()` (`workflow/steps/shell.rs` line 54, `script.rs` line 69). `ctx.steps` is a `HashMap<String, StepOutput>`. `HashMap::values()` does not guarantee insertion order, so `.last()` returns a value from an arbitrary step rather than the immediately preceding one.
-
-**Workaround:** Avoid relying on `pass_stdin` in workflows with more than one prior step. Instead, use a `SetVarStep` to explicitly capture and name the output you want to pipe, then reference it via template substitution (`${steps.<id>.stdout}`) in the step's command string.
+When `pass_stdin: true`, a Shell or Script step receives the stdout of the step that executed immediately before it in the run. The step context tracks outputs in insertion order, so the immediately-prior step's output is always the one piped to stdin.
 
 ---
 

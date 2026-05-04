@@ -27,16 +27,3 @@ The raw JSON from `acs -v status` is the health endpoint response, which
 does not include service registration info, even though the formatted
 (non-verbose) output does (`cli/daemon.rs:542`, `cli/daemon.rs:544-547`).
 
----
-
-## LOW — Runtime behavior
-
-### 4. Cron-fired runs cannot be killed via `POST /api/runs/{id}/kill`
-
-The scheduler dispatches runs with `kill_signals: None`
-(`daemon/scheduler.rs:281`), so the kill-signal registry entry is never
-inserted for cron-fired runs. `POST /api/runs/{run_id}/kill` will return
-a 404 for those runs because the registry lookup at
-`server/workflow_routes.rs:492` finds no sender. Manually triggered runs
-(via `POST /api/workflows/{id}/trigger`) do wire kill signals and are
-killable.

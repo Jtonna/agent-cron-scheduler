@@ -322,8 +322,13 @@ pub struct StepRun {
 
 // ─── TriggerParams (workflow variant) ────────────────────────────────────────
 
+fn default_trigger_input() -> serde_json::Value {
+    serde_json::Value::Null
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TriggerParams {
+    #[serde(default = "default_trigger_input")]
     pub input: serde_json::Value,
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,

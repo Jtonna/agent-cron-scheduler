@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
+use indexmap::IndexMap;
 use serde_json::json;
 use tokio::sync::{broadcast, watch, RwLock};
 use uuid::Uuid;
@@ -227,7 +228,9 @@ async fn execute_steps(
         let result = run_step_with_policy(step_def, ctx, effective_policy, started_at).await;
 
         match result {
-            StepRunResult::Completed(run, output) => {
+            StepRunResult::Completed(mut run, output) => {
+                run.step_index = step_index;
+                run.kind = step_kind.to_string();
                 // Emit StepCompleted after successful execution.
                 emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
                     run_id,
@@ -241,7 +244,9 @@ async fn execute_steps(
                 ctx.steps.insert(common.id.clone(), output);
                 step_runs.push(run);
             }
-            StepRunResult::Failed(run) => {
+            StepRunResult::Failed(mut run) => {
+                run.step_index = step_index;
+                run.kind = step_kind.to_string();
                 // Emit StepCompleted with non-zero exit code or None.
                 emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
                     run_id,
@@ -255,7 +260,9 @@ async fn execute_steps(
                 step_runs.push(run);
                 *aborted = true;
             }
-            StepRunResult::FailedContinue(run, output) => {
+            StepRunResult::FailedContinue(mut run, output) => {
+                run.step_index = step_index;
+                run.kind = step_kind.to_string();
                 // Insert the actual output (even though the step failed) so that
                 // downstream template references like ${steps.<id>.exit_code} resolve.
                 emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
@@ -271,7 +278,9 @@ async fn execute_steps(
                 step_runs.push(run);
                 // Do NOT set aborted — continue policy means keep going.
             }
-            StepRunResult::Killed(run) => {
+            StepRunResult::Killed(mut run) => {
+                run.step_index = step_index;
+                run.kind = step_kind.to_string();
                 emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
                     run_id,
                     workflow_id,
@@ -437,9 +446,9 @@ fn make_step_run(
     error: Option<String>,
 ) -> StepRun {
     StepRun {
-        step_index: 0, // caller will not rely on this; step_index is tracked via ctx
+        step_index: 0, // patched at call site in execute_steps via mut run.step_index
         step_id: common.id.clone(),
-        kind: kind_from_common(common),
+        kind: "unknown".to_string(), // patched at call site
         status,
         started_at,
         finished_at: Some(Utc::now()),
@@ -458,9 +467,9 @@ fn make_failed_step_run(
     error: &str,
 ) -> StepRun {
     StepRun {
-        step_index: 0,
+        step_index: 0, // patched at call site in execute_steps via mut run.step_index
         step_id: common.id.clone(),
-        kind: kind_from_common(common),
+        kind: "unknown".to_string(), // patched at call site
         status: RunStatus::Failed,
         started_at,
         finished_at: Some(Utc::now()),
@@ -473,13 +482,9 @@ fn make_failed_step_run(
     }
 }
 
-/// Derive the step kind string from the common struct.
-/// (We don't have the full StepDef here, so we do a best-effort based on id context.
-/// The actual kind is set by the StepDef at the call-site — this is only used
-/// for failed steps where we don't have an output.)
+/// Derive the step kind string from the step definition (legacy stub).
+#[allow(dead_code)]
 fn kind_from_common(_common: &crate::models::workflow::StepDefCommon) -> String {
-    // We cannot determine kind from StepDefCommon alone; callers that need the
-    // correct kind for a failed step pass it explicitly via the top-level runner.
     "unknown".to_string()
 }
 
@@ -554,7 +559,7 @@ pub async fn run_workflow(
         run_id,
         step_index: 0,
         input: effective_input.clone(),
-        steps: HashMap::new(),
+        steps: IndexMap::new(),
         log_sink,
         working_dir,
         env,
@@ -1562,7 +1567,83 @@ mod tests {
         );
     }
 
-    // ── Test 19: Kill after run completion is a no-op ─────────────────────────
+
+    // ── Test 20: step_index is non-zero and matches runtime order ────────────
+
+    #[tokio::test]
+    async fn test_step_run_step_index_matches_runtime_order() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "step_index_check",
+            vec![
+                shell_step("s1", "echo first"),
+                shell_step("s2", "echo second"),
+                shell_step("s3", "echo third"),
+            ],
+        );
+
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+
+        assert_eq!(run.status, RunStatus::Completed);
+        assert_eq!(run.steps.len(), 3);
+
+        // step_index should be 1, 2, 3 in order
+        assert_eq!(run.steps[0].step_index, 1, "first step should have step_index=1");
+        assert_eq!(run.steps[1].step_index, 2, "second step should have step_index=2");
+        assert_eq!(run.steps[2].step_index, 3, "third step should have step_index=3");
+    }
+
+    // ── Test 21: Failed step records actual kind (not "unknown") ─────────────
+
+    #[tokio::test]
+    async fn test_failed_step_records_actual_kind() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "failed_kind_check",
+            vec![
+                shell_step_with_policy("fail-shell", exit_one_cmd(), FailurePolicy::Abort),
+            ],
+        );
+
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(run.steps.len(), 1);
+        // The failed shell step should record kind="shell", not "unknown"
+        assert_eq!(run.steps[0].kind, "shell", "failed step should have kind='shell'");
+        assert_eq!(run.steps[0].step_index, 1, "step_index should be 1");
+    }
+
+    // ── Test 22: step_index is non-zero for non-abort failed steps ────────────
+
+    #[tokio::test]
+    async fn test_failed_continue_step_index_correct() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "failed_continue_idx",
+            vec![
+                shell_step("s1", "echo first"),
+                shell_step_with_policy("s2-fail", exit_one_cmd(), FailurePolicy::Continue),
+                shell_step("s3", "echo third"),
+            ],
+        );
+
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+
+        assert_eq!(run.status, RunStatus::Completed);
+        assert_eq!(run.steps.len(), 3);
+
+        let s1 = run.steps.iter().find(|r| r.step_id == "s1").unwrap();
+        let s2 = run.steps.iter().find(|r| r.step_id == "s2-fail").unwrap();
+        let s3 = run.steps.iter().find(|r| r.step_id == "s3").unwrap();
+
+        assert_eq!(s1.step_index, 1);
+        assert_eq!(s2.step_index, 2);
+        assert_eq!(s3.step_index, 3);
+        assert_eq!(s2.kind, "shell", "failed continue step should have kind='shell'");
+    }
+
+        // ── Test 19: Kill after run completion is a no-op ─────────────────────────
 
     #[tokio::test]
     async fn test_kill_after_run_completion_no_op() {

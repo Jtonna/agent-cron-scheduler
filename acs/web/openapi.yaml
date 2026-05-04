@@ -109,11 +109,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Workflow"
-        "400":
+        "422":
           description: |
-            Validation error (invalid cron, empty name, UUID-like name, no steps, etc.).
-            Note: invalid cron expressions currently return `500` (known code issue);
-            other validation errors return `422` with `error: "validation_error"`.
+            Validation failed. Covers: empty name, UUID-like name, invalid cron
+            expression, invalid timezone, no steps, duplicate step ids, invalid
+            capture parser. Returns `error: "validation_error"`.
           content:
             application/json:
               schema:
@@ -264,9 +264,9 @@ paths:
       requestBody:
         required: true
         description: |
-          Trigger parameters. The body is required. Send `{"input": null}` to
-          use the workflow's `default_input`. Sending `{}` causes 422 because
-          `input` is required at the wire level.
+          Trigger parameters. The body is required. Send `{"input": null}` or
+          `{}` to use the workflow's `default_input` — the `input` field
+          defaults to `null` when omitted.
         content:
           application/json:
             schema:
@@ -288,6 +288,7 @@ paths:
                 run_id: "0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
                 workflow_id: "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678"
                 workflow_version: 1
+                run_url: "/api/runs/0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
         "400":
           description: Invalid JSON in request body
           content:
@@ -428,9 +429,13 @@ paths:
             format: uuid
       responses:
         "202":
-          description: |
-            Kill signal accepted. Response body is empty — the handler returns
-            `StatusCode::ACCEPTED` with no body (not a `MessageResponse`).
+          description: Kill signal accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: "Kill signal sent"
         "404":
           description: Run not found
           content:
@@ -1201,19 +1206,19 @@ components:
 
     TriggerParams:
       type: object
-      required: [input]
       description: |
         Per-invocation parameters for triggering a workflow. The request body
-        is required (the handler uses `Json<TriggerParams>`, not
-        `Option<Json<...>>`). Send `{"input": null}` to trigger with
-        `workflow.default_input`; sending `{}` causes a 422 because `input`
-        is required at the wire level.
+        is required (the handler uses `Json<TriggerParams>`). Sending `{}`
+        or `{"input": null}` both fall back to `workflow.default_input`.
       properties:
         input:
+          nullable: true
+          default: null
           description: |
             Structured JSON input passed as the workflow's trigger input.
-            Required field. Pass `null` to fall back to `workflow.default_input`.
-            Must conform to the workflow's `input_schema` when one is set.
+            Optional; defaults to `null` when omitted. When `null`, the run
+            falls back to `workflow.default_input`. Must conform to the
+            workflow's `input_schema` when one is set.
           example: { "target": "production" }
         env:
           type: object
@@ -1235,11 +1240,8 @@ components:
 
     WorkflowTriggerResponse:
       type: object
-      required: [run_id, workflow_id, workflow_version]
-      description: |
-        Response returned when a workflow is triggered manually.
-        The actual `TriggerResponse` struct only has `run_id`, `workflow_id`,
-        and `workflow_version`. `run_url` is not returned by the handler.
+      required: [run_id, workflow_id, workflow_version, run_url]
+      description: Response returned when a workflow is triggered manually.
       properties:
         run_id:
           type: string
@@ -1256,6 +1258,11 @@ components:
           format: int32
           description: Version of the workflow at the time of triggering.
           example: 1
+        run_url:
+          type: string
+          format: uri-reference
+          description: Convenience URL for the run record — always `/api/runs/{run_id}`.
+          example: "/api/runs/0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
 
     StepRun:
       type: object

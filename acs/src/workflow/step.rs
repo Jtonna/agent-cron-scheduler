@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
@@ -66,8 +67,13 @@ pub struct StepContext {
     pub run_id: Uuid,
     pub step_index: usize,
     pub input: serde_json::Value,
-    /// Accumulated outputs keyed by step id.
-    pub steps: HashMap<String, StepOutput>,
+    /// Accumulated outputs keyed by step id, in insertion order.
+    ///
+    /// `IndexMap` preserves the order in which steps are inserted, so
+    /// `.values().last()` always returns the immediately-prior step's output.
+    /// This makes `pass_stdin` deterministic: it pipes the last-inserted
+    /// (immediately preceding) step's stdout to the current step's stdin.
+    pub steps: IndexMap<String, StepOutput>,
     pub log_sink: Arc<dyn LogSink>,
     pub working_dir: Option<PathBuf>,
     pub env: HashMap<String, String>,

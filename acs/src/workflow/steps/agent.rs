@@ -303,6 +303,7 @@ mod tests {
 
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
+    use indexmap::IndexMap;
     use serde_json::{json, Value};
     use uuid::Uuid;
 
@@ -359,7 +360,7 @@ mod tests {
             run_id: Uuid::now_v7(),
             step_index: 0,
             input: json!({}),
-            steps: HashMap::new(),
+            steps: IndexMap::new(),
             log_sink: sink,
             working_dir: None,
             env: HashMap::new(),

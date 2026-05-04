@@ -227,6 +227,25 @@ impl Step for ScriptStep {
     }
 }
 
+/// Check whether a command is available on the system PATH.
+///
+/// On Windows uses `where`; on Unix uses `which`. Returns `false` on error.
+fn is_command_available(cmd: &str) -> bool {
+    #[cfg(windows)]
+    let check = std::process::Command::new("where")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    #[cfg(not(windows))]
+    let check = std::process::Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    check.map(|s| s.success()).unwrap_or(false)
+}
+
 /// Build a `portable_pty::CommandBuilder` for a script file with the given interpreter.
 fn build_script_command(
     script_type: Option<&str>,
@@ -296,7 +315,19 @@ fn build_script_command(
             c
         }
         Some("powershell") => {
-            let mut c = portable_pty::CommandBuilder::new("pwsh");
+            // On Windows: prefer pwsh (PowerShell 7+ Core); fall back to
+            // powershell.exe (Windows PowerShell 5.1) when pwsh is not on PATH.
+            // On Unix: always use pwsh.
+            #[cfg(windows)]
+            let interpreter = if is_command_available("pwsh") {
+                "pwsh"
+            } else {
+                "powershell.exe"
+            };
+            #[cfg(not(windows))]
+            let interpreter = "pwsh";
+
+            let mut c = portable_pty::CommandBuilder::new(interpreter);
             c.arg("-File");
             c.arg(path);
             if let Some(a) = args {
@@ -360,6 +391,7 @@ mod tests {
 
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
+    use indexmap::IndexMap;
     use serde_json::{json, Value};
     use tempfile::TempDir;
     use uuid::Uuid;
@@ -430,7 +462,7 @@ mod tests {
             run_id: Uuid::now_v7(),
             step_index: 0,
             input: json!({}),
-            steps: HashMap::new(),
+            steps: IndexMap::new(),
             log_sink: sink,
             working_dir: None,
             env: HashMap::new(),
@@ -1226,15 +1258,57 @@ mod tests {
         );
     }
 
+    // On non-Windows: pwsh is always selected.
+    #[cfg(not(windows))]
     #[test]
-    fn test_build_script_command_powershell() {
+    fn test_build_script_command_powershell_unix_always_pwsh() {
         let result = super::build_script_command(Some("powershell"), "/tmp/run.ps1", None);
         assert!(result.is_ok());
         let cmd = result.unwrap();
         let argv = cmd.get_argv();
         assert!(!argv.is_empty());
         let prog = argv[0].to_string_lossy();
-        assert_eq!(prog, "pwsh");
+        assert_eq!(prog, "pwsh", "on Unix pwsh must always be selected");
+    }
+
+    // On Windows: selected interpreter must match what's available on PATH.
+    #[cfg(windows)]
+    #[test]
+    fn test_build_script_command_powershell_windows_correct_interpreter() {
+        let result = super::build_script_command(Some("powershell"), "C:\\scripts\\run.ps1", None);
+        assert!(result.is_ok());
+        let cmd = result.unwrap();
+        let argv = cmd.get_argv();
+        assert!(!argv.is_empty());
+        let prog = argv[0].to_string_lossy().to_lowercase();
+
+        let pwsh_available = has_command("pwsh");
+        if pwsh_available {
+            assert_eq!(
+                prog, "pwsh",
+                "when pwsh is available it must be preferred over powershell.exe"
+            );
+        } else {
+            assert!(
+                prog.contains("powershell"),
+                "when pwsh is absent, powershell.exe must be used; got: {}",
+                prog
+            );
+        }
+    }
+
+    // On Windows: verify is_command_available works for a guaranteed command.
+    #[cfg(windows)]
+    #[test]
+    fn test_is_command_available_cmd_always_found() {
+        assert!(
+            super::is_command_available("cmd"),
+            "cmd.exe should always be detectable on Windows"
+        );
+        assert!(
+            !super::is_command_available("__acs_fake_command_xyz_not_exist__"),
+            "fake command should not be detected as available"
+        );
     }
 
     #[test]

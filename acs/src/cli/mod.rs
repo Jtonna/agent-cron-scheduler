@@ -1,5 +1,4 @@
-pub mod daemon;
-pub mod logs;
+﻿pub mod daemon;
 pub mod workflows;
 
 use clap::{Parser, Subcommand};
@@ -62,7 +61,7 @@ pub enum Commands {
 
     /// Remove system service registration
     Uninstall {
-        /// Also remove all data (jobs, logs)
+        /// Also remove all data (workflows, logs)
         #[arg(long)]
         purge: bool,
     },
@@ -447,3 +446,5 @@ mod tests {
     }
 
 }
+
+

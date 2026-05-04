@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use crate::workflow::step::StepOutput;
 
@@ -21,7 +21,7 @@ pub struct SubstitutionResult {
 pub fn substitute(
     template: &str,
     input: &serde_json::Value,
-    steps: &HashMap<String, StepOutput>,
+    steps: &IndexMap<String, StepOutput>,
 ) -> SubstitutionResult {
     let mut result = SubstitutionResult::default();
     let bytes = template.as_bytes();
@@ -86,7 +86,7 @@ pub fn substitute(
 fn resolve_path(
     path: &str,
     input: &serde_json::Value,
-    steps: &HashMap<String, StepOutput>,
+    steps: &IndexMap<String, StepOutput>,
 ) -> Option<String> {
     if let Some(rest) = path.strip_prefix("input.") {
         // Convert dotted path to JSON pointer (/a/b/c)
@@ -105,7 +105,7 @@ fn resolve_path(
 }
 
 /// Resolve a path of the form `<step_id>.<accessor>` against the steps map.
-fn resolve_step_path(path: &str, steps: &HashMap<String, StepOutput>) -> Option<String> {
+fn resolve_step_path(path: &str, steps: &indexmap::IndexMap<String, StepOutput>) -> Option<String> {
     // Split into step_id and the rest after the first '.'
     let dot = path.find('.')?;
     let step_id = &path[..dot];
@@ -138,11 +138,13 @@ fn value_to_string(v: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use serde_json::json;
 
-    fn no_steps() -> HashMap<String, StepOutput> {
-        HashMap::new()
+    fn no_steps() -> IndexMap<String, StepOutput> {
+        IndexMap::new()
     }
 
     // ── input substitution ────────────────────────────────────────────────────
@@ -184,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_step_stdout_string() {
-        let mut steps = HashMap::new();
+        let mut steps = IndexMap::new();
         steps.insert(
             "fetch".to_string(),
             StepOutput {
@@ -199,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_step_stdout_structured() {
-        let mut steps = HashMap::new();
+        let mut steps = IndexMap::new();
         steps.insert(
             "fetch".to_string(),
             StepOutput {
@@ -216,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_step_exit_code() {
-        let mut steps = HashMap::new();
+        let mut steps = IndexMap::new();
         steps.insert(
             "fetch".to_string(),
             StepOutput {
@@ -231,7 +233,7 @@ mod tests {
 
     #[test]
     fn test_step_exports() {
-        let mut steps = HashMap::new();
+        let mut steps = IndexMap::new();
         let mut exports = HashMap::new();
         exports.insert("session_id".to_string(), json!("abc"));
         steps.insert(

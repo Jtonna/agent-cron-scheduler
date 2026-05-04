@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::{broadcast, Notify, RwLock};
 
 use uuid::Uuid;
 
@@ -12,6 +13,7 @@ use crate::models::workflow::TriggerParams;
 use crate::models::ScheduleMode;
 use crate::storage::workflow_runs::WorkflowRunStore;
 use crate::storage::workflows::WorkflowStore;
+use crate::workflow::step::KillSender;
 
 // ---------------------------------------------------------------------------
 // Clock trait + implementations
@@ -118,6 +120,10 @@ pub struct WorkflowScheduler {
     workflow_event_tx: broadcast::Sender<WorkflowEvent>,
     workflow_run_store: Arc<dyn WorkflowRunStore>,
     data_dir: std::path::PathBuf,
+    /// Kill-signals registry shared with `AppState`. Cron-dispatched runs
+    /// register their `KillSender` here so `POST /api/runs/{id}/kill` can
+    /// signal them normally.
+    kill_signals: Arc<RwLock<HashMap<Uuid, KillSender>>>,
 }
 
 impl WorkflowScheduler {
@@ -128,6 +134,7 @@ impl WorkflowScheduler {
         workflow_event_tx: broadcast::Sender<WorkflowEvent>,
         workflow_run_store: Arc<dyn WorkflowRunStore>,
         data_dir: std::path::PathBuf,
+        kill_signals: Arc<RwLock<HashMap<Uuid, KillSender>>>,
     ) -> Self {
         Self {
             workflow_store,
@@ -136,6 +143,7 @@ impl WorkflowScheduler {
             workflow_event_tx,
             workflow_run_store,
             data_dir,
+            kill_signals,
         }
     }
 
@@ -203,11 +211,68 @@ impl WorkflowScheduler {
                                 }
                             }
 
+                            // allow_concurrent: false — kill any active run before
+                            // dispatching a new one. This applies when schedule_mode
+                            // is Cron (WaitForCompletion already skipped above).
+                            if !wf.allow_concurrent && wf.schedule_mode != ScheduleMode::WaitForCompletion {
+                                match self.workflow_run_store.list_runs(wf.id, 0, 0).await {
+                                    Ok(runs) => {
+                                        let active_run_ids: Vec<Uuid> = runs.iter()
+                                            .filter(|r| r.status == crate::models::workflow::RunStatus::Running)
+                                            .map(|r| r.run_id)
+                                            .collect();
+                                        for active_id in active_run_ids {
+                                            let sent = {
+                                                let registry = self.kill_signals.read().await;
+                                                if let Some(tx) = registry.get(&active_id) {
+                                                    let _ = tx.send(true);
+                                                    true
+                                                } else {
+                                                    false
+                                                }
+                                            };
+                                            if sent {
+                                                tracing::info!(
+                                                    workflow_id = %wf.id,
+                                                    run_id = %active_id,
+                                                    "allow_concurrent=false: sent kill to active run before dispatching new one"
+                                                );
+                                                let deadline = tokio::time::Instant::now()
+                                                    + Duration::from_secs(5);
+                                                loop {
+                                                    if tokio::time::Instant::now() >= deadline {
+                                                        tracing::warn!(
+                                                            workflow_id = %wf.id,
+                                                            run_id = %active_id,
+                                                            "allow_concurrent=false: timed out waiting for active run to stop; proceeding with dispatch"
+                                                        );
+                                                        break;
+                                                    }
+                                                    let still_alive = self.kill_signals.read().await.contains_key(&active_id);
+                                                    if !still_alive {
+                                                        break;
+                                                    }
+                                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            workflow_id = %wf.id,
+                                            "Failed to check active runs for allow_concurrent=false: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+
                             let run_id = Uuid::now_v7();
                             let wf_clone = wf.clone();
                             let event_tx = self.workflow_event_tx.clone();
                             let run_store = Arc::clone(&self.workflow_run_store);
                             let data_dir = self.data_dir.clone();
+                            let kill_signals = Arc::clone(&self.kill_signals);
 
                             tokio::spawn(async move {
                                 // Persist an initial Running record before execution.
@@ -278,7 +343,7 @@ impl WorkflowScheduler {
                                     trigger,
                                     sink,
                                     Some(event_tx),
-                                    None,
+                                    Some(kill_signals),
                                 ).await;
 
                                 // Persist the final run state.

@@ -1,4 +1,4 @@
-// Daemon module - Phase 6+ implementation (workflow-native runtime)
+﻿// Daemon module - Phase 6+ implementation (workflow-native runtime)
 // Sub-modules for events, scheduler, and service.
 
 pub mod events;
@@ -19,7 +19,7 @@ use crate::models::DaemonConfig;
 use crate::server::{self, AppState};
 
 // ---------------------------------------------------------------------------
-// PidFile — exclusive PID file acquisition
+// PidFile â€” exclusive PID file acquisition
 // ---------------------------------------------------------------------------
 
 /// Manages a PID file to ensure only one daemon instance runs at a time.
@@ -54,7 +54,7 @@ impl PidFile {
                 .context("Failed to parse PID from PID file")?;
 
             if is_process_alive(existing_pid) {
-                // The existing process is alive — it may be shutting down
+                // The existing process is alive â€” it may be shutting down
                 // (e.g., during a restart). Retry for up to 10 seconds.
                 let mut acquired = false;
                 for attempt in 0..20 {
@@ -78,7 +78,7 @@ impl PidFile {
                 }
             }
 
-            // Stale PID file — remove it
+            // Stale PID file â€” remove it
             tracing::warn!(
                 "Removing stale PID file (PID {} is no longer running)",
                 existing_pid
@@ -132,13 +132,13 @@ impl PidFile {
 
 /// Check whether a process with the given PID is alive.
 ///
-/// - Unix: uses kill(pid, 0) — signal 0 checks existence without sending a
+/// - Unix: uses kill(pid, 0) â€” signal 0 checks existence without sending a
 ///   signal.
 /// - Windows: uses OpenProcess + GetExitCodeProcess. OpenProcess alone is not
 ///   sufficient because it can succeed on a dead process if another process
 ///   (e.g., the Electron parent or Windows Task Scheduler) still holds a
 ///   handle to it, keeping the kernel object alive. We additionally check
-///   GetExitCodeProcess — if the exit code is not STILL_ACTIVE (259), the
+///   GetExitCodeProcess â€” if the exit code is not STILL_ACTIVE (259), the
 ///   process is dead despite the handle being valid.
 ///
 ///   NOTE: We observed this zombie-handle scenario once in production (PID
@@ -191,7 +191,7 @@ extern "system" {
 }
 
 // ---------------------------------------------------------------------------
-// PortFile — writes the server's bound port to a discoverable file
+// PortFile â€” writes the server's bound port to a discoverable file
 // ---------------------------------------------------------------------------
 
 /// Manages a port file so the frontend (and CLI) can discover which port the
@@ -347,7 +347,7 @@ pub fn resolve_data_dir(override_dir: Option<&Path>) -> PathBuf {
     // Platform default
     #[cfg(target_os = "windows")]
     {
-        // Use LOCALAPPDATA on Windows — writable without admin elevation.
+        // Use LOCALAPPDATA on Windows â€” writable without admin elevation.
         std::env::var("LOCALAPPDATA")
             .map(PathBuf::from)
             .expect("LOCALAPPDATA environment variable must be set on Windows")
@@ -410,7 +410,7 @@ pub async fn graceful_shutdown(
 }
 
 // ---------------------------------------------------------------------------
-// SizeManagedWriter — daemon.log file writer with automatic size management
+// SizeManagedWriter â€” daemon.log file writer with automatic size management
 // ---------------------------------------------------------------------------
 
 /// Maximum daemon.log file size before truncation (1 GB).
@@ -466,7 +466,7 @@ impl SizeManagedWriter {
         let cut_point = match content[quarter..].iter().position(|&b| b == b'\n') {
             Some(offset) => quarter + offset + 1, // skip past the newline
             None => {
-                // No newline found after the 25% mark — keep everything
+                // No newline found after the 25% mark â€” keep everything
                 // (degenerate case: single very long line).
                 self.bytes_written = content.len() as u64;
                 return Ok(());
@@ -474,7 +474,7 @@ impl SizeManagedWriter {
         };
 
         if cut_point >= content.len() {
-            // Nothing left to keep after the cut — just truncate completely.
+            // Nothing left to keep after the cut â€” just truncate completely.
             self.file = std::fs::OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -515,7 +515,7 @@ impl Write for SizeManagedWriter {
         self.bytes_written += n as u64;
         if self.bytes_written >= self.max_size {
             if let Err(e) = self.truncate_oldest_quarter() {
-                // Log a warning but don't fail the write — losing some log
+                // Log a warning but don't fail the write â€” losing some log
                 // rotation is better than crashing the daemon's tracing pipeline.
                 eprintln!(
                     "WARNING: daemon.log truncation failed: {}. Log file may grow beyond {}.",
@@ -541,7 +541,7 @@ impl Write for SizeManagedWriter {
 /// 1. Acquires PID file
 /// 2. Loads config
 /// 3. Creates data directories
-/// 4. Initializes storage (JsonJobStore, FsLogStore)
+/// 4. Initializes storage (FsWorkflowStore, FsWorkflowRunStore)
 /// 5. Creates broadcast channel
 /// 6. Creates scheduler notify
 /// 7. Starts Executor
@@ -655,7 +655,7 @@ pub async fn start_daemon(
                 std::mem::forget(_guard);
             }
             Err(e) => {
-                // File logging unavailable — stderr only
+                // File logging unavailable â€” stderr only
                 let result = tracing_subscriber::registry()
                     .with(env_filter)
                     .with(stderr_layer)
@@ -691,7 +691,7 @@ pub async fn start_daemon(
     let (workflow_event_tx, _workflow_event_rx) =
         broadcast::channel::<WorkflowEvent>(config.broadcast_capacity);
 
-    // Scheduler notify — woken whenever the workflow list changes.
+    // Scheduler notify â€” woken whenever the workflow list changes.
     let scheduler_notify = Arc::new(Notify::new());
 
     // Shutdown channel
@@ -718,6 +718,7 @@ pub async fn start_daemon(
         workflow_event_tx.clone(),
         Arc::clone(&workflow_run_store),
         data_dir.clone(),
+        Arc::clone(&state.kill_signals),
     );
 
     let wf_scheduler_handle = tokio::spawn(async move {
@@ -1042,7 +1043,7 @@ mod tests {
         let tmp_dir = TempDir::new().expect("create temp dir");
         let data_dir = tmp_dir.path().join("acs-data");
 
-        // Create twice — should not fail
+        // Create twice â€” should not fail
         create_data_dirs(&data_dir).await.expect("first create");
         create_data_dirs(&data_dir).await.expect("second create");
 
@@ -1106,7 +1107,7 @@ mod tests {
         let pid_file = PidFile::new(pid_path.clone());
         pid_file.acquire().expect("acquire");
 
-        // Release twice — second should not error
+        // Release twice â€” second should not error
         pid_file.release().expect("first release");
         pid_file
             .release()
@@ -1328,3 +1329,4 @@ mod tests {
     // =======================================================================
 
 }
+

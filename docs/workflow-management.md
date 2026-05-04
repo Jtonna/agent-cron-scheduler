@@ -117,7 +117,7 @@ Executes an inline shell command string.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `command` | `String` | required | Shell command template. |
-| `pass_stdin` | `bool` | `false` | If `true`, pipes ONE of the prior steps' stdout to this process's stdin, currently selected via `HashMap::values().last()` which is non-deterministic — this is a known limitation. For deterministic stdin injection, use `${steps.<id>.stdout}` template substitution in the command instead. |
+| `pass_stdin` | `bool` | `false` | If `true`, pipes the immediately-prior step's stdout to this process's stdin. The prior step is defined as the last step inserted into the execution context before this one — i.e., the step that ran immediately before this step in execution order. |
 
 **Platform behavior:**
 
@@ -151,7 +151,7 @@ Executes a script file via an explicit or inferred interpreter.
 | `path` | `String` | required | Path to the script file. Supports template substitution. |
 | `script_type` | `Option<String>` | `null` | Interpreter to use. One of `"shell"`, `"batch"`, `"python"`, `"powershell"`. When `null`, defaults to `"shell"` behavior. |
 | `args` | `Option<String>` | `null` | Whitespace-separated arguments passed to the script. Supports template substitution. |
-| `pass_stdin` | `bool` | `false` | Pipe ONE of the prior steps' stdout to this process's stdin, currently selected via `HashMap::values().last()` which is non-deterministic — this is a known limitation. For deterministic stdin injection, use `${steps.<id>.stdout}` template substitution in the args instead. |
+| `pass_stdin` | `bool` | `false` | Pipe the immediately-prior step's stdout to this process's stdin. The prior step is defined as the last step inserted into the execution context before this one — i.e., the step that ran immediately before this step in execution order. |
 
 **Interpreter selection:**
 
@@ -160,7 +160,9 @@ Executes a script file via an explicit or inferred interpreter.
 | `null` or `"shell"` | `sh <path> [args]` | `cmd /C <path> [args]` |
 | `"batch"` | Error (Windows only) | `cmd /C <path> [args]` |
 | `"python"` | `python3 <path> [args]` | `python <path> [args]` |
-| `"powershell"` | `pwsh -File <path> [args]` | `pwsh -File <path> [args]` |
+| `"powershell"` | `pwsh -File <path> [args]` | `pwsh -File <path> [args]` if `pwsh` is on PATH; otherwise `powershell.exe -File <path> [args]` |
+
+On Windows, the PowerShell interpreter is selected at step execution time: `pwsh` (PowerShell 7+ Core) is tried first via a PATH check; if not found, `powershell.exe` (Windows PowerShell 5.1) is used as a fallback. On Unix, `pwsh` is always used.
 
 An unknown `script_type` produces a `StepError::Internal` error and the run fails immediately.
 
@@ -534,9 +536,9 @@ Steps with `always_run: true` execute even when the run has aborted (due to an `
 
 `Workflow.allow_concurrent` defaults to `true`. When `true`, multiple runs of the same workflow can execute simultaneously — there is no cap on concurrent runs.
 
-`Workflow.allow_concurrent: false` is currently STORED ON THE MODEL but NOT ENFORCED BY THE SCHEDULER. Only `schedule_mode: WaitForCompletion` prevents concurrent dispatch (via the scheduler checking `workflow_run_store` for active runs). Enforcement of `allow_concurrent` (e.g., kill-and-restart on cron tick) is a planned follow-up not yet implemented.
+When `allow_concurrent: false` and `schedule_mode` is `Cron`, the scheduler kills any in-progress run before dispatching the new cron-tick run. The scheduler sends the kill signal, waits up to 5 seconds for the run to terminate, then dispatches the new run regardless of whether the previous run finished.
 
-- With `schedule_mode: "WaitForCompletion"`: cron ticks are skipped while a run is active, so concurrent-run scenarios do not arise.
+- With `schedule_mode: "WaitForCompletion"`: cron ticks are skipped while a run is active, so concurrent-run scenarios do not arise. `allow_concurrent: false` has no additional effect in this mode.
 
 ### Timeouts
 
@@ -601,7 +603,7 @@ Each execution creates a `WorkflowRun` persisted under `<data_dir>/runs/<workflo
 
 | Field | Type | Description |
 |---|---|---|
-| `step_index` | `usize` | Currently a code-level limitation: `StepRun.step_index` is always `0` for non-Match step runs (the executor's `make_step_run` hardcodes it). MatchStep synthetic StepRun entries do carry the correct index. The 1-based step ordering described in SSE events (`StepStarted.step_index`) is correct. |
+| `step_index` | `usize` | 1-based position in the runtime execution sequence. The executor increments this counter before each step executes, so the first step has `step_index: 1`, the second has `step_index: 2`, and so on. Branch steps inside a `MatchStep` continue the counter from where the match step left off. Matches the `step_index` carried in `StepStarted` / `StepCompleted` SSE events. |
 | `step_id` | `String` | Matches `StepDefCommon.id`. |
 | `kind` | `String` | `"shell"`, `"script"`, `"http"`, `"match"`, `"set_var"`, or `"agent"`. |
 | `status` | `RunStatus` | `Running`, `Completed`, `Failed`, or `Killed`. |
