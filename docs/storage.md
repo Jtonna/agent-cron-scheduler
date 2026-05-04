@@ -44,6 +44,7 @@ through a store trait).  Migration state is maintained in a standalone
 ├── workflows.json              # Authoritative list of all workflow definitions
 ├── migrations.json             # Applied-migration state for the numbered migration runner
 ├── jobs.json.migrated.<ts>     # Backup of legacy jobs.json after m001 runs (unix timestamp suffix)
+├── migrated_scripts/           # Created on demand by m001 migration when migrating non-shell hooks
 ├── scripts/                    # Reserved directory (created on startup; not currently used)
 ├── logs/
 │   └── {workflow_id}/          # One directory per workflow, named by UUID

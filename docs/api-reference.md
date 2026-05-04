@@ -311,7 +311,7 @@ Manually trigger an immediate execution of the workflow, regardless of its cron 
 |-----------|--------|-------------------------|
 | `id`      | string | Workflow UUID or name.  |
 
-**Request Body:** [TriggerParams](#triggerparams) JSON object. Required (send `{"input": null}` or `{}` to fall back to the workflow's `default_input`; the `input` field defaults to `null` when omitted).
+**Request Body:** [TriggerParams](#triggerparams) JSON object. The body is optional; send `{}` to use all defaults. The `input` field defaults to `null` when omitted, falling back to the workflow's `default_input`.
 
 ```json
 {
@@ -712,7 +712,7 @@ Request body for `PATCH /api/workflows/{id}`. All fields are optional; only incl
 
 Changes to any of `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `input_schema`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure` bump `version`. Toggling `enabled` alone does NOT bump `version`.
 
-> **Limitation:** `timezone`, `working_dir`, `default_input`, and `input_schema` cannot be cleared back to `null` via PATCH — sending `null` is indistinguishable from omitting the field. Send a non-null replacement to update them.
+Sending `null` for `timezone`, `working_dir`, `default_input`, or `input_schema` in a PATCH body is treated the same as omitting the field — the existing value is unchanged. Send a non-null value to update them.
 
 ---
 

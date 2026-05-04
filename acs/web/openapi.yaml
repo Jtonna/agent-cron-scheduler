@@ -198,8 +198,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Workflow"
-        "400":
-          description: Validation error
+        "422":
+          description: Unprocessable Entity (validation error — invalid cron expression, name, etc.)
           content:
             application/json:
               schema:
@@ -256,17 +256,16 @@ paths:
         Dispatches an immediate execution of the workflow regardless of its cron
         schedule. Accepts per-invocation parameters (input JSON, env overrides,
         target step). Returns 202 Accepted with a pre-generated `run_id`.
-        The request body is required (handler uses `Json<TriggerParams>`);
-        send `{"input": null}` to trigger with `workflow.default_input`.
+        Send `{}` or omit the body to fall back to `workflow.default_input`.
       tags: [Workflows]
       parameters:
         - $ref: "#/components/parameters/WorkflowId"
       requestBody:
-        required: true
+        required: false
         description: |
-          Trigger parameters. The body is required. Send `{"input": null}` or
-          `{}` to use the workflow's `default_input` — the `input` field
-          defaults to `null` when omitted.
+          Trigger parameters. The body is optional; send `{}` to use all
+          defaults. The `input` field defaults to `null` when omitted, falling
+          back to `workflow.default_input`.
         content:
           application/json:
             schema:
@@ -470,7 +469,7 @@ paths:
         This structure comes from the `#[serde(tag = "type")]` attribute on the
         `WorkflowEvent` enum.
 
-        The server sends a keepalive comment (`: keepalive`) every 15 seconds.
+        The server sends a keepalive data event (`data: keepalive`) every 15 seconds.
 
         Event types:
         - `run_started` — a workflow run has begun. Fields: `run_id`, `workflow_id`, `workflow_version`, `started_at`
@@ -479,7 +478,7 @@ paths:
         - `step_completed` — a step finished (succeeded or failed). Fields: `run_id`, `workflow_id`, `step_index`, `step_id`, `exit_code`, `cost_usd`, `finished_at`
         - `run_completed` — the run finished (all steps done). Fields: `run_id`, `workflow_id`, `status`, `total_cost_usd`, `finished_at`
         - `run_failed` — the run terminated with an infrastructure error or was killed. Fields: `run_id`, `workflow_id`, `error`, `finished_at`
-        - `workflow_changed` — a workflow definition was created, updated, or deleted. Fields: `workflow_id`, `version`, `change_kind`
+        - `workflow_changed` — a workflow definition was created, updated, or deleted. Fields: `workflow_id`, `version` (workflow version after the change), `change_kind`
       tags: [Events]
       parameters:
         - name: run_id
@@ -1207,9 +1206,10 @@ components:
     TriggerParams:
       type: object
       description: |
-        Per-invocation parameters for triggering a workflow. The request body
-        is required (the handler uses `Json<TriggerParams>`). Sending `{}`
-        or `{"input": null}` both fall back to `workflow.default_input`.
+        Per-invocation parameters for triggering a workflow. The body is
+        optional. Sending `{}` or omitting `input` both fall back to
+        `workflow.default_input`. An explicit `{}` for `input` is stored as
+        an empty object (not the default).
       properties:
         input:
           nullable: true

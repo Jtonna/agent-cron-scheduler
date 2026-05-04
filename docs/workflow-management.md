@@ -53,7 +53,7 @@ Updatable: `name`, `schedule`, `timezone`, `schedule_mode`, `enabled`, `steps`, 
 
 **Version bump rules.** Updating any of these fields increments `version` if the new value differs: `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `input_schema`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure`. Toggling `enabled` does **not** bump the version.
 
-> **Limitation:** `timezone`, `working_dir`, `default_input`, and `input_schema` cannot be cleared back to `null` via PATCH — sending `null` is indistinguishable from omitting the field. Send a non-null replacement to update them.
+Sending `null` for `timezone`, `working_dir`, `default_input`, or `input_schema` in a PATCH body is treated the same as omitting the field — the existing value is unchanged. Send a non-null value to update them.
 
 ---
 
@@ -557,7 +557,7 @@ Sending `POST /api/runs/{run_id}/kill` signals the currently executing step to t
 
 After a kill, steps with `always_run: true` still execute. The final run status is `Killed`.
 
-> **Note:** The executor emits a `RunFailed` SSE event (not `RunCompleted`) when a run is killed. The persistent run record's `status` is `Killed`.
+Killed runs emit a `RunFailed` SSE event. The persistent `status` is `Killed`.
 
 ---
 
@@ -565,7 +565,7 @@ After a kill, steps with `always_run: true` still execute. The final run status 
 
 `ScheduleMode` controls how the scheduler handles cron ticks while a run is active.
 
-> **Note:** `ScheduleMode` serializes as PascalCase strings (`"Cron"`, `"WaitForCompletion"`), unlike `FailurePolicy` which uses snake_case.
+`ScheduleMode` serializes as PascalCase strings (`"Cron"`, `"WaitForCompletion"`), unlike `FailurePolicy` which uses snake_case.
 
 ### `Cron` (default)
 

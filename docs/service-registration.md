@@ -55,11 +55,11 @@ fn is_service_registered() -> bool {
 
 ### Start
 
-> **Note:** `start_service()` is not applicable for registry-based auto-start. On Windows, `acs start` spawns the daemon directly as a hidden background process via `Command::new()`. The Run key entry only causes Windows to launch the daemon automatically at the next logon — it is not used to start the daemon on demand.
+`start_service()` is not applicable for registry-based auto-start. On Windows, `acs start` spawns the daemon directly as a hidden background process via `Command::new()`. The Run key entry causes Windows to launch the daemon automatically at the next logon — it is not used to start the daemon on demand.
 
 ### Stop
 
-> **Note:** `stop_service()` is not applicable for registry-based auto-start. `acs stop` first attempts a graceful shutdown via the HTTP API (`POST /api/shutdown`). If the API is unreachable, the stop attempt fails with a connection error (there is no automatic PID-based fallback on Windows). To forcibly terminate the daemon when the API is unreachable, use `acs stop --force`, which reads the PID file and calls `taskkill /F /PID <pid>`.
+`stop_service()` returns an error on Windows because the Registry Run key provides auto-start at logon only — there is no corresponding stop command. `acs stop` first attempts a graceful shutdown via the HTTP API (`POST /api/shutdown`). If the API is unreachable and the service is registered, `cmd_stop` calls `stop_service()` as a fallback; on Windows that call returns an error, so the user sees a connection error. To forcibly terminate the daemon when the API is unreachable, use `acs stop --force`, which reads the PID file and calls `taskkill /F /PID <pid>`.
 
 ### Uninstall (Unregister)
 

@@ -233,7 +233,7 @@ When `pass_stdin: true`, a Shell or Script step receives the stdout of the step 
 
 **Symptom:** The `logs/` directory contains subdirectories for workflows that no longer exist.
 
-**Cause:** Log directories from deleted workflows may remain if the daemon was not running when the workflow was deleted, or if cleanup was interrupted.
+**Cause:** `DELETE /api/runs/<id>` (or `delete_run`) removes the matching log file at `logs/{workflow_id}/{run_id}.log`. Orphaned log directories arise when an entire workflow is deleted but its run log files remain — the per-run files are gone but the workflow-ID subdirectory under `logs/` may persist.
 
 **Solution:**
 - Orphaned log directories must be cleaned up manually. There is no automatic cleanup code in `start_daemon`; restarting the daemon does not trigger any such cleanup.

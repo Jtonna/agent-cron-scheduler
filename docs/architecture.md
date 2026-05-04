@@ -185,7 +185,7 @@ See [Storage](storage.md) for implementation details.
 - **`execute_steps()`**: Internal recursive function. Walks steps in order, evaluating `always_run` / `aborted` / `killed` flags. Handles `MatchStep` inline by evaluating the expression template and recursing into the chosen branch. Emits `StepStarted` and `StepCompleted` events per step.
 - **`run_step_with_policy()`**: Wraps `dispatch_step()` with retry logic. Retry exhaustion is treated as `Abort`.
 - **`Step` trait** (`acs/src/workflow/step.rs`): `fn kind() -> &'static str; async fn execute(ctx: &mut StepContext) -> Result<StepOutput, StepError>`. Implemented by each step kind.
-- **`StepContext`**: Mutable execution context passed to each step. Carries `input`, accumulated `steps` outputs, `log_sink`, `env`, `working_dir`, `event_tx`, and `kill_rx`.
+- **`StepContext`**: Mutable execution context passed to each step. Carries `input`, `steps: IndexMap<String, StepOutput>` (accumulated step outputs keyed by step id; insertion-ordered so `pass_stdin` selects the immediately-prior step deterministically), `log_sink`, `env`, `working_dir`, `event_tx`, and `kill_rx`.
 - **`LogSink` trait**: `write_step_start`, `write_chunk`, `write_step_end`, plus a defaulted `set_current_step`. Implemented by `FileLogSink` and wrapped by `EventEmittingLogSink`.
 - **`template::substitute()`** (`acs/src/workflow/template.rs`): Single-pass `${...}` substitution. Namespaces: `input.<dotted.path>` and `steps.<step_id>.(stdout|exit_code|exports.<name>)`. Missing references resolve to empty string with a logged warning.
 
@@ -647,13 +647,13 @@ The migration system (`acs/src/migration/`) supports forward-only, numbered data
 
 ### Integration Tests (`cargo test --tests`)
 
-- **`tests/workflow_api_tests.rs`** (21 tests): Full HTTP round-trip tests via a real in-process daemon. Covers workflow CRUD, trigger, run retrieval, kill endpoint, SSE event ordering, run snapshot integrity, concurrent runs, WaitForCompletion mode.
+- **`tests/workflow_api_tests.rs`** (24 tests): Full HTTP round-trip tests via a real in-process daemon. Covers workflow CRUD, trigger, run retrieval, kill endpoint, SSE event ordering, run snapshot integrity, concurrent runs, WaitForCompletion mode.
 - **`tests/cli_tests.rs`** (9 tests): CLI subcommand integration tests (daemon start/stop, `acs workflows list`, `acs workflows runs`, etc.).
 
-### Test Counts (as of ACS-18 completion)
+### Test Counts
 
-- `cargo test --lib`: 427 pass
-- `cargo test --tests`: 30 pass (9 cli + 21 workflow_api)
+- `cargo test --lib`: 430 pass
+- `cargo test --tests`: 33 pass (9 cli + 24 workflow_api)
 
 ---
 

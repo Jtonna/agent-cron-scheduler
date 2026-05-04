@@ -43,7 +43,7 @@ The platform config directory is resolved using the `dirs::config_dir()` functio
 | `host` | string | `"127.0.0.1"` | IP address the daemon HTTP server binds to. Use `"0.0.0.0"` to listen on all interfaces. |
 | `port` | integer (u16) | `8377` | TCP port the daemon HTTP server listens on. |
 | `data_dir` | string or null | `null` | Override the data directory path. When `null`, the platform default is used (see [Data Directory Locations](#data-directory-locations)). |
-| `max_log_files_per_job` | integer | `50` | Maximum number of log files retained per workflow run history entry. Older files are cleaned up automatically. (Field name retains 'job' naming for compatibility; counts apply to workflow run logs. Currently not enforced by the workflow log layer in the post-ACS-18 runtime â€” reserved for future use.) |
+| `max_log_files_per_job` | integer | `50` | Maximum number of log files retained per workflow run history entry. Older files are cleaned up automatically. (Field name retains 'job' naming for compatibility; counts apply to workflow run logs. Currently not enforced by the workflow log layer — reserved for future use.) |
 | `max_log_file_size` | integer (bytes) | `10485760` (10 MB) | Maximum size in bytes for individual run log files. **(Not currently enforced; reserved for future use.)** |
 | `default_timeout_secs` | integer | `0` | Default step timeout in seconds. A value of `0` means no timeout. **(Reserved; not currently applied to workflow steps at runtime.)** |
 | `broadcast_capacity` | integer | `4096` | Capacity of the internal broadcast channel used for workflow events (SSE streaming). |
@@ -90,7 +90,7 @@ The daemon's bind host is resolved with the following precedence (highest to low
 2. `host` value in the loaded config file
 3. Built-in default (`127.0.0.1`)
 
-> **Edge case:** Because the global `--host` flag uses `127.0.0.1` as its clap default, there is no way to distinguish between the user explicitly passing `--host 127.0.0.1` and not passing the flag at all. If your config file sets `host: "0.0.0.0"` and you run `agentcronsystem --host 127.0.0.1 start`, the config value (`0.0.0.0`) wins silently â€” the CLI flag is ignored because its value matches the default. To force `127.0.0.1` when the config sets a different host, remove or change the `host` field in the config file instead of relying on the CLI flag. (See `acs/src/cli/daemon.rs` lines 162â€“166.)
+> **Edge case:** Because the global `--host` flag uses `127.0.0.1` as its clap default, there is no way to distinguish between the user explicitly passing `--host 127.0.0.1` and not passing the flag at all. If your config file sets `host: “0.0.0.0”` and you run `agentcronsystem --host 127.0.0.1 start`, the config value (`0.0.0.0`) wins silently — the CLI flag is ignored because its value matches the default. To force `127.0.0.1` when the config sets a different host, remove or change the `host` field in the config file instead of relying on the CLI flag. (See `acs/src/daemon/mod.rs` — the host override applied in `start_daemon`.)
 
 For the full list of CLI options, see [CLI Reference](cli-reference.md).
 
