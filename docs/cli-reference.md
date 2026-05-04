@@ -546,7 +546,7 @@ agentcronsystem workflows trigger [OPTIONS] <ID_OR_NAME>
 | `--input` | | `String` | none | Input JSON (any valid JSON value) — replaces the workflow's `default_input` for this run (conflicts with `--input-file`) |
 | `--input-file` | | `String` | none | Path to a file containing input JSON (conflicts with `--input`) |
 | `--env` | `-e` | `String` | none | Per-trigger environment variable in `KEY=VALUE` format (repeatable); merges with the workflow's `env_vars`, trigger values win on collision |
-| `--target-step` | | `String` | none | Step ID to start execution from (skips earlier steps) |
+| `--target-step` | | `String` | none | Step `id` to route the trigger's `--input` to as stdin. Strings are written as raw bytes; all other JSON is serialized as compact JSON. Only `Shell` and `Script` steps consume stdin; other step kinds ignore the value silently. Overrides `pass_stdin` for the matching step. |
 | `--follow` | | flag | `false` | After triggering, stream SSE events until `RunCompleted` or `RunFailed` |
 
 #### Behavior
@@ -555,6 +555,8 @@ agentcronsystem workflows trigger [OPTIONS] <ID_OR_NAME>
 - **With `--follow`**: Opens an SSE connection (`/api/events/workflows?workflow_id=<id>`) before triggering (to avoid race conditions with fast-completing runs), then streams events to stdout until `RunCompleted` or `RunFailed`. Events are filtered by `run_id`; output from concurrent runs of the same workflow does not interleave.
 
 **Template substitution.** Step fields that support templates use `${input.<path>}` to reference the trigger input and `${steps.<step_id>.<accessor>}` to reference prior step outputs. The `--input` value becomes the `input` namespace in those templates.
+
+**Concurrency rejection.** When the workflow has `allow_concurrent: false` and a run is already active, the daemon returns `409 Conflict` (`error: "concurrent_run_active"`) and the command fails with a `concurrent run active` error. The active run is left untouched. Wait for it to finish or call `agentcronsystem runs kill <active_run_id>` (or `POST /api/runs/{id}/kill`) before retrying.
 
 #### Output
 
@@ -571,7 +573,7 @@ The placeholder is the UUID returned by the server (not the name passed on the C
 | Code | Meaning |
 |------|---------|
 | 0 | Workflow triggered (and stream ended, if `--follow` was used). Note: exit code 0 indicates the CLI operation succeeded, not that the workflow itself succeeded. |
-| 1 | Error (e.g., workflow not found, invalid input JSON) |
+| 1 | Error (e.g., workflow not found, invalid input JSON, or the workflow has `allow_concurrent: false` with a run already active — the daemon returns `409 Conflict` with `error: "concurrent_run_active"`). |
 
 #### Examples
 
@@ -591,8 +593,8 @@ agentcronsystem workflows trigger my-pipeline --input-file /path/to/payload.json
 # Trigger with per-run environment variables
 agentcronsystem workflows trigger my-pipeline -e "ENV=staging" -e "DRY_RUN=true"
 
-# Start execution from a specific step
-agentcronsystem workflows trigger my-pipeline --target-step review
+# Route the trigger's input bytes to a specific step's stdin
+agentcronsystem workflows trigger my-pipeline --input '"raw text payload"' --target-step ingest
 
 # Combine options
 agentcronsystem workflows trigger my-pipeline --input '{"prompt":"summarize"}' -e "MODEL=claude" --follow

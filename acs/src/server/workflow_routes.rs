@@ -303,6 +303,15 @@ struct TriggerResponse {
     run_url: String,
 }
 
+/// 409 response body returned when a workflow has `allow_concurrent: false`
+/// and a run is already active.
+#[derive(Debug, Serialize)]
+struct ConcurrentRunResponse {
+    error: &'static str,
+    message: &'static str,
+    active_run_id: Uuid,
+}
+
 pub async fn trigger_workflow(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -312,6 +321,43 @@ pub async fn trigger_workflow(
         Ok(w) => w,
         Err((status, body)) => return (status, body).into_response(),
     };
+
+    // If allow_concurrent is false and a run is already active for this
+    // workflow, reject with 409 Conflict instead of starting a new run.
+    if !workflow.allow_concurrent {
+        match state
+            .workflow_run_store
+            .list_runs(workflow.id, 0, 0)
+            .await
+        {
+            Ok(runs) => {
+                if let Some(active) = runs.iter().find(|r| r.status == RunStatus::Running) {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(ConcurrentRunResponse {
+                            error: "concurrent_run_active",
+                            message: "Workflow already has a running run; concurrent runs are disabled.",
+                            active_run_id: active.run_id,
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    workflow_id = %workflow.id,
+                    "Failed to list runs for allow_concurrent check: {}",
+                    e
+                );
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    &format!("Failed to check active runs: {}", e),
+                )
+                .into_response();
+            }
+        }
+    }
 
     let run_id = Uuid::now_v7();
     let workflow_id = workflow.id;
@@ -1146,6 +1192,169 @@ mod tests {
             json["message"].as_str().unwrap().contains("cron"),
             "expected cron error in message, got: {}",
             json["message"]
+        );
+    }
+
+    // ── Trigger / allow_concurrent reject semantics ───────────────────────────
+
+    /// Build a NewWorkflow with `allow_concurrent: false` so the trigger
+    /// endpoint enforces the concurrency guard.
+    fn make_new_workflow_no_concurrent(name: &str) -> NewWorkflow {
+        NewWorkflow {
+            name: name.to_string(),
+            schedule: "*/5 * * * *".to_string(),
+            timezone: None,
+            schedule_mode: Default::default(),
+            enabled: true,
+            steps: vec![make_shell_step("step-1")],
+            input_schema: None,
+            default_input: None,
+            working_dir: None,
+            env_vars: None,
+            allow_concurrent: Some(false),
+            on_failure: FailurePolicy::default(),
+        }
+    }
+
+    /// Insert a `Running` run for the given workflow into the store. Used to
+    /// simulate an in-flight run when testing the trigger endpoint's
+    /// concurrency guard.
+    async fn insert_running_run(
+        run_store: &InMemoryRunStore,
+        wf: &Workflow,
+    ) -> Uuid {
+        let run = WorkflowRun {
+            run_id: Uuid::now_v7(),
+            workflow_id: wf.id,
+            workflow_version: wf.version,
+            workflow_snapshot: wf.clone(),
+            started_at: Utc::now(),
+            finished_at: None,
+            status: RunStatus::Running,
+            trigger_input: None,
+            steps: vec![],
+            total_cost_usd: None,
+            total_duration_ms: None,
+        };
+        let id = run.run_id;
+        run_store.create_run(run).await.unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn test_trigger_returns_409_when_allow_concurrent_false_and_run_active() {
+        let wf_store = Arc::new(InMemoryWorkflowStore::new());
+        let wf = wf_store
+            .create_workflow(make_new_workflow_no_concurrent("no-concurrent-wf"))
+            .await
+            .unwrap();
+        let run_store = Arc::new(InMemoryRunStore::new());
+        let active_run_id = insert_running_run(&run_store, &wf).await;
+
+        let state = make_state(
+            Arc::clone(&wf_store) as Arc<dyn WorkflowStore>,
+            Arc::clone(&run_store) as Arc<dyn WorkflowRunStore>,
+        );
+        let app = crate::server::create_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/api/workflows/{}/trigger", wf.id))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["error"], "concurrent_run_active");
+        assert_eq!(
+            json["message"],
+            "Workflow already has a running run; concurrent runs are disabled."
+        );
+        assert_eq!(json["active_run_id"], active_run_id.to_string());
+
+        // No new run was created — the store should still contain only the
+        // single active run we inserted.
+        let total = run_store.count_runs(wf.id).await.unwrap();
+        assert_eq!(total, 1, "no additional run should have been created");
+    }
+
+    #[tokio::test]
+    async fn test_trigger_returns_202_when_allow_concurrent_true_and_run_active() {
+        let wf_store = Arc::new(InMemoryWorkflowStore::new());
+        // Default (allow_concurrent: None → true)
+        let wf = wf_store
+            .create_workflow(make_new_workflow("concurrent-ok-wf"))
+            .await
+            .unwrap();
+        let run_store = Arc::new(InMemoryRunStore::new());
+        let _active_run_id = insert_running_run(&run_store, &wf).await;
+
+        let state = make_state(
+            Arc::clone(&wf_store) as Arc<dyn WorkflowStore>,
+            Arc::clone(&run_store) as Arc<dyn WorkflowRunStore>,
+        );
+        let app = crate::server::create_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/api/workflows/{}/trigger", wf.id))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn test_trigger_succeeds_after_active_run_finishes() {
+        let wf_store = Arc::new(InMemoryWorkflowStore::new());
+        let wf = wf_store
+            .create_workflow(make_new_workflow_no_concurrent("lock-release-wf"))
+            .await
+            .unwrap();
+        let run_store = Arc::new(InMemoryRunStore::new());
+
+        // Insert a Running run, then mark it Completed before triggering.
+        let active_run_id = insert_running_run(&run_store, &wf).await;
+        let mut active = run_store.get_run(active_run_id).await.unwrap().unwrap();
+        active.status = RunStatus::Completed;
+        active.finished_at = Some(Utc::now());
+        run_store.update_run(&active).await.unwrap();
+
+        let state = make_state(
+            Arc::clone(&wf_store) as Arc<dyn WorkflowStore>,
+            Arc::clone(&run_store) as Arc<dyn WorkflowRunStore>,
+        );
+        let app = crate::server::create_router(state);
+
+        // Now the trigger should succeed because no run is Running anymore.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/api/workflows/{}/trigger", wf.id))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::ACCEPTED,
+            "trigger should succeed after the active run finishes"
         );
     }
 }

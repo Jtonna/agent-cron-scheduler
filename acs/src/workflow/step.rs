@@ -84,6 +84,16 @@ pub struct StepContext {
     /// value and abort with `StepError::Killed` when signalled.
     /// `None` in tests and contexts that don't wire up the kill registry.
     pub kill_rx: Option<KillReceiver>,
+    /// Optional step id whose stdin should receive the trigger's `input` value.
+    ///
+    /// Set from `TriggerParams.target_step` at the start of `run_workflow`.
+    /// When the executor reaches a `ShellStep` or `ScriptStep` whose id matches
+    /// this value, the trigger's `input` is serialized and written to that
+    /// step's stdin. This OVERRIDES `pass_stdin` for the matching step.
+    /// Step kinds that do not accept stdin (e.g. `MatchStep`, `SetVarStep`,
+    /// `HttpStep`, `AgentStep`) ignore this value silently. A non-matching id
+    /// is also ignored silently — the workflow runs without stdin routing.
+    pub target_step: Option<String>,
 }
 
 /// A future that resolves when the kill receiver is signalled with `true`.

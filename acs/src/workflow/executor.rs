@@ -565,6 +565,7 @@ pub async fn run_workflow(
         env,
         event_tx: event_tx.clone(),
         kill_rx: Some(kill_rx),
+        target_step: trigger.target_step.clone(),
     };
 
     let mut step_runs: Vec<StepRun> = Vec::new();
@@ -1675,5 +1676,204 @@ mod tests {
         // Sending kill now should be a no-op (entry gone, no panic).
         let entry = registry.read().await.get(&run_id).cloned();
         assert!(entry.is_none(), "registry entry should be removed after run");
+    }
+
+    // ── Tests for `TriggerParams.target_step` stdin routing ───────────────────
+
+    /// Cross-platform "echo stdin to stdout" command.
+    ///
+    /// Unix: `cat` reads stdin and writes to stdout.
+    /// Windows: PowerShell `[Console]::In.ReadToEnd()` mirrors stdin to stdout.
+    fn cat_stdin_cmd() -> &'static str {
+        #[cfg(windows)]
+        { "powershell -NoProfile -Command \"[Console]::In.ReadToEnd()\"" }
+        #[cfg(not(windows))]
+        { "cat" }
+    }
+
+    fn target_step_trigger(input: Value, target: &str) -> TriggerParams {
+        TriggerParams {
+            input,
+            env: None,
+            target_step: Some(target.to_string()),
+        }
+    }
+
+    /// `target_step: "main"` + `input: "hello world"` routes the raw string
+    /// bytes to the matching step's stdin.
+    #[tokio::test]
+    async fn test_target_step_routes_string_input_to_stdin() {
+        let sink = Arc::new(MockLogSink::default());
+        let workflow = make_workflow(
+            "target_str",
+            vec![shell_step("main", cat_stdin_cmd())],
+        );
+
+        let trigger = target_step_trigger(json!("hello world"), "main");
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            trigger,
+            Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(run.status, RunStatus::Completed);
+        let captured = String::from_utf8_lossy(&sink.chunks.lock().unwrap()).to_string();
+        assert!(
+            captured.contains("hello world"),
+            "expected 'hello world' in step stdout (from stdin echo); got: {:?}",
+            captured
+        );
+    }
+
+    /// `target_step: "main"` + `input: {"foo":1}` routes compact-JSON bytes
+    /// to the matching step's stdin.
+    #[tokio::test]
+    async fn test_target_step_routes_json_input_to_stdin() {
+        let sink = Arc::new(MockLogSink::default());
+        let workflow = make_workflow(
+            "target_json",
+            vec![shell_step("main", cat_stdin_cmd())],
+        );
+
+        let trigger = target_step_trigger(json!({"foo": 1}), "main");
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            trigger,
+            Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(run.status, RunStatus::Completed);
+        let captured = String::from_utf8_lossy(&sink.chunks.lock().unwrap()).to_string();
+        assert!(
+            captured.contains(r#"{"foo":1}"#),
+            "expected compact JSON '{{\"foo\":1}}' in step stdout (from stdin echo); got: {:?}",
+            captured
+        );
+    }
+
+    /// `target_step: None` routes nothing automatically. A step with
+    /// `pass_stdin: false` reads no stdin (process gets EOF immediately).
+    #[tokio::test]
+    async fn test_target_step_none_does_not_route_stdin() {
+        let sink = Arc::new(MockLogSink::default());
+        let workflow = make_workflow(
+            "no_target",
+            vec![shell_step("main", cat_stdin_cmd())],
+        );
+
+        // Trigger has input but target_step is None → no stdin routing.
+        let trigger = TriggerParams {
+            input: json!("should not appear"),
+            env: None,
+            target_step: None,
+        };
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            trigger,
+            Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(run.status, RunStatus::Completed);
+        let captured = String::from_utf8_lossy(&sink.chunks.lock().unwrap()).to_string();
+        assert!(
+            !captured.contains("should not appear"),
+            "input must NOT appear in stdout when target_step is None; got: {:?}",
+            captured
+        );
+    }
+
+    /// `target_step: "nonexistent"` is silently ignored. The workflow runs
+    /// normally without stdin routing.
+    #[tokio::test]
+    async fn test_target_step_nonexistent_id_is_silently_ignored() {
+        let sink = Arc::new(MockLogSink::default());
+        let workflow = make_workflow(
+            "missing_target",
+            vec![shell_step("main", cat_stdin_cmd())],
+        );
+
+        let trigger = target_step_trigger(json!("ignored input"), "does-not-exist");
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            trigger,
+            Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
+            None,
+        )
+        .await;
+
+        // Workflow completes normally — no error from the missing target_step.
+        assert_eq!(run.status, RunStatus::Completed);
+        let captured = String::from_utf8_lossy(&sink.chunks.lock().unwrap()).to_string();
+        assert!(
+            !captured.contains("ignored input"),
+            "input must NOT appear when target_step references a missing step; got: {:?}",
+            captured
+        );
+    }
+
+    /// `target_step` pointing at a `MatchStep` is silently ignored — Match
+    /// doesn't accept stdin. The workflow runs normally.
+    #[tokio::test]
+    async fn test_target_step_match_step_ignored() {
+        let sink = Arc::new(MockLogSink::default());
+
+        let mut cases = std::collections::HashMap::new();
+        cases.insert(
+            "A".to_string(),
+            vec![shell_step("branch_a", "echo branch_a_ran")],
+        );
+
+        let workflow = make_workflow(
+            "match_target",
+            vec![
+                StepDef::Match(MatchStep {
+                    common: StepDefCommon {
+                        id: "match_step_id".to_string(),
+                        on_failure: None,
+                        always_run: false,
+                        timeout_secs: None,
+                        working_dir: None,
+                        env_vars: None,
+                        capture: CaptureSpec::default(),
+                    },
+                    expr: "A".to_string(),
+                    cases,
+                    default: None,
+                }),
+            ],
+        );
+
+        // target_step refers to the MatchStep — should be ignored silently.
+        let trigger = target_step_trigger(json!("input bytes"), "match_step_id");
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            trigger,
+            Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(run.status, RunStatus::Completed);
+        // The branch should still run.
+        assert!(
+            run.steps.iter().any(|r| r.step_id == "branch_a"),
+            "branch_a should still execute"
+        );
     }
 }

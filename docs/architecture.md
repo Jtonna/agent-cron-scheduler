@@ -293,12 +293,11 @@ See [Storage](storage.md) for implementation details.
   tokio::time::sleep(duration)         notify.notified()
      |                                        |
   5. Re-check clock, for each due wf:   Re-loop from step 1
-     a. If WaitForCompletion: check
-        workflow_run_store for active
-        runs; skip if found.
-     b. If allow_concurrent=false + Cron:
-        send kill to any active run, wait
-        up to 5 s for it to terminate.
+     a. If WaitForCompletion + active run:
+        skip dispatch.
+     b. Else if allow_concurrent=false +
+        active run: skip dispatch and log
+        a warning. Active run untouched.
      c. Generate run_id (Uuid::now_v7())
      d. tokio::spawn(async move {
           run_store.create_run(initial)
@@ -474,11 +473,15 @@ StepDef (tag = "kind")
 
 ### 5.1 `allow_concurrent` Flag
 
-`Workflow.allow_concurrent` controls what the scheduler does when a cron tick fires and a run for that workflow is already active.
+`Workflow.allow_concurrent` is a universal concurrency guard that applies to all trigger sources (HTTP and cron).
 
-- **`allow_concurrent: true`** (default): dispatch proceeds immediately regardless of active runs. Multiple runs of the same workflow may execute in parallel.
-- **`allow_concurrent: false`** with `schedule_mode: Cron`: the scheduler looks up any `Running` run in the kill-signals registry, sends the kill signal, waits up to 5 seconds for it to terminate, then dispatches the new run.
-- **`schedule_mode: WaitForCompletion`**: the cron tick is skipped entirely if an active run exists. `allow_concurrent` has no additional effect in this mode — `WaitForCompletion` takes precedence.
+- **`allow_concurrent: true`** (default): no concurrency check. Multiple runs of the same workflow may execute in parallel.
+- **`allow_concurrent: false`** + active run for the workflow:
+  - `POST /api/workflows/{id}/trigger` returns `409 Conflict` with body `{ "error": "concurrent_run_active", "message": "Workflow already has a running run; concurrent runs are disabled.", "active_run_id": "<run_id>" }`. No new run is created.
+  - The cron tick is skipped and a warning is logged. The active run is left untouched and the next cron tick after it finishes is the one that will dispatch.
+- **`schedule_mode: WaitForCompletion`** is independent of `allow_concurrent` and applies to cron only. When set, cron ticks are skipped while a run is active for the workflow regardless of the `allow_concurrent` value. HTTP triggers are unaffected by `schedule_mode`.
+
+The dispatch decision for a cron tick is computed by `cron_dispatch_decision()` in `acs/src/daemon/scheduler.rs`, which returns one of `Dispatch`, `SkipWaitForCompletion`, or `SkipNoConcurrency`. `WaitForCompletion` takes precedence over `allow_concurrent: false` when both apply.
 
 ### 5.2 Kill Channel — `watch<bool>`
 

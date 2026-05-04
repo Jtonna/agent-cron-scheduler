@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::pty::{NoPtySpawner, PtySpawner};
 use crate::workflow::step::{wait_for_kill, Step, StepContext, StepError, StepOutput};
+use crate::workflow::steps::resolve_stdin_source;
 use crate::workflow::template;
 
 pub use crate::models::workflow::ScriptStep;
@@ -63,20 +64,10 @@ impl Step for ScriptStep {
             .spawn(cmd, 24, 80)
             .map_err(|e| StepError::Spawn(e.to_string()))?;
 
-        // 8. stdin handling
-        if self.pass_stdin {
-            // Find the most recently accumulated step output
-            let prev_stdout = ctx.steps.values().last().and_then(|s| s.stdout.as_ref());
-            if let Some(val) = prev_stdout {
-                let bytes: Vec<u8> = match val {
-                    Value::String(s) => s.as_bytes().to_vec(),
-                    other => serde_json::to_vec(other).unwrap_or_default(),
-                };
-                if !bytes.is_empty() {
-                    if let Err(e) = process.write_stdin(&bytes) {
-                        tracing::warn!(step_id = %self.common.id, "Failed to write stdin: {}", e);
-                    }
-                }
+        // 8. stdin handling: target_step takes precedence over pass_stdin.
+        if let Some(bytes) = resolve_stdin_source(ctx, self.common.id.as_str(), self.pass_stdin) {
+            if let Err(e) = process.write_stdin(&bytes) {
+                tracing::warn!(step_id = %self.common.id, "Failed to write stdin: {}", e);
             }
         }
         process.close_stdin();
@@ -468,6 +459,7 @@ mod tests {
             env: HashMap::new(),
             event_tx: None,
             kill_rx: None,
+            target_step: None,
         }
     }
 

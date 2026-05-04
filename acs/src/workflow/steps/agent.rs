@@ -366,6 +366,7 @@ mod tests {
             env: HashMap::new(),
             event_tx: None,
             kill_rx: None,
+            target_step: None,
         }
     }
 

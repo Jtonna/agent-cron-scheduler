@@ -300,6 +300,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: |
+            Workflow has `allow_concurrent: false` and a run is already active.
+            No new run is created; the active run is left untouched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConcurrentRunResponse"
+              example:
+                error: concurrent_run_active
+                message: "Workflow already has a running run; concurrent runs are disabled."
+                active_run_id: "0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"
         "500":
           description: Internal server error
           content:
@@ -1234,8 +1246,14 @@ components:
           type: string
           nullable: true
           description: |
-            Start execution from this step ID instead of the first step.
-            Useful for resuming or debugging a specific step.
+            Step `id` to route the trigger's `input` to as stdin. When set, the
+            `input` value is serialized and written to that step's stdin when
+            it executes. Strings are written as raw bytes; all other JSON
+            values are serialized as compact JSON. Only `Shell` and `Script`
+            steps consume stdin — other step kinds (`Match`, `SetVar`, `Http`,
+            `Agent`) ignore this value silently. A non-matching `id` is also
+            ignored silently. `target_step` overrides `pass_stdin` for the
+            matching step.
           example: deploy
 
     WorkflowTriggerResponse:
@@ -1459,3 +1477,26 @@ components:
           type: string
           description: Human-readable error description.
           example: "Workflow with id '550e8400-e29b-41d4-a716-446655440000' not found"
+
+    ConcurrentRunResponse:
+      type: object
+      required: [error, message, active_run_id]
+      description: |
+        Returned by `POST /api/workflows/{id}/trigger` with status 409 when
+        the workflow has `allow_concurrent: false` and a run is already
+        active. No new run is created; the active run is left untouched.
+      properties:
+        error:
+          type: string
+          description: Always `concurrent_run_active` for this response.
+          enum: [concurrent_run_active]
+          example: concurrent_run_active
+        message:
+          type: string
+          description: Human-readable explanation.
+          example: "Workflow already has a running run; concurrent runs are disabled."
+        active_run_id:
+          type: string
+          format: uuid
+          description: The `run_id` of the active run that blocked the new trigger.
+          example: "0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678"

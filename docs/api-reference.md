@@ -325,7 +325,7 @@ Manually trigger an immediate execution of the workflow, regardless of its cron 
 |---------------|---------------------------|----------|----------------|--------------------------------------------------------------------------------------------------------------|
 | `input`       | any JSON value            | No       | `null`         | Replaces `workflow.default_input` for this run. All step templates referencing `${input.*}` receive these values. When omitted or `null`, falls back to the workflow's `default_input`. Sending `{}` stores an empty object (not the default). |
 | `env`         | object (string -> string) | No       | `null`         | Overlays onto `workflow.env_vars` for this run (merge, not replace). Trigger `env` wins on collision.       |
-| `target_step` | string                    | No       | `null`         | Optional step `id` to route stdin to. Rarely needed.                                                         |
+| `target_step` | string                    | No       | `null`         | Step `id` to route the trigger's `input` to as stdin. When set, the `input` value is serialized (strings as raw bytes, all other JSON as compact JSON) and written to that step's stdin when it executes. Only `Shell` and `Script` steps consume stdin — other step kinds ignore this value. A non-matching `id` is also ignored silently. `target_step` overrides `pass_stdin` for the matching step. |
 
 **Response:**
 
@@ -333,7 +333,24 @@ Manually trigger an immediate execution of the workflow, regardless of its cron 
 |--------|-------------|
 | 202 Accepted | The workflow run has been dispatched. |
 | 404 Not Found | Workflow not found. |
+| 409 Conflict | Workflow has `allow_concurrent: false` and a run is already active. No new run is created. |
 | 500 Internal Server Error | Failed to create run record or spawn the executor. |
+
+**409 Conflict body:**
+
+```json
+{
+  "error": "concurrent_run_active",
+  "message": "Workflow already has a running run; concurrent runs are disabled.",
+  "active_run_id": "01941234-bbbb-7abc-def0-123456789abc"
+}
+```
+
+| Field           | Type          | Description                                                  |
+|-----------------|---------------|--------------------------------------------------------------|
+| `error`         | string        | Always `"concurrent_run_active"` for this response.          |
+| `message`       | string        | Human-readable explanation.                                  |
+| `active_run_id` | string (UUID) | The `run_id` of the active run that blocked the new trigger. |
 
 ```json
 {
@@ -909,7 +926,7 @@ Request body for `POST /api/workflows/{id}/trigger`.
 |---------------|---------------------------|----------|--------------------------------------------------------------------------------------------|
 | `input`       | any JSON value            | No       | Trigger payload; optional, defaults to `null`. When `null` or omitted, falls back to `workflow.default_input`. Sending `{}` stores an empty object rather than falling back to `default_input`. |
 | `env`         | object (string -> string) | No       | Per-trigger environment variables. Merged onto `workflow.env_vars` (trigger wins on collision). |
-| `target_step` | string                    | No       | Route stdin to this step's `id`. Rarely needed.                                            |
+| `target_step` | string                    | No       | Step `id` to route the trigger's `input` to as stdin. Strings are written as raw bytes; all other JSON values are serialized as compact JSON. Only `Shell` and `Script` steps consume stdin — other step kinds ignore this value. A non-matching `id` is also ignored silently. Overrides `pass_stdin` for the matching step. |
 
 **Template substitution:** Fields marked as "template" in step definitions support two namespaces wrapped in `${...}` syntax:
 

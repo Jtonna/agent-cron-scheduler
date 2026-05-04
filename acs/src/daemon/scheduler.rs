@@ -106,6 +106,46 @@ pub fn compute_next_run(
 }
 
 // ---------------------------------------------------------------------------
+// Cron dispatch decision
+// ---------------------------------------------------------------------------
+
+/// Outcome of the cron-tick dispatch check for a single workflow.
+///
+/// Used by the scheduler loop to decide whether to dispatch a new run, skip
+/// because a `WaitForCompletion` workflow already has an active run, or skip
+/// because `allow_concurrent: false` and a run is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CronDispatchDecision {
+    /// No concurrency guard tripped — start a new run for this tick.
+    Dispatch,
+    /// `schedule_mode == WaitForCompletion` and a run is active. Skip.
+    SkipWaitForCompletion,
+    /// `allow_concurrent: false` and a run is active. Skip and leave the
+    /// active run untouched.
+    SkipNoConcurrency,
+}
+
+/// Compute the cron-dispatch decision for a workflow given whether a run is
+/// currently active for it.
+///
+/// Precedence (matches the scheduler loop):
+/// 1. `schedule_mode == WaitForCompletion` + active run → `SkipWaitForCompletion`.
+/// 2. `allow_concurrent == false` + active run → `SkipNoConcurrency`.
+/// 3. Otherwise → `Dispatch`.
+pub fn cron_dispatch_decision(
+    workflow: &crate::models::workflow::Workflow,
+    has_active_run: bool,
+) -> CronDispatchDecision {
+    if has_active_run && workflow.schedule_mode == ScheduleMode::WaitForCompletion {
+        return CronDispatchDecision::SkipWaitForCompletion;
+    }
+    if has_active_run && !workflow.allow_concurrent {
+        return CronDispatchDecision::SkipNoConcurrency;
+    }
+    CronDispatchDecision::Dispatch
+}
+
+// ---------------------------------------------------------------------------
 // WorkflowScheduler
 // ---------------------------------------------------------------------------
 
@@ -185,86 +225,48 @@ impl WorkflowScheduler {
                     let now = self.clock.now();
                     for (wf, next_time) in &next_runs {
                         if *next_time <= now {
-                            // WaitForCompletion: skip if already running
-                            if wf.schedule_mode == ScheduleMode::WaitForCompletion {
+                            // Decide whether to skip this cron tick based on
+                            // schedule_mode and allow_concurrent. We only need
+                            // the active-run flag if at least one rule applies.
+                            let needs_active_check = wf.schedule_mode == ScheduleMode::WaitForCompletion
+                                || !wf.allow_concurrent;
+                            let has_active = if needs_active_check {
                                 match self.workflow_run_store.list_runs(wf.id, 0, 0).await {
-                                    Ok(runs) => {
-                                        let has_active = runs.iter().any(|r| {
-                                            r.status == crate::models::workflow::RunStatus::Running
-                                        });
-                                        if has_active {
-                                            tracing::debug!(
-                                                workflow_id = %wf.id,
-                                                workflow_name = %wf.name,
-                                                "WaitForCompletion: skipping dispatch — run still active"
-                                            );
-                                            continue;
-                                        }
-                                    }
+                                    Ok(runs) => runs.iter().any(|r| {
+                                        r.status == crate::models::workflow::RunStatus::Running
+                                    }),
                                     Err(e) => {
                                         tracing::warn!(
                                             workflow_id = %wf.id,
-                                            "Failed to check active runs for WaitForCompletion: {}",
+                                            "Failed to check active runs: {}",
                                             e
                                         );
+                                        false
                                     }
                                 }
-                            }
+                            } else {
+                                false
+                            };
 
-                            // allow_concurrent: false — kill any active run before
-                            // dispatching a new one. This applies when schedule_mode
-                            // is Cron (WaitForCompletion already skipped above).
-                            if !wf.allow_concurrent && wf.schedule_mode != ScheduleMode::WaitForCompletion {
-                                match self.workflow_run_store.list_runs(wf.id, 0, 0).await {
-                                    Ok(runs) => {
-                                        let active_run_ids: Vec<Uuid> = runs.iter()
-                                            .filter(|r| r.status == crate::models::workflow::RunStatus::Running)
-                                            .map(|r| r.run_id)
-                                            .collect();
-                                        for active_id in active_run_ids {
-                                            let sent = {
-                                                let registry = self.kill_signals.read().await;
-                                                if let Some(tx) = registry.get(&active_id) {
-                                                    let _ = tx.send(true);
-                                                    true
-                                                } else {
-                                                    false
-                                                }
-                                            };
-                                            if sent {
-                                                tracing::info!(
-                                                    workflow_id = %wf.id,
-                                                    run_id = %active_id,
-                                                    "allow_concurrent=false: sent kill to active run before dispatching new one"
-                                                );
-                                                let deadline = tokio::time::Instant::now()
-                                                    + Duration::from_secs(5);
-                                                loop {
-                                                    if tokio::time::Instant::now() >= deadline {
-                                                        tracing::warn!(
-                                                            workflow_id = %wf.id,
-                                                            run_id = %active_id,
-                                                            "allow_concurrent=false: timed out waiting for active run to stop; proceeding with dispatch"
-                                                        );
-                                                        break;
-                                                    }
-                                                    let still_alive = self.kill_signals.read().await.contains_key(&active_id);
-                                                    if !still_alive {
-                                                        break;
-                                                    }
-                                                    tokio::time::sleep(Duration::from_millis(100)).await;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            workflow_id = %wf.id,
-                                            "Failed to check active runs for allow_concurrent=false: {}",
-                                            e
-                                        );
-                                    }
+                            match cron_dispatch_decision(wf, has_active) {
+                                CronDispatchDecision::SkipWaitForCompletion => {
+                                    tracing::debug!(
+                                        workflow_id = %wf.id,
+                                        workflow_name = %wf.name,
+                                        "WaitForCompletion: skipping dispatch — run still active"
+                                    );
+                                    continue;
                                 }
+                                CronDispatchDecision::SkipNoConcurrency => {
+                                    tracing::warn!(
+                                        workflow_id = %wf.id,
+                                        workflow_name = %wf.name,
+                                        "workflow {} has active run, skipping dispatch (allow_concurrent=false)",
+                                        wf.name
+                                    );
+                                    continue;
+                                }
+                                CronDispatchDecision::Dispatch => {}
                             }
 
                             let run_id = Uuid::now_v7();
@@ -524,5 +526,117 @@ mod tests {
         // Should be within 1 second
         let diff = (actual_now - now).num_seconds().abs();
         assert!(diff < 2, "SystemClock should return approximately now");
+    }
+
+    // ── Cron dispatch decision tests ──────────────────────────────────────────
+
+    use crate::models::workflow::{
+        CaptureSpec, FailurePolicy, ShellStep, StepDef, StepDefCommon, Workflow,
+    };
+    use uuid::Uuid;
+
+    fn make_workflow(allow_concurrent: bool, schedule_mode: ScheduleMode) -> Workflow {
+        let now = Utc::now();
+        Workflow {
+            id: Uuid::now_v7(),
+            name: "test-wf".to_string(),
+            version: 1,
+            schedule: "* * * * *".to_string(),
+            timezone: None,
+            schedule_mode,
+            enabled: true,
+            steps: vec![StepDef::Shell(ShellStep {
+                common: StepDefCommon {
+                    id: "s1".to_string(),
+                    on_failure: None,
+                    always_run: false,
+                    timeout_secs: None,
+                    working_dir: None,
+                    env_vars: None,
+                    capture: CaptureSpec::default(),
+                },
+                command: "echo hi".to_string(),
+                pass_stdin: false,
+            })],
+            input_schema: None,
+            default_input: None,
+            working_dir: None,
+            env_vars: None,
+            allow_concurrent,
+            on_failure: FailurePolicy::default(),
+            last_run_at: None,
+            last_run_status: None,
+            last_run_id: None,
+            next_run_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn test_cron_dispatch_no_active_run_dispatches() {
+        let wf = make_workflow(true, ScheduleMode::Cron);
+        assert_eq!(
+            cron_dispatch_decision(&wf, false),
+            CronDispatchDecision::Dispatch
+        );
+    }
+
+    #[test]
+    fn test_cron_dispatch_allow_concurrent_true_with_active_run_dispatches() {
+        let wf = make_workflow(true, ScheduleMode::Cron);
+        assert_eq!(
+            cron_dispatch_decision(&wf, true),
+            CronDispatchDecision::Dispatch
+        );
+    }
+
+    #[test]
+    fn test_cron_dispatch_allow_concurrent_false_with_active_run_skips() {
+        let wf = make_workflow(false, ScheduleMode::Cron);
+        assert_eq!(
+            cron_dispatch_decision(&wf, true),
+            CronDispatchDecision::SkipNoConcurrency
+        );
+    }
+
+    #[test]
+    fn test_cron_dispatch_allow_concurrent_false_no_active_run_dispatches() {
+        let wf = make_workflow(false, ScheduleMode::Cron);
+        assert_eq!(
+            cron_dispatch_decision(&wf, false),
+            CronDispatchDecision::Dispatch
+        );
+    }
+
+    #[test]
+    fn test_cron_dispatch_wait_for_completion_with_active_run_skips() {
+        // schedule_mode takes precedence over allow_concurrent.
+        let wf = make_workflow(true, ScheduleMode::WaitForCompletion);
+        assert_eq!(
+            cron_dispatch_decision(&wf, true),
+            CronDispatchDecision::SkipWaitForCompletion
+        );
+    }
+
+    #[test]
+    fn test_cron_dispatch_wait_for_completion_no_active_run_dispatches() {
+        let wf = make_workflow(true, ScheduleMode::WaitForCompletion);
+        assert_eq!(
+            cron_dispatch_decision(&wf, false),
+            CronDispatchDecision::Dispatch
+        );
+    }
+
+    #[test]
+    fn test_cron_dispatch_wait_for_completion_with_active_run_takes_precedence() {
+        // WaitForCompletion + allow_concurrent: false + active run → the
+        // WaitForCompletion outcome takes precedence (per the function's
+        // documented order).
+        let wf = make_workflow(false, ScheduleMode::WaitForCompletion);
+        assert_eq!(
+            cron_dispatch_decision(&wf, true),
+            CronDispatchDecision::SkipWaitForCompletion
+        );
     }
 }

@@ -184,11 +184,16 @@ This section describes runtime behaviors that are relevant when building or debu
 
 `POST /api/runs/{id}/kill` works for both manually triggered runs and cron-fired runs. The scheduler registers each dispatched run's kill sender in the shared `kill_signals` registry, so the kill endpoint can signal any run regardless of how it was started.
 
-### `allow_concurrent: false` with `schedule_mode: Cron`
+### `allow_concurrent: false` Behavior
 
-When `allow_concurrent: false` and `schedule_mode` is `Cron`, the scheduler kills the in-progress run before dispatching the new tick's run. The scheduler sends the kill signal to the active run, waits up to 5 seconds for it to terminate, then dispatches the new run. If the active run does not terminate within 5 seconds, the new run is dispatched anyway.
+`allow_concurrent: false` is a universal concurrency guard that rejects new runs while a run is already active. It applies to both HTTP triggers and cron ticks.
 
-To skip dispatch instead of killing: set `schedule_mode` to `WaitForCompletion`. That mode skips any cron tick that fires while a run is active.
+- **HTTP trigger** (`POST /api/workflows/{id}/trigger`): returns `409 Conflict` with body `{ "error": "concurrent_run_active", "message": "Workflow already has a running run; concurrent runs are disabled.", "active_run_id": "<run_id>" }`. No new run is created and the active run is left untouched.
+- **Cron tick**: the dispatch is skipped and a warning is logged (`workflow {name} has active run, skipping dispatch (allow_concurrent=false)`). The active run is left untouched and the next eligible cron tick after it finishes dispatches the new run.
+
+To explicitly terminate the active run, call `POST /api/runs/{run_id}/kill` against its `run_id` (the 409 response includes `active_run_id` for convenience).
+
+`schedule_mode: WaitForCompletion` is independent and applies to cron only — when set, cron ticks are skipped while a run is active regardless of `allow_concurrent`. HTTP triggers are unaffected by `schedule_mode`.
 
 ### `StepRun.step_index` in Run Records
 
@@ -197,6 +202,8 @@ To skip dispatch instead of killing: set `schedule_mode` to `WaitForCompletion`.
 ### `pass_stdin` Source Selection
 
 When `pass_stdin: true`, a Shell or Script step receives the stdout of the step that executed immediately before it in the run. The step context tracks outputs in insertion order, so the immediately-prior step's output is always the one piped to stdin.
+
+`TriggerParams.target_step` overrides `pass_stdin` for the matching step: when the trigger sets `target_step: "<step-id>"`, that step's stdin receives the trigger's `input` value (strings as raw bytes, all other JSON as compact JSON) instead of the prior step's stdout. Other step kinds (Match, SetVar, Http, Agent) do not consume stdin and ignore `target_step` silently. A `target_step` value that does not match any step is also ignored silently.
 
 ---
 

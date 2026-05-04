@@ -466,7 +466,7 @@ A reference that cannot be resolved (step not yet run, field not in input, unkno
 |---|---|---|---|
 | `input` | `serde_json::Value` | `null` | Replaces `default_input` for this run. If `null` (or omitted), `default_input` is used. This is a full replacement — the two values are not merged. |
 | `env` | `Option<HashMap<String, String>>` | `null` | Overlaid onto `workflow.env_vars`. Trigger env wins on key collision. |
-| `target_step` | `Option<String>` | `null` | Route stdin to a specific step ID. Informational field; routing behavior depends on implementation. |
+| `target_step` | `Option<String>` | `null` | Route the trigger's `input` to a specific step's stdin. When set to a step `id`, the trigger's `input` value is serialized and written to that step's stdin when it executes. Strings are written as raw bytes; all other JSON values are serialized as compact JSON. Only `Shell` and `Script` steps consume stdin — other step kinds ignore this value. An `id` that does not match any step is also ignored silently. `target_step` overrides `pass_stdin` for the matching step. |
 
 ### Input resolution
 
@@ -536,9 +536,12 @@ Steps with `always_run: true` execute even when the run has aborted (due to an `
 
 `Workflow.allow_concurrent` defaults to `true`. When `true`, multiple runs of the same workflow can execute simultaneously — there is no cap on concurrent runs.
 
-When `allow_concurrent: false` and `schedule_mode` is `Cron`, the scheduler kills any in-progress run before dispatching the new cron-tick run. The scheduler sends the kill signal, waits up to 5 seconds for the run to terminate, then dispatches the new run regardless of whether the previous run finished.
+When `allow_concurrent: false`, the workflow rejects new runs while a run is active. The guard applies to all trigger sources:
 
-- With `schedule_mode: "WaitForCompletion"`: cron ticks are skipped while a run is active, so concurrent-run scenarios do not arise. `allow_concurrent: false` has no additional effect in this mode.
+- **HTTP trigger** (`POST /api/workflows/{id}/trigger`): returns `409 Conflict` with the body `{ "error": "concurrent_run_active", "message": "Workflow already has a running run; concurrent runs are disabled.", "active_run_id": "<run_id>" }`. No new run is created and the active run is left untouched.
+- **Cron tick**: the dispatch is skipped and a warning is logged (`workflow {name} has active run, skipping dispatch (allow_concurrent=false)`). The active run is left untouched and the next eligible cron tick after it finishes will dispatch a new run.
+
+`schedule_mode: "WaitForCompletion"` is independent of `allow_concurrent`. When set, cron ticks are skipped while a run is active for that workflow regardless of the `allow_concurrent` value. HTTP triggers are unaffected by `schedule_mode` — they only check `allow_concurrent`.
 
 ### Timeouts
 
@@ -569,7 +572,7 @@ Killed runs emit a `RunFailed` SSE event. The persistent `status` is `Killed`.
 
 ### `Cron` (default)
 
-The scheduler fires on every cron tick regardless of whether a run of the same workflow is currently active. Combined with `allow_concurrent: true`, this results in multiple runs executing in parallel. Combined with `allow_concurrent: false`, the in-progress run is killed and a fresh run is started.
+The scheduler fires on every cron tick. Combined with `allow_concurrent: true`, multiple runs of the same workflow can execute in parallel. Combined with `allow_concurrent: false`, the cron tick is skipped if a run is already active for the workflow; the active run is left untouched and the next eligible tick after it finishes will dispatch a new run.
 
 ### `WaitForCompletion`
 
