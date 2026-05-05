@@ -12,6 +12,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use tokio::sync::{broadcast, Notify, RwLock};
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 use crate::daemon::events::WorkflowEvent;
@@ -64,24 +65,46 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/api/workflows/{id}/runs",
             get(workflow_routes::list_workflow_runs),
         )
-        .route(
-            "/api/runs/{run_id}",
-            get(workflow_routes::get_workflow_run),
-        )
+        .route("/api/runs/{run_id}", get(workflow_routes::get_workflow_run))
         .route(
             "/api/runs/{run_id}/kill",
             post(workflow_routes::kill_workflow_run),
         )
         // SSE for WorkflowEvent.
-        .route(
-            "/api/events/workflows",
-            get(sse::workflow_events_handler),
-        )
+        .route("/api/events/workflows", get(sse::workflow_events_handler))
         .route("/api/shutdown", post(routes::shutdown))
         .route("/api/restart", post(routes::restart))
         .route("/api/logs", get(routes::get_daemon_logs))
         .route("/api/service/status", get(routes::service_status))
         .with_state(state)
+        .layer(
+            // One-line access log per HTTP request:
+            //   `INFO http_request{method=POST uri=/api/workflows}: ... -> 201 (4ms)`
+            // The span carries method+uri so the on_response info! event is
+            // emitted *inside* that span and inherits those fields.
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::http::Request<_>| {
+                    tracing::info_span!(
+                        "http_request",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                    )
+                })
+                .on_request(|_request: &axum::http::Request<_>, _span: &tracing::Span| {})
+                .on_response(
+                    |response: &axum::http::Response<_>,
+                     latency: std::time::Duration,
+                     _span: &tracing::Span| {
+                        tracing::info!(
+                            status = response.status().as_u16(),
+                            latency_ms = latency.as_millis() as u64,
+                            "-> {} ({}ms)",
+                            response.status().as_u16(),
+                            latency.as_millis()
+                        );
+                    },
+                ),
+        )
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

@@ -165,11 +165,7 @@ impl FsWorkflowRunStore {
             .join(format!("{}.json", run_id))
     }
 
-    async fn write_run_atomic(
-        &self,
-        workflow_id: Uuid,
-        run: &WorkflowRun,
-    ) -> Result<(), AcsError> {
+    async fn write_run_atomic(&self, workflow_id: Uuid, run: &WorkflowRun) -> Result<(), AcsError> {
         let dir = self.runs_dir.join(workflow_id.to_string());
         tokio::fs::create_dir_all(&dir)
             .await
@@ -194,10 +190,7 @@ impl FsWorkflowRunStore {
 
     /// Enumerate all run JSON files in `<runs_dir>/<workflow_id>/` and return
     /// them sorted by run_id descending (latest Uuid v7 first = latest-first).
-    async fn list_run_files_for_workflow(
-        &self,
-        workflow_id: Uuid,
-    ) -> Result<Vec<Uuid>, AcsError> {
+    async fn list_run_files_for_workflow(&self, workflow_id: Uuid) -> Result<Vec<Uuid>, AcsError> {
         let dir = self.runs_dir.join(workflow_id.to_string());
         if !dir.exists() {
             return Ok(vec![]);
@@ -575,10 +568,7 @@ mod tests {
             store.create_run(run).await.expect("create_run");
         }
 
-        let listed = store
-            .list_runs(workflow_id, 0, 0)
-            .await
-            .expect("list_runs");
+        let listed = store.list_runs(workflow_id, 0, 0).await.expect("list_runs");
         assert_eq!(listed.len(), 3, "Should list all 3 runs");
 
         // Verify latest-first ordering (run_ids were created in order 0,1,2).
@@ -611,10 +601,7 @@ mod tests {
         // In latest-first order: [4, 3, 2, 1, 0].
         // offset=2, limit=2 → [2, 1].
 
-        let listed = store
-            .list_runs(workflow_id, 2, 2)
-            .await
-            .expect("list_runs");
+        let listed = store.list_runs(workflow_id, 2, 2).await.expect("list_runs");
         assert_eq!(listed.len(), 2, "Should return exactly 2 runs");
         assert_eq!(
             listed[0].run_id, all_run_ids[2],
@@ -647,14 +634,8 @@ mod tests {
                 .expect("create_run b");
         }
 
-        assert_eq!(
-            store.count_runs(workflow_a).await.expect("count_runs a"),
-            5
-        );
-        assert_eq!(
-            store.count_runs(workflow_b).await.expect("count_runs b"),
-            2
-        );
+        assert_eq!(store.count_runs(workflow_a).await.expect("count_runs a"), 5);
+        assert_eq!(store.count_runs(workflow_b).await.expect("count_runs b"), 2);
     }
 
     // ── 8. test_delete_run_removes_file ───────────────────────────────────────
@@ -679,11 +660,18 @@ mod tests {
             .join("runs")
             .join(workflow_id.to_string())
             .join(format!("{}.json", run_id));
-        assert!(!run_file.exists(), "Run file should be removed after delete");
+        assert!(
+            !run_file.exists(),
+            "Run file should be removed after delete"
+        );
 
         // Index should no longer contain the run.
         assert!(
-            store.get_run(run_id).await.expect("get after delete").is_none(),
+            store
+                .get_run(run_id)
+                .await
+                .expect("get after delete")
+                .is_none(),
             "get_run should return None after delete"
         );
     }
@@ -700,10 +688,7 @@ mod tests {
         store.create_run(run).await.expect("create_run");
 
         // Create a matching log file at the canonical logs/<workflow_id>/<run_id>.log path.
-        let log_dir = tmp
-            .path()
-            .join("logs")
-            .join(workflow_id.to_string());
+        let log_dir = tmp.path().join("logs").join(workflow_id.to_string());
         tokio::fs::create_dir_all(&log_dir)
             .await
             .expect("create log dir");
@@ -719,7 +704,10 @@ mod tests {
             .join("runs")
             .join(workflow_id.to_string())
             .join(format!("{}.json", run_id));
-        assert!(run_file.exists(), "run JSON file should exist before delete");
+        assert!(
+            run_file.exists(),
+            "run JSON file should exist before delete"
+        );
 
         store.delete_run(run_id).await.expect("delete_run");
 
@@ -735,7 +723,11 @@ mod tests {
 
         // Index should no longer contain the run.
         assert!(
-            store.get_run(run_id).await.expect("get after delete").is_none(),
+            store
+                .get_run(run_id)
+                .await
+                .expect("get after delete")
+                .is_none(),
             "get_run should return None after delete"
         );
     }

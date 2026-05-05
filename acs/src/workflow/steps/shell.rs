@@ -89,9 +89,7 @@ impl Step for ShellStep {
 
         // Build the timeout future
         let timeout_fut = match timeout_secs {
-            Some(secs) => {
-                tokio::time::sleep(std::time::Duration::from_secs(secs))
-            }
+            Some(secs) => tokio::time::sleep(std::time::Duration::from_secs(secs)),
             None => {
                 // Effectively infinite: 136 years
                 tokio::time::sleep(std::time::Duration::from_secs(u64::MAX / 2))
@@ -148,11 +146,8 @@ impl Step for ShellStep {
         }
 
         // Wait for the read handle
-        let exit_result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            read_handle,
-        )
-        .await;
+        let exit_result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), read_handle).await;
 
         let exit_code: Option<i32> = if timed_out || killed {
             // Drain any remaining chunks from channel so the reader unblocks,
@@ -193,7 +188,11 @@ impl Step for ShellStep {
         }
 
         // 9. Build StepOutput: parse capture_buf per parser spec
-        let stdout = parse_output(&capture_buf, self.common.capture.parser.as_deref(), &self.common.id);
+        let stdout = parse_output(
+            &capture_buf,
+            self.common.capture.parser.as_deref(),
+            &self.common.id,
+        );
 
         Ok(StepOutput {
             exit_code,
@@ -397,7 +396,10 @@ mod tests {
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
         let step = make_step("s1", &echo_cmd("hello"));
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         // stdout captured
@@ -431,7 +433,10 @@ mod tests {
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
         let step = make_step("s2", exit_one_cmd());
-        let output = step.execute(&mut ctx).await.expect("non-zero exit should be Ok");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("non-zero exit should be Ok");
 
         // Both platforms should produce a non-zero exit code.
         let code = output.exit_code.expect("exit code should be present");
@@ -451,7 +456,10 @@ mod tests {
         // reaches the shell.  After substitution the command is `echo world` which
         // is valid on both sh and cmd.exe.
         let step = make_step("s3", "echo ${input.name}");
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         let stdout_str = match output.stdout {
             Some(Value::String(s)) => s,
@@ -684,7 +692,8 @@ mod tests {
     async fn test_shell_step_env_var_passing() {
         let sink = Arc::new(MockLogSink::default());
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
-        ctx.env.insert("SHELL_STEP_TEST_VAR".to_string(), "bar42".to_string());
+        ctx.env
+            .insert("SHELL_STEP_TEST_VAR".to_string(), "bar42".to_string());
 
         let step = make_step("s7", "echo $SHELL_STEP_TEST_VAR");
         let output = step.execute(&mut ctx).await.expect("execute");
@@ -706,7 +715,8 @@ mod tests {
     async fn test_shell_step_env_var_passing() {
         let sink = Arc::new(MockLogSink::default());
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
-        ctx.env.insert("SHELL_STEP_TEST_VAR".to_string(), "bar42".to_string());
+        ctx.env
+            .insert("SHELL_STEP_TEST_VAR".to_string(), "bar42".to_string());
 
         let step = make_step("s7", "echo %SHELL_STEP_TEST_VAR%");
         let output = step.execute(&mut ctx).await.expect("execute");

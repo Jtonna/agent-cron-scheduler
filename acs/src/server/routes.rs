@@ -17,11 +17,7 @@ use super::AppState;
 // Error response (local helper)
 // ---------------------------------------------------------------------------
 
-fn error_response(
-    status: StatusCode,
-    error: &str,
-    message: &str,
-) -> impl IntoResponse {
+fn error_response(status: StatusCode, error: &str, message: &str) -> impl IntoResponse {
     (
         status,
         Json(serde_json::json!({

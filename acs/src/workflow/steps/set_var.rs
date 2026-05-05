@@ -170,11 +170,17 @@ mod tests {
         exports.insert("foo".to_string(), "bar".to_string());
         let step = make_step("sv1", exports);
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         // "bar" is not valid JSON, so it stays as Value::String
-        assert_eq!(output.exports.get("foo"), Some(&Value::String("bar".to_string())));
+        assert_eq!(
+            output.exports.get("foo"),
+            Some(&Value::String("bar".to_string()))
+        );
     }
 
     // ── Test 2: Template substitution ─────────────────────────────────────────
@@ -189,7 +195,10 @@ mod tests {
         exports.insert("name".to_string(), "${input.user}".to_string());
         let step = make_step("sv2", exports);
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(
             output.exports.get("name"),
@@ -208,7 +217,10 @@ mod tests {
         exports.insert("count".to_string(), "42".to_string());
         let step = make_step("sv3", exports);
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         // "42" is valid JSON → Value::Number(42)
         assert_eq!(output.exports.get("count"), Some(&json!(42)));
@@ -225,7 +237,10 @@ mod tests {
         exports.insert("meta".to_string(), r#"{"k":1}"#.to_string());
         let step = make_step("sv4", exports);
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         // r#"{"k":1}"# is valid JSON → Value::Object
         assert_eq!(output.exports.get("meta"), Some(&json!({"k": 1})));
@@ -245,11 +260,20 @@ mod tests {
         exports.insert("c".to_string(), "${input.env}".to_string());
         let step = make_step("sv5", exports);
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
-        assert_eq!(output.exports.get("a"), Some(&Value::String("hello".to_string())));
+        assert_eq!(
+            output.exports.get("a"),
+            Some(&Value::String("hello".to_string()))
+        );
         assert_eq!(output.exports.get("b"), Some(&json!(99)));
-        assert_eq!(output.exports.get("c"), Some(&Value::String("prod".to_string())));
+        assert_eq!(
+            output.exports.get("c"),
+            Some(&Value::String("prod".to_string()))
+        );
         assert_eq!(output.exports.len(), 3);
     }
 
@@ -261,7 +285,10 @@ mod tests {
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
         let step = make_step("sv6", HashMap::new());
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         assert!(output.exports.is_empty());
@@ -280,9 +307,15 @@ mod tests {
         exports.insert("choice".to_string(), r#""A""#.to_string());
         let step = make_step("sv7", exports);
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
-        assert_eq!(output.exports.get("choice"), Some(&Value::String("A".to_string())));
+        assert_eq!(
+            output.exports.get("choice"),
+            Some(&Value::String("A".to_string()))
+        );
     }
 
     // ── Test 8: kind() returns "set_var" ─────────────────────────────────────

@@ -153,8 +153,11 @@ pub trait LogSink: Send + Sync {
 
     /// Write the START marker for a step.
     /// Returns the byte offset of the BEGINNING of the marker line.
-    async fn write_step_start(&self, step_id: &str, started_at: DateTime<Utc>)
-        -> std::io::Result<u64>;
+    async fn write_step_start(
+        &self,
+        step_id: &str,
+        started_at: DateTime<Utc>,
+    ) -> std::io::Result<u64>;
 
     /// Append output bytes (stdout+stderr interleaved) to the log.
     async fn write_chunk(&self, data: &[u8]) -> std::io::Result<()>;

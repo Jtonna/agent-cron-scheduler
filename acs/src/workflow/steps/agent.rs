@@ -213,11 +213,7 @@ async fn execute_with_spawner(
     }
 
     // Wait for the read handle.
-    let exit_result = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        read_handle,
-    )
-    .await;
+    let exit_result = tokio::time::timeout(std::time::Duration::from_secs(10), read_handle).await;
 
     let exit_code: Option<i32> = if timed_out || killed {
         drop(output_rx);
@@ -415,7 +411,10 @@ mod tests {
         assert_eq!(output.exit_code, Some(0));
         let cost = output.cost.expect("should have cost");
         assert!((cost.total_cost_usd.unwrap() - 0.001).abs() < 1e-9);
-        assert_eq!(output.stdout, Some(Value::String("test answer".to_string())));
+        assert_eq!(
+            output.stdout,
+            Some(Value::String("test answer".to_string()))
+        );
     }
 
     // ── Test 2: Custom command_template with ${prompt} and ${input.*} ─────────
@@ -488,8 +487,7 @@ mod tests {
             r#"{"type":"result","total_cost_usd":0.0042,"duration_ms":1500,"num_turns":3,"result":"answer"}"#,
             "\n",
         );
-        let spawner =
-            MockPtySpawner::with_output_and_exit(vec![ndjson.as_bytes().to_vec()], 0);
+        let spawner = MockPtySpawner::with_output_and_exit(vec![ndjson.as_bytes().to_vec()], 0);
 
         let sink = Arc::new(MockLogSink::default());
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
@@ -538,8 +536,7 @@ mod tests {
             r#"{"type":"result","total_cost_usd":0.001,"duration_ms":200,"num_turns":1,"result":"the answer is 42"}"#,
             "\n",
         );
-        let spawner =
-            MockPtySpawner::with_output_and_exit(vec![ndjson.as_bytes().to_vec()], 0);
+        let spawner = MockPtySpawner::with_output_and_exit(vec![ndjson.as_bytes().to_vec()], 0);
 
         let sink = Arc::new(MockLogSink::default());
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
@@ -559,10 +556,7 @@ mod tests {
 
     #[test]
     fn test_substitute_prompt_replaces_token() {
-        let result = substitute_prompt(
-            r#"claude -p "${prompt}" --verbose"#,
-            "hello world",
-        );
+        let result = substitute_prompt(r#"claude -p "${prompt}" --verbose"#, "hello world");
         assert_eq!(result, r#"claude -p "hello world" --verbose"#);
     }
 
@@ -575,8 +569,7 @@ mod tests {
     #[test]
     fn test_substitute_prompt_dollar_in_prompt_not_re_expanded() {
         // Prompt containing ${...} should not be recursively expanded.
-        let result =
-            substitute_prompt(r#"claude -p "${prompt}""#, "review ${input.repo}");
+        let result = substitute_prompt(r#"claude -p "${prompt}""#, "review ${input.repo}");
         assert_eq!(result, r#"claude -p "review ${input.repo}""#);
     }
 

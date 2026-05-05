@@ -104,7 +104,9 @@ impl LogSink for EventEmittingLogSink {
         exit_code: Option<i32>,
         finished_at: DateTime<Utc>,
     ) -> std::io::Result<u64> {
-        self.inner.write_step_end(step_id, exit_code, finished_at).await
+        self.inner
+            .write_step_end(step_id, exit_code, finished_at)
+            .await
     }
 }
 
@@ -113,8 +115,8 @@ impl LogSink for EventEmittingLogSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex as StdMutex;
     use chrono::TimeZone;
+    use std::sync::Mutex as StdMutex;
     use tokio::sync::broadcast;
     use uuid::Uuid;
 
@@ -193,7 +195,12 @@ mod tests {
 
         let event = rx.recv().await.expect("should receive event");
         match event {
-            WorkflowEvent::StepOutput { step_index, step_id, data, .. } => {
+            WorkflowEvent::StepOutput {
+                step_index,
+                step_id,
+                data,
+                ..
+            } => {
                 assert_eq!(step_index, 3);
                 assert_eq!(step_id, "fetch");
                 assert_eq!(data.as_ref(), "hello");
@@ -213,7 +220,11 @@ mod tests {
 
         let event = rx.recv().await.expect("should receive event");
         match event {
-            WorkflowEvent::StepOutput { run_id, workflow_id, .. } => {
+            WorkflowEvent::StepOutput {
+                run_id,
+                workflow_id,
+                ..
+            } => {
                 assert_eq!(run_id, expected_run_id);
                 assert_eq!(workflow_id, expected_workflow_id);
             }
@@ -289,7 +300,12 @@ mod tests {
 
         let e1 = rx.recv().await.expect("first event");
         match e1 {
-            WorkflowEvent::StepOutput { step_index, step_id, data, .. } => {
+            WorkflowEvent::StepOutput {
+                step_index,
+                step_id,
+                data,
+                ..
+            } => {
                 assert_eq!(step_index, 1);
                 assert_eq!(step_id, "alpha");
                 assert_eq!(data.as_ref(), "first");
@@ -303,7 +319,12 @@ mod tests {
 
         let e2 = rx.recv().await.expect("second event");
         match e2 {
-            WorkflowEvent::StepOutput { step_index, step_id, data, .. } => {
+            WorkflowEvent::StepOutput {
+                step_index,
+                step_id,
+                data,
+                ..
+            } => {
                 assert_eq!(step_index, 2);
                 assert_eq!(step_id, "beta");
                 assert_eq!(data.as_ref(), "second");

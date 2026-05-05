@@ -1,4 +1,4 @@
-﻿use std::path::PathBuf;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -194,4 +194,3 @@ mod tests {
         assert!(config.default_allow_concurrent);
     }
 }
-

@@ -27,10 +27,7 @@ fn emit(tx: Option<&broadcast::Sender<WorkflowEvent>>, event: WorkflowEvent) {
 /// Dispatch a single `StepDef` to the correct `Step::execute` call.
 ///
 /// Unimplemented variants return `StepError::Internal` with a phase note.
-async fn dispatch_step(
-    step_def: &StepDef,
-    ctx: &mut StepContext,
-) -> Result<StepOutput, StepError> {
+async fn dispatch_step(step_def: &StepDef, ctx: &mut StepContext) -> Result<StepOutput, StepError> {
     match step_def {
         StepDef::Shell(s) => s.execute(ctx).await,
         StepDef::Script(s) => s.execute(ctx).await,
@@ -102,14 +99,24 @@ async fn execute_steps(
             let workflow_id = ctx.workflow_id;
 
             // Emit StepStarted for the synthetic match step.
-            emit(ctx.event_tx.as_ref(), WorkflowEvent::StepStarted {
-                run_id,
-                workflow_id,
-                step_index,
-                step_id: m.common.id.clone(),
-                kind: "match".to_string(),
-                started_at: Utc::now(),
-            });
+            emit(
+                ctx.event_tx.as_ref(),
+                WorkflowEvent::StepStarted {
+                    run_id,
+                    workflow_id,
+                    step_index,
+                    step_id: m.common.id.clone(),
+                    kind: "match".to_string(),
+                    started_at: Utc::now(),
+                },
+            );
+            tracing::info!(
+                run_id = %run_id,
+                step_index = step_index,
+                step_id = %m.common.id,
+                kind = "match",
+                "step started"
+            );
 
             let sub = template::substitute(&m.expr, &ctx.input, &ctx.steps);
             for warn in &sub.warnings {
@@ -150,15 +157,26 @@ async fn execute_steps(
             };
 
             // Emit StepCompleted for the match step.
-            emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
-                run_id,
-                workflow_id,
-                step_index,
-                step_id: m.common.id.clone(),
-                exit_code: Some(0),
-                cost_usd: None,
-                finished_at: Utc::now(),
-            });
+            emit(
+                ctx.event_tx.as_ref(),
+                WorkflowEvent::StepCompleted {
+                    run_id,
+                    workflow_id,
+                    step_index,
+                    step_id: m.common.id.clone(),
+                    exit_code: Some(0),
+                    cost_usd: None,
+                    finished_at: Utc::now(),
+                },
+            );
+            tracing::info!(
+                run_id = %run_id,
+                step_index = step_index,
+                step_id = %m.common.id,
+                status = ?RunStatus::Completed,
+                exit_code = 0,
+                "step completed"
+            );
 
             step_runs.push(match_run);
 
@@ -199,14 +217,24 @@ async fn execute_steps(
         let step_kind = step_kind_str(step_def);
 
         // Emit StepStarted before executing the step.
-        emit(ctx.event_tx.as_ref(), WorkflowEvent::StepStarted {
-            run_id,
-            workflow_id,
-            step_index,
-            step_id: common.id.clone(),
-            kind: step_kind.to_string(),
-            started_at: Utc::now(),
-        });
+        emit(
+            ctx.event_tx.as_ref(),
+            WorkflowEvent::StepStarted {
+                run_id,
+                workflow_id,
+                step_index,
+                step_id: common.id.clone(),
+                kind: step_kind.to_string(),
+                started_at: Utc::now(),
+            },
+        );
+        tracing::info!(
+            run_id = %run_id,
+            step_index = step_index,
+            step_id = %common.id,
+            kind = %step_kind,
+            "step started"
+        );
 
         // Inform the log sink which step is active so that chunk events carry
         // the correct step_index and step_id.  Errors are logged but do not
@@ -232,15 +260,30 @@ async fn execute_steps(
                 run.step_index = step_index;
                 run.kind = step_kind.to_string();
                 // Emit StepCompleted after successful execution.
-                emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
-                    run_id,
-                    workflow_id,
-                    step_index,
-                    step_id: common.id.clone(),
-                    exit_code: run.exit_code,
-                    cost_usd: run.cost_usd,
-                    finished_at: Utc::now(),
-                });
+                emit(
+                    ctx.event_tx.as_ref(),
+                    WorkflowEvent::StepCompleted {
+                        run_id,
+                        workflow_id,
+                        step_index,
+                        step_id: common.id.clone(),
+                        exit_code: run.exit_code,
+                        cost_usd: run.cost_usd,
+                        finished_at: Utc::now(),
+                    },
+                );
+                let duration_ms = run
+                    .finished_at
+                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
+                tracing::info!(
+                    run_id = %run_id,
+                    step_index = step_index,
+                    step_id = %common.id,
+                    status = ?run.status,
+                    exit_code = ?run.exit_code,
+                    duration_ms = ?duration_ms,
+                    "step completed"
+                );
                 ctx.steps.insert(common.id.clone(), output);
                 step_runs.push(run);
             }
@@ -248,15 +291,30 @@ async fn execute_steps(
                 run.step_index = step_index;
                 run.kind = step_kind.to_string();
                 // Emit StepCompleted with non-zero exit code or None.
-                emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
-                    run_id,
-                    workflow_id,
-                    step_index,
-                    step_id: common.id.clone(),
-                    exit_code: run.exit_code,
-                    cost_usd: run.cost_usd,
-                    finished_at: Utc::now(),
-                });
+                emit(
+                    ctx.event_tx.as_ref(),
+                    WorkflowEvent::StepCompleted {
+                        run_id,
+                        workflow_id,
+                        step_index,
+                        step_id: common.id.clone(),
+                        exit_code: run.exit_code,
+                        cost_usd: run.cost_usd,
+                        finished_at: Utc::now(),
+                    },
+                );
+                let duration_ms = run
+                    .finished_at
+                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
+                tracing::info!(
+                    run_id = %run_id,
+                    step_index = step_index,
+                    step_id = %common.id,
+                    status = ?run.status,
+                    exit_code = ?run.exit_code,
+                    duration_ms = ?duration_ms,
+                    "step completed"
+                );
                 step_runs.push(run);
                 *aborted = true;
             }
@@ -265,15 +323,30 @@ async fn execute_steps(
                 run.kind = step_kind.to_string();
                 // Insert the actual output (even though the step failed) so that
                 // downstream template references like ${steps.<id>.exit_code} resolve.
-                emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
-                    run_id,
-                    workflow_id,
-                    step_index,
-                    step_id: common.id.clone(),
-                    exit_code: run.exit_code,
-                    cost_usd: run.cost_usd,
-                    finished_at: Utc::now(),
-                });
+                emit(
+                    ctx.event_tx.as_ref(),
+                    WorkflowEvent::StepCompleted {
+                        run_id,
+                        workflow_id,
+                        step_index,
+                        step_id: common.id.clone(),
+                        exit_code: run.exit_code,
+                        cost_usd: run.cost_usd,
+                        finished_at: Utc::now(),
+                    },
+                );
+                let duration_ms = run
+                    .finished_at
+                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
+                tracing::info!(
+                    run_id = %run_id,
+                    step_index = step_index,
+                    step_id = %common.id,
+                    status = ?run.status,
+                    exit_code = ?run.exit_code,
+                    duration_ms = ?duration_ms,
+                    "step completed"
+                );
                 ctx.steps.insert(common.id.clone(), output);
                 step_runs.push(run);
                 // Do NOT set aborted — continue policy means keep going.
@@ -281,15 +354,30 @@ async fn execute_steps(
             StepRunResult::Killed(mut run) => {
                 run.step_index = step_index;
                 run.kind = step_kind.to_string();
-                emit(ctx.event_tx.as_ref(), WorkflowEvent::StepCompleted {
-                    run_id,
-                    workflow_id,
-                    step_index,
-                    step_id: common.id.clone(),
-                    exit_code: run.exit_code,
-                    cost_usd: run.cost_usd,
-                    finished_at: Utc::now(),
-                });
+                emit(
+                    ctx.event_tx.as_ref(),
+                    WorkflowEvent::StepCompleted {
+                        run_id,
+                        workflow_id,
+                        step_index,
+                        step_id: common.id.clone(),
+                        exit_code: run.exit_code,
+                        cost_usd: run.cost_usd,
+                        finished_at: Utc::now(),
+                    },
+                );
+                let duration_ms = run
+                    .finished_at
+                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
+                tracing::info!(
+                    run_id = %run_id,
+                    step_index = step_index,
+                    step_id = %common.id,
+                    status = ?run.status,
+                    exit_code = ?run.exit_code,
+                    duration_ms = ?duration_ms,
+                    "step completed"
+                );
                 step_runs.push(run);
                 *killed = true;
                 *aborted = true; // stop further steps
@@ -360,7 +448,13 @@ async fn run_step_with_policy(
                                 output.exit_code.unwrap_or(-1)
                             )));
                         } else {
-                            let run = make_step_run(common, started_at, RunStatus::Completed, &output, None);
+                            let run = make_step_run(
+                                common,
+                                started_at,
+                                RunStatus::Completed,
+                                &output,
+                                None,
+                            );
                             return StepRunResult::Completed(run, output);
                         }
                     }
@@ -400,7 +494,13 @@ fn build_step_run_result(
                     "step exited with non-zero code: {}",
                     output.exit_code.unwrap_or(-1)
                 );
-                let run = make_step_run(common, started_at, RunStatus::Failed, &output, Some(err_msg));
+                let run = make_step_run(
+                    common,
+                    started_at,
+                    RunStatus::Failed,
+                    &output,
+                    Some(err_msg),
+                );
                 match policy {
                     FailurePolicy::Continue => {
                         // On Continue, carry the real output so downstream templates can
@@ -525,12 +625,21 @@ pub async fn run_workflow(
     }
 
     // Emit RunStarted before executing any steps.
-    emit(event_tx.as_ref(), WorkflowEvent::RunStarted {
-        run_id,
-        workflow_id: workflow.id,
-        workflow_version: workflow.version,
-        started_at,
-    });
+    emit(
+        event_tx.as_ref(),
+        WorkflowEvent::RunStarted {
+            run_id,
+            workflow_id: workflow.id,
+            workflow_version: workflow.version,
+            started_at,
+        },
+    );
+    tracing::info!(
+        run_id = %run_id,
+        workflow_id = %workflow.id,
+        name = %workflow.name,
+        "run started"
+    );
 
     // Resolve effective input: trigger.input if not Null, else workflow.default_input.
     let effective_input = if trigger.input.is_null() {
@@ -612,16 +721,28 @@ pub async fn run_workflow(
         }
     };
 
+    let total_duration_ms = (finished_at - started_at).num_milliseconds().max(0) as u64;
+
     // Emit RunCompleted or RunFailed.
     match status {
         RunStatus::Completed => {
-            emit(event_tx.as_ref(), WorkflowEvent::RunCompleted {
-                run_id,
-                workflow_id: workflow.id,
-                status: RunStatus::Completed,
-                total_cost_usd,
-                finished_at,
-            });
+            emit(
+                event_tx.as_ref(),
+                WorkflowEvent::RunCompleted {
+                    run_id,
+                    workflow_id: workflow.id,
+                    status: RunStatus::Completed,
+                    total_cost_usd,
+                    finished_at,
+                },
+            );
+            tracing::info!(
+                run_id = %run_id,
+                status = "Completed",
+                total_duration_ms = total_duration_ms,
+                total_cost_usd = ?total_cost_usd,
+                "run finished"
+            );
         }
         RunStatus::Failed | RunStatus::Killed => {
             // Use the first error from step_runs as the failure message.
@@ -630,25 +751,36 @@ pub async fn run_workflow(
                 .find_map(|r| r.error.as_deref())
                 .unwrap_or("workflow run failed")
                 .to_string();
-            emit(event_tx.as_ref(), WorkflowEvent::RunFailed {
-                run_id,
-                workflow_id: workflow.id,
-                error: error_msg,
-                finished_at,
-            });
+            emit(
+                event_tx.as_ref(),
+                WorkflowEvent::RunFailed {
+                    run_id,
+                    workflow_id: workflow.id,
+                    error: error_msg,
+                    finished_at,
+                },
+            );
+            tracing::info!(
+                run_id = %run_id,
+                status = ?status,
+                total_duration_ms = total_duration_ms,
+                total_cost_usd = ?total_cost_usd,
+                "run finished"
+            );
         }
         RunStatus::Running => {
             // Should not happen at end of run_workflow; emit RunFailed defensively.
-            emit(event_tx.as_ref(), WorkflowEvent::RunFailed {
-                run_id,
-                workflow_id: workflow.id,
-                error: "unexpected Running status at end of run_workflow".to_string(),
-                finished_at,
-            });
+            emit(
+                event_tx.as_ref(),
+                WorkflowEvent::RunFailed {
+                    run_id,
+                    workflow_id: workflow.id,
+                    error: "unexpected Running status at end of run_workflow".to_string(),
+                    finished_at,
+                },
+            );
         }
     }
-
-    let total_duration_ms = (finished_at - started_at).num_milliseconds().max(0) as u64;
 
     WorkflowRun {
         run_id,
@@ -681,11 +813,11 @@ mod tests {
     use serde_json::{json, Value};
     use uuid::Uuid;
 
+    use crate::models::workflow::ScheduleMode;
     use crate::models::workflow::{
         CaptureSpec, FailurePolicy, MatchStep, RunStatus, SetVarStep, ShellStep, StepDef,
         StepDefCommon, TriggerParams, Workflow,
     };
-    use crate::models::workflow::ScheduleMode;
     use crate::workflow::step::LogSink;
 
     use super::run_workflow;
@@ -850,9 +982,13 @@ mod tests {
     /// Platform-appropriate "exit 1" command.
     fn exit_one_cmd() -> &'static str {
         #[cfg(windows)]
-        { "exit 1" }
+        {
+            "exit 1"
+        }
         #[cfg(not(windows))]
-        { "sh -c 'exit 1'" }
+        {
+            "sh -c 'exit 1'"
+        }
     }
 
     // ── Test 1: 3-step happy path ──────────────────────────────────────────────
@@ -901,7 +1037,11 @@ mod tests {
 
         assert_eq!(run.status, RunStatus::Failed, "expected Failed");
         // The failing step is recorded; the skipped step is NOT recorded.
-        assert_eq!(run.steps.len(), 1, "only the failed step should be recorded");
+        assert_eq!(
+            run.steps.len(),
+            1,
+            "only the failed step should be recorded"
+        );
         assert_eq!(run.steps[0].step_id, "fail");
         assert_eq!(run.steps[0].status, RunStatus::Failed);
     }
@@ -945,7 +1085,11 @@ mod tests {
         let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
         // No abort happened, so overall Completed.
-        assert_eq!(run.status, RunStatus::Completed, "expected Completed despite step failure");
+        assert_eq!(
+            run.status,
+            RunStatus::Completed,
+            "expected Completed despite step failure"
+        );
         assert_eq!(run.steps.len(), 2);
 
         let first = run.steps.iter().find(|r| r.step_id == "fail").unwrap();
@@ -998,7 +1142,12 @@ mod tests {
 
         assert_eq!(run.status, RunStatus::Completed);
         // Expected step_runs: set_choice, m1 (synthetic), branch_a
-        assert_eq!(run.steps.len(), 3, "expected 3 step runs; got: {:?}", run.steps.iter().map(|r| &r.step_id).collect::<Vec<_>>());
+        assert_eq!(
+            run.steps.len(),
+            3,
+            "expected 3 step runs; got: {:?}",
+            run.steps.iter().map(|r| &r.step_id).collect::<Vec<_>>()
+        );
 
         let match_run = run.steps.iter().find(|r| r.step_id == "m1").unwrap();
         assert_eq!(match_run.status, RunStatus::Completed);
@@ -1152,9 +1301,10 @@ mod tests {
     }
 
     // ── Test 10: AgentStep is now dispatched (phase 4) ────────────────────────
-    // AgentStep no longer returns a "not implemented" error; it now calls execute().
-    // Since `claude` CLI is not available in the test environment, it will fail
-    // with a spawn error — but crucially not with a "not implemented" Internal error.
+    // Verifies the agent step is actually invoked (not stubbed out with a
+    // "not implemented" error). The terminal status depends on whether the
+    // `claude` CLI happens to be on the test runner's PATH — both outcomes
+    // are acceptable here; what matters is that the step dispatched.
 
     #[tokio::test]
     async fn test_executor_agent_step_dispatched() {
@@ -1182,8 +1332,9 @@ mod tests {
 
         let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
 
-        // The step should fail (no `claude` CLI in test env), but NOT with "not implemented".
-        assert_eq!(run.status, RunStatus::Failed);
+        // Step ran (was dispatched), so there should be exactly 1 step run.
+        assert_eq!(run.steps.len(), 1);
+        // Whatever the outcome, it must NOT be the old "not implemented" stub.
         if let Some(err) = run.steps[0].error.as_ref() {
             assert!(
                 !err.contains("not implemented in phase 3"),
@@ -1191,8 +1342,11 @@ mod tests {
                 err
             );
         }
-        // The step ran (was dispatched), so there should be exactly 1 step run.
-        assert_eq!(run.steps.len(), 1);
+        assert!(
+            matches!(run.status, RunStatus::Completed | RunStatus::Failed),
+            "expected Completed or Failed, got {:?}",
+            run.status
+        );
     }
 
     // ── Test 11: workflow.default_input applied when trigger.input is Null ────
@@ -1201,10 +1355,8 @@ mod tests {
     async fn test_executor_default_input_applied() {
         let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
 
-        let mut workflow = make_workflow(
-            "default_input",
-            vec![shell_step("s1", "echo ${input.x}")],
-        );
+        let mut workflow =
+            make_workflow("default_input", vec![shell_step("s1", "echo ${input.x}")]);
         workflow.default_input = Some(json!({"x": 42}));
 
         let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
@@ -1223,10 +1375,8 @@ mod tests {
     async fn test_executor_trigger_input_overrides_default() {
         let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
 
-        let mut workflow = make_workflow(
-            "input_override",
-            vec![shell_step("s1", "echo ${input.x}")],
-        );
+        let mut workflow =
+            make_workflow("input_override", vec![shell_step("s1", "echo ${input.x}")]);
         workflow.default_input = Some(json!({"x": 42}));
 
         let trigger = input_trigger(json!({"x": 99}));
@@ -1262,14 +1412,30 @@ mod tests {
             target_step: None,
         };
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, Arc::clone(&sink) as Arc<dyn LogSink>, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            trigger,
+            Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
         // Verify through the mock log sink chunks that FOO=b and BAR=c appear
         if let Some(sink_inner) = Arc::downcast::<MockLogSink>(sink).ok() {
             let output = String::from_utf8_lossy(&sink_inner.chunks.lock().unwrap()).to_string();
-            assert!(output.contains("FOO=b"), "expected FOO=b in output: {}", output);
-            assert!(output.contains("BAR=c"), "expected BAR=c in output: {}", output);
+            assert!(
+                output.contains("FOO=b"),
+                "expected FOO=b in output: {}",
+                output
+            );
+            assert!(
+                output.contains("BAR=c"),
+                "expected BAR=c in output: {}",
+                output
+            );
         }
     }
 
@@ -1356,10 +1522,7 @@ mod tests {
 
         let workflow = make_workflow(
             "eel_integration",
-            vec![
-                shell_step("s1", cmd1),
-                shell_step("s2", cmd2),
-            ],
+            vec![shell_step("s1", cmd1), shell_step("s2", cmd2)],
         );
 
         let run_id = Uuid::now_v7();
@@ -1404,7 +1567,8 @@ mod tests {
         // RunStarted must be first.
         assert!(
             matches!(events[0], WorkflowEvent::RunStarted { run_id: r, .. } if r == run_id),
-            "First event should be RunStarted, got {:?}", events[0]
+            "First event should be RunStarted, got {:?}",
+            events[0]
         );
 
         // RunCompleted must be last.
@@ -1412,14 +1576,20 @@ mod tests {
         assert!(
             matches!(last, WorkflowEvent::RunCompleted { .. })
                 || matches!(last, WorkflowEvent::RunFailed { .. }),
-            "Last event should be RunCompleted or RunFailed, got {:?}", last
+            "Last event should be RunCompleted or RunFailed, got {:?}",
+            last
         );
 
         // Every StepOutput event must have a non-empty step_id.
         let step_output_events: Vec<_> = events
             .iter()
             .filter_map(|e| {
-                if let WorkflowEvent::StepOutput { step_id, step_index, .. } = e {
+                if let WorkflowEvent::StepOutput {
+                    step_id,
+                    step_index,
+                    ..
+                } = e
+                {
                     Some((step_id.clone(), *step_index))
                 } else {
                     None
@@ -1568,7 +1738,6 @@ mod tests {
         );
     }
 
-
     // ── Test 20: step_index is non-zero and matches runtime order ────────────
 
     #[tokio::test]
@@ -1589,9 +1758,18 @@ mod tests {
         assert_eq!(run.steps.len(), 3);
 
         // step_index should be 1, 2, 3 in order
-        assert_eq!(run.steps[0].step_index, 1, "first step should have step_index=1");
-        assert_eq!(run.steps[1].step_index, 2, "second step should have step_index=2");
-        assert_eq!(run.steps[2].step_index, 3, "third step should have step_index=3");
+        assert_eq!(
+            run.steps[0].step_index, 1,
+            "first step should have step_index=1"
+        );
+        assert_eq!(
+            run.steps[1].step_index, 2,
+            "second step should have step_index=2"
+        );
+        assert_eq!(
+            run.steps[2].step_index, 3,
+            "third step should have step_index=3"
+        );
     }
 
     // ── Test 21: Failed step records actual kind (not "unknown") ─────────────
@@ -1601,9 +1779,11 @@ mod tests {
         let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
         let workflow = make_workflow(
             "failed_kind_check",
-            vec![
-                shell_step_with_policy("fail-shell", exit_one_cmd(), FailurePolicy::Abort),
-            ],
+            vec![shell_step_with_policy(
+                "fail-shell",
+                exit_one_cmd(),
+                FailurePolicy::Abort,
+            )],
         );
 
         let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
@@ -1611,7 +1791,10 @@ mod tests {
         assert_eq!(run.status, RunStatus::Failed);
         assert_eq!(run.steps.len(), 1);
         // The failed shell step should record kind="shell", not "unknown"
-        assert_eq!(run.steps[0].kind, "shell", "failed step should have kind='shell'");
+        assert_eq!(
+            run.steps[0].kind, "shell",
+            "failed step should have kind='shell'"
+        );
         assert_eq!(run.steps[0].step_index, 1, "step_index should be 1");
     }
 
@@ -1641,10 +1824,13 @@ mod tests {
         assert_eq!(s1.step_index, 1);
         assert_eq!(s2.step_index, 2);
         assert_eq!(s3.step_index, 3);
-        assert_eq!(s2.kind, "shell", "failed continue step should have kind='shell'");
+        assert_eq!(
+            s2.kind, "shell",
+            "failed continue step should have kind='shell'"
+        );
     }
 
-        // ── Test 19: Kill after run completion is a no-op ─────────────────────────
+    // ── Test 19: Kill after run completion is a no-op ─────────────────────────
 
     #[tokio::test]
     async fn test_kill_after_run_completion_no_op() {
@@ -1675,7 +1861,10 @@ mod tests {
         // After the run finishes, the registry entry is removed.
         // Sending kill now should be a no-op (entry gone, no panic).
         let entry = registry.read().await.get(&run_id).cloned();
-        assert!(entry.is_none(), "registry entry should be removed after run");
+        assert!(
+            entry.is_none(),
+            "registry entry should be removed after run"
+        );
     }
 
     // ── Tests for `TriggerParams.target_step` stdin routing ───────────────────
@@ -1686,9 +1875,13 @@ mod tests {
     /// Windows: PowerShell `[Console]::In.ReadToEnd()` mirrors stdin to stdout.
     fn cat_stdin_cmd() -> &'static str {
         #[cfg(windows)]
-        { "powershell -NoProfile -Command \"[Console]::In.ReadToEnd()\"" }
+        {
+            "powershell -NoProfile -Command \"[Console]::In.ReadToEnd()\""
+        }
         #[cfg(not(windows))]
-        { "cat" }
+        {
+            "cat"
+        }
     }
 
     fn target_step_trigger(input: Value, target: &str) -> TriggerParams {
@@ -1704,10 +1897,7 @@ mod tests {
     #[tokio::test]
     async fn test_target_step_routes_string_input_to_stdin() {
         let sink = Arc::new(MockLogSink::default());
-        let workflow = make_workflow(
-            "target_str",
-            vec![shell_step("main", cat_stdin_cmd())],
-        );
+        let workflow = make_workflow("target_str", vec![shell_step("main", cat_stdin_cmd())]);
 
         let trigger = target_step_trigger(json!("hello world"), "main");
         let run = run_workflow(
@@ -1734,10 +1924,7 @@ mod tests {
     #[tokio::test]
     async fn test_target_step_routes_json_input_to_stdin() {
         let sink = Arc::new(MockLogSink::default());
-        let workflow = make_workflow(
-            "target_json",
-            vec![shell_step("main", cat_stdin_cmd())],
-        );
+        let workflow = make_workflow("target_json", vec![shell_step("main", cat_stdin_cmd())]);
 
         let trigger = target_step_trigger(json!({"foo": 1}), "main");
         let run = run_workflow(
@@ -1764,10 +1951,7 @@ mod tests {
     #[tokio::test]
     async fn test_target_step_none_does_not_route_stdin() {
         let sink = Arc::new(MockLogSink::default());
-        let workflow = make_workflow(
-            "no_target",
-            vec![shell_step("main", cat_stdin_cmd())],
-        );
+        let workflow = make_workflow("no_target", vec![shell_step("main", cat_stdin_cmd())]);
 
         // Trigger has input but target_step is None → no stdin routing.
         let trigger = TriggerParams {
@@ -1799,10 +1983,7 @@ mod tests {
     #[tokio::test]
     async fn test_target_step_nonexistent_id_is_silently_ignored() {
         let sink = Arc::new(MockLogSink::default());
-        let workflow = make_workflow(
-            "missing_target",
-            vec![shell_step("main", cat_stdin_cmd())],
-        );
+        let workflow = make_workflow("missing_target", vec![shell_step("main", cat_stdin_cmd())]);
 
         let trigger = target_step_trigger(json!("ignored input"), "does-not-exist");
         let run = run_workflow(
@@ -1839,22 +2020,20 @@ mod tests {
 
         let workflow = make_workflow(
             "match_target",
-            vec![
-                StepDef::Match(MatchStep {
-                    common: StepDefCommon {
-                        id: "match_step_id".to_string(),
-                        on_failure: None,
-                        always_run: false,
-                        timeout_secs: None,
-                        working_dir: None,
-                        env_vars: None,
-                        capture: CaptureSpec::default(),
-                    },
-                    expr: "A".to_string(),
-                    cases,
-                    default: None,
-                }),
-            ],
+            vec![StepDef::Match(MatchStep {
+                common: StepDefCommon {
+                    id: "match_step_id".to_string(),
+                    on_failure: None,
+                    always_run: false,
+                    timeout_secs: None,
+                    working_dir: None,
+                    env_vars: None,
+                    capture: CaptureSpec::default(),
+                },
+                expr: "A".to_string(),
+                cases,
+                default: None,
+            })],
         );
 
         // target_step refers to the MatchStep — should be ignored silently.

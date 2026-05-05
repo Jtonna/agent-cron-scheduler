@@ -63,9 +63,7 @@ pub trait Migration: Send + Sync {
 
 /// All available migrations **in order**. Append new migrations here.
 fn registry() -> Vec<Box<dyn Migration>> {
-    vec![
-        Box::new(m001_jobs_to_workflows::JobsToWorkflows),
-    ]
+    vec![Box::new(m001_jobs_to_workflows::JobsToWorkflows)]
 }
 
 // ── Run report ────────────────────────────────────────────────────────────────
@@ -179,15 +177,11 @@ async fn write_state(data_dir: &Path, applied: &HashSet<String>) -> Result<(), A
 
     tokio::fs::write(&tmp_path, json.as_bytes())
         .await
-        .map_err(|e| {
-            AcsError::Storage(format!("Failed to write migrations.json.tmp: {}", e))
-        })?;
+        .map_err(|e| AcsError::Storage(format!("Failed to write migrations.json.tmp: {}", e)))?;
 
     tokio::fs::rename(&tmp_path, &path)
         .await
-        .map_err(|e| {
-            AcsError::Storage(format!("Failed to rename migrations.json.tmp: {}", e))
-        })?;
+        .map_err(|e| AcsError::Storage(format!("Failed to rename migrations.json.tmp: {}", e)))?;
 
     Ok(())
 }
@@ -406,7 +400,10 @@ mod tests {
 
         // m001 applied before the failure — must be in state.
         let state = read_state(tmp.path()).await.unwrap();
-        assert!(state.contains("m001_ok"), "m001 was applied before the error");
+        assert!(
+            state.contains("m001_ok"),
+            "m001 was applied before the error"
+        );
         assert!(
             !state.contains("m003_ok"),
             "m003 must not be in state (never ran)"
@@ -420,21 +417,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // First call
-        let r1 = run_migrations(
-            tmp.path(),
-            vec![Box::new(AlwaysApplies { name: "m001_a" })],
-        )
-        .await
-        .unwrap();
+        let r1 = run_migrations(tmp.path(), vec![Box::new(AlwaysApplies { name: "m001_a" })])
+            .await
+            .unwrap();
         assert_eq!(r1.newly_applied, vec!["m001_a"]);
 
         // Second call with the same migration list — it is now in the applied set.
-        let r2 = run_migrations(
-            tmp.path(),
-            vec![Box::new(AlwaysApplies { name: "m001_a" })],
-        )
-        .await
-        .unwrap();
+        let r2 = run_migrations(tmp.path(), vec![Box::new(AlwaysApplies { name: "m001_a" })])
+            .await
+            .unwrap();
         assert_eq!(r2.already_applied, vec!["m001_a"]);
         assert!(r2.newly_applied.is_empty());
     }
@@ -445,12 +436,9 @@ mod tests {
     async fn test_run_pending_atomic_write_no_tmp_leftover() {
         let tmp = TempDir::new().unwrap();
 
-        run_migrations(
-            tmp.path(),
-            vec![Box::new(AlwaysApplies { name: "m001_a" })],
-        )
-        .await
-        .unwrap();
+        run_migrations(tmp.path(), vec![Box::new(AlwaysApplies { name: "m001_a" })])
+            .await
+            .unwrap();
 
         let tmp_file = tmp.path().join("migrations.json.tmp");
         assert!(
@@ -477,6 +465,8 @@ mod tests {
         // On a fresh install, m001 runs but has nothing to do.
         assert!(report.newly_applied.is_empty());
         assert!(report.already_applied.is_empty());
-        assert!(report.skipped_not_needed.contains(&"m001_jobs_to_workflows".to_string()));
+        assert!(report
+            .skipped_not_needed
+            .contains(&"m001_jobs_to_workflows".to_string()));
     }
 }

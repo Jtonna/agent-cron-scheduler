@@ -386,14 +386,15 @@ mod tests {
 
         // Verify a backup file was created (timestamped)
         let entries = std::fs::read_dir(tmp_dir.path()).expect("read dir");
-        let backup_exists = entries
-            .filter_map(|e| e.ok())
-            .any(|e| {
-                let name = e.file_name();
-                let s = name.to_string_lossy();
-                s.starts_with("workflows.json.bak.")
-            });
-        assert!(backup_exists, "Timestamped backup file should have been created");
+        let backup_exists = entries.filter_map(|e| e.ok()).any(|e| {
+            let name = e.file_name();
+            let s = name.to_string_lossy();
+            s.starts_with("workflows.json.bak.")
+        });
+        assert!(
+            backup_exists,
+            "Timestamped backup file should have been created"
+        );
     }
 
     #[tokio::test]
@@ -785,10 +786,7 @@ mod tests {
             .expect("create");
         assert_eq!(created.version, 1);
 
-        let new_steps = vec![
-            make_shell_step("step-1"),
-            make_shell_step("step-2"),
-        ];
+        let new_steps = vec![make_shell_step("step-1"), make_shell_step("step-2")];
         let update = WorkflowUpdate {
             steps: Some(new_steps),
             ..Default::default()

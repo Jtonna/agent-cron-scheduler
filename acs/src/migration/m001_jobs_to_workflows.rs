@@ -81,10 +81,7 @@ impl Migration for JobsToWorkflows {
         tokio::fs::create_dir_all(&migrated_scripts_dir)
             .await
             .map_err(|e| {
-                AcsError::Storage(format!(
-                    "Failed to create migrated_scripts dir: {}",
-                    e
-                ))
+                AcsError::Storage(format!("Failed to create migrated_scripts dir: {}", e))
             })?;
 
         // 5. Synthesise workflows (may write script files into migrated_scripts_dir).
@@ -101,9 +98,7 @@ impl Migration for JobsToWorkflows {
 
         tokio::fs::write(&tmp_path, json.as_bytes())
             .await
-            .map_err(|e| {
-                AcsError::Storage(format!("Failed to write workflows.json.tmp: {}", e))
-            })?;
+            .map_err(|e| AcsError::Storage(format!("Failed to write workflows.json.tmp: {}", e)))?;
 
         tokio::fs::rename(&tmp_path, &workflows_path)
             .await
@@ -630,14 +625,8 @@ mod tests {
             script_type_from_path("deploy.bash"),
             Some("shell".to_string())
         );
-        assert_eq!(
-            script_type_from_path("run.bat"),
-            Some("batch".to_string())
-        );
-        assert_eq!(
-            script_type_from_path("run.cmd"),
-            Some("batch".to_string())
-        );
+        assert_eq!(script_type_from_path("run.bat"), Some("batch".to_string()));
+        assert_eq!(script_type_from_path("run.cmd"), Some("batch".to_string()));
         assert_eq!(
             script_type_from_path("script.py"),
             Some("python".to_string())
@@ -670,7 +659,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let m = JobsToWorkflows;
         let applied = m.run(tmp.path()).await.unwrap();
-        assert!(!applied, "run() should return false when jobs.json is absent");
+        assert!(
+            !applied,
+            "run() should return false when jobs.json is absent"
+        );
     }
 
     #[tokio::test]
@@ -708,12 +700,18 @@ mod tests {
         m.run(tmp.path()).await.unwrap();
 
         let wf_path = tmp.path().join("workflows.json");
-        assert!(wf_path.exists(), "workflows.json should exist after migration");
+        assert!(
+            wf_path.exists(),
+            "workflows.json should exist after migration"
+        );
 
         let content = tokio::fs::read_to_string(&wf_path).await.unwrap();
         let workflows: Vec<Workflow> = serde_json::from_str(&content).unwrap();
         assert_eq!(workflows.len(), 1);
-        assert_eq!(workflows[0].id, job.id, "workflow id must match original job id");
+        assert_eq!(
+            workflows[0].id, job.id,
+            "workflow id must match original job id"
+        );
         assert_eq!(workflows[0].name, job.name);
     }
 
@@ -740,7 +738,10 @@ mod tests {
                 let s = name.to_string_lossy();
                 s.starts_with("jobs.json.migrated.")
             });
-        assert!(backup_exists, "a jobs.json.migrated.<ts> backup file must exist");
+        assert!(
+            backup_exists,
+            "a jobs.json.migrated.<ts> backup file must exist"
+        );
     }
 
     #[tokio::test]
@@ -765,7 +766,9 @@ mod tests {
     async fn test_pre_hook_python_type_emits_script_step_and_writes_file() {
         let tmp = TempDir::new().unwrap();
         let migrated_scripts_dir = tmp.path().join("migrated_scripts");
-        tokio::fs::create_dir_all(&migrated_scripts_dir).await.unwrap();
+        tokio::fs::create_dir_all(&migrated_scripts_dir)
+            .await
+            .unwrap();
 
         let mut job = make_job("py-hook-job");
         job.pre_hook = Some("import os\nprint(os.getcwd())".to_string());
@@ -801,7 +804,9 @@ mod tests {
     async fn test_post_hook_powershell_type_emits_script_step_with_always_run() {
         let tmp = TempDir::new().unwrap();
         let migrated_scripts_dir = tmp.path().join("migrated_scripts");
-        tokio::fs::create_dir_all(&migrated_scripts_dir).await.unwrap();
+        tokio::fs::create_dir_all(&migrated_scripts_dir)
+            .await
+            .unwrap();
 
         let mut job = make_job("ps-hook-job");
         job.post_hook = Some("Write-Host 'done'".to_string());
@@ -833,7 +838,9 @@ mod tests {
     async fn test_shell_hook_with_explicit_shell_type_stays_as_shell_step() {
         let tmp = TempDir::new().unwrap();
         let migrated_scripts_dir = tmp.path().join("migrated_scripts");
-        tokio::fs::create_dir_all(&migrated_scripts_dir).await.unwrap();
+        tokio::fs::create_dir_all(&migrated_scripts_dir)
+            .await
+            .unwrap();
 
         let mut job = make_job("shell-hook-job");
         job.pre_hook = Some("echo setup".to_string());
@@ -848,7 +855,10 @@ mod tests {
                 assert_eq!(s.common.id, "pre_hook");
                 assert_eq!(s.command, "echo setup");
             }
-            other => panic!("Expected ShellStep for explicit shell type, got: {:?}", other),
+            other => panic!(
+                "Expected ShellStep for explicit shell type, got: {:?}",
+                other
+            ),
         }
     }
 

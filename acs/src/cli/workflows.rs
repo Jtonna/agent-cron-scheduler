@@ -318,12 +318,12 @@ pub async fn cmd_get(host: &str, port: u16, id_or_name: &str, json: bool) -> any
     if let Some(tz) = body["timezone"].as_str() {
         println!("Timezone:    {}", tz);
     }
-    println!("Enabled:     {}", body["enabled"].as_bool().unwrap_or(false));
+    println!(
+        "Enabled:     {}",
+        body["enabled"].as_bool().unwrap_or(false)
+    );
 
-    let step_count = body["steps"]
-        .as_array()
-        .map(|a| a.len())
-        .unwrap_or(0);
+    let step_count = body["steps"].as_array().map(|a| a.len()).unwrap_or(0);
     println!("Steps:       {}", step_count);
 
     if let Some(ts) = body["last_run_at"].as_str() {
@@ -339,8 +339,14 @@ pub async fn cmd_get(host: &str, port: u16, id_or_name: &str, json: bool) -> any
             println!("Next run:    {}", format_relative_time(&dt));
         }
     }
-    println!("Created:     {}", body["created_at"].as_str().unwrap_or("?"));
-    println!("Updated:     {}", body["updated_at"].as_str().unwrap_or("?"));
+    println!(
+        "Created:     {}",
+        body["created_at"].as_str().unwrap_or("?")
+    );
+    println!(
+        "Updated:     {}",
+        body["updated_at"].as_str().unwrap_or("?")
+    );
 
     Ok(())
 }
@@ -414,8 +420,7 @@ pub async fn cmd_update(
         serde_json::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Invalid JSON in '{}': {}", path, e))?
     } else if let Some(json_str) = inline_json {
-        serde_json::from_str(json_str)
-            .map_err(|e| anyhow::anyhow!("Invalid inline JSON: {}", e))?
+        serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("Invalid inline JSON: {}", e))?
     } else if enable {
         serde_json::json!({"enabled": true})
     } else if disable {
@@ -535,18 +540,12 @@ pub async fn cmd_trigger(
 
     // Build TriggerParams body
     let mut body_map = serde_json::Map::new();
-    body_map.insert(
-        "input".to_string(),
-        input_value.unwrap_or(Value::Null),
-    );
+    body_map.insert("input".to_string(), input_value.unwrap_or(Value::Null));
     if let Some(env_map) = env_map {
         body_map.insert("env".to_string(), serde_json::to_value(env_map)?);
     }
     if let Some(ts) = target_step {
-        body_map.insert(
-            "target_step".to_string(),
-            Value::String(ts.to_string()),
-        );
+        body_map.insert("target_step".to_string(), Value::String(ts.to_string()));
     }
     let trigger_body = Value::Object(body_map);
 
@@ -966,8 +965,8 @@ mod tests {
 
     #[test]
     fn test_workflows_list_parses() {
-        let cli = Cli::try_parse_from(["acs", "workflows", "list"])
-            .expect("Should parse workflows list");
+        let cli =
+            Cli::try_parse_from(["acs", "workflows", "list"]).expect("Should parse workflows list");
         match &cli.command {
             Some(crate::cli::Commands::Workflows(cmd)) => {
                 assert!(matches!(
@@ -1091,14 +1090,9 @@ mod tests {
 
     #[test]
     fn test_workflows_create_with_inline_json() {
-        let cli = Cli::try_parse_from([
-            "acs",
-            "workflows",
-            "create",
-            "--json",
-            r#"{"name":"test"}"#,
-        ])
-        .expect("Should parse workflows create --json");
+        let cli =
+            Cli::try_parse_from(["acs", "workflows", "create", "--json", r#"{"name":"test"}"#])
+                .expect("Should parse workflows create --json");
         match &cli.command {
             Some(crate::cli::Commands::Workflows(cmd)) => match &cmd.subcommand {
                 WorkflowsSubcommand::Create { file, inline_json } => {
@@ -1131,9 +1125,8 @@ mod tests {
 
     #[test]
     fn test_workflows_update_with_enable() {
-        let cli =
-            Cli::try_parse_from(["acs", "workflows", "update", "my-workflow", "--enable"])
-                .expect("Should parse workflows update --enable");
+        let cli = Cli::try_parse_from(["acs", "workflows", "update", "my-workflow", "--enable"])
+            .expect("Should parse workflows update --enable");
         match &cli.command {
             Some(crate::cli::Commands::Workflows(cmd)) => match &cmd.subcommand {
                 WorkflowsSubcommand::Update {
@@ -1154,9 +1147,8 @@ mod tests {
 
     #[test]
     fn test_workflows_update_with_disable() {
-        let cli =
-            Cli::try_parse_from(["acs", "workflows", "update", "my-workflow", "--disable"])
-                .expect("Should parse workflows update --disable");
+        let cli = Cli::try_parse_from(["acs", "workflows", "update", "my-workflow", "--disable"])
+            .expect("Should parse workflows update --disable");
         match &cli.command {
             Some(crate::cli::Commands::Workflows(cmd)) => match &cmd.subcommand {
                 WorkflowsSubcommand::Update { disable, .. } => {
@@ -1381,10 +1373,7 @@ mod tests {
             "--input-file",
             "/tmp/input.json",
         ]);
-        assert!(
-            result.is_err(),
-            "--input and --input-file should conflict"
-        );
+        assert!(result.is_err(), "--input and --input-file should conflict");
     }
 
     #[test]
@@ -1454,7 +1443,11 @@ mod tests {
     fn test_format_relative_time_future_hours() {
         let future = Utc::now() + chrono::Duration::hours(3);
         let result = format_relative_time(&future);
-        assert!(result.contains("in") && result.contains("hours"), "Got: {}", result);
+        assert!(
+            result.contains("in") && result.contains("hours"),
+            "Got: {}",
+            result
+        );
     }
 
     #[test]
@@ -1475,14 +1468,22 @@ mod tests {
     fn test_format_relative_time_in_minutes() {
         let future = Utc::now() + chrono::Duration::minutes(20);
         let result = format_relative_time(&future);
-        assert!(result.contains("in") && result.contains("minutes"), "Got: {}", result);
+        assert!(
+            result.contains("in") && result.contains("minutes"),
+            "Got: {}",
+            result
+        );
     }
 
     #[test]
     fn test_format_relative_time_in_days() {
         let future = Utc::now() + chrono::Duration::days(3);
         let result = format_relative_time(&future);
-        assert!(result.contains("in") && result.contains("days"), "Got: {}", result);
+        assert!(
+            result.contains("in") && result.contains("days"),
+            "Got: {}",
+            result
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1491,7 +1492,8 @@ mod tests {
 
     #[test]
     fn test_workflow_sse_event_block_parsing() {
-        let event_block = "event: run_completed\ndata: {\"run_id\":\"abc\",\"workflow_id\":\"def\"}\n";
+        let event_block =
+            "event: run_completed\ndata: {\"run_id\":\"abc\",\"workflow_id\":\"def\"}\n";
         let mut event_type = String::new();
         let mut data = String::new();
         for line in event_block.lines() {
@@ -1531,9 +1533,18 @@ mod tests {
 
     #[test]
     fn test_cli_workflows_runs_parses() {
-        let cli =
-            Cli::try_parse_from(["acs", "workflows", "runs", "my-wf", "--limit", "10", "--offset", "5", "--json"])
-                .expect("Should parse workflows runs with all flags");
+        let cli = Cli::try_parse_from([
+            "acs",
+            "workflows",
+            "runs",
+            "my-wf",
+            "--limit",
+            "10",
+            "--offset",
+            "5",
+            "--json",
+        ])
+        .expect("Should parse workflows runs with all flags");
         match &cli.command {
             Some(crate::cli::Commands::Workflows(cmd)) => match &cmd.subcommand {
                 WorkflowsSubcommand::Runs {

@@ -194,8 +194,7 @@ impl WorkflowScheduler {
             let enabled: Vec<_> = workflows.into_iter().filter(|w| w.enabled).collect();
 
             // Compute next_run for each enabled workflow
-            let mut next_runs: Vec<(crate::models::workflow::Workflow, DateTime<Utc>)> =
-                Vec::new();
+            let mut next_runs: Vec<(crate::models::workflow::Workflow, DateTime<Utc>)> = Vec::new();
             for wf in enabled {
                 match compute_next_run(&wf.schedule, wf.timezone.as_deref(), self.clock.now()) {
                     Ok(next) => next_runs.push((wf, next)),

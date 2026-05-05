@@ -168,11 +168,7 @@ impl Step for HttpStep {
 ///
 /// If the content-type indicates JSON, attempt to parse as JSON (fall back to string on error).
 /// Otherwise, apply the capture spec parser.
-fn parse_response_body(
-    body: &[u8],
-    content_type: Option<&str>,
-    parser: Option<&str>,
-) -> Value {
+fn parse_response_body(body: &[u8], content_type: Option<&str>, parser: Option<&str>) -> Value {
     // Check if content-type indicates JSON
     let is_json_content_type = content_type
         .map(|ct| ct.contains("application/json"))
@@ -353,7 +349,10 @@ mod tests {
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
         let step = make_step("h1", "GET", &format!("{}/test", base_url));
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         match output.stdout {
@@ -377,10 +376,7 @@ mod tests {
             received: Arc<Mutex<Option<Vec<u8>>>>,
         }
 
-        async fn echo_handler(
-            State(state): State<EchoState>,
-            body: Body,
-        ) -> impl IntoResponse {
+        async fn echo_handler(State(state): State<EchoState>, body: Body) -> impl IntoResponse {
             let bytes = axum::body::to_bytes(body, 64 * 1024).await.unwrap();
             *state.received.lock().unwrap() = Some(bytes.to_vec());
             (StatusCode::OK, [("content-type", "text/plain")], "ok")
@@ -401,7 +397,10 @@ mod tests {
         let mut step = make_step("h2", "POST", &format!("{}/echo", base_url));
         step.body = Some("hello".to_string());
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
         assert_eq!(output.exit_code, Some(0));
 
         let body_received = received.lock().unwrap().clone().unwrap_or_default();
@@ -444,10 +443,15 @@ mod tests {
         ctx.input = json!({"token": "xyz"});
 
         let mut step = make_step("h3", "GET", &format!("{}/headers", base_url));
-        step.headers
-            .insert("Authorization".to_string(), "Bearer ${input.token}".to_string());
+        step.headers.insert(
+            "Authorization".to_string(),
+            "Bearer ${input.token}".to_string(),
+        );
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
         assert_eq!(output.exit_code, Some(0));
 
         let auth_received = captured_auth.lock().unwrap().clone().unwrap_or_default();
@@ -463,10 +467,7 @@ mod tests {
             path: Arc<Mutex<Option<String>>>,
         }
 
-        async fn path_handler(
-            State(state): State<PathState>,
-            req: Request,
-        ) -> impl IntoResponse {
+        async fn path_handler(State(state): State<PathState>, req: Request) -> impl IntoResponse {
             *state.path.lock().unwrap() = Some(req.uri().path().to_string());
             (StatusCode::OK, [("content-type", "text/plain")], "ok")
         }
@@ -484,13 +485,12 @@ mod tests {
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
         ctx.input = json!({"id": "42"});
 
-        let step = make_step(
-            "h4",
-            "GET",
-            &format!("{}/items/${{input.id}}", base_url),
-        );
+        let step = make_step("h4", "GET", &format!("{}/items/${{input.id}}", base_url));
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
         assert_eq!(output.exit_code, Some(0));
 
         let path_received = captured_path.lock().unwrap().clone().unwrap_or_default();
@@ -541,7 +541,10 @@ mod tests {
         let mut step = make_step("h6", "GET", &format!("{}/missing2", base_url));
         step.expect_status = vec![404];
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
         assert_eq!(output.exit_code, Some(0));
     }
 
@@ -550,11 +553,7 @@ mod tests {
     #[tokio::test]
     async fn test_http_step_capture_parser_lines() {
         async fn lines_handler() -> impl IntoResponse {
-            (
-                StatusCode::OK,
-                [("content-type", "text/plain")],
-                "a\nb\n",
-            )
+            (StatusCode::OK, [("content-type", "text/plain")], "a\nb\n")
         }
 
         let router = Router::new().route("/lines", get(lines_handler));
@@ -566,7 +565,10 @@ mod tests {
         let mut step = make_step("h7", "GET", &format!("{}/lines", base_url));
         step.common.capture.parser = Some("lines".to_string());
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
         assert_eq!(output.exit_code, Some(0));
 
         match output.stdout {
@@ -632,11 +634,7 @@ mod tests {
 
     #[test]
     fn test_parse_response_body_json_content_type() {
-        let result = super::parse_response_body(
-            b"{\"x\":1}",
-            Some("application/json"),
-            None,
-        );
+        let result = super::parse_response_body(b"{\"x\":1}", Some("application/json"), None);
         assert_eq!(result, json!({"x": 1}));
     }
 

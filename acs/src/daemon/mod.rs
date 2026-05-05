@@ -1,4 +1,4 @@
-﻿// Daemon module - Phase 6+ implementation (workflow-native runtime)
+// Daemon module - Phase 6+ implementation (workflow-native runtime)
 // Sub-modules for events, scheduler, and service.
 
 pub mod events;
@@ -362,7 +362,6 @@ pub fn resolve_data_dir(override_dir: Option<&Path>) -> PathBuf {
     }
 }
 
-
 /// Create the required data directories under `data_dir`.
 pub async fn create_data_dirs(data_dir: &Path) -> Result<()> {
     tokio::fs::create_dir_all(data_dir)
@@ -388,10 +387,7 @@ pub async fn create_data_dirs(data_dir: &Path) -> Result<()> {
 /// 2. Stop scheduling new workflow runs         (handled by caller aborting scheduler)
 /// 3. Remove PID file and port file
 /// 4. Exit with code 0                          (handled by caller)
-pub async fn graceful_shutdown(
-    pid_file: Option<&PidFile>,
-    port_file: Option<&PortFile>,
-) {
+pub async fn graceful_shutdown(pid_file: Option<&PidFile>, port_file: Option<&PortFile>) {
     tracing::info!("Beginning graceful shutdown sequence...");
 
     // Remove PID file and port file
@@ -582,33 +578,6 @@ pub async fn start_daemon(
     // Create data directories
     create_data_dirs(&data_dir).await?;
 
-    // Run pending migrations (numbered migration system).
-    match crate::migration::run_pending(&data_dir).await {
-        Ok(report) => {
-            if !report.newly_applied.is_empty() {
-                tracing::info!(
-                    "Migrations applied: {:?}",
-                    report.newly_applied
-                );
-            }
-            if !report.already_applied.is_empty() {
-                tracing::debug!(
-                    "Migrations already applied (skipped): {:?}",
-                    report.already_applied
-                );
-            }
-            if !report.skipped_not_needed.is_empty() {
-                tracing::debug!(
-                    "Migrations not needed (skipped): {:?}",
-                    report.skipped_not_needed
-                );
-            }
-        }
-        Err(e) => {
-            return Err(anyhow::anyhow!("Migration failed: {}", e));
-        }
-    }
-
     // Set up tracing: always stderr, optionally also daemon.log file
     {
         use tracing_subscriber::layer::SubscriberExt;
@@ -672,20 +641,44 @@ pub async fn start_daemon(
         }
     }
 
+    // Run pending migrations (numbered migration system).
+    // Must run AFTER tracing init so migration logs are visible.
+    match crate::migration::run_pending(&data_dir).await {
+        Ok(report) => {
+            if !report.newly_applied.is_empty() {
+                tracing::info!("Migrations applied: {:?}", report.newly_applied);
+            }
+            if !report.already_applied.is_empty() {
+                tracing::debug!(
+                    "Migrations already applied (skipped): {:?}",
+                    report.already_applied
+                );
+            }
+            if !report.skipped_not_needed.is_empty() {
+                tracing::debug!(
+                    "Migrations not needed (skipped): {:?}",
+                    report.skipped_not_needed
+                );
+            }
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!("Migration failed: {}", e));
+        }
+    }
+
     // Acquire PID file
     let pid_file_path = data_dir.join("agentcronsystem.pid");
     let pid_file = PidFile::new(pid_file_path);
     pid_file.acquire()?;
 
     // Initialize WorkflowStore
-    let workflow_store = Arc::new(
-        crate::storage::workflows::FsWorkflowStore::new(&data_dir).await?,
-    ) as Arc<dyn crate::storage::workflows::WorkflowStore>;
+    let workflow_store = Arc::new(crate::storage::workflows::FsWorkflowStore::new(&data_dir).await?)
+        as Arc<dyn crate::storage::workflows::WorkflowStore>;
 
     // Initialize WorkflowRunStore (persistent, file-backed).
-    let workflow_run_store = Arc::new(
-        crate::storage::workflow_runs::FsWorkflowRunStore::new(&data_dir).await?,
-    ) as Arc<dyn crate::storage::workflow_runs::WorkflowRunStore>;
+    let workflow_run_store =
+        Arc::new(crate::storage::workflow_runs::FsWorkflowRunStore::new(&data_dir).await?)
+            as Arc<dyn crate::storage::workflow_runs::WorkflowRunStore>;
 
     // WorkflowEvent broadcast channel.
     let (workflow_event_tx, _workflow_event_rx) =
@@ -810,7 +803,6 @@ pub async fn start_daemon(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-
 
     // =======================================================================
     // 1. PidFile acquire creates file (exclusive create)
@@ -938,7 +930,10 @@ mod tests {
 
         graceful_shutdown(Some(&pid_file), None).await;
 
-        assert!(!pid_path.exists(), "PID file should be removed after shutdown");
+        assert!(
+            !pid_path.exists(),
+            "PID file should be removed after shutdown"
+        );
     }
 
     #[tokio::test]
@@ -952,7 +947,10 @@ mod tests {
 
         graceful_shutdown(None, Some(&port_file)).await;
 
-        assert!(!port_path.exists(), "Port file should be removed after shutdown");
+        assert!(
+            !port_path.exists(),
+            "Port file should be removed after shutdown"
+        );
     }
 
     // =======================================================================
@@ -1155,7 +1153,6 @@ mod tests {
         }
     }
 
-
     // =======================================================================
     // SizeManagedWriter tests
     // =======================================================================
@@ -1327,6 +1324,4 @@ mod tests {
     // =======================================================================
     // Failed event sets last_exit_code to -1
     // =======================================================================
-
 }
-

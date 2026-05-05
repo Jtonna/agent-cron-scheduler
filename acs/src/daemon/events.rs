@@ -92,7 +92,6 @@ pub enum WorkflowChangeKind {
     Disabled,
 }
 
-
 #[cfg(test)]
 mod workflow_event_tests {
     use super::*;
@@ -146,7 +145,11 @@ mod workflow_event_tests {
         };
         let json = serde_json::to_string(&event).expect("serialize");
         assert!(json.contains("\"type\":\"StepOutput\""), "json: {}", json);
-        assert!(json.contains("\"data\":\"some output chunk\""), "json: {}", json);
+        assert!(
+            json.contains("\"data\":\"some output chunk\""),
+            "json: {}",
+            json
+        );
         assert!(json.contains("\"step_index\":2"), "json: {}", json);
     }
 
@@ -162,7 +165,11 @@ mod workflow_event_tests {
             finished_at: Utc::now(),
         };
         let json = serde_json::to_string(&event).expect("serialize");
-        assert!(json.contains("\"type\":\"StepCompleted\""), "json: {}", json);
+        assert!(
+            json.contains("\"type\":\"StepCompleted\""),
+            "json: {}",
+            json
+        );
         assert!(json.contains("\"exit_code\":0"), "json: {}", json);
         assert!(json.contains("\"cost_usd\":0.0012"), "json: {}", json);
     }
@@ -208,7 +215,11 @@ mod workflow_event_tests {
         };
         let json = serde_json::to_string(&event).expect("serialize");
         assert!(json.contains("\"type\":\"RunFailed\""), "json: {}", json);
-        assert!(json.contains("\"error\":\"step-1 timed out\""), "json: {}", json);
+        assert!(
+            json.contains("\"error\":\"step-1 timed out\""),
+            "json: {}",
+            json
+        );
     }
 
     #[test]
@@ -219,9 +230,17 @@ mod workflow_event_tests {
             change_kind: WorkflowChangeKind::Updated,
         };
         let json = serde_json::to_string(&event).expect("serialize");
-        assert!(json.contains("\"type\":\"WorkflowChanged\""), "json: {}", json);
+        assert!(
+            json.contains("\"type\":\"WorkflowChanged\""),
+            "json: {}",
+            json
+        );
         assert!(json.contains("\"version\":3"), "json: {}", json);
-        assert!(json.contains("\"change_kind\":\"updated\""), "json: {}", json);
+        assert!(
+            json.contains("\"change_kind\":\"updated\""),
+            "json: {}",
+            json
+        );
     }
 
     // ── Arc<str> cheap clone ─────────────────────────────────────────────────
@@ -247,7 +266,9 @@ mod workflow_event_tests {
 
         // Both arcs point at the same allocation (cheap clone, no copy)
         match &cloned {
-            WorkflowEvent::StepOutput { data: cloned_data, .. } => {
+            WorkflowEvent::StepOutput {
+                data: cloned_data, ..
+            } => {
                 assert!(Arc::ptr_eq(&data, cloned_data), "should share allocation");
             }
             _ => panic!("Expected StepOutput"),
@@ -296,7 +317,12 @@ mod workflow_event_tests {
         let json = serde_json::to_string(&event).expect("serialize");
         let decoded: WorkflowEvent = serde_json::from_str(&json).expect("deserialize");
         match decoded {
-            WorkflowEvent::StepStarted { step_index, step_id, kind, .. } => {
+            WorkflowEvent::StepStarted {
+                step_index,
+                step_id,
+                kind,
+                ..
+            } => {
                 assert_eq!(step_index, 5);
                 assert_eq!(step_id, "agent-step");
                 assert_eq!(kind, "agent");
@@ -340,7 +366,12 @@ mod workflow_event_tests {
         let json = serde_json::to_string(&event).expect("serialize");
         let decoded: WorkflowEvent = serde_json::from_str(&json).expect("deserialize");
         match decoded {
-            WorkflowEvent::StepCompleted { exit_code, cost_usd, step_id, .. } => {
+            WorkflowEvent::StepCompleted {
+                exit_code,
+                cost_usd,
+                step_id,
+                ..
+            } => {
                 assert_eq!(exit_code, Some(1));
                 assert!(cost_usd.is_none());
                 assert_eq!(step_id, "script-step");
@@ -361,7 +392,11 @@ mod workflow_event_tests {
         let json = serde_json::to_string(&event).expect("serialize");
         let decoded: WorkflowEvent = serde_json::from_str(&json).expect("deserialize");
         match decoded {
-            WorkflowEvent::RunCompleted { status, total_cost_usd, .. } => {
+            WorkflowEvent::RunCompleted {
+                status,
+                total_cost_usd,
+                ..
+            } => {
                 assert_eq!(status, RunStatus::Failed);
                 assert!(total_cost_usd.is_none());
             }
@@ -398,7 +433,11 @@ mod workflow_event_tests {
         let json = serde_json::to_string(&event).expect("serialize");
         let decoded: WorkflowEvent = serde_json::from_str(&json).expect("deserialize");
         match decoded {
-            WorkflowEvent::WorkflowChanged { workflow_id, version, change_kind } => {
+            WorkflowEvent::WorkflowChanged {
+                workflow_id,
+                version,
+                change_kind,
+            } => {
                 assert_eq!(workflow_id, wf_id);
                 assert_eq!(version, 7);
                 assert_eq!(change_kind, WorkflowChangeKind::Deleted);
@@ -420,7 +459,11 @@ mod workflow_event_tests {
         ];
         for (kind, expected) in cases {
             let json = serde_json::to_string(&kind).expect("serialize");
-            assert_eq!(json, expected, "WorkflowChangeKind::{:?} should serialize as {}", kind, expected);
+            assert_eq!(
+                json, expected,
+                "WorkflowChangeKind::{:?} should serialize as {}",
+                kind, expected
+            );
         }
     }
 
@@ -492,7 +535,9 @@ mod workflow_event_tests {
 
         for received in [r1, r2] {
             match received {
-                WorkflowEvent::RunFailed { run_id: r, error, .. } => {
+                WorkflowEvent::RunFailed {
+                    run_id: r, error, ..
+                } => {
                     assert_eq!(r, run_id);
                     assert_eq!(error, "two-subscriber-test");
                 }

@@ -17,7 +17,12 @@ pub struct SubstitutionResult {
 /// - `steps.<step_id>.exit_code` — the step's exit code as a decimal string.
 /// - `steps.<step_id>.exports.<name>` — a named export value.
 ///
-/// Single-pass; missing references produce empty string + a warning.
+/// Single-pass. Behavior for unresolved references:
+/// - **Unknown top-level namespace** (e.g. `${prompt}`, `${foo.bar}`): the token
+///   is left intact in the output, no warning. This lets layered substitution
+///   passes (e.g. the agent step's `${prompt}` pass) handle their own tokens.
+/// - **Known namespace, missing field** (e.g. `${input.missing}`,
+///   `${steps.x.bad_accessor}`): substituted with empty string + warning.
 pub fn substitute(
     template: &str,
     input: &serde_json::Value,
@@ -40,10 +45,9 @@ pub fn substitute(
 
             if j >= len {
                 // No closing '}' — treat as literal and warn
-                result.warnings.push(format!(
-                    "unclosed '${{{}'",
-                    &template[start..]
-                ));
+                result
+                    .warnings
+                    .push(format!("unclosed '${{{}'", &template[start..]));
                 result.output.push_str(&template[i..]);
                 break;
             }
@@ -56,6 +60,12 @@ pub fn substitute(
                     .push("empty substitution path '${}' found".to_string());
                 // Leave as literal text
                 result.output.push_str("${");
+                result.output.push('}');
+            } else if !path.starts_with("input.") && !path.starts_with("steps.") {
+                // Unknown top-level namespace — pass through unchanged so layered
+                // substitution passes (e.g. agent step's ${prompt}) can handle it.
+                result.output.push_str("${");
+                result.output.push_str(path);
                 result.output.push('}');
             } else {
                 let resolved = resolve_path(path, input, steps);
@@ -94,9 +104,7 @@ fn resolve_path(
             return None;
         }
         let pointer = format!("/{}", rest.replace('.', "/"));
-        input
-            .pointer(&pointer)
-            .map(value_to_string)
+        input.pointer(&pointer).map(value_to_string)
     } else if let Some(rest) = path.strip_prefix("steps.") {
         resolve_step_path(rest, steps)
     } else {
@@ -293,5 +301,31 @@ mod tests {
         let res = substitute("cost is $10", &json!({}), &no_steps());
         assert_eq!(res.output, "cost is $10");
         assert!(res.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_unknown_namespace_preserved_as_literal() {
+        // Tokens whose top-level segment is neither `input.` nor `steps.` are
+        // passed through unchanged so layered substitution (e.g. the agent
+        // step's ${prompt} pass) can handle them.
+        let res = substitute("claude -p \"${prompt}\" --flag", &json!({}), &no_steps());
+        assert_eq!(res.output, "claude -p \"${prompt}\" --flag");
+        assert!(res.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_unknown_namespace_with_dots_preserved() {
+        let res = substitute("${env.HOME}/log", &json!({}), &no_steps());
+        assert_eq!(res.output, "${env.HOME}/log");
+        assert!(res.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_known_namespace_miss_still_warns() {
+        // Make sure the unknown-namespace pass-through doesn't accidentally
+        // mask real misses inside `input.` or `steps.`.
+        let res = substitute("${input.missing}", &json!({}), &no_steps());
+        assert_eq!(res.output, "");
+        assert_eq!(res.warnings.len(), 1);
     }
 }

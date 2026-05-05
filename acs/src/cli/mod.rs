@@ -1,4 +1,4 @@
-﻿pub mod daemon;
+pub mod daemon;
 pub mod workflows;
 
 use clap::{Parser, Subcommand};
@@ -444,7 +444,4 @@ mod tests {
             other => panic!("Expected Update command, got: {:?}", other),
         }
     }
-
 }
-
-

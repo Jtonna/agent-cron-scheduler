@@ -223,6 +223,19 @@ When `pass_stdin: true`, a Shell or Script step receives the stdout of the step 
    - Linux: `~/.local/share/agent-cron-scheduler/logs/`
 3. Each run produces one combined log file per run ID under the workflow's UUID subdirectory.
 
+### What gets written to daemon.log
+
+`daemon.log` (and the daemon's stderr in foreground mode) carries `INFO`-level lines for the operational lifecycle. Step stdout/stderr is **not** written here — that lives in per-run files under `logs/<workflow_id>/<run_id>.log`.
+
+Lines you will see:
+- **Startup / shutdown**: tracing init, data dir, PID/port file acquisition, migrations applied, graceful shutdown.
+- **HTTP access log**: one line per inbound request. Format example:
+  `INFO http_request{method=POST uri=/api/workflows}: agent_cron_scheduler::server: -> 201 (4ms)`
+- **Workflow CRUD**: emitted on success only. `workflow created`, `workflow updated` (with the list of changed fields), `workflow deleted`, `workflow triggered` (with the new `run_id`), `workflow run killed`.
+- **Run lifecycle**: `run started`, `step started` (with `step_id` + `kind`), `step completed` (with `status`, `exit_code`, `duration_ms`), `run finished` (with `status`, `total_duration_ms`, `total_cost_usd` when present).
+
+Errors and warnings (e.g. spawn failures, template warnings, persistence errors) are also emitted at their respective levels regardless of the log filter setting.
+
 ### Large daemon.log
 
 **Symptom:** The `daemon.log` file is consuming significant disk space.

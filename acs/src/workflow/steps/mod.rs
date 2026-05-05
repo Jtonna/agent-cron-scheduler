@@ -1,10 +1,10 @@
 // Step implementations (Shell, Script, Http, Match, SetVar, Agent) live here.
 
 pub mod agent;
-pub mod shell;
+pub mod http;
 pub mod script;
 pub mod set_var;
-pub mod http;
+pub mod shell;
 
 use serde_json::Value;
 

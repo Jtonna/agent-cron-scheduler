@@ -25,7 +25,9 @@ use uuid::Uuid;
 use super::AppState;
 use crate::daemon::events::{WorkflowChangeKind, WorkflowEvent};
 use crate::errors::AcsError;
-use crate::models::workflow::{NewWorkflow, RunStatus, TriggerParams, Workflow, WorkflowRun, WorkflowUpdate};
+use crate::models::workflow::{
+    NewWorkflow, RunStatus, TriggerParams, Workflow, WorkflowRun, WorkflowUpdate,
+};
 use crate::workflow::{EventEmittingLogSink, FileLogSink};
 
 // ---------------------------------------------------------------------------
@@ -176,14 +178,21 @@ async fn resolve_workflow(
 // GET /api/workflows
 // ---------------------------------------------------------------------------
 
-pub async fn list_workflows(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn list_workflows(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.workflow_store.list_workflows().await {
-        Ok(workflows) => (StatusCode::OK, Json(serde_json::to_value(workflows).unwrap())).into_response(),
+        Ok(workflows) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(workflows).unwrap()),
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!("Failed to list workflows: {}", e);
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", &e.to_string()).into_response()
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &e.to_string(),
+            )
+            .into_response()
         }
     }
 }
@@ -199,12 +208,19 @@ pub async fn create_workflow(
     match state.workflow_store.create_workflow(body).await {
         Ok(wf) => {
             // Broadcast WorkflowChanged{Created}
-            let _ = state.workflow_event_tx.send(WorkflowEvent::WorkflowChanged {
-                workflow_id: wf.id,
-                version: wf.version,
-                change_kind: WorkflowChangeKind::Created,
-            });
-            (StatusCode::CREATED, Json(serde_json::to_value(&wf).unwrap())).into_response()
+            let _ = state
+                .workflow_event_tx
+                .send(WorkflowEvent::WorkflowChanged {
+                    workflow_id: wf.id,
+                    version: wf.version,
+                    change_kind: WorkflowChangeKind::Created,
+                });
+            tracing::info!(workflow_id = %wf.id, name = %wf.name, "workflow created");
+            (
+                StatusCode::CREATED,
+                Json(serde_json::to_value(&wf).unwrap()),
+            )
+                .into_response()
         }
         Err(e) => {
             let (status, body) = map_store_error(e);
@@ -241,15 +257,66 @@ pub async fn update_workflow(
         Err((status, body)) => return (status, body).into_response(),
     };
 
+    // Capture which fields the caller is updating (presence-based, no values).
+    let mut changed: Vec<&'static str> = Vec::new();
+    if body.name.is_some() {
+        changed.push("name");
+    }
+    if body.schedule.is_some() {
+        changed.push("schedule");
+    }
+    if body.timezone.is_some() {
+        changed.push("timezone");
+    }
+    if body.schedule_mode.is_some() {
+        changed.push("schedule_mode");
+    }
+    if body.enabled.is_some() {
+        changed.push("enabled");
+    }
+    if body.steps.is_some() {
+        changed.push("steps");
+    }
+    if body.input_schema.is_some() {
+        changed.push("input_schema");
+    }
+    if body.default_input.is_some() {
+        changed.push("default_input");
+    }
+    if body.working_dir.is_some() {
+        changed.push("working_dir");
+    }
+    if body.env_vars.is_some() {
+        changed.push("env_vars");
+    }
+    if body.allow_concurrent.is_some() {
+        changed.push("allow_concurrent");
+    }
+    if body.on_failure.is_some() {
+        changed.push("on_failure");
+    }
+
     match state.workflow_store.update_workflow(wf.id, body).await {
         Ok(updated) => {
             // Broadcast WorkflowChanged{Updated}
-            let _ = state.workflow_event_tx.send(WorkflowEvent::WorkflowChanged {
-                workflow_id: updated.id,
-                version: updated.version,
-                change_kind: WorkflowChangeKind::Updated,
-            });
-            (StatusCode::OK, Json(serde_json::to_value(&updated).unwrap())).into_response()
+            let _ = state
+                .workflow_event_tx
+                .send(WorkflowEvent::WorkflowChanged {
+                    workflow_id: updated.id,
+                    version: updated.version,
+                    change_kind: WorkflowChangeKind::Updated,
+                });
+            tracing::info!(
+                workflow_id = %updated.id,
+                name = %updated.name,
+                fields = ?changed,
+                "workflow updated"
+            );
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(&updated).unwrap()),
+            )
+                .into_response()
         }
         Err(e) => {
             let (status, body) = map_store_error(e);
@@ -273,15 +340,19 @@ pub async fn delete_workflow(
 
     let workflow_id = wf.id;
     let version = wf.version;
+    let workflow_name = wf.name.clone();
 
     match state.workflow_store.delete_workflow(workflow_id).await {
         Ok(()) => {
             // Broadcast WorkflowChanged{Deleted}
-            let _ = state.workflow_event_tx.send(WorkflowEvent::WorkflowChanged {
-                workflow_id,
-                version,
-                change_kind: WorkflowChangeKind::Deleted,
-            });
+            let _ = state
+                .workflow_event_tx
+                .send(WorkflowEvent::WorkflowChanged {
+                    workflow_id,
+                    version,
+                    change_kind: WorkflowChangeKind::Deleted,
+                });
+            tracing::info!(workflow_id = %workflow_id, name = %workflow_name, "workflow deleted");
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => {
@@ -325,18 +396,15 @@ pub async fn trigger_workflow(
     // If allow_concurrent is false and a run is already active for this
     // workflow, reject with 409 Conflict instead of starting a new run.
     if !workflow.allow_concurrent {
-        match state
-            .workflow_run_store
-            .list_runs(workflow.id, 0, 0)
-            .await
-        {
+        match state.workflow_run_store.list_runs(workflow.id, 0, 0).await {
             Ok(runs) => {
                 if let Some(active) = runs.iter().find(|r| r.status == RunStatus::Running) {
                     return (
                         StatusCode::CONFLICT,
                         Json(ConcurrentRunResponse {
                             error: "concurrent_run_active",
-                            message: "Workflow already has a running run; concurrent runs are disabled.",
+                            message:
+                                "Workflow already has a running run; concurrent runs are disabled.",
                             active_run_id: active.run_id,
                         }),
                     )
@@ -362,6 +430,7 @@ pub async fn trigger_workflow(
     let run_id = Uuid::now_v7();
     let workflow_id = workflow.id;
     let workflow_version = workflow.version;
+    let workflow_name = workflow.name.clone();
 
     // Resolve the data_dir for the log file.
     let data_dir = if let Some(ref dir) = state.config.data_dir {
@@ -383,7 +452,11 @@ pub async fn trigger_workflow(
         started_at: Utc::now(),
         finished_at: None,
         status: RunStatus::Running,
-        trigger_input: if params.input.is_null() { None } else { Some(params.input.clone()) },
+        trigger_input: if params.input.is_null() {
+            None
+        } else {
+            Some(params.input.clone())
+        },
         steps: vec![],
         total_cost_usd: None,
         total_duration_ms: None,
@@ -407,7 +480,11 @@ pub async fn trigger_workflow(
     tokio::spawn(async move {
         // Ensure log directory exists.
         if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
-            tracing::error!("Failed to create log dir for workflow run {}: {}", run_id, e);
+            tracing::error!(
+                "Failed to create log dir for workflow run {}: {}",
+                run_id,
+                e
+            );
             return;
         }
 
@@ -445,6 +522,13 @@ pub async fn trigger_workflow(
         }
     });
 
+    tracing::info!(
+        workflow_id = %workflow_id,
+        name = %workflow_name,
+        run_id = %run_id,
+        "workflow triggered"
+    );
+
     (
         StatusCode::ACCEPTED,
         Json(TriggerResponse {
@@ -478,9 +562,7 @@ pub async fn get_workflow_run(
     };
 
     match state.workflow_run_store.get_run(run_id).await {
-        Ok(Some(run)) => {
-            (StatusCode::OK, Json(serde_json::to_value(run).unwrap())).into_response()
-        }
+        Ok(Some(run)) => (StatusCode::OK, Json(serde_json::to_value(run).unwrap())).into_response(),
         Ok(None) => error_response(
             StatusCode::NOT_FOUND,
             "not_found",
@@ -546,10 +628,7 @@ pub async fn kill_workflow_run(
             //    and here).
             if let Some(kill_tx) = state.kill_signals.read().await.get(&run_id) {
                 let _ = kill_tx.send(true);
-                tracing::info!(
-                    "Kill signal sent to executor for run {}",
-                    run_id
-                );
+                tracing::info!("Kill signal sent to executor for run {}", run_id);
             } else {
                 tracing::info!(
                     "Kill signal requested for run {} but no active executor entry \
@@ -574,6 +653,7 @@ pub async fn kill_workflow_run(
                     .into_response();
                 }
             }
+            tracing::info!(run_id = %run_id, "workflow run killed");
             (
                 StatusCode::ACCEPTED,
                 Json(KillResponse {
@@ -629,7 +709,11 @@ pub async fn list_workflow_runs(
     let limit = params.limit.unwrap_or(20).min(100);
     let offset = params.offset.unwrap_or(0);
 
-    let runs = match state.workflow_run_store.list_runs(workflow.id, limit, offset).await {
+    let runs = match state
+        .workflow_run_store
+        .list_runs(workflow.id, limit, offset)
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Failed to list runs for workflow {}: {}", workflow.id, e);
@@ -841,7 +925,10 @@ mod tests {
         async fn update_run(&self, run: &WorkflowRun) -> Result<(), AcsError> {
             let mut map = self.runs.lock().await;
             if !map.contains_key(&run.run_id) {
-                return Err(AcsError::NotFound(format!("Run '{}' not found", run.run_id)));
+                return Err(AcsError::NotFound(format!(
+                    "Run '{}' not found",
+                    run.run_id
+                )));
             }
             map.insert(run.run_id, run.clone());
             Ok(())
@@ -1219,10 +1306,7 @@ mod tests {
     /// Insert a `Running` run for the given workflow into the store. Used to
     /// simulate an in-flight run when testing the trigger endpoint's
     /// concurrency guard.
-    async fn insert_running_run(
-        run_store: &InMemoryRunStore,
-        wf: &Workflow,
-    ) -> Uuid {
+    async fn insert_running_run(run_store: &InMemoryRunStore, wf: &Workflow) -> Uuid {
         let run = WorkflowRun {
             run_id: Uuid::now_v7(),
             workflow_id: wf.id,

@@ -159,11 +159,8 @@ impl Step for ScriptStep {
         }
 
         // Wait for the read handle
-        let exit_result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            read_handle,
-        )
-        .await;
+        let exit_result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), read_handle).await;
 
         let exit_code: Option<i32> = if timed_out || killed {
             // Drain remaining chunks so reader unblocks
@@ -528,7 +525,10 @@ mod tests {
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
         let step = make_step("s1", path.to_str().unwrap(), Some("shell"));
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         let stdout_str = match output.stdout {
@@ -559,7 +559,10 @@ mod tests {
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
         let step = make_step("s2", path.to_str().unwrap(), Some("batch"));
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         let stdout_str = match output.stdout {
@@ -594,7 +597,10 @@ mod tests {
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
         let step = make_step("s3", path.to_str().unwrap(), Some("python"));
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         let stdout_str = match output.stdout {
@@ -624,7 +630,10 @@ mod tests {
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
         let step = make_step("s4", path.to_str().unwrap(), Some("powershell"));
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         let stdout_str = match output.stdout {
@@ -694,7 +703,10 @@ mod tests {
             pass_stdin: false,
         };
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         let stdout_str = match output.stdout {
@@ -739,7 +751,10 @@ mod tests {
             pass_stdin: false,
         };
 
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         let stdout_str = match output.stdout {
@@ -765,7 +780,10 @@ mod tests {
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
         let step = make_step("s7", path.to_str().unwrap(), None);
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         let stdout_str = match output.stdout {
@@ -789,7 +807,10 @@ mod tests {
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
 
         let step = make_step("s7", path.to_str().unwrap(), None);
-        let output = step.execute(&mut ctx).await.expect("execute should succeed");
+        let output = step
+            .execute(&mut ctx)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
         let stdout_str = match output.stdout {
@@ -811,11 +832,7 @@ mod tests {
     #[tokio::test]
     async fn test_script_step_capture_parser_json() {
         let dir = TempDir::new().expect("tmpdir");
-        let path = write_script(
-            &dir,
-            "json.sh",
-            "#!/bin/sh\nprintf '{\"x\":1}'\n",
-        );
+        let path = write_script(&dir, "json.sh", "#!/bin/sh\nprintf '{\"x\":1}'\n");
 
         let sink = Arc::new(MockLogSink::default());
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
@@ -896,11 +913,7 @@ mod tests {
     #[tokio::test]
     async fn test_script_step_capture_parser_lines() {
         let dir = TempDir::new().expect("tmpdir");
-        let path = write_script(
-            &dir,
-            "lines.sh",
-            "#!/bin/sh\nprintf 'a\\nb\\n'\n",
-        );
+        let path = write_script(&dir, "lines.sh", "#!/bin/sh\nprintf 'a\\nb\\n'\n");
 
         let sink = Arc::new(MockLogSink::default());
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
@@ -942,11 +955,7 @@ mod tests {
     #[tokio::test]
     async fn test_script_step_capture_parser_lines() {
         let dir = TempDir::new().expect("tmpdir");
-        let path = write_script(
-            &dir,
-            "lines.bat",
-            "@echo off\necho lineA\necho lineB\n",
-        );
+        let path = write_script(&dir, "lines.bat", "@echo off\necho lineA\necho lineB\n");
 
         let sink = Arc::new(MockLogSink::default());
         let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
@@ -1022,7 +1031,11 @@ mod tests {
         let output = step.execute(&mut ctx).await.expect("execute");
         match output.stdout {
             Some(Value::String(s)) => {
-                assert!(s.contains("rawdata"), "expected 'rawdata' in raw output: {:?}", s);
+                assert!(
+                    s.contains("rawdata"),
+                    "expected 'rawdata' in raw output: {:?}",
+                    s
+                );
             }
             other => panic!("expected String, got {:?}", other),
         }

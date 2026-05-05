@@ -187,7 +187,7 @@ See [Storage](storage.md) for implementation details.
 - **`Step` trait** (`acs/src/workflow/step.rs`): `fn kind() -> &'static str; async fn execute(ctx: &mut StepContext) -> Result<StepOutput, StepError>`. Implemented by each step kind.
 - **`StepContext`**: Mutable execution context passed to each step. Carries `input`, `steps: IndexMap<String, StepOutput>` (accumulated step outputs keyed by step id; insertion-ordered so `pass_stdin` selects the immediately-prior step deterministically), `log_sink`, `env`, `working_dir`, `event_tx`, and `kill_rx`.
 - **`LogSink` trait**: `write_step_start`, `write_chunk`, `write_step_end`, plus a defaulted `set_current_step`. Implemented by `FileLogSink` and wrapped by `EventEmittingLogSink`.
-- **`template::substitute()`** (`acs/src/workflow/template.rs`): Single-pass `${...}` substitution. Namespaces: `input.<dotted.path>` and `steps.<step_id>.(stdout|exit_code|exports.<name>)`. Missing references resolve to empty string with a logged warning.
+- **`template::substitute()`** (`acs/src/workflow/template.rs`): Single-pass `${...}` substitution. Namespaces: `input.<dotted.path>` and `steps.<step_id>.(stdout|exit_code|exports.<name>)`. Within a known namespace, missing references resolve to empty string with a logged warning. Tokens whose top-level segment is neither `input.` nor `steps.` (e.g. `${prompt}` consumed by the agent step's second pass) are left intact in the output so layered substitution passes can handle them.
 
 #### `workflow::steps` -- Step Implementations
 

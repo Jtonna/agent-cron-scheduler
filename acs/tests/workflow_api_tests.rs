@@ -364,9 +364,12 @@ async fn test_delete_workflow() {
 #[tokio::test]
 async fn test_trigger_workflow_returns_202() {
     let (wf_store, run_store, tmp) = make_stores().await;
-    let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
-            .await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
     let client = reqwest::Client::new();
 
     let created: serde_json::Value = client
@@ -390,7 +393,10 @@ async fn test_trigger_workflow_returns_202() {
         .expect("POST trigger");
     assert_eq!(trigger_resp.status(), 202);
     let trigger_json: serde_json::Value = trigger_resp.json().await.unwrap();
-    assert!(trigger_json["run_id"].is_string(), "run_id should be present");
+    assert!(
+        trigger_json["run_id"].is_string(),
+        "run_id should be present"
+    );
     assert_eq!(trigger_json["workflow_id"], id);
     assert_eq!(trigger_json["workflow_version"], 1);
 }
@@ -399,9 +405,12 @@ async fn test_trigger_workflow_returns_202() {
 #[tokio::test]
 async fn test_trigger_and_poll_until_completed() {
     let (wf_store, run_store, tmp) = make_stores().await;
-    let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
-            .await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
     let client = reqwest::Client::new();
 
     let echo_cmd = "echo hello";
@@ -483,9 +492,12 @@ async fn test_trigger_and_poll_until_completed() {
 #[tokio::test]
 async fn test_sse_workflow_events_run_started() {
     let (wf_store, run_store, tmp) = make_stores().await;
-    let (base_url, state, _handle) =
-        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
-            .await;
+    let (base_url, state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
     let client = reqwest::Client::new();
 
     // Create workflow
@@ -522,12 +534,7 @@ async fn test_sse_workflow_events_run_started() {
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
     let mut got_run_started = false;
     while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            rx.recv(),
-        )
-        .await
-        {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(500), rx.recv()).await {
             Ok(Ok(WorkflowEvent::RunStarted { run_id: r, .. })) if r == run_id => {
                 got_run_started = true;
                 break;
@@ -554,9 +561,12 @@ async fn test_sse_workflow_events_run_started() {
 #[tokio::test]
 async fn test_trigger_with_input_flows_through() {
     let (wf_store, run_store, tmp) = make_stores().await;
-    let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
-            .await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
     let client = reqwest::Client::new();
 
     let wf = NewWorkflow {
@@ -730,9 +740,12 @@ async fn insert_runs(
 #[tokio::test]
 async fn test_list_runs_endpoint_returns_runs_for_workflow() {
     let (wf_store, run_store, tmp) = make_stores().await;
-    let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
-            .await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
     let client = reqwest::Client::new();
 
     // Create a workflow.
@@ -770,9 +783,12 @@ async fn test_list_runs_endpoint_returns_runs_for_workflow() {
 #[tokio::test]
 async fn test_list_runs_endpoint_pagination() {
     let (wf_store, run_store, tmp) = make_stores().await;
-    let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
-            .await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
     let client = reqwest::Client::new();
 
     let created: serde_json::Value = client
@@ -821,8 +837,7 @@ async fn test_kill_endpoint_terminates_running_step() {
 
     // Platform-appropriate long-sleep command.
     #[cfg(windows)]
-    let sleep_cmd =
-        "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"";
+    let sleep_cmd = "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"";
     #[cfg(not(windows))]
     let sleep_cmd = "sleep 30";
 
@@ -874,15 +889,10 @@ async fn test_kill_endpoint_terminates_running_step() {
         .send()
         .await
         .expect("POST /kill");
-    assert_eq!(
-        kill_resp.status(),
-        202,
-        "kill endpoint should return 202"
-    );
+    assert_eq!(kill_resp.status(), 202, "kill endpoint should return 202");
 
     // Poll until the run finishes (should be well under 5s after kill).
-    let deadline =
-        tokio::time::Instant::now() + tokio::time::Duration::from_secs(8);
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(8);
     let mut final_status = String::new();
     loop {
         if tokio::time::Instant::now() >= deadline {
@@ -939,9 +949,12 @@ async fn test_kill_endpoint_404_for_unknown_run() {
 #[tokio::test]
 async fn test_list_runs_endpoint_returns_latest_first() {
     let (wf_store, run_store, tmp) = make_stores().await;
-    let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
-            .await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
     let client = reqwest::Client::new();
 
     let created: serde_json::Value = client
@@ -1004,9 +1017,12 @@ async fn test_list_runs_endpoint_404_for_unknown_workflow() {
 #[tokio::test]
 async fn test_list_runs_endpoint_zero_runs_returns_empty_array() {
     let (wf_store, run_store, tmp) = make_stores().await;
-    let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
-            .await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
     let client = reqwest::Client::new();
 
     let created: serde_json::Value = client
@@ -1038,9 +1054,12 @@ async fn test_list_runs_endpoint_zero_runs_returns_empty_array() {
 #[tokio::test]
 async fn test_list_runs_resolves_workflow_by_name() {
     let (wf_store, run_store, tmp) = make_stores().await;
-    let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
-            .await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
     let client = reqwest::Client::new();
 
     let created: serde_json::Value = client
@@ -1083,10 +1102,9 @@ async fn test_restart_simulation_run_persists() {
 
     // Instance A — create a workflow and trigger it.
     {
-        let wf_store_a =
-            agent_cron_scheduler::storage::workflows::FsWorkflowStore::new(&data_dir)
-                .await
-                .expect("create wf store A");
+        let wf_store_a = agent_cron_scheduler::storage::workflows::FsWorkflowStore::new(&data_dir)
+            .await
+            .expect("create wf store A");
         let run_store_a =
             agent_cron_scheduler::storage::workflow_runs::FsWorkflowRunStore::new(&data_dir)
                 .await
@@ -1124,8 +1142,7 @@ async fn test_restart_simulation_run_persists() {
         run_id_str = trigger_json["run_id"].as_str().unwrap().to_string();
 
         // Wait for run to complete before "restarting".
-        let deadline =
-            tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
         loop {
             if tokio::time::Instant::now() >= deadline {
                 panic!("Run did not complete within 10s before restart simulation");
@@ -1148,10 +1165,9 @@ async fn test_restart_simulation_run_persists() {
 
     // Instance B — open the same data_dir and verify the run is readable.
     {
-        let wf_store_b =
-            agent_cron_scheduler::storage::workflows::FsWorkflowStore::new(&data_dir)
-                .await
-                .expect("create wf store B");
+        let wf_store_b = agent_cron_scheduler::storage::workflows::FsWorkflowStore::new(&data_dir)
+            .await
+            .expect("create wf store B");
         let run_store_b =
             agent_cron_scheduler::storage::workflow_runs::FsWorkflowRunStore::new(&data_dir)
                 .await
@@ -1192,9 +1208,12 @@ async fn test_restart_simulation_run_persists() {
 #[tokio::test]
 async fn test_trigger_response_includes_run_url() {
     let (wf_store, run_store, tmp) = make_stores().await;
-    let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
-            .await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
     let client = reqwest::Client::new();
 
     let created: serde_json::Value = client
@@ -1309,9 +1328,12 @@ async fn test_kill_endpoint_returns_json_body() {
 #[tokio::test]
 async fn test_trigger_with_empty_body_succeeds() {
     let (wf_store, run_store, tmp) = make_stores().await;
-    let (base_url, _state, _handle) =
-        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp.path().to_path_buf())
-            .await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
     let client = reqwest::Client::new();
 
     let created: serde_json::Value = client

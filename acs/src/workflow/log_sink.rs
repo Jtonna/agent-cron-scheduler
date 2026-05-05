@@ -133,9 +133,7 @@ mod tests {
         // Close the NamedTempFile handle so we can reopen for appending on
         // Windows, but keep the path alive. We'll reopen via FileLogSink.
         let path = tmp.path().to_path_buf();
-        let sink = FileLogSink::create(path)
-            .await
-            .expect("create FileLogSink");
+        let sink = FileLogSink::create(path).await.expect("create FileLogSink");
         (sink, tmp)
     }
 
@@ -175,10 +173,7 @@ mod tests {
         let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 
         // File starts empty — start offset should be 0
-        let start_offset = sink
-            .write_step_start("s1", t)
-            .await
-            .expect("write start");
+        let start_offset = sink.write_step_start("s1", t).await.expect("write start");
         assert_eq!(start_offset, 0, "start offset should be 0 for fresh file");
     }
 
@@ -188,9 +183,7 @@ mod tests {
         let t1 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
         let t2 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 1).unwrap();
 
-        sink.write_step_start("s1", t1)
-            .await
-            .expect("write start");
+        sink.write_step_start("s1", t1).await.expect("write start");
         sink.write_chunk(b"data").await.expect("chunk");
         let end_offset = sink
             .write_step_end("s1", Some(0), t2)
@@ -219,9 +212,7 @@ mod tests {
         let t1 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
         let t2 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 1).unwrap();
 
-        sink.write_step_start("s1", t1)
-            .await
-            .expect("write start");
+        sink.write_step_start("s1", t1).await.expect("write start");
         sink.write_step_end("s1", None, t2)
             .await
             .expect("write end");
@@ -240,9 +231,7 @@ mod tests {
         let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 
         let start1 = sink.write_step_start("step-a", t).await.expect("start1");
-        sink.write_chunk(b"step-a output\n")
-            .await
-            .expect("chunk1");
+        sink.write_chunk(b"step-a output\n").await.expect("chunk1");
         let end1 = sink
             .write_step_end("step-a", Some(0), t)
             .await

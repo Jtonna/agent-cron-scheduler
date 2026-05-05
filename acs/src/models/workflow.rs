@@ -752,8 +752,14 @@ mod tests {
         // id, command, pass_stdin must be at top level — no "common" key
         assert!(val.get("id").is_some(), "expected top-level 'id'");
         assert!(val.get("command").is_some(), "expected top-level 'command'");
-        assert!(val.get("pass_stdin").is_some(), "expected top-level 'pass_stdin'");
-        assert!(val.get("common").is_none(), "unexpected nested 'common' key");
+        assert!(
+            val.get("pass_stdin").is_some(),
+            "expected top-level 'pass_stdin'"
+        );
+        assert!(
+            val.get("common").is_none(),
+            "unexpected nested 'common' key"
+        );
     }
 
     // ── RunStatus serde ───────────────────────────────────────────────────────

@@ -1,0 +1,23 @@
+{
+  "name": "fresno-weather",
+  "schedule": "0 8 * * *",
+  "timezone": "America/Los_Angeles",
+  "enabled": false,
+  "allow_concurrent": false,
+  "steps": [
+    {
+      "kind": "script",
+      "id": "fetch_weather",
+      "path": "C:\\Users\\J\\documents\\github\\agent-cron-scheduler\\examples\\fresno-weather.ps1",
+      "script_type": "powershell",
+      "timeout_secs": 30
+    },
+    {
+      "kind": "agent",
+      "id": "summarize",
+      "agent_type": "claude_code_cli",
+      "prompt": "You are reporting today's weather for Fresno, California. Below is the raw weather snapshot from wttr.in -- summarize it in 1-2 friendly sentences for a human reader, including the temperature and a brief description of conditions. Raw weather: ${steps.fetch_weather.stdout}",
+      "timeout_secs": 120
+    }
+  ]
+}

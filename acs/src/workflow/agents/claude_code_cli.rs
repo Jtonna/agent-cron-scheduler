@@ -32,6 +32,12 @@ pub struct ClaudeStreamParser {
     final_message: Option<String>,
 }
 
+impl Default for ClaudeStreamParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClaudeStreamParser {
     pub fn new() -> Self {
         Self {
@@ -89,17 +95,14 @@ impl ClaudeStreamParser {
                     if let serde_json::Value::Object(ref mut acc) = merged {
                         for (k, v) in new_usage {
                             if let Some(n) = v.as_f64() {
-                                let entry =
-                                    acc.entry(k).or_insert(serde_json::Value::Number(
-                                        serde_json::Number::from(0u64),
-                                    ));
+                                let entry = acc.entry(k).or_insert(serde_json::Value::Number(
+                                    serde_json::Number::from(0u64),
+                                ));
                                 let existing = entry.as_f64().unwrap_or(0.0);
                                 let sum = existing + n;
                                 // Preserve integer representation where possible.
                                 *entry = if sum.fract() == 0.0 && sum >= 0.0 {
-                                    serde_json::Value::Number(serde_json::Number::from(
-                                        sum as u64,
-                                    ))
+                                    serde_json::Value::Number(serde_json::Number::from(sum as u64))
                                 } else {
                                     serde_json::Value::Number(
                                         serde_json::Number::from_f64(sum)
