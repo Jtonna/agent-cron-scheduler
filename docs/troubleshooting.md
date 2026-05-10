@@ -349,7 +349,7 @@ This contacts the daemon's `/health` endpoint and displays:
 - Active and total workflow counts
 - Uptime
 - Version
-- Service registration status
+- Service registration status (from the `service` block on `/health`)
 
 For raw JSON output, use the global `-v` flag:
 ```
@@ -388,7 +388,7 @@ You can directly query the health endpoint for scripting or monitoring:
 curl http://127.0.0.1:8377/health
 ```
 
-This returns a JSON object with daemon status, version, uptime, workflow counts, and data directory information.
+This returns a JSON object with daemon status, version, uptime, workflow counts, data directory, platform service registration (`service` block), and applied migrations (`migrations` block).
 
 ---
 

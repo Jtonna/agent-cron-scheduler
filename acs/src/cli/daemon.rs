@@ -501,8 +501,8 @@ pub async fn cmd_status(host: &str, port: u16, verbose: bool) -> anyhow::Result<
     let total_jobs = body["total_jobs"].as_u64().unwrap_or(0);
     let data_dir = body["data_dir"].as_str().unwrap_or("unknown");
 
-    // Check service registration
-    let service_registered = service::is_service_registered();
+    // Read service registration from the `service` block on the /health response.
+    let service_registered = body["service"]["registered"].as_bool().unwrap_or(false);
     let service_status = if service_registered {
         format!("Registered ({})", service::service_name())
     } else {

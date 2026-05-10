@@ -1,7 +1,7 @@
-//! Server utility routes: shutdown, restart, daemon logs, service status.
+//! Server utility routes: shutdown, restart, daemon logs.
 //!
-//! The old /api/jobs/* handlers that lived here were removed in Phase 6
-//! cutover. Only the four utility handlers are still registered.
+//! Service-registration data is exposed via the `service` block on
+//! `GET /health` (see `crate::server::health`).
 
 use std::sync::Arc;
 
@@ -170,27 +170,4 @@ pub async fn restart(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         })),
     )
         .into_response()
-}
-
-// ---------------------------------------------------------------------------
-// GET /api/service/status
-// ---------------------------------------------------------------------------
-
-pub async fn service_status(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
-    let platform = if cfg!(target_os = "windows") {
-        "windows"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else {
-        "linux"
-    };
-
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "platform": platform,
-            "service_installed": false,
-            "service_running": false,
-        })),
-    )
 }

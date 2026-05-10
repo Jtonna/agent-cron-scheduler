@@ -68,7 +68,7 @@ acs/src/
   server/
     mod.rs                         # AppState, create_router()
     workflow_routes.rs             # REST API route handlers for workflows and runs
-    routes.rs                      # Misc routes: shutdown, restart, daemon logs, service status
+    routes.rs                      # Misc routes: shutdown, restart, daemon logs
     sse.rs                         # GET /api/events/workflows SSE handler
     health.rs                      # GET /health handler
     assets.rs                      # Embedded static file serving (SPA fallback)
@@ -153,7 +153,7 @@ See [CLI Reference](cli-reference.md) for the full command documentation.
 #### `server` -- HTTP Server
 
 - **`AppState`**: Central shared state holding `workflow_store`, `workflow_run_store`, `workflow_event_tx`, `scheduler_notify`, `config`, `start_time`, `kill_signals`, and `shutdown_tx`.
-- **`create_router()`**: Builds the Axum `Router` with all API routes, permissive CORS middleware, and a fallback to embedded static assets. Routes: workflow CRUD (`/api/workflows`, `/api/workflows/{id}`), trigger (`/api/workflows/{id}/trigger`), runs list (`/api/workflows/{id}/runs`), run detail (`/api/runs/{run_id}`), kill (`/api/runs/{run_id}/kill`), SSE (`/api/events/workflows`), health (`/health`), shutdown (`/api/shutdown`), restart (`/api/restart`), daemon logs (`/api/logs`), service status (`/api/service/status`).
+- **`create_router()`**: Builds the Axum `Router` with all API routes, permissive CORS middleware, and a fallback to embedded static assets. Routes: workflow CRUD (`/api/workflows`, `/api/workflows/{id}`), trigger (`/api/workflows/{id}/trigger`), runs list (`/api/workflows/{id}/runs`), run detail (`/api/runs/{run_id}`), kill (`/api/runs/{run_id}/kill`), SSE (`/api/events/workflows`), health (`/health`), shutdown (`/api/shutdown`), restart (`/api/restart`), daemon logs (`/api/logs`).
 - See [API Reference](api-reference.md) for the full endpoint specification.
 
 #### `storage` -- Persistence Layer

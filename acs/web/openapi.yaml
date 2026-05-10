@@ -31,7 +31,9 @@ paths:
     get:
       operationId: healthCheck
       summary: Health check
-      description: Returns daemon health status including uptime, workflow counts, and version.
+      description: |
+        Returns daemon health status including uptime, workflow counts, version,
+        platform service registration, and applied migrations.
       tags: [Health]
       responses:
         "200":
@@ -47,6 +49,13 @@ paths:
                 total_jobs: 8
                 version: "4.0.0"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
+                service:
+                  registered: true
+                  platform: windows
+                  details: "Registry: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\AgentCronScheduler"
+                migrations:
+                  applied:
+                    - m001_jobs_to_workflows
 
   # -------------------------------------------------------------------------
   # Workflows
@@ -601,26 +610,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /api/service/status:
-    get:
-      operationId: serviceStatus
-      summary: Get OS service status
-      description: |
-        Returns platform information and whether ACS is installed/running as
-        an OS-level service (Windows service, macOS launchd, or Linux systemd).
-      tags: [System]
-      responses:
-        "200":
-          description: Service status
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ServiceStatusResponse"
-              example:
-                platform: windows
-                service_installed: false
-                service_running: false
-
 # ===========================================================================
 # Components
 # ===========================================================================
@@ -640,7 +629,15 @@ components:
     # -----------------------------------------------------------------------
     HealthResponse:
       type: object
-      required: [status, uptime_seconds, active_jobs, total_jobs, version, data_dir]
+      required:
+        - status
+        - uptime_seconds
+        - active_jobs
+        - total_jobs
+        - version
+        - data_dir
+        - service
+        - migrations
       properties:
         status:
           type: string
@@ -667,6 +664,50 @@ components:
           type: string
           description: Filesystem path to the data directory.
           example: "C:\\Users\\J\\AppData\\Local\\acs\\data"
+        service:
+          $ref: "#/components/schemas/HealthService"
+        migrations:
+          $ref: "#/components/schemas/HealthMigrations"
+
+    HealthService:
+      type: object
+      required: [registered, platform]
+      description: |
+        Platform service registration block. Reports whether ACS is registered
+        with the current OS service manager.
+      properties:
+        registered:
+          type: boolean
+          description: |
+            True when ACS is registered with the platform service manager
+            (Windows Run key, macOS launchd, or Linux systemd user unit).
+          example: true
+        platform:
+          type: string
+          enum: [windows, macos, linux]
+          description: Operating system platform.
+          example: windows
+        details:
+          type: string
+          description: |
+            Filesystem path or registry location of the service registration.
+            Omitted when `registered` is false.
+          example: "Registry: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\AgentCronScheduler"
+
+    HealthMigrations:
+      type: object
+      required: [applied]
+      description: Applied-migration tracking block.
+      properties:
+        applied:
+          type: array
+          items:
+            type: string
+          description: |
+            Names of migrations that have been applied, sorted ascending. Read
+            from `<data_dir>/migrations.json`. Empty when the file is absent.
+          example:
+            - m001_jobs_to_workflows
 
     # -----------------------------------------------------------------------
     # RunStatus enum
@@ -1417,27 +1458,6 @@ components:
           nullable: true
           description: Total wall-clock duration in milliseconds.
           example: 30000
-
-    # -----------------------------------------------------------------------
-    # Service status
-    # -----------------------------------------------------------------------
-    ServiceStatusResponse:
-      type: object
-      required: [platform, service_installed, service_running]
-      properties:
-        platform:
-          type: string
-          enum: [windows, macos, linux]
-          description: Operating system platform.
-          example: windows
-        service_installed:
-          type: boolean
-          description: Whether ACS is installed as an OS service.
-          example: false
-        service_running:
-          type: boolean
-          description: Whether the OS service is currently running.
-          example: false
 
     # -----------------------------------------------------------------------
     # WorkflowChangeKind enum

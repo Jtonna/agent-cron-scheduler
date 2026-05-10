@@ -147,7 +147,7 @@ This command has no subcommand-specific options. Use the global `--verbose` (`-v
 - **Uptime** -- human-readable uptime (e.g., "1d 2h 30m 15s")
 - **Version** -- daemon version string
 - **Update** -- indicates if an update is available with version number, or "up to date". Shows "(could not check)" if GitHub API is unreachable (only visible with `--verbose`)
-- **Service** -- system service registration status
+- **Service** -- system service registration status, sourced from the `service` block on the `/health` response
 
 #### Exit Codes
 

@@ -129,7 +129,7 @@ struct MigrationState {
 /// - If the file is corrupt (invalid JSON), logs a warning and returns an
 ///   empty set rather than failing — this prevents lockout if the state file
 ///   gets corrupted.
-async fn read_state(data_dir: &Path) -> Result<HashSet<String>, AcsError> {
+pub async fn read_state(data_dir: &Path) -> Result<HashSet<String>, AcsError> {
     let path = data_dir.join("migrations.json");
 
     if !path.exists() {

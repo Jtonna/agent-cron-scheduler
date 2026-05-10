@@ -75,7 +75,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/shutdown", post(routes::shutdown))
         .route("/api/restart", post(routes::restart))
         .route("/api/logs", get(routes::get_daemon_logs))
-        .route("/api/service/status", get(routes::service_status))
         .with_state(state)
         .layer(
             // One-line access log per HTTP request:

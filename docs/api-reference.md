@@ -28,7 +28,6 @@ All request and response bodies use JSON (`Content-Type: application/json`) unle
   - [POST /api/shutdown](#post-apishutdown)
   - [POST /api/restart](#post-apirestart)
   - [GET /api/logs](#get-apilogs)
-  - [GET /api/service/status](#get-apiservicestatus)
 - [Data Models](#data-models)
   - [Workflow](#workflow)
   - [NewWorkflow](#newworkflow)
@@ -93,7 +92,7 @@ If neither lookup finds a matching workflow, a `404 not_found` error is returned
 
 ### GET /health
 
-Returns the daemon health status including uptime and workflow counts.
+Returns daemon health status, including uptime, workflow counts, version, platform service registration, and applied migrations.
 
 **Request:** No body, no query parameters.
 
@@ -110,7 +109,15 @@ Returns the daemon health status including uptime and workflow counts.
   "active_jobs": 5,
   "total_jobs": 8,
   "version": "0.2.0",
-  "data_dir": "/home/user/.local/share/agent-cron-scheduler"
+  "data_dir": "/home/user/.local/share/agent-cron-scheduler",
+  "service": {
+    "registered": true,
+    "platform": "linux",
+    "details": "/home/user/.config/systemd/user/agentcronsystem.service"
+  },
+  "migrations": {
+    "applied": ["m001_jobs_to_workflows"]
+  }
 }
 ```
 
@@ -121,7 +128,27 @@ Returns the daemon health status including uptime and workflow counts.
 | `active_jobs`    | integer | Number of enabled workflows (field name is legacy; reflects enabled workflow count)       |
 | `total_jobs`     | integer | Total number of workflows (field name is legacy; reflects all workflows enabled+disabled) |
 | `version`        | string  | ACS version string                                                                        |
-| `data_dir`       | string  | Filesystem path to the data directory. Returns `"unknown"` if not explicitly configured. |
+| `data_dir`       | string  | Filesystem path to the data directory                                                     |
+| `service`        | object  | Platform service registration block (see below)                                           |
+| `migrations`     | object  | Applied-migration tracking block (see below)                                              |
+
+#### `service` block
+
+| Field        | Type    | Description                                                                                              |
+|--------------|---------|----------------------------------------------------------------------------------------------------------|
+| `registered` | bool    | `true` when ACS is registered with the platform service manager                                          |
+| `platform`   | string  | One of `"windows"`, `"macos"`, or `"linux"`                                                              |
+| `details`    | string  | Filesystem path or registry location of the service registration. Omitted when `registered` is `false`.  |
+
+The platform service manager is the Windows Run key (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`), the macOS launchd plist at `~/Library/LaunchAgents/com.agentcronsystem.scheduler.plist`, or the Linux systemd user unit at `~/.config/systemd/user/agentcronsystem.service`.
+
+#### `migrations` block
+
+| Field     | Type             | Description                                                                                  |
+|-----------|------------------|----------------------------------------------------------------------------------------------|
+| `applied` | array of string  | Names of migrations applied to this data directory, sorted ascending. Empty on a fresh install. |
+
+The list is read from `<data_dir>/migrations.json`. If the file is absent or unreadable, `applied` is an empty array.
 
 ---
 
@@ -625,34 +652,6 @@ If no daemon log file exists yet, the response body is:
 ```
 No daemon logs available yet.
 ```
-
----
-
-### GET /api/service/status
-
-Check the platform service installation and running status.
-
-**Request:** No body, no query parameters.
-
-**Response:**
-
-| Status | Description |
-|--------|-------------|
-| 200 OK | Returns service status information. |
-
-```json
-{
-  "platform": "windows",
-  "service_installed": false,
-  "service_running": false
-}
-```
-
-| Field               | Type    | Description                                              |
-|---------------------|---------|----------------------------------------------------------|
-| `platform`          | string  | One of `"windows"`, `"macos"`, or `"linux"`.             |
-| `service_installed` | bool    | Whether the system service is installed. Currently returns a static `false`; actual service detection is not implemented. |
-| `service_running`   | bool    | Whether the system service is currently running. Currently returns a static `false`. |
 
 ---
 
