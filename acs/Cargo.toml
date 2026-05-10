@@ -34,6 +34,7 @@ futures-util = "0.3"
 dirs = "6"
 tracing-appender = "0.2"
 indexmap = { version = "2", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
