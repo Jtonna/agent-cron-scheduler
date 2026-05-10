@@ -36,6 +36,7 @@
 //! location indefinitely. The `meta` table exists in the schema for future
 //! SQLite-only metadata but is unused by this migration.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -87,7 +88,34 @@ impl Migration for JsonToSqlite {
         // 3. Full migration. Read sources first so a parse failure aborts
         //    before we ever touch the DB.
         let workflows = read_workflows_json(&workflows_path).await?;
-        let runs = read_run_files(&runs_dir).await?;
+        let all_runs = read_run_files(&runs_dir).await?;
+
+        // Filter out orphaned runs: run records whose `workflow_id` does not
+        // match any workflow currently in `workflows.json`. The legacy
+        // FS-backed `delete_workflow` did not cascade into `runs/`, so a
+        // long-lived install can accumulate orphan run files for workflows
+        // that were deleted months ago. The SQLite schema has a FOREIGN KEY
+        // on `workflow_runs.workflow_id`, so attempting to insert these would
+        // fail with a constraint violation. The right call is to drop them on
+        // the floor — they are dead history with no live parent — and log a
+        // warning so the operator can investigate if they wanted to keep the
+        // run files for some out-of-band reason.
+        let valid_workflow_ids: HashSet<Uuid> = workflows.iter().map(|w| w.id).collect();
+        let total_run_files = all_runs.len();
+        let mut runs: Vec<WorkflowRun> = Vec::with_capacity(total_run_files);
+        let mut orphan_count: usize = 0;
+        for run in all_runs {
+            if valid_workflow_ids.contains(&run.workflow_id) {
+                runs.push(run);
+            } else {
+                orphan_count += 1;
+                tracing::warn!(
+                    "Migration m002: skipping orphaned run '{}' (workflow '{}' no longer exists in workflows.json)",
+                    run.run_id,
+                    run.workflow_id
+                );
+            }
+        }
 
         // Drive the SQLite work on a blocking task — rusqlite is sync.
         let db_path_clone = db_path.clone();
@@ -128,11 +156,12 @@ impl Migration for JsonToSqlite {
                 }
 
                 tracing::info!(
-                    "m002_json_to_sqlite: migrated {} workflow(s) and {} run(s) into {}",
+                    "Migration m002 complete: {} workflows + {} runs migrated to SQLite ({} orphaned runs skipped). Original JSON sources removed.",
                     workflow_count,
                     run_count,
-                    db_path.display()
+                    orphan_count
                 );
+                tracing::debug!("Migration m002: SQLite database at {}", db_path.display());
 
                 Ok(true)
             }
@@ -866,7 +895,71 @@ mod tests {
         );
     }
 
-    // ── 8. Post-COMMIT cleanup-failure path is non-fatal ─────────────────────
+    // ── 8. Orphan run files are skipped instead of failing the migration ────
+    //
+    // Regression test for v4.2.0 smoke-test failure: the legacy FS-backed
+    // `delete_workflow` did not cascade into `runs/`, so installs accumulated
+    // run files for workflows that no longer exist. The new SQLite schema
+    // has a FOREIGN KEY on `workflow_runs.workflow_id`; without filtering,
+    // those orphan rows would trip the constraint and abort the migration.
+
+    #[tokio::test]
+    async fn test_orphan_run_files_are_skipped() {
+        let tmp = TempDir::new().unwrap();
+
+        // One live workflow with one valid run.
+        let wf = make_workflow("alive");
+        write_workflows_json(tmp.path(), &[wf.clone()]).await;
+        let valid_run = make_run(&wf);
+        write_run_json(tmp.path(), &valid_run).await;
+
+        // An orphan: a run whose `workflow_id` is NOT in workflows.json.
+        // We synthesise a workflow only to build a plausible run snapshot;
+        // the snapshot's id is what gates the FK check.
+        let ghost_wf = make_workflow("ghost-deleted");
+        let orphan_run = make_run(&ghost_wf);
+        write_run_json(tmp.path(), &orphan_run).await;
+
+        // Sanity: both run files exist before migration.
+        let runs_dir = tmp.path().join("runs");
+        let valid_run_file = runs_dir
+            .join(valid_run.workflow_id.to_string())
+            .join(format!("{}.json", valid_run.run_id));
+        let orphan_run_file = runs_dir
+            .join(orphan_run.workflow_id.to_string())
+            .join(format!("{}.json", orphan_run.run_id));
+        assert!(valid_run_file.exists());
+        assert!(orphan_run_file.exists());
+
+        let m = JsonToSqlite;
+        let applied = m
+            .run(tmp.path())
+            .await
+            .expect("migration must succeed despite orphan run files");
+        assert!(applied);
+
+        let db_path = tmp.path().join("acs.db");
+        assert_eq!(
+            count_rows(&db_path, "workflows"),
+            1,
+            "only the live workflow is in SQLite"
+        );
+        assert_eq!(
+            count_rows(&db_path, "workflow_runs"),
+            1,
+            "only the run for the live workflow is in SQLite (orphan was skipped)"
+        );
+
+        // The whole runs/ directory is removed on successful commit, so both
+        // run files are gone after migration. That includes the orphan — it
+        // is dead history with no live parent in either place.
+        assert!(
+            !runs_dir.exists(),
+            "runs/ should be removed wholesale after a successful migration"
+        );
+    }
+
+    // ── 9. Post-COMMIT cleanup-failure path is non-fatal ─────────────────────
     //
     // Windows-only because it relies on the OS denying `remove_dir_all` while
     // an open file handle exists inside the directory. POSIX happily unlinks
@@ -928,7 +1021,7 @@ mod tests {
         assert!(runs_dir.exists(), "runs/ remained on disk");
     }
 
-    // ── 9. Compatibility with NewWorkflow shape via SqliteWorkflowStore ─────
+    // ── 10. Compatibility with NewWorkflow shape via SqliteWorkflowStore ────
 
     #[tokio::test]
     async fn test_migrated_rows_readable_by_sqlite_store() {
