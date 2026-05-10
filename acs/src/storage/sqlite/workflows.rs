@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
@@ -371,6 +371,49 @@ impl WorkflowStore for SqliteWorkflowStore {
                     return Err(AcsError::NotFound(format!(
                         "Workflow with id '{}' not found",
                         id
+                    )));
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn record_run_outcome(
+        &self,
+        workflow_id: Uuid,
+        run_id: Uuid,
+        status: RunStatus,
+        finished_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let status_s = run_status_str(&status)?;
+        let id_s = workflow_id.to_string();
+        let run_id_s = run_id.to_string();
+        let finished_s = finished_at.to_rfc3339();
+        // updated_at is bumped to now() so consumers (UI, /health) can tell
+        // the row changed; version is intentionally NOT bumped because this
+        // is runtime metadata, not a definition change.
+        let now_s = Utc::now().to_rfc3339();
+
+        self.db
+            .with_conn(move |c| {
+                let n = c
+                    .execute(
+                        "UPDATE workflows SET
+                            last_run_id = ?1,
+                            last_run_status = ?2,
+                            last_run_at = ?3,
+                            updated_at = ?4
+                         WHERE id = ?5",
+                        params![run_id_s, status_s, finished_s, now_s, id_s],
+                    )
+                    .map_err(|e| {
+                        AcsError::Storage(format!("UPDATE workflow run-outcome failed: {}", e))
+                    })?;
+                if n == 0 {
+                    return Err(AcsError::NotFound(format!(
+                        "Workflow with id '{}' not found",
+                        workflow_id
                     )));
                 }
                 Ok(())
@@ -839,5 +882,104 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names, vec!["a", "b", "c"]);
+    }
+
+    // ── record_run_outcome ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_record_run_outcome_populates_last_run_fields() {
+        let store = SqliteWorkflowStore::in_memory_for_tests();
+        let created = store
+            .create_workflow(minimal_new_workflow("rro-1"))
+            .await
+            .expect("create");
+        // Pre-condition: last_run_* are null on a freshly created workflow.
+        assert!(created.last_run_id.is_none());
+        assert!(created.last_run_status.is_none());
+        assert!(created.last_run_at.is_none());
+        let initial_version = created.version;
+
+        let run_id = Uuid::now_v7();
+        let finished_at = Utc::now();
+        store
+            .record_run_outcome(created.id, run_id, RunStatus::Completed, finished_at)
+            .await
+            .expect("record_run_outcome");
+
+        let got = store
+            .get_workflow(created.id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got.last_run_id, Some(run_id));
+        assert_eq!(got.last_run_status, Some(RunStatus::Completed));
+        // Round-tripping through RFC3339 → SQLite TEXT → RFC3339 truncates
+        // sub-second precision below microseconds depending on chrono. Compare
+        // by RFC3339 string at second precision to be robust.
+        assert_eq!(
+            got.last_run_at.expect("set").timestamp(),
+            finished_at.timestamp()
+        );
+        // version must NOT bump for runtime metadata changes.
+        assert_eq!(got.version, initial_version);
+    }
+
+    #[tokio::test]
+    async fn test_record_run_outcome_unknown_workflow_returns_not_found() {
+        let store = SqliteWorkflowStore::in_memory_for_tests();
+        let err = store
+            .record_run_outcome(
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                RunStatus::Failed,
+                Utc::now(),
+            )
+            .await
+            .expect_err("must error");
+        let acs = err.downcast_ref::<AcsError>().expect("must be AcsError");
+        assert!(matches!(acs, AcsError::NotFound(_)), "got: {:?}", acs);
+    }
+
+    #[tokio::test]
+    async fn test_record_run_outcome_latest_wins() {
+        let store = SqliteWorkflowStore::in_memory_for_tests();
+        let created = store
+            .create_workflow(minimal_new_workflow("rro-3"))
+            .await
+            .expect("create");
+
+        let first_run = Uuid::now_v7();
+        let first_at = Utc::now();
+        store
+            .record_run_outcome(created.id, first_run, RunStatus::Failed, first_at)
+            .await
+            .expect("first record");
+
+        // Sleep a tick so the finished_at timestamps are distinguishable
+        // even on platforms whose clock has limited monotonicity.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        let second_run = Uuid::now_v7();
+        let second_at = Utc::now();
+        store
+            .record_run_outcome(created.id, second_run, RunStatus::Completed, second_at)
+            .await
+            .expect("second record");
+
+        let got = store
+            .get_workflow(created.id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(
+            got.last_run_id,
+            Some(second_run),
+            "second call's run_id wins"
+        );
+        assert_eq!(got.last_run_status, Some(RunStatus::Completed));
+        assert_eq!(
+            got.last_run_at.expect("set").timestamp(),
+            second_at.timestamp()
+        );
     }
 }

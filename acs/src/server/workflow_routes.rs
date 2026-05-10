@@ -474,6 +474,7 @@ pub async fn trigger_workflow(
 
     let event_tx = state.workflow_event_tx.clone();
     let run_store = Arc::clone(&state.workflow_run_store);
+    let workflow_store = Arc::clone(&state.workflow_store);
     let kill_signals = Arc::clone(&state.kill_signals);
 
     // Spawn the workflow run in the background.
@@ -519,6 +520,20 @@ pub async fn trigger_workflow(
         // Persist the final run state to the store.
         if let Err(e) = run_store.update_run(&final_run).await {
             tracing::error!("Failed to persist final run {}: {}", run_id, e);
+        }
+
+        // Stamp the parent workflow with this run's terminal status so
+        // list_workflows / get_workflow surface it in last_run_*.
+        let finished_at = final_run.finished_at.unwrap_or_else(Utc::now);
+        if let Err(e) = workflow_store
+            .record_run_outcome(workflow_id, run_id, final_run.status, finished_at)
+            .await
+        {
+            tracing::error!(
+                "Failed to record run outcome on parent workflow for run {}: {}",
+                run_id,
+                e
+            );
         }
     });
 
@@ -640,6 +655,15 @@ pub async fn kill_workflow_run(
             // 3. Update the persisted record if it is still Running, so that
             //    pollers see Killed immediately without waiting for the executor
             //    to write its final status.
+            //
+            //    The parent workflow's `last_run_*` fields are intentionally
+            //    NOT updated here. The executor's finalization path is the
+            //    single writer for the workflow row — it runs a moment later
+            //    and reflects the actually-final run status (which may be
+            //    Killed, Completed, or Failed depending on the kill-vs-exit
+            //    race). Letting one writer own the field eliminates the
+            //    possibility of `run.status` and `workflow.last_run_status`
+            //    disagreeing.
             if run.status == RunStatus::Running {
                 run.status = RunStatus::Killed;
                 run.finished_at = Some(Utc::now());
@@ -760,7 +784,7 @@ mod tests {
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
     use http_body_util::BodyExt;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -898,6 +922,29 @@ mod tests {
             if wfs.len() == len_before {
                 return Err(anyhow::anyhow!("not found"));
             }
+            Ok(())
+        }
+        async fn record_run_outcome(
+            &self,
+            workflow_id: Uuid,
+            run_id: Uuid,
+            status: RunStatus,
+            finished_at: DateTime<Utc>,
+        ) -> anyhow::Result<()> {
+            let mut wfs = self.workflows.write().await;
+            let wf = wfs
+                .iter_mut()
+                .find(|w| w.id == workflow_id)
+                .ok_or_else(|| {
+                    crate::errors::AcsError::NotFound(format!(
+                        "Workflow with id '{}' not found",
+                        workflow_id
+                    ))
+                })?;
+            wf.last_run_id = Some(run_id);
+            wf.last_run_status = Some(status);
+            wf.last_run_at = Some(finished_at);
+            wf.updated_at = Utc::now();
             Ok(())
         }
     }

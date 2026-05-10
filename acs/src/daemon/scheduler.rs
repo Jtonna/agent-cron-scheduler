@@ -272,6 +272,7 @@ impl WorkflowScheduler {
                             let wf_clone = wf.clone();
                             let event_tx = self.workflow_event_tx.clone();
                             let run_store = Arc::clone(&self.workflow_run_store);
+                            let workflow_store = Arc::clone(&self.workflow_store);
                             let data_dir = self.data_dir.clone();
                             let kill_signals = Arc::clone(&self.kill_signals);
 
@@ -352,6 +353,26 @@ impl WorkflowScheduler {
                                     tracing::error!(
                                         workflow_id = %wf_clone.id,
                                         "Failed to persist final run {}: {}",
+                                        run_id, e
+                                    );
+                                }
+
+                                // Stamp the parent workflow with this run's
+                                // terminal status so list_workflows / get_workflow
+                                // surface it in last_run_*.
+                                let finished_at = final_run.finished_at.unwrap_or_else(Utc::now);
+                                if let Err(e) = workflow_store
+                                    .record_run_outcome(
+                                        wf_clone.id,
+                                        run_id,
+                                        final_run.status,
+                                        finished_at,
+                                    )
+                                    .await
+                                {
+                                    tracing::error!(
+                                        workflow_id = %wf_clone.id,
+                                        "Failed to record run outcome on parent workflow for run {}: {}",
                                         run_id, e
                                     );
                                 }

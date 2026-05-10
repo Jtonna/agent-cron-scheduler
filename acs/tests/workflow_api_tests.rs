@@ -1363,3 +1363,244 @@ async fn test_trigger_with_empty_body_succeeds() {
     let json: serde_json::Value = resp.json().await.unwrap();
     assert!(json["run_id"].is_string(), "run_id should be present");
 }
+
+// ---------------------------------------------------------------------------
+// last_run_* propagation tests
+//
+// Regression coverage for the ACS-22 follow-up: after a run reaches a terminal
+// status, the parent workflow row's `last_run_id`, `last_run_status`, and
+// `last_run_at` fields must be populated so they show up in
+// GET /api/workflows[/{id}] responses.
+// ---------------------------------------------------------------------------
+
+/// Helper: poll GET /api/workflows/{id} until last_run_id is non-null (or
+/// `deadline_secs` elapses). Returns the workflow JSON.
+async fn poll_for_last_run(
+    client: &reqwest::Client,
+    base_url: &str,
+    wf_id: &str,
+    deadline_secs: u64,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(deadline_secs);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "Workflow {} did not get a last_run_id within {}s",
+                wf_id, deadline_secs
+            );
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        let wf: serde_json::Value = client
+            .get(format!("{}/api/workflows/{}", base_url, wf_id))
+            .send()
+            .await
+            .expect("GET workflow")
+            .json()
+            .await
+            .unwrap();
+        if wf["last_run_id"].is_string() {
+            return wf;
+        }
+    }
+}
+
+/// Successful run: last_run_status should be "Completed" and last_run_id
+/// should match the run's id.
+#[tokio::test]
+async fn test_successful_run_populates_workflow_last_run_fields() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("last-run-success")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap().to_string();
+    assert!(
+        created["last_run_id"].is_null(),
+        "fresh workflow must start with last_run_id=null"
+    );
+    assert!(created["last_run_status"].is_null());
+    assert!(created["last_run_at"].is_null());
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+    let run_id = trigger_json["run_id"].as_str().unwrap().to_string();
+
+    let wf = poll_for_last_run(&client, &base_url, &wf_id, 10).await;
+    assert_eq!(
+        wf["last_run_id"].as_str(),
+        Some(run_id.as_str()),
+        "workflow.last_run_id should match the triggered run"
+    );
+    assert_eq!(
+        wf["last_run_status"].as_str(),
+        Some("Completed"),
+        "workflow.last_run_status should be Completed for a successful run"
+    );
+    assert!(
+        wf["last_run_at"].is_string(),
+        "workflow.last_run_at should be set"
+    );
+}
+
+/// Failing run (non-zero exit, default Abort policy): last_run_status="Failed".
+#[tokio::test]
+async fn test_failed_run_populates_workflow_last_run_fields() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Platform-appropriate "exit 1" command.
+    #[cfg(windows)]
+    let fail_cmd = "cmd /C exit 1";
+    #[cfg(not(windows))]
+    let fail_cmd = "false";
+
+    let wf = NewWorkflow {
+        name: "last-run-fail".to_string(),
+        schedule: "*/5 * * * *".to_string(),
+        timezone: None,
+        schedule_mode: Default::default(),
+        enabled: true,
+        steps: vec![shell_step("boom", fail_cmd)],
+        input_schema: None,
+        default_input: None,
+        working_dir: None,
+        env_vars: None,
+        allow_concurrent: None,
+        on_failure: FailurePolicy::default(),
+    };
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&wf).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap().to_string();
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+    let run_id = trigger_json["run_id"].as_str().unwrap().to_string();
+
+    let got = poll_for_last_run(&client, &base_url, &wf_id, 10).await;
+    assert_eq!(got["last_run_id"].as_str(), Some(run_id.as_str()));
+    assert_eq!(
+        got["last_run_status"].as_str(),
+        Some("Failed"),
+        "non-zero exit with default Abort policy should mark workflow.last_run_status=Failed"
+    );
+}
+
+/// Killed run: last_run_status="Killed".
+#[tokio::test]
+async fn test_killed_run_populates_workflow_last_run_fields() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    #[cfg(windows)]
+    let sleep_cmd = "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"";
+    #[cfg(not(windows))]
+    let sleep_cmd = "sleep 30";
+
+    let wf = NewWorkflow {
+        name: "last-run-kill".to_string(),
+        schedule: "*/5 * * * *".to_string(),
+        timezone: None,
+        schedule_mode: Default::default(),
+        enabled: true,
+        steps: vec![shell_step("slow", sleep_cmd)],
+        input_schema: None,
+        default_input: None,
+        working_dir: None,
+        env_vars: None,
+        allow_concurrent: None,
+        on_failure: FailurePolicy::default(),
+    };
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&wf).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap().to_string();
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+    let run_id = trigger_json["run_id"].as_str().unwrap().to_string();
+
+    // Let the executor settle on the long-sleep step.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let kill_resp = client
+        .post(format!("{}/api/runs/{}/kill", base_url, run_id))
+        .send()
+        .await
+        .expect("POST /kill");
+    assert_eq!(kill_resp.status(), 202);
+
+    let got = poll_for_last_run(&client, &base_url, &wf_id, 10).await;
+    assert_eq!(got["last_run_id"].as_str(), Some(run_id.as_str()));
+    assert_eq!(
+        got["last_run_status"].as_str(),
+        Some("Killed"),
+        "killed run should propagate Killed to workflow.last_run_status"
+    );
+}
