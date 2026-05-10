@@ -348,34 +348,16 @@ impl WorkflowScheduler {
                                     Some(kill_signals),
                                 ).await;
 
-                                // Persist the final run state.
-                                if let Err(e) = run_store.update_run(&final_run).await {
-                                    tracing::error!(
-                                        workflow_id = %wf_clone.id,
-                                        "Failed to persist final run {}: {}",
-                                        run_id, e
-                                    );
-                                }
-
-                                // Stamp the parent workflow with this run's
-                                // terminal status so list_workflows / get_workflow
+                                // Persist the final run state and stamp the
+                                // parent workflow with this run's terminal
+                                // status so list_workflows / get_workflow
                                 // surface it in last_run_*.
-                                let finished_at = final_run.finished_at.unwrap_or_else(Utc::now);
-                                if let Err(e) = workflow_store
-                                    .record_run_outcome(
-                                        wf_clone.id,
-                                        run_id,
-                                        final_run.status,
-                                        finished_at,
-                                    )
-                                    .await
-                                {
-                                    tracing::error!(
-                                        workflow_id = %wf_clone.id,
-                                        "Failed to record run outcome on parent workflow for run {}: {}",
-                                        run_id, e
-                                    );
-                                }
+                                crate::workflow::finalize_run(
+                                    &run_store,
+                                    &workflow_store,
+                                    &final_run,
+                                )
+                                .await;
                             });
                         }
                     }
@@ -578,7 +560,6 @@ mod tests {
                 command: "echo hi".to_string(),
                 pass_stdin: false,
             })],
-            input_schema: None,
             default_input: None,
             working_dir: None,
             env_vars: None,

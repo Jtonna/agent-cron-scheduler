@@ -110,7 +110,7 @@ async fn execute_with_spawner(
     }
 
     // Step 4: Write START marker.
-    let _ = ctx
+    let log_byte_offset_start = ctx
         .log_sink
         .write_step_start(&step.common.id, Utc::now())
         .await
@@ -237,7 +237,7 @@ async fn execute_with_spawner(
     };
 
     // Step 7: Write END marker.
-    let _ = ctx
+    let log_byte_offset_end = ctx
         .log_sink
         .write_step_end(&step.common.id, exit_code, Utc::now())
         .await
@@ -276,6 +276,8 @@ async fn execute_with_spawner(
         stdout,
         exports: HashMap::new(),
         cost: agent_output.cost,
+        log_byte_offset_start: Some(log_byte_offset_start),
+        log_byte_offset_end: Some(log_byte_offset_end),
     })
 }
 

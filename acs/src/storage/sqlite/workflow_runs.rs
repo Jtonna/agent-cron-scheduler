@@ -292,7 +292,6 @@ mod tests {
                 schedule_mode: ScheduleMode::default(),
                 enabled: true,
                 steps: vec![make_shell_step("step-1")],
-                input_schema: None,
                 default_input: None,
                 working_dir: None,
                 env_vars: None,

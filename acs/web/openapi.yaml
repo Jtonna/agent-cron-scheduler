@@ -7,7 +7,7 @@ info:
     ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
     Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "4.2.1"
+  version: "4.2.3"
   license:
     name: MIT
 
@@ -47,7 +47,7 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "4.2.1"
+                version: "4.2.3"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
                 service:
                   registered: true
@@ -476,6 +476,16 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "400":
           description: run_id is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: |
+            The recorded `log_byte_offset_end` for the requested step extends
+            past the actual length of the log file on disk (e.g. the log was
+            truncated or replaced after the run was persisted). `error` is
+            `log_offset_out_of_range`.
           content:
             application/json:
               schema:
@@ -1123,10 +1133,6 @@ components:
           items:
             $ref: "#/components/schemas/StepDef"
           description: Ordered list of step definitions. Must be non-empty.
-        input_schema:
-          nullable: true
-          description: JSON Schema describing the expected shape of trigger input.
-          example: { "type": "object", "properties": { "target": { "type": "string" } } }
         default_input:
           nullable: true
           description: Default trigger input JSON used for scheduled runs.
@@ -1223,9 +1229,6 @@ components:
           items:
             $ref: "#/components/schemas/StepDef"
           description: Ordered step definitions. Must contain at least one step.
-        input_schema:
-          nullable: true
-          description: JSON Schema for the trigger input.
         default_input:
           nullable: true
           description: Default trigger input for scheduled runs.
@@ -1286,9 +1289,6 @@ components:
           items:
             $ref: "#/components/schemas/StepDef"
           description: Replace the full step list (must be non-empty if provided).
-        input_schema:
-          nullable: true
-          description: Replace the input schema (null clears it).
         default_input:
           nullable: true
           description: Replace the default input (null clears it).
@@ -1327,8 +1327,7 @@ components:
           description: |
             Structured JSON input passed as the workflow's trigger input.
             Optional; defaults to `null` when omitted. When `null`, the run
-            falls back to `workflow.default_input`. Must conform to the
-            workflow's `input_schema` when one is set.
+            falls back to `workflow.default_input`.
           example: { "target": "production" }
         env:
           type: object

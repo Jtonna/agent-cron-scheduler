@@ -55,11 +55,6 @@ fn row_to_workflow(row: &Row<'_>) -> rusqlite::Result<Workflow> {
     let on_failure: FailurePolicy =
         serde_json::from_str(&on_failure_json).map_err(map_serde_err)?;
 
-    let input_schema_s: Option<String> = row.get("input_schema")?;
-    let input_schema = match input_schema_s {
-        Some(s) => Some(serde_json::from_str::<serde_json::Value>(&s).map_err(map_serde_err)?),
-        None => None,
-    };
     let default_input_s: Option<String> = row.get("default_input")?;
     let default_input = match default_input_s {
         Some(s) => Some(serde_json::from_str::<serde_json::Value>(&s).map_err(map_serde_err)?),
@@ -98,7 +93,6 @@ fn row_to_workflow(row: &Row<'_>) -> rusqlite::Result<Workflow> {
         schedule_mode,
         enabled: row.get::<_, i64>("enabled")? != 0,
         steps,
-        input_schema,
         default_input,
         working_dir: row.get("working_dir")?,
         env_vars,
@@ -211,7 +205,6 @@ impl WorkflowStore for SqliteWorkflowStore {
             schedule_mode: new.schedule_mode,
             enabled: new.enabled,
             steps: new.steps,
-            input_schema: new.input_schema,
             default_input: new.default_input,
             working_dir: new.working_dir,
             env_vars: new.env_vars,
@@ -309,12 +302,6 @@ impl WorkflowStore for SqliteWorkflowStore {
                         definition_changed = true;
                     }
                     wf.steps = steps;
-                }
-                if let Some(input_schema) = update.input_schema {
-                    if wf.input_schema.as_ref() != Some(&input_schema) {
-                        definition_changed = true;
-                    }
-                    wf.input_schema = Some(input_schema);
                 }
                 if let Some(default_input) = update.default_input {
                     if wf.default_input.as_ref() != Some(&default_input) {
@@ -428,12 +415,6 @@ impl WorkflowStore for SqliteWorkflowStore {
 fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
     let steps_json =
         serde_json::to_string(&wf.steps).map_err(|e| AcsError::Storage(e.to_string()))?;
-    let input_schema = wf
-        .input_schema
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|e| AcsError::Storage(e.to_string()))?;
     let default_input = wf
         .default_input
         .as_ref()
@@ -456,14 +437,14 @@ fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
     conn.execute(
         "INSERT INTO workflows (
             id, name, version, schedule, timezone, schedule_mode, enabled,
-            steps_json, input_schema, default_input, working_dir, env_vars,
+            steps_json, default_input, working_dir, env_vars,
             allow_concurrent, on_failure, last_run_at, last_run_status,
             last_run_id, created_at, updated_at
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7,
-            ?8, ?9, ?10, ?11, ?12,
-            ?13, ?14, ?15, ?16,
-            ?17, ?18, ?19
+            ?8, ?9, ?10, ?11,
+            ?12, ?13, ?14, ?15,
+            ?16, ?17, ?18
         )",
         params![
             wf.id.to_string(),
@@ -474,7 +455,6 @@ fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
             schedule_mode_str(&wf.schedule_mode)?,
             wf.enabled as i64,
             steps_json,
-            input_schema,
             default_input,
             wf.working_dir,
             env_vars,
@@ -494,12 +474,6 @@ fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
 fn update_workflow_row(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
     let steps_json =
         serde_json::to_string(&wf.steps).map_err(|e| AcsError::Storage(e.to_string()))?;
-    let input_schema = wf
-        .input_schema
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|e| AcsError::Storage(e.to_string()))?;
     let default_input = wf
         .default_input
         .as_ref()
@@ -522,11 +496,11 @@ fn update_workflow_row(conn: &Connection, wf: &Workflow) -> Result<(), AcsError>
         "UPDATE workflows SET
             name = ?1, version = ?2, schedule = ?3, timezone = ?4,
             schedule_mode = ?5, enabled = ?6, steps_json = ?7,
-            input_schema = ?8, default_input = ?9, working_dir = ?10,
-            env_vars = ?11, allow_concurrent = ?12, on_failure = ?13,
-            last_run_at = ?14, last_run_status = ?15, last_run_id = ?16,
-            updated_at = ?17
-         WHERE id = ?18",
+            default_input = ?8, working_dir = ?9,
+            env_vars = ?10, allow_concurrent = ?11, on_failure = ?12,
+            last_run_at = ?13, last_run_status = ?14, last_run_id = ?15,
+            updated_at = ?16
+         WHERE id = ?17",
         params![
             wf.name,
             wf.version as i64,
@@ -535,7 +509,6 @@ fn update_workflow_row(conn: &Connection, wf: &Workflow) -> Result<(), AcsError>
             schedule_mode_str(&wf.schedule_mode)?,
             wf.enabled as i64,
             steps_json,
-            input_schema,
             default_input,
             wf.working_dir,
             env_vars,
@@ -586,7 +559,6 @@ mod tests {
             schedule_mode: ScheduleMode::default(),
             enabled: true,
             steps: vec![make_shell_step("step-1")],
-            input_schema: None,
             default_input: None,
             working_dir: None,
             env_vars: None,
@@ -605,7 +577,6 @@ mod tests {
             schedule_mode: ScheduleMode::WaitForCompletion,
             enabled: false,
             steps: vec![make_shell_step("a"), make_shell_step("b")],
-            input_schema: Some(serde_json::json!({"type": "object"})),
             default_input: Some(serde_json::json!({"k": 1})),
             working_dir: Some("/tmp".to_string()),
             env_vars: Some(env),
@@ -767,7 +738,6 @@ mod tests {
         assert_eq!(updated.env_vars, created.env_vars);
         assert_eq!(updated.allow_concurrent, created.allow_concurrent);
         assert_eq!(updated.on_failure, created.on_failure);
-        assert_eq!(updated.input_schema, created.input_schema);
     }
 
     #[tokio::test]

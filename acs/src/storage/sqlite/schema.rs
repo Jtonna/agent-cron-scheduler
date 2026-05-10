@@ -30,7 +30,6 @@ CREATE TABLE IF NOT EXISTS workflows (
     schedule_mode       TEXT NOT NULL,
     enabled             INTEGER NOT NULL,
     steps_json          TEXT NOT NULL,
-    input_schema        TEXT,
     default_input       TEXT,
     working_dir         TEXT,
     env_vars            TEXT,

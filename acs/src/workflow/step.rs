@@ -38,6 +38,16 @@ pub struct StepOutput {
     /// Explicit named exports.
     pub exports: HashMap<String, serde_json::Value>,
     pub cost: Option<CostFragment>,
+    /// Byte offset (in the run's combined log file) of the BEGINNING of this
+    /// step's START marker line. `None` for synthetic outputs (e.g. template
+    /// fixtures) that don't have a corresponding log slice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_byte_offset_start: Option<u64>,
+    /// Byte offset just AFTER this step's END marker line. `None` if the
+    /// step did not finish writing an END marker (e.g. killed mid-run, or
+    /// a synthetic output without a log slice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_byte_offset_end: Option<u64>,
 }
 
 /// Errors a step can return that prevent it from producing a `StepOutput`.

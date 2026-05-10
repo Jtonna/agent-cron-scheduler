@@ -99,7 +99,6 @@ CREATE TABLE workflows (
     schedule_mode       TEXT NOT NULL,
     enabled             INTEGER NOT NULL,
     steps_json          TEXT NOT NULL,
-    input_schema        TEXT,
     default_input       TEXT,
     working_dir         TEXT,
     env_vars            TEXT,
@@ -156,8 +155,8 @@ CREATE TABLE meta (
   (workflow_runs) is `Vec<StepRun>` serialised.
 - `workflow_snapshot` is the full `Workflow` definition at trigger time
   serialised as JSON, so each run record is self-contained.
-- `input_schema`, `default_input`, `trigger_input`, and `env_vars` are
-  optional JSON TEXT blobs (`NULL` when absent).
+- `default_input`, `trigger_input`, and `env_vars` are optional JSON TEXT
+  blobs (`NULL` when absent).
 
 ### Atomicity and durability
 
@@ -241,9 +240,9 @@ SQLite `UNIQUE` constraint violation on `workflows.name` to
 ### Version bump rules
 
 `update_workflow` tracks whether any **definition-affecting field** changed.
-Definition-affecting fields are: `steps`, `on_failure`, `input_schema`,
-`default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `schedule`,
-`schedule_mode`, `timezone`, and `name`.
+Definition-affecting fields are: `steps`, `on_failure`, `default_input`,
+`working_dir`, `env_vars`, `allow_concurrent`, `schedule`, `schedule_mode`,
+`timezone`, and `name`.
 
 The `enabled` flag is explicitly excluded — toggling a workflow on or off does
 not alter its definition and therefore does **not** bump `version`.

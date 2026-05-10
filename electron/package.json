@@ -1,6 +1,6 @@
 {
   "name": "acs-electron",
-  "version": "4.2.1",
+  "version": "4.2.3",
   "private": true,
   "//workspaces": "desktopapp is excluded so it installs standalone (own node_modules + package-lock.json) and `npm install` / `npm run dev` work from inside its folder. It also has outputFileTracingRoot pinned in its next.config.ts so Next doesn't walk up to this lockfile.",
   "workspaces": [

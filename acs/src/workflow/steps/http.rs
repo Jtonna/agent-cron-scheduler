@@ -16,7 +16,7 @@ impl Step for HttpStep {
 
     async fn execute(&self, ctx: &mut StepContext) -> Result<StepOutput, StepError> {
         // 1. Emit step start marker
-        let _ = ctx
+        let log_byte_offset_start = ctx
             .log_sink
             .write_step_start(&self.common.id, Utc::now())
             .await
@@ -141,7 +141,7 @@ impl Step for HttpStep {
             .map_err(StepError::Io)?;
 
         // 11. Emit step end marker
-        let _ = ctx
+        let log_byte_offset_end = ctx
             .log_sink
             .write_step_end(&self.common.id, Some(exit_code), Utc::now())
             .await
@@ -160,6 +160,8 @@ impl Step for HttpStep {
             stdout: Some(stdout),
             exports: HashMap::new(),
             cost: None,
+            log_byte_offset_start: Some(log_byte_offset_start),
+            log_byte_offset_end: Some(log_byte_offset_end),
         })
     }
 }

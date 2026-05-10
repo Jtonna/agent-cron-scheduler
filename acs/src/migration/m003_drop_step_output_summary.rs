@@ -159,32 +159,28 @@ fn run_blocking(db_path: &Path) -> Result<bool, AcsError> {
     Ok(true)
 }
 
-/// Recursively strip every `output_summary` key from a JSON value (the
-/// `steps_json` blob is an array of `StepRun` objects, but downstream
-/// schemas may evolve — walk the whole structure to be safe). Returns the
-/// number of keys removed.
+/// Strip every `output_summary` key from a `steps_json` blob.
+///
+/// The schema is flat: `steps_json` is a JSON array, each element is a JSON
+/// object, and each object MAY carry an `output_summary` key at depth 1.
+/// A single 2-level pass (outer array → inner object → `map.remove`) is
+/// sufficient — no recursion needed. Non-array / non-object inputs are
+/// treated as a no-op.
+///
+/// Returns the total number of `output_summary` keys removed.
 fn strip_output_summary(value: &mut serde_json::Value) -> usize {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut removed = if map.remove(STEP_OUTPUT_SUMMARY_KEY).is_some() {
-                1
-            } else {
-                0
-            };
-            for (_, v) in map.iter_mut() {
-                removed += strip_output_summary(v);
+    let Some(items) = value.as_array_mut() else {
+        return 0;
+    };
+    let mut removed = 0;
+    for item in items.iter_mut() {
+        if let Some(map) = item.as_object_mut() {
+            if map.remove(STEP_OUTPUT_SUMMARY_KEY).is_some() {
+                removed += 1;
             }
-            removed
         }
-        serde_json::Value::Array(items) => {
-            let mut removed = 0;
-            for item in items.iter_mut() {
-                removed += strip_output_summary(item);
-            }
-            removed
-        }
-        _ => 0,
     }
+    removed
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -202,12 +198,12 @@ mod tests {
         conn.execute(
             "INSERT INTO workflows (
                 id, name, version, schedule, timezone, schedule_mode, enabled,
-                steps_json, input_schema, default_input, working_dir, env_vars,
+                steps_json, default_input, working_dir, env_vars,
                 allow_concurrent, on_failure, last_run_at, last_run_status,
                 last_run_id, created_at, updated_at
             ) VALUES (
                 ?1, ?2, 1, '* * * * *', NULL, 'Cron', 1,
-                '[]', NULL, NULL, NULL, NULL,
+                '[]', NULL, NULL, NULL,
                 1, '\"abort\"', NULL, NULL,
                 NULL, ?3, ?3
             )",

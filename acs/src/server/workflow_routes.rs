@@ -201,10 +201,79 @@ pub async fn list_workflows(State(state): State<Arc<AppState>>) -> impl IntoResp
 // POST /api/workflows
 // ---------------------------------------------------------------------------
 
+/// Fill in daemon-config-driven defaults on a freshly-deserialised
+/// `NewWorkflow` body. Called from `create_workflow` before the body reaches
+/// the store.
+///
+/// Currently fills in:
+///   * `timezone` ← `config.display_timezone`
+///   * `working_dir` ← `<documents>/agent-cron-scheduler/<sanitized-name>/`
+///     (created on disk if missing; left as `None` if creation fails)
+fn apply_new_workflow_defaults(body: &mut NewWorkflow, config: &crate::models::DaemonConfig) {
+    if body.timezone.is_none() {
+        body.timezone = Some(config.display_timezone.clone());
+    }
+
+    if body.working_dir.is_none() {
+        if let Some(docs) = dirs::document_dir() {
+            let sanitized = sanitize_workflow_name(&body.name);
+            let target = docs.join("agent-cron-scheduler").join(&sanitized);
+            match std::fs::create_dir_all(&target) {
+                Ok(()) => {
+                    body.working_dir = Some(target.to_string_lossy().into_owned());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        workflow_name = %body.name,
+                        path = ?target,
+                        "failed to create default working_dir: {} — persisting workflow with working_dir = null",
+                        e
+                    );
+                }
+            }
+        } else {
+            tracing::warn!(
+                workflow_name = %body.name,
+                "could not resolve user Documents dir — persisting workflow with working_dir = null"
+            );
+        }
+    }
+}
+
+/// Sanitize a workflow name for use as a directory component.
+///
+/// Lowercases, keeps `[a-z0-9-]`, and replaces every other run of characters
+/// with a single `-`. Leading and trailing dashes are stripped. If the input
+/// reduces to the empty string, the literal `workflow` is returned so the
+/// path component is always non-empty.
+fn sanitize_workflow_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut prev_dash = false;
+    for ch in name.chars() {
+        let lowered = ch.to_ascii_lowercase();
+        if lowered.is_ascii_alphanumeric() {
+            out.push(lowered);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "workflow".to_string()
+    } else {
+        trimmed
+    }
+}
+
 pub async fn create_workflow(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<NewWorkflow>,
+    Json(mut body): Json<NewWorkflow>,
 ) -> impl IntoResponse {
+    // Apply daemon-config defaults for fields the caller left unspecified.
+    apply_new_workflow_defaults(&mut body, &state.config);
+
     match state.workflow_store.create_workflow(body).await {
         Ok(wf) => {
             // Broadcast WorkflowChanged{Created}
@@ -276,9 +345,6 @@ pub async fn update_workflow(
     }
     if body.steps.is_some() {
         changed.push("steps");
-    }
-    if body.input_schema.is_some() {
-        changed.push("input_schema");
     }
     if body.default_input.is_some() {
         changed.push("default_input");
@@ -517,24 +583,10 @@ pub async fn trigger_workflow(
         )
         .await;
 
-        // Persist the final run state to the store.
-        if let Err(e) = run_store.update_run(&final_run).await {
-            tracing::error!("Failed to persist final run {}: {}", run_id, e);
-        }
-
-        // Stamp the parent workflow with this run's terminal status so
-        // list_workflows / get_workflow surface it in last_run_*.
-        let finished_at = final_run.finished_at.unwrap_or_else(Utc::now);
-        if let Err(e) = workflow_store
-            .record_run_outcome(workflow_id, run_id, final_run.status, finished_at)
-            .await
-        {
-            tracing::error!(
-                "Failed to record run outcome on parent workflow for run {}: {}",
-                run_id,
-                e
-            );
-        }
+        // Persist the final run state to the store and stamp the parent
+        // workflow with this run's terminal status so list_workflows /
+        // get_workflow surface it in last_run_*.
+        crate::workflow::finalize_run(&run_store, &workflow_store, &final_run).await;
     });
 
     tracing::info!(
@@ -804,6 +856,19 @@ pub async fn get_run_log(
         .await
         {
             Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // Recorded `log_byte_offset_end` points past the end of the
+                // log file on disk — most likely the log file was truncated,
+                // rotated, or replaced after the run was persisted. Surface
+                // this as 422 so the caller can distinguish it from a
+                // generic IO error.
+                return error_response(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "log_offset_out_of_range",
+                    &format!("log file shorter than recorded offset for step {}", idx),
+                )
+                .into_response();
+            }
             Err(e) => {
                 tracing::error!(
                     "Failed to read step slice for run {} step {}: {}",
@@ -830,19 +895,24 @@ pub async fn get_run_log(
             .into_response();
     }
 
-    // Whole-file path — no step_index supplied.
-    match tokio::fs::read(&log_path).await {
-        Ok(bytes) => (
-            StatusCode::OK,
-            [(
-                axum::http::header::CONTENT_TYPE,
-                "text/plain; charset=utf-8",
-            )],
-            bytes,
-        )
-            .into_response(),
+    // Whole-file path — no step_index supplied. Stream the file to avoid
+    // buffering multi-MB logs into memory.
+    match tokio::fs::File::open(&log_path).await {
+        Ok(file) => {
+            let stream = tokio_util::io::ReaderStream::new(file);
+            let body = axum::body::Body::from_stream(stream);
+            (
+                StatusCode::OK,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )],
+                body,
+            )
+                .into_response()
+        }
         Err(e) => {
-            tracing::error!("Failed to read log file {:?}: {}", log_path, e);
+            tracing::error!("Failed to open log file {:?}: {}", log_path, e);
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
@@ -1028,7 +1098,6 @@ mod tests {
                 schedule_mode: new.schedule_mode,
                 enabled: new.enabled,
                 steps: new.steps,
-                input_schema: new.input_schema,
                 default_input: new.default_input,
                 working_dir: new.working_dir,
                 env_vars: new.env_vars,
@@ -1221,7 +1290,6 @@ mod tests {
             schedule_mode: Default::default(),
             enabled: true,
             steps: vec![make_shell_step("step-1")],
-            input_schema: None,
             default_input: None,
             working_dir: None,
             env_vars: None,
@@ -1299,6 +1367,105 @@ mod tests {
         let json = body_json(resp.into_body()).await;
         assert_eq!(json["name"], "test-wf");
         assert_eq!(json["version"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_workflow_fills_default_timezone_from_config() {
+        let state = make_state_default(Arc::new(InMemoryWorkflowStore::new()));
+        let app = crate::server::create_router(state);
+        // make_new_workflow leaves timezone = None.
+        let body = serde_json::to_string(&make_new_workflow("tz-default")).unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflows")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(
+            json["timezone"], "America/Los_Angeles",
+            "missing timezone must default to the daemon-config display_timezone"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_workflow_fills_default_working_dir_and_creates_it() {
+        let state = make_state_default(Arc::new(InMemoryWorkflowStore::new()));
+        let app = crate::server::create_router(state);
+        // Unique name so the sanitized directory does not collide with other
+        // test runs sharing the user's Documents directory.
+        let unique_name = format!("wd-default-{}", Uuid::now_v7());
+        let body = serde_json::to_string(&make_new_workflow(&unique_name)).unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflows")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let json = body_json(resp.into_body()).await;
+        // If the test environment cannot resolve the user's Documents dir at
+        // all (some sandboxed CI environments), working_dir falls back to
+        // null — we allow that here to keep the test portable.
+        if let Some(wd) = json["working_dir"].as_str() {
+            assert!(
+                wd.contains("agent-cron-scheduler"),
+                "default working_dir should be under agent-cron-scheduler, got: {}",
+                wd
+            );
+            assert!(
+                std::path::Path::new(wd).exists(),
+                "default working_dir should be created on disk: {}",
+                wd
+            );
+            // Best-effort cleanup so the user's Documents folder doesn't fill
+            // up with test artifacts.
+            let _ = std::fs::remove_dir_all(wd);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_workflow_preserves_explicit_working_dir() {
+        let state = make_state_default(Arc::new(InMemoryWorkflowStore::new()));
+        let app = crate::server::create_router(state);
+        let mut nw = make_new_workflow("wd-explicit");
+        let explicit_path = "/some/specific/path";
+        nw.working_dir = Some(explicit_path.to_string());
+        let body = serde_json::to_string(&nw).unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflows")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(
+            json["working_dir"], explicit_path,
+            "explicit working_dir must round-trip verbatim"
+        );
+        // The default-fill path is not invoked when the caller supplies a
+        // value, so this nonsensical path must NOT have been created on disk.
+        assert!(
+            !std::path::Path::new(explicit_path).exists(),
+            "explicit working_dir must not be auto-created"
+        );
     }
 
     #[tokio::test]
@@ -1518,7 +1685,6 @@ mod tests {
             schedule_mode: Default::default(),
             enabled: true,
             steps: vec![make_shell_step("step-1")],
-            input_schema: None,
             default_input: None,
             working_dir: None,
             env_vars: None,
@@ -1819,6 +1985,116 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&bytes[..], b"BBBBB");
+    }
+
+    #[tokio::test]
+    async fn test_get_run_log_step_index_in_progress_tails_to_eof() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wf_store = Arc::new(InMemoryWorkflowStore::new());
+        let wf = wf_store
+            .create_workflow(make_new_workflow("log-in-progress"))
+            .await
+            .unwrap();
+        let run_store = Arc::new(InMemoryRunStore::new());
+
+        // Partial log: a START marker and some output, but no END marker yet
+        // (i.e. the step is still running or the daemon crashed mid-step).
+        let log_bytes = b"===== START =====\n some content";
+        let steps = vec![crate::models::workflow::StepRun {
+            step_index: 0,
+            step_id: "s0".to_string(),
+            kind: "shell".to_string(),
+            status: RunStatus::Running,
+            started_at: Utc::now(),
+            finished_at: None,
+            exit_code: None,
+            log_byte_offset_start: 0,
+            log_byte_offset_end: None,
+            cost_usd: None,
+            error: None,
+        }];
+        // stage_run_with_log persists status=Completed; we override afterwards
+        // by directly inserting a Running run.
+        let run_id = Uuid::now_v7();
+        let run = WorkflowRun {
+            run_id,
+            workflow_id: wf.id,
+            workflow_version: wf.version,
+            workflow_snapshot: wf.clone(),
+            started_at: Utc::now(),
+            finished_at: None,
+            status: RunStatus::Running,
+            trigger_input: None,
+            steps,
+            total_cost_usd: None,
+            total_duration_ms: None,
+        };
+        run_store.create_run(run).await.unwrap();
+        let log_dir = tmp.path().join("logs").join(wf.id.to_string());
+        tokio::fs::create_dir_all(&log_dir).await.unwrap();
+        tokio::fs::write(log_dir.join(format!("{}.log", run_id)), log_bytes)
+            .await
+            .unwrap();
+
+        let state = make_state_with_data_dir(
+            Arc::clone(&wf_store) as Arc<dyn WorkflowStore>,
+            Arc::clone(&run_store) as Arc<dyn WorkflowRunStore>,
+            tmp.path(),
+        );
+        let app = crate::server::create_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{}/log?step_index=0", run_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            &bytes[..],
+            log_bytes,
+            "in-progress step (end=None) must tail the log to EOF"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_run_log_offset_past_eof_returns_422() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wf_store = Arc::new(InMemoryWorkflowStore::new());
+        let wf = wf_store
+            .create_workflow(make_new_workflow("log-out-of-range"))
+            .await
+            .unwrap();
+        let run_store = Arc::new(InMemoryRunStore::new());
+
+        // Log file is 100 bytes, but the persisted StepRun's end offset is
+        // 1_000_000 — wildly past EOF.
+        let log_bytes = vec![b'X'; 100];
+        let steps = vec![step_record(0, "s0", 0, Some(1_000_000))];
+        let run_id = stage_run_with_log(&run_store, &wf, steps, &log_bytes, tmp.path()).await;
+
+        let state = make_state_with_data_dir(
+            Arc::clone(&wf_store) as Arc<dyn WorkflowStore>,
+            Arc::clone(&run_store) as Arc<dyn WorkflowRunStore>,
+            tmp.path(),
+        );
+        let app = crate::server::create_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{}/log?step_index=0", run_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["error"], "log_offset_out_of_range");
     }
 
     #[tokio::test]

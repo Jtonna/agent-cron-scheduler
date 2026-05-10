@@ -26,7 +26,6 @@ Each workflow run executes its steps in sequence. Steps can spawn subprocesses, 
 | `schedule_mode` | `ScheduleMode` | `"Cron"` | Controls how the scheduler handles ticks while a run is active. See [Schedule Modes](#schedule-modes). |
 | `enabled` | `bool` | `true` | Whether the scheduler should run this workflow. |
 | `steps` | `Vec<StepDef>` | required | Ordered list of steps. At least one required. Step ids must be unique across all steps (including nested match branches). |
-| `input_schema` | `Option<serde_json::Value>` | `null` | JSON Schema for validating trigger payloads. Informational; not enforced at runtime. |
 | `default_input` | `Option<serde_json::Value>` | `null` | Baseline trigger payload used for cron-fired runs and manual triggers with no input. |
 | `working_dir` | `Option<String>` | `null` | Default working directory for spawned processes. Overridden per step. |
 | `env_vars` | `Option<HashMap<String, String>>` | `null` | Workflow-level environment variables injected into all spawned processes. |
@@ -43,17 +42,17 @@ Each workflow run executes its steps in sequence. Steps can spawn subprocesses, 
 
 Required fields: `name`, `schedule`, `steps`.
 
-Optional fields: `timezone`, `schedule_mode`, `enabled` (defaults `true`), `input_schema`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent` (defaults `true` if omitted), `on_failure` (defaults `"abort"`).
+Optional fields: `timezone` (defaults to the daemon-config `display_timezone`, which itself defaults to `America/Los_Angeles`), `schedule_mode`, `enabled` (defaults `true`), `default_input`, `working_dir` (defaults to `<user-documents>/agent-cron-scheduler/<sanitized-workflow-name>/`, created on disk if absent), `env_vars`, `allow_concurrent` (defaults `true` if omitted), `on_failure` (defaults `"abort"`).
 
 ### WorkflowUpdate (partial update payload)
 
 All fields optional. Only fields present in the request body are modified. Omitted fields are unchanged.
 
-Updatable: `name`, `schedule`, `timezone`, `schedule_mode`, `enabled`, `steps`, `input_schema`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure`.
+Updatable: `name`, `schedule`, `timezone`, `schedule_mode`, `enabled`, `steps`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure`.
 
-**Version bump rules.** Updating any of these fields increments `version` if the new value differs: `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `input_schema`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure`. Toggling `enabled` does **not** bump the version.
+**Version bump rules.** Updating any of these fields increments `version` if the new value differs: `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure`. Toggling `enabled` does **not** bump the version.
 
-Sending `null` for `timezone`, `working_dir`, `default_input`, or `input_schema` in a PATCH body is treated the same as omitting the field — the existing value is unchanged. Send a non-null value to update them.
+Sending `null` for `timezone`, `working_dir`, or `default_input` in a PATCH body is treated the same as omitting the field — the existing value is unchanged. Send a non-null value to update them.
 
 ---
 

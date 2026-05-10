@@ -88,12 +88,17 @@ async fn execute_steps(
             continue;
         }
 
-        ctx.step_index += 1;
+        // step_index is 0-based across the entire run. The first executed
+        // step gets index 0, the second gets 1, etc. `ctx.step_index` is
+        // assigned (not pre-incremented) so the value is correct for the
+        // current step; the post-increment prepares the counter for the
+        // next call.
+        let step_index = ctx.step_index;
+        ctx.step_index = step_index + 1;
 
         // ── MatchStep: special handling ───────────────────────────────────────
 
         if let StepDef::Match(m) = step_def {
-            let step_index = ctx.step_index;
             let run_id = ctx.run_id;
             let workflow_id = ctx.workflow_id;
 
@@ -147,8 +152,18 @@ async fn execute_steps(
                 case_taken = %case_taken,
                 "match step decision"
             );
+            // The match step itself does NOT write to the log, but the child
+            // steps in the chosen branch do. Record offsets that span the
+            // first-child-START through last-child-END so a slice query on
+            // the match step returns the branch's bytes.
+            //
+            // We push the synthetic match_run BEFORE the branch executes (so
+            // step_runs is in execution order), then patch its
+            // `log_byte_offset_start` / `_end` AFTER the branch finishes by
+            // tracking the first / last child step that was pushed during
+            // the recursion.
             let match_run = StepRun {
-                step_index: ctx.step_index,
+                step_index,
                 step_id: m.common.id.clone(),
                 kind: "match".to_string(),
                 status: RunStatus::Completed,
@@ -183,6 +198,7 @@ async fn execute_steps(
                 "step completed"
             );
 
+            let match_run_idx = step_runs.len();
             step_runs.push(match_run);
 
             // Insert a placeholder so ${steps.<id>.*} can resolve.
@@ -193,6 +209,8 @@ async fn execute_steps(
                     stdout: None,
                     exports: HashMap::new(),
                     cost: None,
+                    log_byte_offset_start: None,
+                    log_byte_offset_end: None,
                 },
             );
 
@@ -200,6 +218,7 @@ async fn execute_steps(
             if let Some(branch) = branch_steps {
                 // We need to clone to avoid borrow issues since execute_steps is recursive
                 let branch_owned: Vec<StepDef> = branch.clone();
+                let pre_len = step_runs.len();
                 Box::pin(execute_steps(
                     &branch_owned,
                     workflow,
@@ -209,6 +228,24 @@ async fn execute_steps(
                     killed,
                 ))
                 .await;
+                let post_len = step_runs.len();
+
+                // Patch the match_run's byte offsets to span the children that
+                // were just pushed (if any). The first child's _start becomes
+                // the match step's _start; the last child's _end (or None if
+                // it never finished) becomes the match step's _end.
+                if post_len > pre_len {
+                    let first_start = step_runs[pre_len].log_byte_offset_start;
+                    let last_end = step_runs[post_len - 1].log_byte_offset_end;
+                    if let Some(slot) = step_runs.get_mut(match_run_idx) {
+                        slot.log_byte_offset_start = first_start;
+                        slot.log_byte_offset_end = last_end;
+                    }
+                }
+                // If no children ran (branch_steps was empty or all skipped),
+                // the match step has no log slice — leave offsets as the
+                // defaults (0 / None), which the log endpoint serves as
+                // "tail to EOF".
             }
 
             continue;
@@ -216,7 +253,6 @@ async fn execute_steps(
 
         // ── Regular step execution ────────────────────────────────────────────
 
-        let step_index = ctx.step_index;
         let run_id = ctx.run_id;
         let workflow_id = ctx.workflow_id;
         let step_kind = step_kind_str(step_def);
@@ -534,6 +570,8 @@ fn build_step_run_result(
                         stdout: None,
                         exports: HashMap::new(),
                         cost: None,
+                        log_byte_offset_start: None,
+                        log_byte_offset_end: None,
                     };
                     StepRunResult::FailedContinue(run, placeholder)
                 }
@@ -558,8 +596,8 @@ fn make_step_run(
         started_at,
         finished_at: Some(Utc::now()),
         exit_code: output.exit_code,
-        log_byte_offset_start: 0,
-        log_byte_offset_end: None,
+        log_byte_offset_start: output.log_byte_offset_start.unwrap_or(0),
+        log_byte_offset_end: output.log_byte_offset_end,
         cost_usd: output.cost.as_ref().and_then(|c| c.total_cost_usd),
         error,
     }
@@ -570,6 +608,12 @@ fn make_failed_step_run(
     started_at: chrono::DateTime<Utc>,
     error: &str,
 ) -> StepRun {
+    // Err paths from step impls do not surface byte offsets (the step impl
+    // already returned). We record `log_byte_offset_start = 0` and
+    // `_end = None`; the GET /api/runs/{id}/log?step_index=N handler treats
+    // `_end = None` as "tail to EOF", which gives a sensible best-effort slice
+    // for a failed/killed step (it returns everything from the very start of
+    // the log, but at least the endpoint still serves bytes).
     StepRun {
         step_index: 0, // patched at call site in execute_steps via mut run.step_index
         step_id: common.id.clone(),
@@ -831,6 +875,9 @@ mod tests {
     struct MockLogSink {
         chunks: Arc<Mutex<Vec<u8>>>,
         events: Arc<Mutex<Vec<String>>>,
+        /// Running byte position — start/end markers each advance it by a
+        /// fixed sentinel amount so tests can assert monotonic offsets.
+        pos: Arc<Mutex<u64>>,
     }
 
     #[async_trait]
@@ -844,11 +891,15 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("start:{}", step_id));
-            Ok(0)
+            let mut pos = self.pos.lock().unwrap();
+            let before = *pos;
+            *pos += 32; // sentinel marker size
+            Ok(before)
         }
 
         async fn write_chunk(&self, data: &[u8]) -> std::io::Result<()> {
             self.chunks.lock().unwrap().extend_from_slice(data);
+            *self.pos.lock().unwrap() += data.len() as u64;
             Ok(())
         }
 
@@ -863,7 +914,9 @@ mod tests {
                 step_id,
                 exit_code.map(|c| c.to_string()).unwrap_or("-1".to_string())
             ));
-            Ok(0)
+            let mut pos = self.pos.lock().unwrap();
+            *pos += 32; // sentinel marker size
+            Ok(*pos)
         }
     }
 
@@ -888,7 +941,6 @@ mod tests {
             schedule_mode: ScheduleMode::default(),
             enabled: true,
             steps,
-            input_schema: None,
             default_input: None,
             working_dir: None,
             env_vars: None,
@@ -1609,12 +1661,12 @@ mod tests {
             "Expected at least one StepOutput event"
         );
 
-        // All StepOutput events should have a step_index of 1 or 2 (executor
-        // starts at 0 and increments before each step, so first step → index 1).
+        // All StepOutput events should have a step_index of 0 or 1 (executor
+        // is 0-based: first step → index 0, second step → index 1).
         for (step_id, step_index) in &step_output_events {
             assert!(
-                *step_index > 0,
-                "step_index should be > 0, got {} for step '{}'",
+                *step_index < 2,
+                "step_index should be 0 or 1, got {} for step '{}'",
                 step_index,
                 step_id
             );
@@ -1763,18 +1815,18 @@ mod tests {
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.steps.len(), 3);
 
-        // step_index should be 1, 2, 3 in order
+        // step_index should be 0, 1, 2 in order (0-based)
         assert_eq!(
-            run.steps[0].step_index, 1,
-            "first step should have step_index=1"
+            run.steps[0].step_index, 0,
+            "first step should have step_index=0"
         );
         assert_eq!(
-            run.steps[1].step_index, 2,
-            "second step should have step_index=2"
+            run.steps[1].step_index, 1,
+            "second step should have step_index=1"
         );
         assert_eq!(
-            run.steps[2].step_index, 3,
-            "third step should have step_index=3"
+            run.steps[2].step_index, 2,
+            "third step should have step_index=2"
         );
     }
 
@@ -1801,7 +1853,7 @@ mod tests {
             run.steps[0].kind, "shell",
             "failed step should have kind='shell'"
         );
-        assert_eq!(run.steps[0].step_index, 1, "step_index should be 1");
+        assert_eq!(run.steps[0].step_index, 0, "step_index should be 0");
     }
 
     // ── Test 22: step_index is non-zero for non-abort failed steps ────────────
@@ -1827,12 +1879,58 @@ mod tests {
         let s2 = run.steps.iter().find(|r| r.step_id == "s2-fail").unwrap();
         let s3 = run.steps.iter().find(|r| r.step_id == "s3").unwrap();
 
-        assert_eq!(s1.step_index, 1);
-        assert_eq!(s2.step_index, 2);
-        assert_eq!(s3.step_index, 3);
+        assert_eq!(s1.step_index, 0);
+        assert_eq!(s2.step_index, 1);
+        assert_eq!(s3.step_index, 2);
         assert_eq!(
             s2.kind, "shell",
             "failed continue step should have kind='shell'"
+        );
+    }
+
+    // ── Byte offsets: completed steps carry real start+end and are monotonic ─
+
+    #[tokio::test]
+    async fn test_completed_step_runs_carry_byte_offsets_and_monotonic() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "byte_offsets",
+            vec![
+                shell_step("s1", "echo first"),
+                shell_step("s2", "echo second"),
+            ],
+        );
+
+        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+
+        assert_eq!(run.status, RunStatus::Completed);
+        assert_eq!(run.steps.len(), 2);
+
+        for step in &run.steps {
+            assert!(
+                step.log_byte_offset_end.is_some(),
+                "completed step {} must have log_byte_offset_end populated",
+                step.step_id
+            );
+            let end = step.log_byte_offset_end.unwrap();
+            assert!(
+                end > step.log_byte_offset_start,
+                "step {} end ({}) must be > start ({})",
+                step.step_id,
+                end,
+                step.log_byte_offset_start
+            );
+        }
+
+        // Step 2's start must be at or past step 1's end (sink is append-only,
+        // markers do not overlap).
+        let prior_end = run.steps[0].log_byte_offset_end.unwrap();
+        let next_start = run.steps[1].log_byte_offset_start;
+        assert!(
+            next_start >= prior_end,
+            "subsequent step start ({}) must be >= prior step end ({})",
+            next_start,
+            prior_end
         );
     }
 

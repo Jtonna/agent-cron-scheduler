@@ -343,12 +343,6 @@ fn migrate_blocking(
 fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
     let steps_json =
         serde_json::to_string(&wf.steps).map_err(|e| AcsError::Storage(e.to_string()))?;
-    let input_schema = wf
-        .input_schema
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|e| AcsError::Storage(e.to_string()))?;
     let default_input = wf
         .default_input
         .as_ref()
@@ -395,14 +389,14 @@ fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
     conn.execute(
         "INSERT INTO workflows (
             id, name, version, schedule, timezone, schedule_mode, enabled,
-            steps_json, input_schema, default_input, working_dir, env_vars,
+            steps_json, default_input, working_dir, env_vars,
             allow_concurrent, on_failure, last_run_at, last_run_status,
             last_run_id, created_at, updated_at
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7,
-            ?8, ?9, ?10, ?11, ?12,
-            ?13, ?14, ?15, ?16,
-            ?17, ?18, ?19
+            ?8, ?9, ?10, ?11,
+            ?12, ?13, ?14, ?15,
+            ?16, ?17, ?18
         )",
         params![
             wf.id.to_string(),
@@ -413,7 +407,6 @@ fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
             schedule_mode,
             wf.enabled as i64,
             steps_json,
-            input_schema,
             default_input,
             wf.working_dir,
             env_vars,
@@ -642,7 +635,6 @@ mod tests {
             schedule_mode: ScheduleMode::default(),
             enabled: true,
             steps: vec![make_shell_step("step-1")],
-            input_schema: Some(serde_json::json!({"type": "object"})),
             default_input: Some(serde_json::json!({"k": 1})),
             working_dir: Some("/tmp".to_string()),
             env_vars: Some(env),
@@ -1054,7 +1046,6 @@ mod tests {
             schedule_mode: ScheduleMode::default(),
             enabled: true,
             steps: vec![make_shell_step("s")],
-            input_schema: None,
             default_input: None,
             working_dir: None,
             env_vars: None,

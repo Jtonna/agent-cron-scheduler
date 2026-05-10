@@ -28,6 +28,11 @@ pub struct DaemonConfig {
     pub default_allow_concurrent: bool,
     #[serde(default)]
     pub default_schedule_mode: ScheduleMode,
+    /// Default timezone applied to freshly-created workflows that don't
+    /// supply their own `timezone` field. Defaults to `America/Los_Angeles`
+    /// to match the cost-analytics display target.
+    #[serde(default = "default_display_timezone")]
+    pub display_timezone: String,
 }
 
 fn default_host() -> String {
@@ -62,6 +67,10 @@ fn default_pty_cols() -> u16 {
     80
 }
 
+fn default_display_timezone() -> String {
+    "America/Los_Angeles".to_string()
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -76,6 +85,7 @@ impl Default for DaemonConfig {
             pty_cols: default_pty_cols(),
             default_allow_concurrent: false,
             default_schedule_mode: ScheduleMode::Cron,
+            display_timezone: default_display_timezone(),
         }
     }
 }

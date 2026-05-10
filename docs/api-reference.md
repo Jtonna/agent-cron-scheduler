@@ -190,7 +190,6 @@ List all workflows.
         "capture": { "stdout_max_bytes": 65536, "parser": null }
       }
     ],
-    "input_schema": null,
     "default_input": null,
     "working_dir": "/workspace",
     "env_vars": { "LANG": "en_US.UTF-8" },
@@ -273,7 +272,7 @@ Retrieve a single workflow by UUID or name.
 
 ### PATCH /api/workflows/{id}
 
-Partially update an existing workflow. Only the fields you include in the request body will be changed. Changes to any of `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `input_schema`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure` bump `version`. Toggling `enabled` alone does NOT bump `version`.
+Partially update an existing workflow. Only the fields you include in the request body will be changed. Changes to any of `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure` bump `version`. Toggling `enabled` alone does NOT bump `version`.
 
 **Path Parameters:**
 
@@ -703,7 +702,6 @@ The full workflow object returned by GET, POST (201), and PATCH (200) endpoints.
 | `schedule_mode`   | string                                | No       | One of `"Cron"` or `"WaitForCompletion"`. Default: `"Cron"`.                      |
 | `enabled`         | bool                                  | No       | Whether the workflow is scheduled.                                                 |
 | `steps`           | array of [StepDef](#stepdef)          | No       | Ordered list of step definitions. Must contain at least one step.                  |
-| `input_schema`    | object (JSON Schema)                  | Yes      | Optional JSON Schema for validating trigger input payloads.                        |
 | `default_input`   | any JSON value                        | Yes      | Baseline trigger payload used for cron-fired runs (or manual triggers with no body). |
 | `working_dir`     | string                                | Yes      | Default working directory for all steps (overridable per step).                    |
 | `env_vars`        | object (string -> string)             | Yes      | Default environment variables for all steps (merged with per-step `env_vars`).    |
@@ -727,12 +725,11 @@ Request body for `POST /api/workflows`.
 | `name`           | string                                | Yes      |            | Unique name. See [Validation Rules](#validation-rules).             |
 | `schedule`       | string                                | Yes      |            | Cron expression (5-field).                                          |
 | `steps`          | array of [StepDef](#stepdef)          | Yes      |            | At least one step required.                                         |
-| `timezone`       | string                                | No       | `null`     | IANA timezone name.                                                 |
+| `timezone`       | string                                | No       | daemon `display_timezone` (default `America/Los_Angeles`) | IANA timezone name. |
 | `schedule_mode`  | string                                | No       | `"Cron"`   | One of `"Cron"` or `"WaitForCompletion"`.                           |
 | `enabled`        | bool                                  | No       | `true`     | Whether the workflow starts enabled.                                |
-| `input_schema`   | object                                | No       | `null`     | JSON Schema for trigger input validation.                           |
 | `default_input`  | any JSON value                        | No       | `null`     | Default trigger payload.                                            |
-| `working_dir`    | string                                | No       | `null`     | Default working directory.                                          |
+| `working_dir`    | string                                | No       | derived    | Default working directory. When omitted, the daemon creates `<user-documents>/agent-cron-scheduler/<sanitized-name>/` and stores its path. |
 | `env_vars`       | object (string -> string)             | No       | `null`     | Default environment variables.                                      |
 | `allow_concurrent`| bool                                 | No       | `true`     | Allow concurrent runs. `null` treated as `true`.                    |
 | `on_failure`     | [FailurePolicy](#failurepolicy)       | No       | `"abort"`  | Workflow-level default failure policy.                              |
@@ -751,16 +748,15 @@ Request body for `PATCH /api/workflows/{id}`. All fields are optional; only incl
 | `schedule_mode`  | string                                | New scheduling mode.                                                     |
 | `enabled`        | bool                                  | Enable or disable the workflow.                                          |
 | `steps`          | array of [StepDef](#stepdef)          | Replace the entire step list. Must contain at least one step if provided.|
-| `input_schema`   | object                                | New JSON Schema for trigger input.                                       |
 | `default_input`  | any JSON value                        | New default trigger payload.                                             |
 | `working_dir`    | string                                | New default working directory.                                           |
 | `env_vars`       | object (string -> string)             | New default environment variables (full replacement).                    |
 | `allow_concurrent`| bool                                 | New concurrent-run setting.                                              |
 | `on_failure`     | [FailurePolicy](#failurepolicy)       | New workflow-level failure policy.                                       |
 
-Changes to any of `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `input_schema`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure` bump `version`. Toggling `enabled` alone does NOT bump `version`.
+Changes to any of `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure` bump `version`. Toggling `enabled` alone does NOT bump `version`.
 
-Sending `null` for `timezone`, `working_dir`, `default_input`, or `input_schema` in a PATCH body is treated the same as omitting the field — the existing value is unchanged. Send a non-null value to update them.
+Sending `null` for `timezone`, `working_dir`, or `default_input` in a PATCH body is treated the same as omitting the field — the existing value is unchanged. Send a non-null value to update them.
 
 ---
 

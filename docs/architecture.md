@@ -423,7 +423,6 @@ The only top-level scheduled entity. Owns schedule, steps, and runtime configura
 | `schedule_mode` | `ScheduleMode` | `Cron` (default) or `WaitForCompletion` |
 | `enabled` | `bool` | Whether the scheduler fires this workflow |
 | `steps` | `Vec<StepDef>` | Ordered list of step definitions |
-| `input_schema` | `Option<Value>` | JSON Schema for trigger payload validation |
 | `default_input` | `Option<Value>` | Baseline input for cron-fired runs |
 | `working_dir` | `Option<String>` | Workflow-level default for steps |
 | `env_vars` | `Option<HashMap<String,String>>` | Workflow-level default |

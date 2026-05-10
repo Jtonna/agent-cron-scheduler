@@ -34,8 +34,6 @@ pub struct Workflow {
     pub enabled: bool,
     pub steps: Vec<StepDef>,
     #[serde(default)]
-    pub input_schema: Option<serde_json::Value>,
-    #[serde(default)]
     pub default_input: Option<serde_json::Value>,
     #[serde(default)]
     pub working_dir: Option<String>,
@@ -67,7 +65,6 @@ impl PartialEq for Workflow {
             && self.schedule_mode == other.schedule_mode
             && self.enabled == other.enabled
             && self.steps == other.steps
-            && self.input_schema == other.input_schema
             && self.default_input == other.default_input
             && self.working_dir == other.working_dir
             && self.env_vars == other.env_vars
@@ -94,8 +91,6 @@ pub struct NewWorkflow {
     pub enabled: bool,
     pub steps: Vec<StepDef>,
     #[serde(default)]
-    pub input_schema: Option<serde_json::Value>,
-    #[serde(default)]
     pub default_input: Option<serde_json::Value>,
     #[serde(default)]
     pub working_dir: Option<String>,
@@ -118,7 +113,6 @@ pub struct WorkflowUpdate {
     pub schedule_mode: Option<ScheduleMode>,
     pub enabled: Option<bool>,
     pub steps: Option<Vec<StepDef>>,
-    pub input_schema: Option<serde_json::Value>,
     pub default_input: Option<serde_json::Value>,
     pub working_dir: Option<String>,
     pub env_vars: Option<HashMap<String, String>>,
@@ -524,7 +518,6 @@ mod tests {
             schedule_mode: ScheduleMode::default(),
             enabled: true,
             steps: vec![make_shell_step("step-1")],
-            input_schema: None,
             default_input: None,
             working_dir: Some("/tmp".to_string()),
             env_vars: Some({
@@ -551,7 +544,6 @@ mod tests {
             schedule_mode: ScheduleMode::default(),
             enabled: true,
             steps: vec![make_shell_step("step-1")],
-            input_schema: None,
             default_input: None,
             working_dir: None,
             env_vars: None,
