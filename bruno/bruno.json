@@ -1,0 +1,15 @@
+{
+  "version": "1",
+  "name": "Agent Cron Scheduler",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ],
+  "size": 0.020277023315429688,
+  "filesCount": 29,
+  "presets": {
+    "requestType": "http",
+    "requestUrl": "http://127.0.0.1:8377"
+  }
+}

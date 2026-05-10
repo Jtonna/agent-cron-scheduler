@@ -1,0 +1,23 @@
+meta {
+  name: Restart daemon
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/restart
+  body: none
+  auth: none
+}
+
+docs {
+  Trigger a graceful restart. The daemon spawns a new process, then exits.
+  The CLI's `agentcronsystem restart` command wraps this and polls /health
+  for up to 10 seconds afterward to confirm the new process is live.
+
+  Response: 200 with `{"message": "Restart initiated"}`.
+
+  Note: after this fires, the current daemon process exits. You'll see the
+  HTTP connection drop. Re-issue any subsequent requests against the new
+  process (same port).
+}

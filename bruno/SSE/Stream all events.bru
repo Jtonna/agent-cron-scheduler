@@ -1,0 +1,32 @@
+meta {
+  name: Stream all events
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/events/workflows
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+docs {
+  Server-Sent Events stream of every WorkflowEvent emitted by the daemon.
+
+  Event types (each delivered as `data: <json>` over SSE):
+  - `RunStarted` — { run_id, workflow_id, workflow_version, started_at }
+  - `StepStarted` — { run_id, workflow_id, step_index, step_id, kind, started_at }
+  - `StepOutput` — { run_id, workflow_id, step_index, step_id, data, finished_at } (chunk of stdout/stderr)
+  - `StepCompleted` — { run_id, workflow_id, step_index, step_id, status, exit_code, cost_usd, finished_at }
+  - `RunCompleted` — { run_id, workflow_id, status, total_duration_ms, total_cost_usd, finished_at }
+  - `RunFailed` — { run_id, workflow_id, error, finished_at }
+  - `WorkflowChanged` — { workflow_id, kind } (Created / Updated / Deleted / Enabled / Disabled)
+
+  Bruno's HTTP runner displays incoming SSE events live. Open this request,
+  hit Send, then trigger a workflow in another tab — you'll see the run
+  unfold in real time.
+}

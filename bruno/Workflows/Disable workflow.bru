@@ -1,0 +1,25 @@
+meta {
+  name: Disable workflow
+  type: http
+  seq: 6
+}
+
+patch {
+  url: {{baseUrl}}/api/workflows/:id
+  body: json
+  auth: none
+}
+
+params:path {
+  id: {{workflowId}}
+}
+
+body:json {
+  {
+    "enabled": false
+  }
+}
+
+docs {
+  Convenience: same endpoint as Update, just the enabled flag.
+}

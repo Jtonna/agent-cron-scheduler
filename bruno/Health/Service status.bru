@@ -1,0 +1,26 @@
+meta {
+  name: Service status
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/service/status
+  body: none
+  auth: none
+}
+
+docs {
+  Reports whether ACS has registered itself as a system service for auto-start
+  at logon. Platform-specific: Windows registry Run key, macOS launchd plist,
+  Linux systemd user unit.
+
+  Response 200 example:
+  ```json
+  {
+    "registered": true,
+    "platform": "windows",
+    "details": "..."
+  }
+  ```
+}

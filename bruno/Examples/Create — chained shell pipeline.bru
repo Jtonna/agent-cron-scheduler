@@ -1,0 +1,47 @@
+meta {
+  name: Create — chained shell pipeline
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/workflows
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "ex-shell-pipeline",
+    "schedule": "0 0 1 1 *",
+    "enabled": false,
+    "allow_concurrent": false,
+    "steps": [
+      {
+        "kind": "shell",
+        "id": "fetch",
+        "command": "echo apple banana cherry"
+      },
+      {
+        "kind": "shell",
+        "id": "filter",
+        "command": "echo \"${steps.fetch.stdout}\" | tr ' ' '\\n' | sort -r"
+      },
+      {
+        "kind": "shell",
+        "id": "count",
+        "command": "echo \"${steps.filter.stdout}\" | wc -l"
+      }
+    ]
+  }
+}
+
+docs {
+  Three shell steps demonstrating template substitution between steps.
+
+  - `${steps.fetch.stdout}` resolves to the prior step's captured stdout.
+  - Each step's stdout is captured into `output_summary` (up to 64 KB by default).
+  - On Windows the inner shell quoting will differ — `cmd /C` rather than `sh -c`.
+    Adjust to PowerShell `-Command` or use Script steps with `script_type: "shell"`
+    if you need consistent quoting cross-platform.
+}

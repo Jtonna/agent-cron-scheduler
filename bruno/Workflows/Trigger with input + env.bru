@@ -1,0 +1,42 @@
+meta {
+  name: Trigger with input + env
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/api/workflows/:id/trigger
+  body: json
+  auth: none
+}
+
+params:path {
+  id: {{workflowId}}
+}
+
+body:json {
+  {
+    "input": {
+      "repo": "acme/widgets",
+      "branch": "main",
+      "deploy_target": "staging"
+    },
+    "env": {
+      "DRY_RUN": "true",
+      "MODEL": "claude-haiku-4-5"
+    },
+    "target_step": null
+  }
+}
+
+docs {
+  Example: pass structured input + per-trigger env vars.
+
+  Inside step templates:
+  - `${input.repo}` → "acme/widgets"
+  - `${input.branch}` → "main"
+  - `${input.deploy_target}` → "staging"
+
+  And every step's process sees the env overlaid on the workflow's own env_vars
+  (trigger wins on collision).
+}

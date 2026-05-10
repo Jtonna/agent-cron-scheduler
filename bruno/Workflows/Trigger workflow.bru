@@ -1,0 +1,48 @@
+meta {
+  name: Trigger workflow
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/workflows/:id/trigger
+  body: json
+  auth: none
+}
+
+params:path {
+  id: {{workflowId}}
+}
+
+body:json {
+  {
+    "input": null,
+    "env": null,
+    "target_step": null
+  }
+}
+
+docs {
+  Trigger an immediate run, regardless of schedule or `enabled` flag.
+
+  Body shape is `TriggerParams`:
+  - `input` (any JSON value, default null): replaces the workflow's
+    `default_input` for this run. Available in templates as `${input.<path>}`.
+    If null, the workflow's `default_input` is used (or null if neither is set).
+  - `env` (object<string, string>, default null): per-trigger environment
+    variables, overlaid on top of the workflow's `env_vars`. Trigger values
+    win on collision.
+  - `target_step` (string, default null): step `id` that should receive the
+    `input` as stdin. Strings are written as raw bytes; other JSON is
+    serialized as compact JSON. Only Shell and Script steps consume stdin.
+    Overrides each step's own `pass_stdin` for the matched step.
+
+  Response: 202 Accepted with `{"run_id": "...", "workflow_id": "...", "workflow_version": N, "run_url": "/api/runs/<run_id>"}`.
+
+  ## Concurrency
+
+  If the workflow has `allow_concurrent: false` and a run is already active,
+  this endpoint returns **409 Conflict** with body
+  `{"error": "concurrent_run_active", ...}`. The active run is left alone.
+  Either wait for it to finish or POST `/api/runs/<active_id>/kill` first.
+}

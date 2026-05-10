@@ -1,0 +1,46 @@
+meta {
+  name: Create workflow
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/workflows
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "example-shell-workflow",
+    "schedule": "0 8 * * *",
+    "timezone": "America/Los_Angeles",
+    "enabled": false,
+    "allow_concurrent": false,
+    "steps": [
+      {
+        "kind": "shell",
+        "id": "say_hello",
+        "command": "echo hello from ACS",
+        "timeout_secs": 30
+      }
+    ]
+  }
+}
+
+docs {
+  Create a new workflow. Body shape is `NewWorkflow`.
+
+  Required fields: `name`, `schedule`, `steps`.
+  Defaults: `enabled` true, `schedule_mode` "Cron", `on_failure` "abort",
+  `allow_concurrent` true.
+
+  Step kinds: `shell`, `script`, `http`, `match`, `set_var`, `agent`. Each step
+  needs an `id` (unique within the workflow) plus its kind-specific fields.
+
+  Response: 201 Created with the full canonical `Workflow` JSON (including
+  server-assigned UUID, version=1, created_at, updated_at).
+
+  409 if a workflow with that `name` already exists. 400 on validation failure
+  (bad cron, empty steps, duplicate step id, etc.).
+}

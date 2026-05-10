@@ -1,0 +1,26 @@
+meta {
+  name: Trigger fresno-weather
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/workflows/fresno-weather/trigger
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "input": null,
+    "env": null,
+    "target_step": null
+  }
+}
+
+docs {
+  Trigger the fresno-weather example workflow.
+
+  Use the path-segment form `fresno-weather` directly — no environment
+  variable or UUID lookup needed.
+}

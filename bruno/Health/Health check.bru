@@ -1,0 +1,27 @@
+meta {
+  name: Health check
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/health
+  body: none
+  auth: none
+}
+
+docs {
+  Returns daemon liveness + summary stats.
+
+  Response 200 example:
+  ```json
+  {
+    "status": "ok",
+    "uptime_seconds": 1234,
+    "active_jobs": 3,        // count of enabled workflows (legacy field name)
+    "total_jobs": 7,         // count of all workflows (legacy field name)
+    "version": "4.0.0",
+    "data_dir": "C:\\Users\\J\\AppData\\Local\\agent-cron-scheduler"
+  }
+  ```
+}

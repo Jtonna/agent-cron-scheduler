@@ -1,0 +1,23 @@
+meta {
+  name: Delete workflow
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{baseUrl}}/api/workflows/:id
+  body: none
+  auth: none
+}
+
+params:path {
+  id: {{workflowId}}
+}
+
+docs {
+  Permanent delete. Returns 204 on success.
+
+  Past run records under `runs/<workflow_id>/` and log files under
+  `logs/<workflow_id>/` are NOT automatically deleted with the workflow —
+  they remain for historical inspection until manually removed.
+}

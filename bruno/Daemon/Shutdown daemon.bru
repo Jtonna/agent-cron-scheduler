@@ -1,0 +1,22 @@
+meta {
+  name: Shutdown daemon
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/shutdown
+  body: none
+  auth: none
+}
+
+docs {
+  Graceful shutdown. The daemon stops accepting new requests, drains active
+  runs (or runs the configured shutdown grace), removes its PID/port files,
+  and exits.
+
+  Response: 200 with `{"message": "Shutdown initiated"}`.
+
+  Same caveat as restart — the connection drops shortly after. To bring the
+  daemon back up afterward, run `agentcronsystem start -f` from a terminal.
+}

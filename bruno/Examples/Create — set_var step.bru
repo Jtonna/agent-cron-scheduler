@@ -1,0 +1,41 @@
+meta {
+  name: Create — set_var step
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/workflows
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "ex-set-var",
+    "schedule": "0 0 1 1 *",
+    "enabled": false,
+    "default_input": { "first": "Ada", "last": "Lovelace" },
+    "steps": [
+      {
+        "kind": "set_var",
+        "id": "compute",
+        "exports": {
+          "full_name": "${input.first} ${input.last}",
+          "threshold": "100"
+        }
+      },
+      {
+        "kind": "shell",
+        "id": "use",
+        "command": "echo Hello ${steps.compute.exports.full_name}, threshold=${steps.compute.exports.threshold}"
+      }
+    ]
+  }
+}
+
+docs {
+  `set_var` is pure context mutation — no subprocess. After substitution,
+  each export is JSON-parsed if possible (so `"100"` becomes a Number, not a
+  String). Use `${steps.<id>.exports.<name>}` from any subsequent step.
+}

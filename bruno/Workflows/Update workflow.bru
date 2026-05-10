@@ -1,0 +1,38 @@
+meta {
+  name: Update workflow
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/api/workflows/:id
+  body: json
+  auth: none
+}
+
+params:path {
+  id: {{workflowId}}
+}
+
+body:json {
+  {
+    "enabled": true
+  }
+}
+
+docs {
+  Partial update — only the fields you supply are changed.
+
+  Body shape is `WorkflowUpdate`. All fields are optional:
+    `name`, `schedule`, `timezone`, `schedule_mode`, `enabled`, `steps`,
+    `input_schema`, `default_input`, `working_dir`, `env_vars`,
+    `allow_concurrent`, `on_failure`.
+
+  Examples:
+  - Toggle enabled: `{"enabled": true}` or `{"enabled": false}`
+  - Change schedule: `{"schedule": "0 9 * * 1-5", "timezone": "America/New_York"}`
+  - Replace all steps: `{"steps": [...]}` (full step array)
+
+  Response: 200 with the updated `Workflow`. Increments `version` if `steps`
+  changed, otherwise leaves it.
+}

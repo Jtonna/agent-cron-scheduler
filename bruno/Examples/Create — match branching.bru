@@ -1,0 +1,62 @@
+meta {
+  name: Create — match branching
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/workflows
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "ex-match",
+    "schedule": "0 0 1 1 *",
+    "enabled": false,
+    "default_input": { "deploy_target": "staging" },
+    "steps": [
+      {
+        "kind": "match",
+        "id": "route",
+        "expr": "${input.deploy_target}",
+        "cases": {
+          "prod": [
+            {
+              "kind": "shell",
+              "id": "deploy_prod",
+              "command": "echo running prod deploy"
+            }
+          ],
+          "staging": [
+            {
+              "kind": "shell",
+              "id": "deploy_staging",
+              "command": "echo running staging deploy"
+            }
+          ]
+        },
+        "default": [
+          {
+            "kind": "shell",
+            "id": "noop",
+            "command": "echo unknown target, doing nothing"
+          }
+        ]
+      }
+    ]
+  }
+}
+
+docs {
+  Match-step branching. Evaluates the `expr` (templated against input/steps),
+  matches against `cases` keys, and runs the matched branch. Falls through to
+  `default` when no case matches.
+
+  All step ids in branches must be unique within the whole workflow (the
+  validator recursively scans branches and `default`).
+
+  Trigger this with `{"input": {"deploy_target": "prod"}}` to exercise the
+  prod branch. Override the default at trigger time.
+}

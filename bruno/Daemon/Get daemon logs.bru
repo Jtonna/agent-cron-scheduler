@@ -1,0 +1,34 @@
+meta {
+  name: Get daemon logs
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/logs?tail=200
+  body: none
+  auth: none
+}
+
+params:query {
+  tail: 200
+}
+
+vars:pre-request {
+  baseUrl: http://127.0.0.1:8377
+}
+
+docs {
+  Return tail of the daemon's process log (`daemon.log` in the data dir).
+  
+  Query param:
+  - `tail` (optional, usize) — number of lines to return from the end of the
+    file. If omitted, returns the entire log.
+  
+  Response: text/plain (the raw log content, NOT JSON-wrapped).
+  
+  Contents include: startup, migrations, HTTP access log, workflow CRUD
+  lifecycle (`workflow created` / `triggered` / `deleted`), run lifecycle
+  (`run started`, `step started/completed`, `run finished`), warnings/errors.
+  Step stdout/stderr is NOT here — that lives in `logs/<workflow_id>/<run_id>.log`.
+}

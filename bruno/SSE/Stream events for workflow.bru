@@ -1,0 +1,27 @@
+meta {
+  name: Stream events for workflow
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/events/workflows?workflow_id={{workflowId}}
+  body: none
+  auth: none
+}
+
+params:query {
+  workflow_id: {{workflowId}}
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+docs {
+  Same SSE stream, filtered to one workflow's events. All runs of that
+  workflow contribute, but other workflows' events are dropped.
+
+  `workflow_id` accepts a UUID only — not a workflow name (the SSE filter
+  parses to UUID directly).
+}

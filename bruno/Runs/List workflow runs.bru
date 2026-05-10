@@ -1,0 +1,39 @@
+meta {
+  name: List workflow runs
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/workflows/:id/runs?limit=20&offset=0
+  body: none
+  auth: none
+}
+
+params:path {
+  id: {{workflowId}}
+}
+
+params:query {
+  limit: 20
+  offset: 0
+}
+
+docs {
+  List recent runs for one workflow. Newest first.
+
+  Query params:
+  - `limit` — default 20, server caps at 100
+  - `offset` — for pagination
+
+  Response shape:
+  ```json
+  {
+    "runs": [ /* WorkflowRun objects */ ],
+    "total": 42
+  }
+  ```
+
+  `total` is the unfiltered count of runs for this workflow (useful for
+  paginating).
+}

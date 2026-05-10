@@ -1,0 +1,21 @@
+meta {
+  name: List workflows
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/workflows
+  body: none
+  auth: none
+}
+
+docs {
+  Returns the full array of workflow definitions. No pagination — this returns
+  every workflow on disk in `workflows.json`.
+
+  Each item is a complete `Workflow` object with: id, name, version, schedule,
+  timezone, schedule_mode, enabled, steps[], input_schema, default_input,
+  working_dir, env_vars, allow_concurrent, on_failure, last_run_*, next_run_at,
+  created_at, updated_at.
+}

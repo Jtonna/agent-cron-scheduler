@@ -1,0 +1,53 @@
+meta {
+  name: Create — script + agent (fresno-weather)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/workflows
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "fresno-weather",
+    "schedule": "0 8 * * *",
+    "timezone": "America/Los_Angeles",
+    "enabled": false,
+    "allow_concurrent": false,
+    "steps": [
+      {
+        "kind": "script",
+        "id": "fetch_weather",
+        "path": "C:\\Users\\J\\documents\\github\\agent-cron-scheduler\\examples\\fresno-weather.ps1",
+        "script_type": "powershell",
+        "timeout_secs": 30
+      },
+      {
+        "kind": "agent",
+        "id": "summarize",
+        "agent_type": "claude_code_cli",
+        "prompt": "You are reporting today's weather for Fresno, California. Below is the raw weather snapshot from wttr.in -- summarize it in 1-2 friendly sentences for a human reader, including the temperature and a brief description of conditions. Raw weather: ${steps.fetch_weather.stdout}",
+        "timeout_secs": 120
+      }
+    ]
+  }
+}
+
+docs {
+  Two-step pipeline used as the working agentic example.
+
+  Step 1 (`script`, PowerShell): runs `examples/fresno-weather.ps1` which
+  curls wttr.in and prints a single weather line.
+
+  Step 2 (`agent`, claude_code_cli): templates the prior step's stdout into
+  the prompt, then invokes the default command:
+    `claude -p "${prompt}" --output-format stream-json --verbose --dangerously-skip-permissions`
+  The streaming NDJSON parser extracts cost, model, and final message into
+  the StepRun's `cost_usd`, `output_summary`, etc.
+
+  Note the agent prompt is a single line — embedded `\n\n` would break
+  `cmd /C claude -p "..."` quoting on Windows.
+}

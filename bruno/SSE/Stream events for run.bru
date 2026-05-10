@@ -1,0 +1,28 @@
+meta {
+  name: Stream events for run
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/events/workflows?run_id={{runId}}
+  body: none
+  auth: none
+}
+
+params:query {
+  run_id: {{runId}}
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+docs {
+  Same SSE stream as "Stream all events", but filtered server-side to events
+  whose `run_id` matches the query param. Events without a run_id (like
+  `WorkflowChanged`) are dropped.
+
+  Useful pattern: trigger a workflow → grab the `run_id` from the response →
+  paste it into the `runId` environment variable → hit Send here.
+}

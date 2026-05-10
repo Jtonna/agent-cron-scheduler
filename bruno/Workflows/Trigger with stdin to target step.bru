@@ -1,0 +1,33 @@
+meta {
+  name: Trigger with stdin to target step
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/workflows/:id/trigger
+  body: json
+  auth: none
+}
+
+params:path {
+  id: {{workflowId}}
+}
+
+body:json {
+  {
+    "input": "raw text payload that becomes stdin",
+    "env": null,
+    "target_step": "ingest"
+  }
+}
+
+docs {
+  Route the trigger's `input` as stdin to a specific step.
+
+  - When `input` is a JSON string, it's written as raw bytes.
+  - When `input` is any other JSON value, it's serialized as compact JSON.
+  - `target_step` must be the `id` of a Shell or Script step in the workflow;
+    other step kinds ignore stdin even when targeted.
+  - Overrides that step's own `pass_stdin` setting.
+}

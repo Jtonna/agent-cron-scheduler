@@ -1,0 +1,27 @@
+meta {
+  name: Kill run
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/runs/:run_id/kill
+  body: none
+  auth: none
+}
+
+params:path {
+  run_id: {{runId}}
+}
+
+docs {
+  Terminate an in-flight run. The kill signal flows through the executor's
+  per-run watch channel and tears down the active step's process tree
+  (cross-platform: SIGTERM/SIGKILL on Unix, taskkill /T on Windows).
+
+  Remaining steps in the workflow are skipped unless `always_run: true`.
+  The run's terminal status is `Killed`.
+
+  Response: 204 No Content on success. 404 if run_id is unknown.
+  If the run is already terminal, the kill is a no-op.
+}
