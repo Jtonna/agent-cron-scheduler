@@ -2,8 +2,10 @@
   "name": "acs-electron",
   "version": "4.0.0",
   "private": true,
+  "//workspaces": "desktopapp is excluded so it installs standalone (own node_modules + package-lock.json) and `npm install` / `npm run dev` work from inside its folder. It also has outputFileTracingRoot pinned in its next.config.ts so Next doesn't walk up to this lockfile.",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "!packages/desktopapp"
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev --workspace=packages/frontend\" \"wait-on http://localhost:3000 && npm run dev --workspace=packages/app\"",
