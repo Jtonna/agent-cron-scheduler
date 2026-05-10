@@ -807,7 +807,7 @@ mod tests {
                 .cloned())
         }
         async fn create_workflow(&self, new: NewWorkflow) -> anyhow::Result<Workflow> {
-            // Mirror the real FsWorkflowStore: validate before persisting.
+            // Mirror the real SqliteWorkflowStore: validate before persisting.
             crate::models::workflow::validate_new_workflow(&new)?;
             let mut wfs = self.workflows.write().await;
             if wfs.iter().any(|w| w.name == new.name) {

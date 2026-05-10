@@ -148,9 +148,8 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
     }
 
     async fn update_run(&self, run: &WorkflowRun) -> Result<(), AcsError> {
-        // Mirror FsWorkflowRunStore::update_run: NotFound if the run isn't
-        // already in the index. We don't have an index — use a presence query
-        // to stay behaviourally identical.
+        // Return NotFound if the run isn't already present — a presence
+        // query is enough since the primary key already enforces uniqueness.
         let run_owned = run.clone();
         self.db
             .with_conn(move |c| {
@@ -198,9 +197,7 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
         self.db
             .with_conn(move |c| {
                 // Sort by run_id DESC. Since run_ids are Uuid v7 (time-ordered),
-                // the lexicographic ordering matches the insertion-time ordering.
-                // This mirrors `FsWorkflowRunStore::list_run_files_for_workflow`
-                // which sorts the file list by `b.cmp(a)` on the parsed Uuid.
+                // the lexicographic ordering matches insertion-time ordering.
                 //
                 // limit=0 means "no limit"; use SQLite's convention of -1.
                 let sql_limit: i64 = if limit == 0 { -1 } else { limit as i64 };
@@ -242,8 +239,7 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
     }
 
     async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError> {
-        // Mirror FsWorkflowRunStore::delete_run: best-effort. If the run isn't
-        // present, that's not an error.
+        // Best-effort: deleting a row that isn't present is not an error.
         let id_s = run_id.to_string();
         self.db
             .with_conn(move |c| {
@@ -547,7 +543,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_run_unknown_is_no_op() {
-        // Mirror FsWorkflowRunStore: deleting a run that isn't present is OK.
+        // Deleting a run that isn't present is a no-op.
         let store = SqliteWorkflowRunStore::in_memory_for_tests();
         store
             .delete_run(Uuid::now_v7())

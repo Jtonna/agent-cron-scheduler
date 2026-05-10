@@ -1,9 +1,5 @@
 //! SQLite-backed implementations of [`WorkflowStore`] and [`WorkflowRunStore`].
 //!
-//! These types are *not yet wired into the daemon*. They exist behind the same
-//! traits as the filesystem stores so the daemon can be cut over once the
-//! `m002_json_to_sqlite` migration has run.
-//!
 //! Concurrency model
 //! -----------------
 //! Each store owns an `Arc<std::sync::Mutex<rusqlite::Connection>>`. Every
@@ -66,15 +62,27 @@ impl SqliteDb {
 }
 
 /// Open (or create) the SQLite database at `path`, apply pragmas, and apply
+/// the schema. Returns the raw [`Connection`].
+///
+/// Used by callers that need direct ownership of the connection — notably
+/// `migration::m002_json_to_sqlite`, which drives a single transaction and
+/// needs `&mut Connection` to call `.transaction()`. The parent directory of
+/// `path` must already exist; this helper does not create it.
+pub(crate) fn open_with_schema(path: &Path) -> Result<Connection, AcsError> {
+    let conn = Connection::open(path)
+        .map_err(|e| AcsError::Storage(format!("Failed to open SQLite at {:?}: {}", path, e)))?;
+    apply_pragmas(&conn)?;
+    apply_schema(&conn)?;
+    Ok(conn)
+}
+
+/// Open (or create) the SQLite database at `path`, apply pragmas, and apply
 /// the schema. Returns a [`SqliteDb`] suitable for constructing the stores.
 ///
 /// The parent directory of `path` must already exist; this helper does not
 /// create it.
 pub fn init_db(path: &Path) -> Result<SqliteDb, AcsError> {
-    let conn = Connection::open(path)
-        .map_err(|e| AcsError::Storage(format!("Failed to open SQLite at {:?}: {}", path, e)))?;
-    apply_pragmas(&conn)?;
-    apply_schema(&conn)?;
+    let conn = open_with_schema(path)?;
     Ok(SqliteDb::from_connection(conn))
 }
 

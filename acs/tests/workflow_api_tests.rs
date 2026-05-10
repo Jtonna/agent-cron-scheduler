@@ -20,7 +20,7 @@ use tokio::sync::{broadcast, Notify};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
-// Store helpers — use the real Fs* implementations on a temp dir
+// Store helpers — use the real Sqlite* implementations on a temp dir
 // ---------------------------------------------------------------------------
 
 async fn make_stores() -> (
@@ -29,13 +29,11 @@ async fn make_stores() -> (
     tempfile::TempDir,
 ) {
     let tmp = tempfile::TempDir::new().expect("create temp dir");
-    let wf_store = agent_cron_scheduler::storage::workflows::FsWorkflowStore::new(tmp.path())
-        .await
-        .expect("create FsWorkflowStore");
-    let run_store =
-        agent_cron_scheduler::storage::workflow_runs::FsWorkflowRunStore::new(tmp.path())
-            .await
-            .expect("create FsWorkflowRunStore");
+    let db_path = tmp.path().join("acs.db");
+    let db =
+        agent_cron_scheduler::storage::sqlite::init_db(&db_path).expect("init SQLite database");
+    let wf_store = agent_cron_scheduler::storage::sqlite::SqliteWorkflowStore::new(&db);
+    let run_store = agent_cron_scheduler::storage::sqlite::SqliteWorkflowRunStore::new(&db);
     (
         Arc::new(wf_store) as Arc<dyn WorkflowStore>,
         Arc::new(run_store) as Arc<dyn WorkflowRunStore>,
@@ -649,7 +647,8 @@ async fn test_trigger_with_input_flows_through() {
     }
 }
 
-/// 12. Triggering a workflow persists the run to disk (file exists).
+/// 12. Triggering a workflow persists the run record (read it back through the
+///     run store).
 #[tokio::test]
 async fn test_trigger_persists_run_to_disk() {
     let (wf_store, run_store, tmp) = make_stores().await;
@@ -684,19 +683,25 @@ async fn test_trigger_persists_run_to_disk() {
         .json()
         .await
         .unwrap();
-    let run_id = trigger_json["run_id"].as_str().unwrap();
+    let run_id_str = trigger_json["run_id"].as_str().unwrap();
+    let run_id = uuid::Uuid::parse_str(run_id_str).expect("parse run_id");
 
-    // Wait briefly then verify the JSON file exists on disk.
+    // Wait briefly so the create_run call has committed, then verify the
+    // record is readable through the store (which is backed by acs.db).
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-    let run_file = tmp_path
-        .join("runs")
-        .join(wf_id)
-        .join(format!("{}.json", run_id));
+    let stored = run_store
+        .get_run(run_id)
+        .await
+        .expect("get_run")
+        .expect("run record should be persisted");
+    assert_eq!(stored.run_id, run_id);
+    assert_eq!(stored.workflow_id.to_string(), wf_id);
+
+    // The DB file lives at <data_dir>/acs.db; sanity-check it exists too.
     assert!(
-        run_file.exists(),
-        "Run JSON file should be persisted at {}",
-        run_file.display()
+        tmp_path.join("acs.db").exists(),
+        "acs.db should exist under the data dir"
     );
 }
 
@@ -1102,13 +1107,10 @@ async fn test_restart_simulation_run_persists() {
 
     // Instance A — create a workflow and trigger it.
     {
-        let wf_store_a = agent_cron_scheduler::storage::workflows::FsWorkflowStore::new(&data_dir)
-            .await
-            .expect("create wf store A");
-        let run_store_a =
-            agent_cron_scheduler::storage::workflow_runs::FsWorkflowRunStore::new(&data_dir)
-                .await
-                .expect("create run store A");
+        let db_a = agent_cron_scheduler::storage::sqlite::init_db(&data_dir.join("acs.db"))
+            .expect("init SQLite (instance A)");
+        let wf_store_a = agent_cron_scheduler::storage::sqlite::SqliteWorkflowStore::new(&db_a);
+        let run_store_a = agent_cron_scheduler::storage::sqlite::SqliteWorkflowRunStore::new(&db_a);
         let (base_url, _state, _handle) = spawn_test_server(
             Arc::new(wf_store_a) as Arc<dyn WorkflowStore>,
             Arc::new(run_store_a) as Arc<dyn WorkflowRunStore>,
@@ -1165,13 +1167,10 @@ async fn test_restart_simulation_run_persists() {
 
     // Instance B — open the same data_dir and verify the run is readable.
     {
-        let wf_store_b = agent_cron_scheduler::storage::workflows::FsWorkflowStore::new(&data_dir)
-            .await
-            .expect("create wf store B");
-        let run_store_b =
-            agent_cron_scheduler::storage::workflow_runs::FsWorkflowRunStore::new(&data_dir)
-                .await
-                .expect("create run store B");
+        let db_b = agent_cron_scheduler::storage::sqlite::init_db(&data_dir.join("acs.db"))
+            .expect("init SQLite (instance B)");
+        let wf_store_b = agent_cron_scheduler::storage::sqlite::SqliteWorkflowStore::new(&db_b);
+        let run_store_b = agent_cron_scheduler::storage::sqlite::SqliteWorkflowRunStore::new(&db_b);
         let (base_url_b, _state_b, _handle_b) = spawn_test_server(
             Arc::new(wf_store_b) as Arc<dyn WorkflowStore>,
             Arc::new(run_store_b) as Arc<dyn WorkflowRunStore>,

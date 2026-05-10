@@ -258,55 +258,35 @@ Errors and warnings (e.g. spawn failures, template warnings, persistence errors)
 **Solution:**
 - Orphaned log directories must be cleaned up manually. There is no automatic cleanup code in `start_daemon`; restarting the daemon does not trigger any such cleanup.
 - Non-UUID directories inside `logs/` are left untouched.
-- To remove orphaned directories, identify workflow UUIDs that no longer exist in `workflows.json` and delete their corresponding subdirectories under `logs/` and `runs/`.
+- To remove orphaned directories, list the workflow IDs in `acs.db` (e.g. `sqlite3 <data_dir>/acs.db 'SELECT id FROM workflows;'`) and delete the corresponding subdirectories under `logs/` whose name does not appear in the result.
 
 ---
 
 ## 6. Data Corruption
 
-### Corrupted workflows.json
+### Corrupted acs.db
 
-**Symptom:** Workflows are missing after a crash, or the daemon logs a warning about `workflows.json` being corrupted.
+**Symptom:** Daemon startup fails with a SQLite error, or `GET /api/workflows` / `GET /api/runs/{id}` returns errors mentioning the database.
 
 **What happens automatically:**
-When ACS detects that `workflows.json` contains invalid JSON, it:
-1. Creates a timestamped backup (e.g., `workflows.json.bak.<timestamp>`).
-2. Logs a warning about the corruption.
-3. Starts with an empty workflow list.
+SQLite uses a write-ahead log (`acs.db-wal`) and atomic transactions, so a crash mid-write either commits the full change or none of it. The daemon does **not** auto-repair a structurally-corrupt database; startup aborts with a non-zero exit code and the error is logged.
 
-**Recovery from backup:**
-1. Stop the daemon: `agentcronsystem stop`
-2. Navigate to the data directory.
-3. Examine the backup in a text editor.
-4. If recoverable (e.g., minor corruption), fix the JSON and save it as `workflows.json`.
-5. If beyond repair, you will need to recreate your workflows.
-6. Restart the daemon: `agentcronsystem start`
+**Recovery:**
+1. Stop the daemon: `agentcronsystem stop`.
+2. Try `sqlite3 <data_dir>/acs.db 'PRAGMA integrity_check;'`. If it reports `ok`, the file is fine.
+3. If integrity_check fails, restore `acs.db`, `acs.db-wal`, and `acs.db-shm` together from your most recent data-directory backup. They form a single unit — restoring `acs.db` without its sidecars can cause silent data loss.
+4. If you have no backup, salvage what you can with `sqlite3 <data_dir>/acs.db .dump > dump.sql`, fix any malformed statements, then re-import into a fresh DB.
+5. Restart the daemon: `agentcronsystem start`.
 
 **Prevention:**
-- ACS uses atomic writes (write to `.tmp` file, then rename) to prevent partial-write corruption during normal operation. Corruption is typically caused by hardware issues, disk-full conditions, or forceful termination at the exact moment of a write.
-
-### Corrupted runs/index.json
-
-**Symptom:** `GET /api/runs/{id}` returns 404 for a run that you know was created, or the daemon logs `runs/index.json is corrupted`.
-
-**What happens automatically:**
-`FsWorkflowRunStore` maintains a `runs/index.json` file that maps `run_id → workflow_id` for fast lookups. On startup, if `index.json` is invalid JSON, ACS:
-1. Creates a timestamped backup (`index.json.bak.<timestamp>`) in the `runs/` directory.
-2. Rebuilds the index by scanning all `runs/<workflow_id>/<run_id>.json` files on disk.
-3. Persists the rebuilt index.
-
-This recovery is automatic and requires no manual intervention. All previously-completed run records are recovered as long as their individual JSON files are intact.
-
-**If individual run files are corrupted:**
-- Corrupted individual run files are skipped with a warning during `list_runs`; they do not prevent other runs from loading.
-- You can manually delete a corrupted run file and its entry will be absent from future listings.
+- ACS opens SQLite in WAL mode with `synchronous=NORMAL` and wraps every mutation in a transaction. Corruption is typically caused by hardware issues, disk-full conditions, or forceful termination of the OS (not just the daemon — that is safe).
 
 ### Missing Data Directory
 
 **Symptom:** The daemon starts but reports it cannot find or create the data directory.
 
 **What happens automatically:**
-ACS creates the data directory and its subdirectories (`logs/`, `scripts/`, `runs/`) on startup if they do not exist. This includes creating all intermediate parent directories.
+ACS creates the data directory and its subdirectories (`logs/`, `scripts/`) on startup if they do not exist. The `acs.db` file is created by the `m002_json_to_sqlite` migration when the daemon first runs against an empty data directory. This includes creating all intermediate parent directories.
 
 **Solution:**
 - If creation fails, check filesystem permissions on the parent directory.

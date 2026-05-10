@@ -27,6 +27,7 @@
 
 pub mod legacy_types;
 mod m001_jobs_to_workflows;
+mod m002_json_to_sqlite;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -63,7 +64,10 @@ pub trait Migration: Send + Sync {
 
 /// All available migrations **in order**. Append new migrations here.
 fn registry() -> Vec<Box<dyn Migration>> {
-    vec![Box::new(m001_jobs_to_workflows::JobsToWorkflows)]
+    vec![
+        Box::new(m001_jobs_to_workflows::JobsToWorkflows),
+        Box::new(m002_json_to_sqlite::JsonToSqlite),
+    ]
 }
 
 // ── Run report ────────────────────────────────────────────────────────────────
@@ -457,16 +461,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_pending_real_registry_fresh_install() {
-        // Fresh install: no jobs.json, no workflows.json.
-        // m001 should detect nothing to do and go to skipped_not_needed.
+        // Fresh install: no jobs.json, no workflows.json, no acs.db.
+        // m001 has nothing to do; m002 creates the empty SQLite DB.
         let tmp = TempDir::new().unwrap();
         let report = run_pending(tmp.path()).await.unwrap();
 
-        // On a fresh install, m001 runs but has nothing to do.
-        assert!(report.newly_applied.is_empty());
         assert!(report.already_applied.is_empty());
         assert!(report
             .skipped_not_needed
             .contains(&"m001_jobs_to_workflows".to_string()));
+        assert!(report
+            .newly_applied
+            .contains(&"m002_json_to_sqlite".to_string()));
+        assert!(
+            tmp.path().join("acs.db").exists(),
+            "m002 must have created acs.db on a fresh install"
+        );
     }
 }

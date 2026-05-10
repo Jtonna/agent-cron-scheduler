@@ -1,8 +1,8 @@
 # Storage and Data Management
 
 This document describes how the Agent Cron Scheduler (ACS) persists workflows,
-run records, logs, daemon state, and configuration on disk after the ACS-18
-refactor.  All paths below are relative to the **data directory** (`{data_dir}`).
+run records, logs, daemon state, and configuration on disk.  All paths below
+are relative to the **data directory** (`{data_dir}`).
 
 For how the data directory is resolved (CLI flags, env vars, platform defaults),
 see [Configuration](configuration.md#data-directory-locations).
@@ -14,21 +14,21 @@ see [Configuration](configuration.md#data-directory-locations).
 Storage is organised around two complementary concerns:
 
 * **Trait-based stores** — all persistence goes through an `async_trait`
-  interface.  Each trait has one filesystem implementation (`Fs*`) and can be
-  replaced by an in-memory mock for tests.
+  interface.  Each trait has one SQLite-backed implementation (`Sqlite*`) and
+  can be replaced by an in-memory mock for tests.
 * **Single rooted layout** — every file the daemon writes lives under a single
   `data_dir` chosen at startup.  There is no global state outside that tree.
 
-The three active store traits after ACS-18 are:
+The three active store traits are:
 
 | Trait | Impl | What it stores |
 |---|---|---|
-| `WorkflowStore` | `FsWorkflowStore` | Workflow definitions (`workflows.json`) |
-| `WorkflowRunStore` | `FsWorkflowRunStore` | Per-run `WorkflowRun` records + index |
+| `WorkflowStore` | `SqliteWorkflowStore` | Workflow definitions (`workflows` table in `acs.db`) |
+| `WorkflowRunStore` | `SqliteWorkflowRunStore` | `WorkflowRun` records (`workflow_runs` table in `acs.db`) |
 | *(daemon)* | `SizeManagedWriter` | Daemon process log (`daemon.log`) |
 
-Log output from step execution is written directly by `FileLogSink` (not
-through a store trait).  Migration state is maintained in a standalone
+Step output is written by `FileLogSink` (not through a store trait) to per-run
+files under `logs/`.  Migration state is maintained in a standalone
 `migrations.json` file managed by the migration runner.
 
 ---
@@ -41,94 +41,165 @@ through a store trait).  Migration state is maintained in a standalone
 ├── agentcronsystem.port        # TCP port the daemon is listening on
 ├── config.json                 # Daemon config (fallback location; see configuration.md)
 ├── daemon.log                  # Daemon process log (size-managed, max 1 GB)
-├── workflows.json              # Authoritative list of all workflow definitions
+├── acs.db                      # SQLite database holding workflows + workflow_runs tables
+├── acs.db-wal                  # SQLite write-ahead log (created at runtime, managed by SQLite)
+├── acs.db-shm                  # SQLite shared memory file (created at runtime, managed by SQLite)
 ├── migrations.json             # Applied-migration state for the numbered migration runner
 ├── jobs.json.migrated.<ts>     # Backup of legacy jobs.json after m001 runs (unix timestamp suffix)
 ├── migrated_scripts/           # Created on demand by m001 migration when migrating non-shell hooks
 ├── scripts/                    # Reserved directory (created on startup; not currently used)
-├── logs/
-│   └── {workflow_id}/          # One directory per workflow, named by UUID
-│       └── {run_id}.log        # Combined step output for a single run (append-only)
-└── runs/
-    ├── index.json              # Map of run_id → workflow_id for O(1) lookup
+└── logs/
     └── {workflow_id}/          # One directory per workflow, named by UUID
-        └── {run_id}.json       # Full WorkflowRun record (pretty-printed JSON)
+        └── {run_id}.log        # Combined step output for a single run (append-only)
 ```
 
 On daemon startup, `create_data_dirs()` ensures the top-level directory and
-the `logs/` and `scripts/` subdirectories exist.  The `runs/` directory is
-created by `FsWorkflowRunStore::new()`.
+the `logs/` and `scripts/` subdirectories exist.  The `acs.db` file is created
+by the `m002_json_to_sqlite` migration when the daemon first runs.  The
+`acs.db-wal` and `acs.db-shm` sidecar files are created by SQLite the first
+time the database is opened in WAL mode and persist alongside the DB.
 
 ---
 
-## 3. Atomic Writes Pattern
+## 3. SQLite Database
 
-All three file-based stores use the same write strategy to prevent partial
-writes from leaving the data directory in a corrupt state:
+**Sources:** `acs/src/storage/sqlite/mod.rs`,
+`acs/src/storage/sqlite/schema.rs`,
+`acs/src/storage/sqlite/workflows.rs`,
+`acs/src/storage/sqlite/workflow_runs.rs`
 
-1. Serialize the new content.
-2. Write to a sibling `.tmp` file (e.g. `workflows.json.tmp`).
-3. Rename the `.tmp` file over the target file.
+A single SQLite database at `{data_dir}/acs.db` holds all structured
+persistence.  Both trait implementations share one `SqliteDb` handle, which
+wraps `Arc<Mutex<rusqlite::Connection>>`.  Every async trait method offloads
+rusqlite work via `tokio::task::spawn_blocking` so the runtime is never
+blocked by synchronous DB calls.
 
-On POSIX systems the rename is atomic.  On Windows, `tokio::fs::rename`
-performs a non-atomic replace, but this is still safer than writing in-place
-because the old file is only replaced after the new content is fully written.
-After a successful rename, no `.tmp` file remains on disk.
+### Pragmas
 
-The files that use this pattern:
+Applied on every connection by `apply_pragmas()`:
 
-| Target | Temporary |
-|---|---|
-| `workflows.json` | `workflows.json.tmp` |
-| `runs/{workflow_id}/{run_id}.json` | `runs/{workflow_id}/{run_id}.json.tmp` |
-| `runs/index.json` | `runs/index.json.tmp` |
-| `migrations.json` | `migrations.json.tmp` |
+| Pragma | Value | Reason |
+|---|---|---|
+| `journal_mode` | `WAL` | Readers and writers do not block each other; better concurrency than the default rollback journal. |
+| `foreign_keys` | `ON` | Actually enforce the FK on `workflow_runs.workflow_id`. SQLite has FK disabled by default. |
+| `synchronous` | `NORMAL` | Safe under WAL (writes are still durable after commit) and noticeably faster than `FULL`. |
+
+### Schema
+
+Created idempotently by `apply_schema()` (every `CREATE TABLE` /
+`CREATE INDEX` is `IF NOT EXISTS`):
+
+```sql
+CREATE TABLE workflows (
+    id                  TEXT PRIMARY KEY,
+    name                TEXT NOT NULL UNIQUE,
+    version             INTEGER NOT NULL,
+    schedule            TEXT NOT NULL,
+    timezone            TEXT,
+    schedule_mode       TEXT NOT NULL,
+    enabled             INTEGER NOT NULL,
+    steps_json          TEXT NOT NULL,
+    input_schema        TEXT,
+    default_input       TEXT,
+    working_dir         TEXT,
+    env_vars            TEXT,
+    allow_concurrent    INTEGER NOT NULL,
+    on_failure          TEXT NOT NULL,
+    last_run_at         TEXT,
+    last_run_status     TEXT,
+    last_run_id         TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE TABLE workflow_runs (
+    run_id              TEXT PRIMARY KEY,
+    workflow_id         TEXT NOT NULL,
+    workflow_version    INTEGER NOT NULL,
+    workflow_snapshot   TEXT NOT NULL,
+    started_at          TEXT NOT NULL,
+    finished_at         TEXT,
+    status              TEXT NOT NULL,
+    trigger_input       TEXT,
+    steps_json          TEXT NOT NULL,
+    total_cost_usd      REAL,
+    total_duration_ms   INTEGER,
+    FOREIGN KEY (workflow_id) REFERENCES workflows(id)
+);
+
+CREATE INDEX idx_workflow_runs_workflow_id_finished_at
+    ON workflow_runs(workflow_id, finished_at);
+CREATE INDEX idx_workflow_runs_finished_at
+    ON workflow_runs(finished_at);
+CREATE INDEX idx_workflow_runs_status
+    ON workflow_runs(status);
+
+CREATE TABLE meta (
+    key     TEXT PRIMARY KEY,
+    value   TEXT NOT NULL
+);
+```
+
+### Encoding rules
+
+- UUIDs (`id`, `run_id`, `workflow_id`, `last_run_id`) are stored as their
+  RFC 4122 hyphenated TEXT form.
+- Booleans (`enabled`, `allow_concurrent`) are `INTEGER` (`0` / `1`).
+- Timestamps are RFC 3339 TEXT (`DateTime<Utc>::to_rfc3339()`).
+- `schedule_mode` is the bare snake_case enum string (e.g. `"cron"`).
+- `last_run_status` and `workflow_runs.status` are the bare PascalCase
+  `RunStatus` strings (`"Running"`, `"Completed"`, `"Failed"`, `"Killed"`).
+- `on_failure` is the full JSON serialisation of `FailurePolicy` because the
+  `Retry { attempts, backoff_ms }` variant carries data and cannot be a bare
+  string.
+- `steps_json` (workflows) is `Vec<StepDef>` serialised; `steps_json`
+  (workflow_runs) is `Vec<StepRun>` serialised.
+- `workflow_snapshot` is the full `Workflow` definition at trigger time
+  serialised as JSON, so each run record is self-contained.
+- `input_schema`, `default_input`, `trigger_input`, and `env_vars` are
+  optional JSON TEXT blobs (`NULL` when absent).
+
+### Atomicity and durability
+
+Every mutation runs inside a SQLite transaction.  Trait methods that perform
+multi-step changes (e.g., `update_workflow` reads, mutates, and writes back)
+take a `&mut Connection` for the duration of the operation, so the read and
+write are part of the same logical unit.  WAL mode plus `synchronous = NORMAL`
+guarantees that committed transactions survive process crashes; the WAL is
+checkpointed back into the main file periodically and on connection close.
+
+### Concurrency
+
+The shared `Mutex<Connection>` serialises calls into rusqlite within the
+process.  WAL mode means external readers (e.g., a `sqlite3` shell opened
+against the same file for inspection) do not block the daemon and vice
+versa.
 
 ---
 
 ## 4. Corruption Handling
 
-### workflows.json
+### `acs.db`
 
-When `FsWorkflowStore::new()` reads `workflows.json` and encounters invalid
-JSON:
+If `init_db()` fails to open `acs.db` (e.g., the file is missing or the
+header is corrupt), daemon startup aborts with a non-zero exit code; no data
+is silently dropped.  Recovery is operator-driven: restore from a known-good
+backup of the data directory.  Because every transaction is atomic, partial
+writes from a crash never leave the database structurally inconsistent.
 
-1. The corrupted file is copied to `workflows.json.bak.<unix_timestamp>` (e.g.
-   `workflows.json.bak.1746288000`).
-2. A warning is logged via `tracing::warn!`.
-3. The store starts with an **empty** workflow list.
-
-The timestamped suffix means multiple corruption events produce distinct
-backups rather than overwriting each other.
-
-### runs/index.json
-
-When `FsWorkflowRunStore::new()` reads `runs/index.json` and encounters
-invalid JSON:
-
-1. The corrupted index is copied to `runs/index.json.bak.<unix_timestamp>`.
-2. A warning is logged.
-3. The runner **rebuilds** the index by scanning all
-   `runs/{workflow_id}/{run_id}.json` files on disk.  Only files whose parent
-   directory name is a valid UUID and whose filename stem is a valid UUID are
-   included.
-
-This means run history is never lost from a corrupt index; the index is always
-recoverable from the run files themselves.
-
-### migrations.json
+### `migrations.json`
 
 If `migrations.json` is missing or contains invalid JSON, `read_state()`
 returns an empty `HashSet`, treating the daemon as if no migrations have been
-applied.  **No backup file is created** (unlike `workflows.json` and
-`runs/index.json`); a corrupt state simply causes pending migrations to re-run
-(each migration's `run()` method must be idempotent).
+applied.  **No backup file is created**; a corrupt state simply causes
+pending migrations to re-run (each migration's `run()` method is idempotent).
 
 ---
 
 ## 5. WorkflowStore
 
-**Sources:** `acs/src/storage/mod.rs`, `acs/src/storage/workflows.rs`
+**Sources:** `acs/src/storage/mod.rs`, `acs/src/storage/workflows.rs`,
+`acs/src/storage/sqlite/workflows.rs`
 
 ### Trait
 
@@ -146,30 +217,26 @@ pub trait WorkflowStore: Send + Sync {
 
 | Method | Description |
 |---|---|
-| `list_workflows` | Returns all workflows. |
+| `list_workflows` | Returns all workflows ordered by `created_at ASC`. |
 | `get_workflow` | Looks up a single workflow by UUID; returns `None` if not found. |
 | `find_by_name` | Looks up a single workflow by name; returns `None` if not found. |
-| `create_workflow` | Validates, assigns a UUIDv7 ID, sets `version: 1`, persists, and returns the new workflow. |
+| `create_workflow` | Validates, assigns a UUIDv7 ID, sets `version: 1`, INSERTs, and returns the new workflow. |
 | `update_workflow` | Partial update; bumps `version` when any definition-affecting field changes. Returns `NotFound` or `Conflict` as appropriate. |
-| `delete_workflow` | Removes a workflow by UUID; returns `NotFound` if it does not exist. |
+| `delete_workflow` | DELETEs a workflow by UUID; returns `NotFound` if it does not exist. |
 
-### FsWorkflowStore
+### SqliteWorkflowStore
 
 ```rust
-pub struct FsWorkflowStore {
-    path: PathBuf,           // {data_dir}/workflows.json
-    inner: RwLock<Vec<Workflow>>,
+pub struct SqliteWorkflowStore {
+    db: SqliteDb,
 }
 ```
 
-All workflow data is held in a `tokio::sync::RwLock<Vec<Workflow>>`.  Reads
-acquire a read lock; mutations acquire a write lock.  After every mutation the
-full list is persisted to `workflows.json` via `persist()`.
-
-### On-disk format
-
-`workflows.json` is a pretty-printed JSON array of `Workflow` objects
-(`serde_json::to_string_pretty`).  The array may be empty (`[]`).
+The store is a thin wrapper around the shared `SqliteDb`.  `list_workflows`
+issues a single `SELECT *` and maps each row through `row_to_workflow`.
+Mutations go through prepared INSERT / UPDATE statements and translate the
+SQLite `UNIQUE` constraint violation on `workflows.name` to
+`AcsError::Conflict`.
 
 ### Version bump rules
 
@@ -186,14 +253,17 @@ not present in `WorkflowUpdate` at all and cannot trigger a version bump.
 
 ### Duplicate name enforcement
 
-Both `create_workflow` and `update_workflow` reject duplicate names among
-existing workflows, returning `AcsError::Conflict`.
+`create_workflow` relies on the `UNIQUE` constraint on `workflows.name`;
+violations are mapped to `AcsError::Conflict`.  `update_workflow` performs an
+explicit `SELECT COUNT(*) … WHERE name = ? AND id != ?` check before issuing
+the UPDATE so the conflict path is symmetric.
 
 ---
 
 ## 6. WorkflowRunStore
 
-**Source:** `acs/src/storage/workflow_runs.rs`
+**Sources:** `acs/src/storage/workflow_runs.rs`,
+`acs/src/storage/sqlite/workflow_runs.rs`
 
 ### Trait
 
@@ -216,55 +286,43 @@ pub trait WorkflowRunStore: Send + Sync {
 
 | Method | Description |
 |---|---|
-| `create_run` | Writes the initial run file and updates the index. |
-| `update_run` | Atomically replaces the run file (uses index to locate the workflow directory). |
-| `get_run` | Uses index for O(1) lookup; reads and deserializes the run file. Returns `None` if not in index or file is absent. |
-| `list_runs` | Lists runs for a workflow, latest-first. `limit=0` returns all. Supports `offset` for pagination. Skips corrupted files with a warning. |
-| `count_runs` | Returns the number of run files in a workflow's directory. |
-| `delete_run` | Removes the run from the index (persisted atomically) and deletes the `.json` file. Also attempts to delete the matching log file at `logs/{workflow_id}/{run_id}.log` (best-effort; logs a warning if the file is absent or cannot be removed). |
+| `create_run` | INSERTs the initial run record. |
+| `update_run` | UPSERTs (`INSERT … ON CONFLICT(run_id) DO UPDATE`); returns `NotFound` if the row is not already present. |
+| `get_run` | Single-row SELECT by primary key; returns `None` if the row is absent. |
+| `list_runs` | `SELECT … WHERE workflow_id = ? ORDER BY run_id DESC LIMIT ? OFFSET ?`. `limit=0` is translated to `-1` (SQLite "no limit"). |
+| `count_runs` | `SELECT COUNT(*) … WHERE workflow_id = ?`. |
+| `delete_run` | `DELETE FROM workflow_runs WHERE run_id = ?` (best-effort; absent rows are not an error). Also attempts to delete the matching log file at `logs/{workflow_id}/{run_id}.log` (best-effort; logs a warning if the file is absent or cannot be removed). |
 
-### FsWorkflowRunStore
+### SqliteWorkflowRunStore
 
 ```rust
-pub struct FsWorkflowRunStore {
-    runs_dir: PathBuf,           // {data_dir}/runs/
-    index: Arc<Mutex<RunIndex>>, // run_id → workflow_id (in-memory + on-disk)
+pub struct SqliteWorkflowRunStore {
+    db: SqliteDb,
 }
 ```
 
-### Persistence paths
-
-Each run is stored as a pretty-printed JSON file:
-
-```
-{data_dir}/runs/{workflow_id}/{run_id}.json
-```
-
-The trigger handler persists the initial `Running` record synchronously before
-spawning the workflow executor, so `GET /api/runs/{id}` between trigger and
-execution start always returns the run rather than a 404.
-
-### Index file design
-
-`{data_dir}/runs/index.json` contains a flat JSON object mapping every known
-`run_id` (UUID string) to its `workflow_id` (UUID string):
-
-```json
-{
-  "019abcde-1234-7000-8000-aabbccddeeff": "01912345-6789-7abc-def0-123456789abc"
-}
-```
-
-This enables O(1) `get_run` lookups without scanning workflow subdirectories.
-The index is kept in sync with the in-memory `RunIndex` cache and written
-atomically after every `create_run` or `delete_run` operation.
+Like `SqliteWorkflowStore`, this is a thin wrapper around the shared
+`SqliteDb`.  The `INSERT … ON CONFLICT … DO UPDATE` pattern in `upsert_run`
+keeps `create_run` and `update_run` symmetric: both end up writing a row
+keyed by `run_id`, and `update_run` only differs in that it asserts the row
+already exists.
 
 ### Latest-first ordering
 
-`list_runs` sorts run IDs descending before applying `offset`/`limit`.  Run
-IDs are UUIDv7 values, which are monotonically time-ordered, so descending UUID
-order is equivalent to latest-first chronological order without reading any
-file contents.
+`list_runs` orders by `run_id DESC`.  Run IDs are UUIDv7 values, which are
+monotonically time-ordered, so descending lexicographic order is equivalent
+to latest-first chronological order without any additional join or
+secondary sort.
+
+### Indexes
+
+The `workflow_runs` table has three secondary indexes:
+
+| Index | Columns | Purpose |
+|---|---|---|
+| `idx_workflow_runs_workflow_id_finished_at` | `(workflow_id, finished_at)` | Per-workflow listings ordered by completion time. |
+| `idx_workflow_runs_finished_at` | `(finished_at)` | Cross-workflow recency queries. |
+| `idx_workflow_runs_status` | `(status)` | Filters that pick out e.g. all currently-running rows. |
 
 ---
 
@@ -372,6 +430,7 @@ On every `write_chunk(data)`:
 
 **Sources:** `acs/src/migration/mod.rs`,
 `acs/src/migration/m001_jobs_to_workflows.rs`,
+`acs/src/migration/m002_json_to_sqlite.rs`,
 `acs/src/migration/legacy_types.rs`
 
 ### Design
@@ -398,7 +457,7 @@ Applied migration names are tracked in `{data_dir}/migrations.json`:
 
 ```json
 {
-  "applied": ["m001_jobs_to_workflows"]
+  "applied": ["m001_jobs_to_workflows", "m002_json_to_sqlite"]
 }
 ```
 
@@ -427,12 +486,12 @@ the failure) is preserved in the state file.  Migrations that return
 
 ---
 
-## 10. Backwards Compatibility — jobs.json
+## 10. Migration history
 
-Migration `m001_jobs_to_workflows` handles the transition from the pre-ACS-18
+### m001_jobs_to_workflows
+
+`m001_jobs_to_workflows` handles the transition from the pre-ACS-18
 `jobs.json` format.
-
-### Decision table
 
 | Condition | Action |
 |---|---|
@@ -440,21 +499,8 @@ Migration `m001_jobs_to_workflows` handles the transition from the pre-ACS-18
 | `jobs.json` does not exist | No-op — fresh install (return `Ok(false)`) |
 | Both conditions false | Read `jobs.json`, synthesise workflows, write `workflows.json`, rename `jobs.json` |
 
-### Backup file name
-
 After a successful migration, the original `jobs.json` is **renamed** (not
-deleted) to:
-
-```
-{data_dir}/jobs.json.migrated.<unix_timestamp>
-```
-
-For example: `jobs.json.migrated.1746288000`.  The file is never deleted
-automatically.  Multiple failed-then-retried migrations cannot produce duplicate
-backup names because the presence of `workflows.json` causes the migration to
-short-circuit as a no-op after the first successful run.
-
-### Step synthesis rules
+deleted) to `{data_dir}/jobs.json.migrated.<unix_timestamp>`.
 
 For each legacy `Job`, the synthesised `Workflow` preserves the original job's
 UUID so that existing log files (keyed by `job_id` / `workflow_id`) remain
@@ -469,20 +515,37 @@ accessible without path changes.
 | `post_hook` (if present) with `post_hook_script_type = null` or `"shell"` | `ShellStep` with `id="post_hook"`, `on_failure=Abort`, `always_run=true` |
 | `post_hook` (if present) with `post_hook_script_type = "python"`, `"batch"`, or `"powershell"` | Hook body written to `migrated_scripts/{job_id}_post_hook.{ext}`; `ScriptStep` with `id="post_hook"`, `script_type` set, `always_run=true` |
 
-When a non-shell hook body is written to a script file, the `migrated_scripts/` directory is created under `{data_dir}` during the migration run. The script file content is identical to the original hook body from `jobs.json`.
-
 `job.timeout_secs` is copied to `common.timeout_secs` on all synthesised
-steps.  A value of `0` becomes `None` (no timeout).
-
-`job.last_exit_code` is mapped to `workflow.last_run_status`: `0` →
-`Completed`, any other value → `Failed`, absent → `None`.
-
-`job.allow_concurrent` is preserved verbatim.  The new-workflow default is
-`true`, but migrated entries keep whatever value the original job had.
-
+steps.  A value of `0` becomes `None` (no timeout).  `job.last_exit_code` is
+mapped to `workflow.last_run_status`: `0` → `Completed`, any other value →
+`Failed`, absent → `None`.  `job.allow_concurrent` is preserved verbatim.
 `script_type` is inferred from the file extension: `.sh`/`.bash` → `"shell"`,
 `.bat`/`.cmd` → `"batch"`, `.py` → `"python"`, `.ps1` → `"powershell"`.
 Unrecognised extensions → `None`.
+
+### m002_json_to_sqlite
+
+`m002_json_to_sqlite` populates `acs.db` from any JSON sources left behind by
+earlier daemon versions.
+
+| Condition | Action |
+|---|---|
+| `acs.db` already exists | No-op (return `Ok(false)`) |
+| Neither `workflows.json` nor `runs/` exists | Create empty `acs.db` with the schema applied, return `Ok(true)` |
+| Otherwise | Open `acs.db`, BEGIN transaction, INSERT every workflow from `workflows.json` and every run from `runs/<workflow_id>/<run_id>.json`, verify row counts match, sample-verify one row of each, COMMIT, then delete `workflows.json` and the entire `runs/` directory |
+
+Files inside `runs/` whose name is not a valid UUID `.json` filename (notably
+`runs/index.json`) are ignored on read; they are removed implicitly when the
+parent `runs/` directory is deleted on success.
+
+On any failure during the insert/verify phase the transaction is rolled back
+explicitly, the partial `acs.db` (and any WAL/SHM sidecars) is removed, and
+the JSON sources are left untouched so the migration can be re-run after the
+underlying problem is fixed.  The error is propagated through
+`migration::run_pending()`, which aborts daemon startup.
+
+`migrations.json` is **not** moved into the `meta` table; it remains the
+canonical migration-state file alongside `acs.db` in the data directory.
 
 ---
 

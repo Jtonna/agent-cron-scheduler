@@ -29,7 +29,7 @@ The system follows a layered architecture:
   +------------------------------------+
        |                   |
        v                   v
-  workflows.json    runs/<workflow_id>/<run_id>.json
+  acs.db (SQLite: workflows, workflow_runs)
                     logs/<workflow_id>/<run_id>.log
 ```
 
@@ -37,7 +37,7 @@ The system follows a layered architecture:
 
 - **Single-binary deployment**: The `acs` binary serves as both the CLI client and the daemon server. `main()` parses CLI arguments and dispatches to the appropriate handler (`acs/src/main.rs`).
 - **Async runtime**: Built on Tokio, with the runtime created explicitly in `main()` via `tokio::runtime::Runtime::new()`.
-- **Trait-based storage**: All persistence is behind `WorkflowStore` and `WorkflowRunStore` traits, with concrete filesystem implementations.
+- **Trait-based storage**: All persistence is behind `WorkflowStore` and `WorkflowRunStore` traits, with concrete SQLite-backed implementations.
 - **Event-driven**: A broadcast channel propagates `WorkflowEvent` variants to all subscribers (SSE clients, etc.).
 - **Workflow-native runtime**: The entire execution model is built around `Workflow` and `StepDef`. There is no separate `Job` concept.
 
@@ -73,9 +73,15 @@ acs/src/
     health.rs                      # GET /health handler
     assets.rs                      # Embedded static file serving (SPA fallback)
   storage/
-    mod.rs                         # Re-exports (workflow_runs, workflows)
-    workflows.rs                   # WorkflowStore trait + FsWorkflowStore
-    workflow_runs.rs               # WorkflowRunStore trait + FsWorkflowRunStore
+    mod.rs                         # Re-exports (sqlite, workflow_runs, workflows)
+    workflows.rs                   # WorkflowStore trait
+    workflow_runs.rs               # WorkflowRunStore trait
+    sqlite/
+      mod.rs                       # SqliteDb handle, init_db(), init_in_memory_db()
+      schema.rs                    # SCHEMA_SQL, apply_pragmas(), apply_schema()
+      row_helpers.rs               # parse_dt, parse_opt_dt, run_status_str, error mappers
+      workflows.rs                 # SqliteWorkflowStore (impls WorkflowStore)
+      workflow_runs.rs             # SqliteWorkflowRunStore (impls WorkflowRunStore)
   models/
     mod.rs                         # Re-exports
     workflow.rs                    # Workflow, StepDef enum + variants, StepDefCommon,
@@ -112,6 +118,7 @@ acs/src/
                                    #   MigrationRunReport, state file I/O
     legacy_types.rs                # Legacy Job/ExecutionType types (migration read only)
     m001_jobs_to_workflows.rs      # JobsToWorkflows migration
+    m002_json_to_sqlite.rs         # JsonToSqlite migration
   process_kill.rs                  # kill_process_tree(), force_kill_process_tree()
   pty/
     mod.rs                         # PtySpawner trait, PtyProcess trait,
@@ -131,7 +138,7 @@ See [CLI Reference](cli-reference.md) for the full command documentation.
 
 #### `daemon` -- Daemon Lifecycle and Core Engine
 
-- **`daemon::start_daemon()`**: The master orchestration function. Acquires PID file, loads config, creates data directories, runs pending migrations, initializes storage (`FsWorkflowStore`, `FsWorkflowRunStore`), sets up the broadcast channel, starts the `WorkflowScheduler`, and starts the HTTP server, then waits for shutdown signals.
+- **`daemon::start_daemon()`**: The master orchestration function. Acquires PID file, loads config, creates data directories, runs pending migrations, opens `acs.db` and initializes storage (`SqliteWorkflowStore`, `SqliteWorkflowRunStore`), sets up the broadcast channel, starts the `WorkflowScheduler`, and starts the HTTP server, then waits for shutdown signals.
 - **`daemon::PidFile`**: Manages an exclusive PID file (`agentcronsystem.pid`) to enforce single-instance. Uses `create_new(true)` for atomic creation with stale PID detection.
 - **`daemon::PortFile`**: Writes the actual bound port to `agentcronsystem.port` so CLI clients can discover the daemon.
 - **`daemon::load_config()`**: Loads `DaemonConfig` via a multi-level resolution order (see [Configuration](configuration.md)).
@@ -159,9 +166,9 @@ See [CLI Reference](cli-reference.md) for the full command documentation.
 #### `storage` -- Persistence Layer
 
 - **`WorkflowStore` trait**: Async trait with `list_workflows`, `get_workflow`, `find_by_name`, `create_workflow`, `update_workflow`, `delete_workflow`. (`acs/src/storage/workflows.rs`)
-- **`FsWorkflowStore`**: Concrete `WorkflowStore` using `workflows.json` with in-memory `RwLock<Vec<Workflow>>` cache. Corrupted JSON triggers a timestamped backup and empty start.
+- **`SqliteWorkflowStore`**: Concrete `WorkflowStore` backed by the `workflows` table in `<data_dir>/acs.db`. Holds a shared `SqliteDb` (`Arc<Mutex<rusqlite::Connection>>`) and offloads every call to `tokio::task::spawn_blocking` so the runtime is never blocked by synchronous DB calls.
 - **`WorkflowRunStore` trait**: Async trait with `create_run`, `update_run`, `get_run`, `list_runs(workflow_id, limit, offset)`, `count_runs`, `delete_run`. (`acs/src/storage/workflow_runs.rs`)
-- **`FsWorkflowRunStore`**: Concrete `WorkflowRunStore` persisting each run as `<data_dir>/runs/<workflow_id>/<run_id>.json`. Maintains an index file (`<data_dir>/runs/index.json`) mapping `run_id → workflow_id` for O(1) lookup. On index corruption, falls back to a directory scan and creates a timestamped backup.
+- **`SqliteWorkflowRunStore`**: Concrete `WorkflowRunStore` backed by the `workflow_runs` table in `<data_dir>/acs.db`. Shares the same `SqliteDb` handle as `SqliteWorkflowStore`. `list_runs` orders by `run_id DESC`, which is latest-first because `run_id` is a UUIDv7.
 
 See [Storage](storage.md) for implementation details.
 
@@ -236,7 +243,7 @@ See [Storage](storage.md) for implementation details.
 
 - **`Migration` trait** (`acs/src/migration/mod.rs`): `fn name() -> &'static str; async fn run(data_dir) -> Result<bool, AcsError>`. `Ok(true)` = work done; `Ok(false)` = nothing to do (idempotent).
 - **`run_pending()`**: Called at daemon startup. Reads `<data_dir>/migrations.json` for already-applied names. For each unapplied migration in the registry, calls `run()`. Writes state atomically after each `Ok(true)`. Stops on first error (partial progress is preserved).
-- **Registry** (ordered): `m001_jobs_to_workflows::JobsToWorkflows`.
+- **Registry** (ordered): `m001_jobs_to_workflows::JobsToWorkflows`, `m002_json_to_sqlite::JsonToSqlite`.
 - **`legacy_types`** (`acs/src/migration/legacy_types.rs`): Read-only legacy `Job` and `ExecutionType` structs used only by the migration code to deserialize old `jobs.json` files.
 
 ---
@@ -253,12 +260,14 @@ See [Storage](storage.md) for implementation details.
 3.  resolve_data_dir()             — Determine data directory
 4.  create_data_dirs()             — Ensure data/, data/logs/, data/scripts/ exist
 5.  migration::run_pending()       — Run any unapplied numbered migrations
+                                     (m002 creates acs.db on a fresh install).
 6.  Set up tracing                 — Truncate daemon.log on startup, then open with
                                      SizeManagedWriter (auto-drops oldest 25% at 1 GB).
                                      Falls back to stderr-only on error.
 7.  PidFile::acquire()             — Exclusive PID file (agentcronsystem.pid)
-8.  FsWorkflowStore::new()         — Load workflows.json into memory cache
-9.  FsWorkflowRunStore::new()      — Load runs index from disk
+8.  sqlite::init_db()              — Open acs.db (apply pragmas + idempotent schema)
+9.  SqliteWorkflowStore::new()     — Wrap the shared SqliteDb handle
+9b. SqliteWorkflowRunStore::new()  — Same SqliteDb, run-store façade
 10. broadcast::channel()           — Create WorkflowEvent bus (capacity from config)
 11. Notify::new()                  — Create scheduler wake signal
 12. watch::channel()               — Create shutdown signal
@@ -515,12 +524,11 @@ let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(config.broadcas
 
 ### 5.6 Shared-State Primitives
 
-Note: `FsWorkflowRunStore::index` uses `Arc<Mutex<RunIndex>>` (not `RwLock`), because index mutations (create/delete) are always exclusive. `FsWorkflowStore` and `AppState::kill_signals` use `RwLock` to allow concurrent reads.
+Note: the SQLite stores share a single `Arc<std::sync::Mutex<rusqlite::Connection>>` exposed through `SqliteDb`. The `std::sync::Mutex` is correct because rusqlite is synchronous — calls happen inside `tokio::task::spawn_blocking` and never await while holding the lock.
 
 | Resource | Type |
 |---|---|
-| `FsWorkflowStore::inner` | `tokio::sync::RwLock<Vec<Workflow>>` |
-| `FsWorkflowRunStore::index` | `Arc<tokio::sync::Mutex<HashMap<Uuid, Uuid>>>` |
+| `SqliteDb::conn` (shared by both stores) | `Arc<std::sync::Mutex<rusqlite::Connection>>` |
 | `AppState::kill_signals` | `Arc<tokio::sync::RwLock<HashMap<Uuid, KillSender>>>` |
 
 ### 5.7 Blocking Work
@@ -583,15 +591,13 @@ data_dir/
   agentcronsystem.port         # Bound port (written after bind, removed on shutdown)
   daemon.log                   # Daemon tracing output; auto-truncated at 1 GB
   config.json                  # Optional; loaded if present
-  workflows.json               # FsWorkflowStore persistence (JSON array of Workflow)
+  acs.db                       # SQLite database (workflows + workflow_runs tables)
+  acs.db-wal                   # SQLite write-ahead log (managed by SQLite)
+  acs.db-shm                   # SQLite shared memory file (managed by SQLite)
   migrations.json              # Applied migration names: { "applied": [...] }
   logs/
     <workflow_id>/
       <run_id>.log             # Combined step output with ACS marker lines
-  runs/
-    index.json                 # { run_id: workflow_id, ... } for O(1) lookup
-    <workflow_id>/
-      <run_id>.json            # WorkflowRun JSON (persisted atomically)
   scripts/                     # User script files (referenced by ScriptStep.path)
 ```
 
@@ -625,6 +631,7 @@ The migration system (`acs/src/migration/`) supports forward-only, numbered data
 | Name | File | What it does |
 |---|---|---|
 | `m001_jobs_to_workflows` | `m001_jobs_to_workflows.rs` | Reads `jobs.json` (legacy). For each `Job`: creates a `Workflow` with the same schedule/name/timezone/etc. Synthesizes steps from `pre_hook` (if present and `pre_hook_script_type` is shell/null → `ShellStep("pre_hook", always_run=false)`; if non-shell type → hook body written to `migrated_scripts/{id}_pre_hook.{ext}` and a `ScriptStep` pointing at that file), `execution` → `ShellStep`/`ScriptStep("main")`, `post_hook` (same script_type logic, `always_run=true`). Creates `migrated_scripts/` directory when needed. Preserves the original `Job.allow_concurrent` value. Writes `workflows.json`. Renames `jobs.json` to `jobs.json.migrated.<ts>`. Returns `Ok(false)` on fresh install (no `jobs.json`). |
+| `m002_json_to_sqlite` | `m002_json_to_sqlite.rs` | Populates `<data_dir>/acs.db`. If `acs.db` already exists, returns `Ok(false)`. If neither `workflows.json` nor `runs/` exists, creates an empty `acs.db` with the schema applied and returns `Ok(true)`. Otherwise opens `acs.db`, BEGINs a transaction, INSERTs every workflow from `workflows.json` and every run from `runs/<workflow_id>/<run_id>.json`, verifies row counts match the source, sample-verifies one row of each, COMMITs, then deletes `workflows.json` and the `runs/` directory. On any failure during insert/verify the transaction is rolled back, the partial `acs.db` (and WAL/SHM sidecars) are removed, and the JSON sources are left in place. `runs/index.json` is ignored on read and removed implicitly with the parent directory on success. `migrations.json` is left in place — it remains the canonical migration-state file. |
 
 **Adding a new migration**: Create `src/migration/mNNN_<name>.rs`, implement `Migration`, append to `registry()` in `mod.rs`.
 
@@ -642,8 +649,9 @@ The migration system (`acs/src/migration/`) supports forward-only, numbered data
 - **`workflow/log_sink.rs`**: Marker ordering, byte offsets, binary chunk preservation, `None` exit code renders as `-1`, sequential offsets across steps.
 - **`workflow/event_log_sink.rs`**: `set_current_step` propagates to chunk events, chunk includes run_id + workflow_id, no panic on zero subscribers, chunk before `set_current_step` emits nothing, inner sink still receives chunks, `set_current_step` overwrite, forwarded to inner.
 - **`workflow/steps/shell.rs`** and **`script.rs`**: Cross-platform (`#[cfg(unix)]` + `#[cfg(windows)]` mirrors). Tests cover exit-code capture, output capture, timeout, env vars, template substitution, pass_stdin.
-- **`storage/workflows.rs`**: CRUD, find_by_name, not-found, conflict, corruption recovery.
-- **`storage/workflow_runs.rs`**: create/update/get/list/count/delete, pagination, index rebuild on corruption.
+- **`storage/sqlite/workflows.rs`**: CRUD round-trips, `find_by_name`, not-found, conflict (UNIQUE on name), version-bump rules, partial updates.
+- **`storage/sqlite/workflow_runs.rs`**: create/update/get/list/count/delete via the FK-enforced `workflow_runs` table, latest-first ordering by `run_id DESC`, pagination, FK to `workflows.id`.
+- **`storage/sqlite/schema.rs`**: pragma + schema idempotency, UNIQUE constraint enforcement.
 - **`migration/mod.rs`**: State read/write round-trip, corruption tolerance, all-migrations run on fresh install, already-applied skipped, not-needed goes to `skipped_not_needed`, stops at first failure, idempotent, atomic write (no `.tmp` leftover), real-registry smoke test.
 - **`errors.rs`**: Display formatting for all `AcsError` variants, `From<>` impls.
 - **`process_kill.rs`**: Kill of dead PID does not panic (both `kill_process_tree` and `force_kill_process_tree`).
@@ -692,7 +700,7 @@ Single-instance enforcement uses `create_new(true)` (`O_EXCL`/`CREATE_NEW`). Sta
 
 ### 11.8 Atomic File Persistence
 
-`FsWorkflowStore` uses write-to-temp-then-rename for crash-safe persistence. Corrupted `workflows.json` triggers a timestamped backup. `FsWorkflowRunStore` uses the same pattern for individual run JSON files and the index file. `SizeManagedWriter` (daemon.log) uses the same pattern for log rotation.
+Structured persistence (workflows + run records) lives in `acs.db`, a SQLite database opened in WAL mode with `synchronous=NORMAL`. Every mutation runs inside a transaction, so a crash mid-write either commits the full change or none of it. `SizeManagedWriter` (daemon.log) and the migration runner's `migrations.json` writer still use write-to-temp-then-rename for the file-based artefacts that remain outside the database.
 
 ### 11.9 Numbered Migration System
 

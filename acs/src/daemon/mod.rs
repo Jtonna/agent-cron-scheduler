@@ -537,7 +537,7 @@ impl Write for SizeManagedWriter {
 /// 1. Acquires PID file
 /// 2. Loads config
 /// 3. Creates data directories
-/// 4. Initializes storage (FsWorkflowStore, FsWorkflowRunStore)
+/// 4. Initializes storage (SqliteWorkflowStore, SqliteWorkflowRunStore)
 /// 5. Creates broadcast channel
 /// 6. Creates scheduler notify
 /// 7. Starts Executor
@@ -671,14 +671,21 @@ pub async fn start_daemon(
     let pid_file = PidFile::new(pid_file_path);
     pid_file.acquire()?;
 
-    // Initialize WorkflowStore
-    let workflow_store = Arc::new(crate::storage::workflows::FsWorkflowStore::new(&data_dir).await?)
+    // Initialize SQLite-backed stores. The m002 migration is responsible for
+    // creating `acs.db` with the correct schema before this point; here we
+    // just open the existing file. Both stores share the same `SqliteDb`
+    // handle so they read/write the same connection-mutex-guarded
+    // `Connection`.
+    let db_path = data_dir.join("acs.db");
+    let sqlite_db = crate::storage::sqlite::init_db(&db_path)
+        .map_err(|e| anyhow::anyhow!("Failed to open SQLite database at {:?}: {}", db_path, e))?;
+
+    let workflow_store = Arc::new(crate::storage::sqlite::SqliteWorkflowStore::new(&sqlite_db))
         as Arc<dyn crate::storage::workflows::WorkflowStore>;
 
-    // Initialize WorkflowRunStore (persistent, file-backed).
-    let workflow_run_store =
-        Arc::new(crate::storage::workflow_runs::FsWorkflowRunStore::new(&data_dir).await?)
-            as Arc<dyn crate::storage::workflow_runs::WorkflowRunStore>;
+    let workflow_run_store = Arc::new(crate::storage::sqlite::SqliteWorkflowRunStore::new(
+        &sqlite_db,
+    )) as Arc<dyn crate::storage::workflow_runs::WorkflowRunStore>;
 
     // WorkflowEvent broadcast channel.
     let (workflow_event_tx, _workflow_event_rx) =

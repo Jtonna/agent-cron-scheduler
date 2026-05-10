@@ -272,8 +272,8 @@ impl WorkflowStore for SqliteWorkflowStore {
                     }
                 }
 
-                // Mirror FsWorkflowStore::update_workflow exactly: bump version on
-                // any definition-affecting field change; `enabled` does NOT bump.
+                // Bump version on any definition-affecting field change;
+                // `enabled` does NOT bump.
                 let mut definition_changed = false;
 
                 if let Some(name) = update.name {
