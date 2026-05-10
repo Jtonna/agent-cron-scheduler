@@ -39,8 +39,10 @@ body:json {
 docs {
   Three shell steps demonstrating template substitution between steps.
 
-  - `${steps.fetch.stdout}` resolves to the prior step's captured stdout.
-  - Each step's stdout is captured into `output_summary` (up to 64 KB by default).
+  - `${steps.fetch.stdout}` resolves to the prior step's captured stdout
+    (capped by the step's `capture.stdout_max_bytes`, default 64 KB).
+  - The full stdout/stderr stream is written to the run log file on disk;
+    fetch it via `GET /api/runs/{run_id}/log?step_index=N`.
   - On Windows the inner shell quoting will differ — `cmd /C` rather than `sh -c`.
     Adjust to PowerShell `-Command` or use Script steps with `script_type: "shell"`
     if you need consistent quoting cross-platform.

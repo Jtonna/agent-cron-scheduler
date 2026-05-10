@@ -24,6 +24,7 @@ All request and response bodies use JSON (`Content-Type: application/json`) unle
   - [GET /api/workflows/{id}/runs](#get-apiworkflowsidruns)
   - [GET /api/runs/{run_id}](#get-apirunsrun_id)
   - [POST /api/runs/{run_id}/kill](#post-apirunsrun_idkill)
+  - [GET /api/runs/{run_id}/log](#get-apirunsrun_idlog)
   - [GET /api/events/workflows](#get-apieventsworkflows)
   - [POST /api/shutdown](#post-apishutdown)
   - [POST /api/restart](#post-apirestart)
@@ -456,8 +457,7 @@ List execution runs for a specific workflow, with pagination. Returns latest-fir
           "log_byte_offset_start": 0,
           "log_byte_offset_end": 4096,
           "cost_usd": null,
-          "error": null,
-          "output_summary": null
+          "error": null
         }
       ],
       "total_cost_usd": null,
@@ -530,6 +530,38 @@ Request cancellation of a running workflow run. Sends a kill signal to the curre
 3. If the run is still `Running`, updates the persisted record to `status: "Killed"` and sets `finished_at` to now.
 
 **Race note:** If a run finishes between the kill lookup and the status update, the handler may overwrite the executor's final `Completed` or `Failed` status with `Killed`. This is documented and accepted behavior.
+
+---
+
+### GET /api/runs/{run_id}/log
+
+Fetch the on-disk run log as `text/plain`. The log holds the concatenated stdout/stderr of every step in execution order; each `StepRun` references its slice via `log_byte_offset_start` / `log_byte_offset_end`.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description                            |
+|-----------|--------|----------------------------------------|
+| `run_id`  | string | The run UUID.                          |
+
+**Query Parameters:**
+
+| Parameter    | Type    | Required | Description                                                                                |
+|--------------|---------|----------|--------------------------------------------------------------------------------------------|
+| `step_index` | integer | No       | If supplied, return only the bytes belonging to the StepRun with this `step_index`.        |
+
+When `step_index` is omitted the entire log file is returned.
+When the active step's `log_byte_offset_end` is `null` (run still in progress) the response tails to end-of-file.
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | `text/plain` body containing the requested bytes. |
+| 400 Bad Request | `run_id` is not a valid UUID. |
+| 404 Not Found | Run, requested `step_index`, or log file is missing. |
+| 500 Internal Server Error | Failed to read the log file. |
+
+The log file lives at `<data_dir>/logs/<workflow_id>/<run_id>.log` and uses the boundary markers documented under [`StepRun`](#steprun).
 
 ---
 
@@ -973,7 +1005,10 @@ Represents the execution record for one step within a run.
 | `log_byte_offset_end`  | integer (u64)           | Yes      | Byte offset where this step's output ends. `null` while the step is running. |
 | `cost_usd`             | number (f64)            | Yes      | Cost for this step in USD. Non-null only for `AgentStep`.                    |
 | `error`                | string                  | Yes      | Human-readable error description on failure, or `null`.                      |
-| `output_summary`       | any JSON value          | Yes      | Captured stdout if structured (when `capture.parser` is set), or `null`.     |
+
+The captured stdout/stderr is not stored on the `StepRun`. Each record's
+`log_byte_offset_start` / `log_byte_offset_end` pair frames its bytes inside
+the combined run log file; fetch them via [`GET /api/runs/{run_id}/log`](#get-apirunsrun_idlog).
 
 **Combined run log file location:**
 ```

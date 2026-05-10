@@ -25,10 +25,13 @@ docs {
     - `step_index`, `step_id`, `kind`, `status`
     - `started_at`, `finished_at`, `exit_code`
     - `cost_usd` (Agent steps only)
-    - `output_summary` (captured stdout up to `stdout_max_bytes`)
-    - `log_byte_offset_start` / `_end` — byte offsets into the run log file
+    - `log_byte_offset_start` / `_end` — byte offsets into the run log file.
+      Use `GET /api/runs/:run_id/log?step_index=N` to fetch the bytes themselves.
     - `error` (only on failure)
   - `total_cost_usd` (sum across Agent steps)
   - `total_duration_ms`
   - `workflow_snapshot` — frozen `Workflow` state at run time
+
+  Per-step captured stdout lives on disk in the run log file rather than on
+  the StepRun record — see the `Get run log` request in this folder.
 }

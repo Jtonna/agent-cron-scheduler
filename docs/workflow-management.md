@@ -235,7 +235,7 @@ Multi-way branching step. Evaluates a template expression and dispatches to one 
 
 **Runtime behavior.** The `MatchStep` does not spawn a process. The executor evaluates `expr`, looks up the matching case, and recursively executes that branch's steps in the same execution context as the parent workflow. Chosen branch steps appear sequentially in the run's `steps[]` list after the synthetic `MatchStep` entry.
 
-The `MatchStep` itself always records a `RunStatus::Completed` `StepRun` entry with an `output_summary` field containing `{ "evaluated": "<value>", "case_taken": "<key or 'default' or 'none'>" }`.
+The `MatchStep` itself always records a `RunStatus::Completed` `StepRun` entry. The selected branch is observable via the subsequent step records: when case `"A"` is taken, only `cases.A` steps appear in `steps[]` after the synthetic `MatchStep` entry; when no case matches and a default is configured, only the default branch steps appear; when neither matches, no branch steps appear at all.
 
 Step ids must be globally unique — ids inside branch steps are validated against the top-level step ids and against ids in all other branches.
 
@@ -617,7 +617,8 @@ Each execution creates a `WorkflowRun` persisted under `<data_dir>/runs/<workflo
 | `log_byte_offset_end` | `Option<u64>` | Byte offset just after this step's END marker. |
 | `cost_usd` | `Option<f64>` | Cost in USD extracted from the agent's streaming output. Present for `AgentStep` only. |
 | `error` | `Option<String>` | Error description for `Failed` or `Killed` steps. |
-| `output_summary` | `Option<serde_json::Value>` | Captured stdout (if structured). Also used by `MatchStep` to store `{ "evaluated": "...", "case_taken": "..." }`. |
+
+Per-step stdout/stderr is captured on disk in the combined run log file (see [`storage.md`](./storage.md)). Each `StepRun`'s `log_byte_offset_*` pair frames its slice; fetch the bytes via `GET /api/runs/{run_id}/log?step_index=N`.
 
 ### Run status values
 

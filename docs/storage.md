@@ -377,6 +377,12 @@ written.  The executor stores these offsets in `StepRun.log_byte_offset_start`
 and `StepRun.log_byte_offset_end` respectively, enabling fast random access to
 any step's output without scanning the entire file.
 
+Per-step output lives only in this log file — the SQLite `workflow_runs.steps_json`
+blob carries the byte offsets but not the bytes themselves. Clients fetch step
+output via `GET /api/runs/{run_id}/log?step_index=N`, which seeks to
+`log_byte_offset_start` and reads through `log_byte_offset_end` (or end-of-file
+when the step is still running and `_end` is `null`).
+
 ---
 
 ## 8. EventEmittingLogSink

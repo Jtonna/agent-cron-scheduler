@@ -316,8 +316,6 @@ pub struct StepRun {
     pub cost_usd: Option<f64>,
     #[serde(default)]
     pub error: Option<String>,
-    #[serde(default)]
-    pub output_summary: Option<serde_json::Value>,
 }
 
 // ─── TriggerParams (workflow variant) ────────────────────────────────────────
@@ -876,7 +874,6 @@ mod tests {
                 log_byte_offset_end: Some(1024),
                 cost_usd: None,
                 error: None,
-                output_summary: None,
             }],
             total_cost_usd: Some(0.001),
             total_duration_ms: Some(500),

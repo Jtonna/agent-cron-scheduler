@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use indexmap::IndexMap;
-use serde_json::json;
 use tokio::sync::{broadcast, watch, RwLock};
 use uuid::Uuid;
 
@@ -137,7 +136,17 @@ async fn execute_steps(
 
             let started_at = Utc::now();
 
-            // Synthetic StepRun for the MatchStep itself.
+            // Synthetic StepRun for the MatchStep itself. The case_taken
+            // decision is recorded in the in-memory StepOutput below (and
+            // flows into ${steps.<id>.exports.*} for downstream substitution)
+            // but is not persisted on the StepRun — that record carries the
+            // log byte range plus structural fields only.
+            tracing::debug!(
+                step_id = %m.common.id,
+                evaluated = %evaluated,
+                case_taken = %case_taken,
+                "match step decision"
+            );
             let match_run = StepRun {
                 step_index: ctx.step_index,
                 step_id: m.common.id.clone(),
@@ -150,10 +159,6 @@ async fn execute_steps(
                 log_byte_offset_end: None,
                 cost_usd: None,
                 error: None,
-                output_summary: Some(json!({
-                    "evaluated": evaluated,
-                    "case_taken": case_taken
-                })),
             };
 
             // Emit StepCompleted for the match step.
@@ -557,7 +562,6 @@ fn make_step_run(
         log_byte_offset_end: None,
         cost_usd: output.cost.as_ref().and_then(|c| c.total_cost_usd),
         error,
-        output_summary: output.stdout.clone(),
     }
 }
 
@@ -578,7 +582,6 @@ fn make_failed_step_run(
         log_byte_offset_end: None,
         cost_usd: None,
         error: Some(error.to_string()),
-        output_summary: None,
     }
 }
 
@@ -1151,12 +1154,13 @@ mod tests {
 
         let match_run = run.steps.iter().find(|r| r.step_id == "m1").unwrap();
         assert_eq!(match_run.status, RunStatus::Completed);
-        // output_summary should indicate case_taken == "A"
-        let summary = match_run.output_summary.as_ref().unwrap();
-        assert_eq!(summary["case_taken"], json!("A"));
-
+        // The "A" case was taken: branch_a ran and branch_b did not.
         let branch_run = run.steps.iter().find(|r| r.step_id == "branch_a").unwrap();
         assert_eq!(branch_run.status, RunStatus::Completed);
+        assert!(
+            !run.steps.iter().any(|r| r.step_id == "branch_b"),
+            "branch_b must not run when case 'A' is selected"
+        );
     }
 
     // ── Test 7: MatchStep no case + default branch ────────────────────────────
@@ -1199,12 +1203,15 @@ mod tests {
         assert_eq!(run.status, RunStatus::Completed);
 
         let match_run = run.steps.iter().find(|r| r.step_id == "m2").unwrap();
-        let summary = match_run.output_summary.as_ref().unwrap();
-        assert_eq!(summary["case_taken"], json!("default"));
+        assert_eq!(match_run.status, RunStatus::Completed);
 
         assert!(
             run.steps.iter().any(|r| r.step_id == "default_step"),
             "default branch step should appear in step_runs"
+        );
+        assert!(
+            !run.steps.iter().any(|r| r.step_id == "branch_a2"),
+            "no case branch should have run"
         );
     }
 
@@ -1246,8 +1253,7 @@ mod tests {
         assert_eq!(run.status, RunStatus::Completed);
 
         let match_run = run.steps.iter().find(|r| r.step_id == "m3").unwrap();
-        let summary = match_run.output_summary.as_ref().unwrap();
-        assert_eq!(summary["case_taken"], json!("none"));
+        assert_eq!(match_run.status, RunStatus::Completed);
 
         // No branch steps should appear
         assert!(

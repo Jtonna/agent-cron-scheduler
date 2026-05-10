@@ -342,7 +342,6 @@ mod tests {
                 log_byte_offset_end: Some(1024),
                 cost_usd: Some(0.001),
                 error: None,
-                output_summary: Some(serde_json::json!({"summary": "ok"})),
             }],
             total_cost_usd: Some(0.001),
             total_duration_ms: Some(500),

@@ -45,8 +45,10 @@ docs {
   Step 2 (`agent`, claude_code_cli): templates the prior step's stdout into
   the prompt, then invokes the default command:
     `claude -p "${prompt}" --output-format stream-json --verbose --dangerously-skip-permissions`
-  The streaming NDJSON parser extracts cost, model, and final message into
-  the StepRun's `cost_usd`, `output_summary`, etc.
+  The streaming NDJSON parser extracts cost into the StepRun's `cost_usd`
+  and makes the model/final-message available to downstream steps via
+  `${steps.<id>.stdout.*}`. The full streamed response is also captured in
+  the run log file (`GET /api/runs/{run_id}/log?step_index=N`).
 
   Note the agent prompt is a single line — embedded `\n\n` would break
   `cmd /C claude -p "..."` quoting on Windows.

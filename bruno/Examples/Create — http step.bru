@@ -41,6 +41,9 @@ docs {
   - `expect_status` — list of HTTP status codes treated as success (exit 0).
     Anything else maps to exit code = HTTP status code.
   - When the response Content-Type is JSON, the body is parsed structurally
-    into `output_summary`. Otherwise it's stored as a raw string.
+    so downstream `${steps.<id>.stdout.<field>}` paths can navigate it.
+    Non-JSON bodies remain available as raw text via `${steps.<id>.stdout}`.
+  - The full response body is also written to the run log file and is
+    fetchable via `GET /api/runs/{run_id}/log?step_index=N`.
   - Kill is implemented by dropping the in-flight reqwest future via tokio::select!.
 }

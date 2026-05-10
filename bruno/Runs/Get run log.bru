@@ -1,0 +1,39 @@
+meta {
+  name: Get run log
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/runs/:run_id/log?step_index=
+  body: none
+  auth: none
+}
+
+params:path {
+  run_id: {{runId}}
+}
+
+params:query {
+  ~step_index: 0
+}
+
+docs {
+  Fetch the on-disk run log as `text/plain`. The log file holds the
+  concatenated stdout/stderr of every step in execution order, written by
+  the executor while the run is in progress.
+
+  Two modes:
+  - No `step_index` query param → returns the entire log file.
+  - `step_index=N` → returns only the bytes belonging to that step,
+    framed by the StepRun's `log_byte_offset_start` / `log_byte_offset_end`.
+
+  Use this endpoint to inspect step output instead of looking on the
+  StepRun record itself — the StepRun carries byte offsets only.
+
+  While the run is still in progress, the active step's
+  `log_byte_offset_end` is null and the response tails to end-of-file.
+
+  Response: 200 OK with the bytes (text/plain). 404 if the run, the
+  requested step_index, or the on-disk log file is missing.
+}

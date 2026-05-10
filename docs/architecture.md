@@ -464,9 +464,8 @@ StepDef (tag = "kind")
 |---|---|
 | `step_index` | 1-based position in the runtime execution sequence, matching the `step_index` in `StepStarted` / `StepCompleted` SSE events |
 | `kind` | `"shell"` \| `"script"` \| `"http"` \| `"match"` \| `"set_var"` \| `"agent"` |
-| `log_byte_offset_start` / `_end` | Byte range in the combined run log file for fast UI indexing |
+| `log_byte_offset_start` / `_end` | Byte range in the combined run log file for fast UI indexing. The captured stdout/stderr is only on disk — fetch the slice via `GET /api/runs/{run_id}/log?step_index=N`. |
 | `cost_usd` | Populated only by `AgentStep` |
-| `output_summary` | Captured stdout if structured; `MatchStep` uses this for `evaluated` + `case_taken` |
 
 ### `RunStatus`
 

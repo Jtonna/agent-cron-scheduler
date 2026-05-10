@@ -70,6 +70,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/api/runs/{run_id}/kill",
             post(workflow_routes::kill_workflow_run),
         )
+        .route("/api/runs/{run_id}/log", get(workflow_routes::get_run_log))
         // SSE for WorkflowEvent.
         .route("/api/events/workflows", get(sse::workflow_events_handler))
         .route("/api/shutdown", post(routes::shutdown))

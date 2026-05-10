@@ -705,6 +705,183 @@ pub async fn kill_workflow_run(
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/runs/{run_id}/log
+// ---------------------------------------------------------------------------
+//
+// Returns the on-disk run log (or a single step's slice of it) as text/plain.
+// The file lives at `<data_dir>/logs/<workflow_id>/<run_id>.log` and contains
+// the concatenated stdout/stderr from every step. Each persisted `StepRun`
+// frames its bytes via `log_byte_offset_start` and `log_byte_offset_end` —
+// when `step_index` is supplied the handler reads exactly that range.
+
+#[derive(Deserialize, Default)]
+pub struct RunLogQuery {
+    /// If supplied, return only the byte range belonging to this step index.
+    step_index: Option<usize>,
+}
+
+/// Resolve the configured data directory the same way `trigger_workflow` does.
+fn resolve_data_dir_for(state: &AppState) -> std::path::PathBuf {
+    if let Some(ref dir) = state.config.data_dir {
+        std::path::PathBuf::from(dir)
+    } else {
+        crate::daemon::resolve_data_dir(None)
+    }
+}
+
+pub async fn get_run_log(
+    State(state): State<Arc<AppState>>,
+    Path(run_id_str): Path<String>,
+    Query(query): Query<RunLogQuery>,
+) -> impl IntoResponse {
+    let run_id = match Uuid::parse_str(&run_id_str) {
+        Ok(id) => id,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                &format!("Invalid run_id '{}'", run_id_str),
+            )
+            .into_response();
+        }
+    };
+
+    let run = match state.workflow_run_store.get_run(run_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                &format!("Run '{}' not found", run_id),
+            )
+            .into_response();
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch run {} for log: {}", run_id, e);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to fetch run: {}", e),
+            )
+            .into_response();
+        }
+    };
+
+    let data_dir = resolve_data_dir_for(&state);
+    let log_path = data_dir
+        .join("logs")
+        .join(run.workflow_id.to_string())
+        .join(format!("{}.log", run_id));
+
+    if !log_path.exists() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            &format!("Log file for run '{}' is not on disk", run_id),
+        )
+        .into_response();
+    }
+
+    // Step-scoped slice → resolve bounds against the StepRun.
+    if let Some(idx) = query.step_index {
+        let step = match run.steps.iter().find(|s| s.step_index == idx) {
+            Some(s) => s,
+            None => {
+                return error_response(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    &format!("step_index {} not found on run '{}'", idx, run_id),
+                )
+                .into_response();
+            }
+        };
+
+        let bytes = match read_step_slice(
+            &log_path,
+            step.log_byte_offset_start,
+            step.log_byte_offset_end,
+        )
+        .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!(
+                    "Failed to read step slice for run {} step {}: {}",
+                    run_id,
+                    idx,
+                    e
+                );
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    &format!("Failed to read step log: {}", e),
+                )
+                .into_response();
+            }
+        };
+        return (
+            StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
+            bytes,
+        )
+            .into_response();
+    }
+
+    // Whole-file path — no step_index supplied.
+    match tokio::fs::read(&log_path).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
+            bytes,
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to read log file {:?}: {}", log_path, e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to read log file: {}", e),
+            )
+            .into_response()
+        }
+    }
+}
+
+/// Read `[start, end)` from `path`. When `end` is `None` the step is still
+/// running and we tail to end-of-file.
+async fn read_step_slice(
+    path: &std::path::Path,
+    start: u64,
+    end: Option<u64>,
+) -> std::io::Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut file = tokio::fs::File::open(path).await?;
+    file.seek(std::io::SeekFrom::Start(start)).await?;
+
+    let mut buf = Vec::new();
+    match end {
+        Some(end_offset) if end_offset > start => {
+            let len = (end_offset - start) as usize;
+            buf.resize(len, 0);
+            file.read_exact(&mut buf).await?;
+        }
+        Some(_) => {
+            // end <= start → empty slice.
+        }
+        None => {
+            file.read_to_end(&mut buf).await?;
+        }
+    }
+    Ok(buf)
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/workflows/{id}/runs
 // ---------------------------------------------------------------------------
 
@@ -1487,5 +1664,257 @@ mod tests {
             StatusCode::ACCEPTED,
             "trigger should succeed after the active run finishes"
         );
+    }
+
+    // ── GET /api/runs/{run_id}/log ────────────────────────────────────────────
+
+    /// Build an `AppState` whose `data_dir` points at the given directory so
+    /// the log endpoint resolves files inside the test sandbox instead of the
+    /// real platform data dir.
+    fn make_state_with_data_dir(
+        wf_store: Arc<dyn WorkflowStore>,
+        run_store: Arc<dyn WorkflowRunStore>,
+        data_dir: &std::path::Path,
+    ) -> Arc<crate::server::AppState> {
+        let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(256);
+        let config = DaemonConfig {
+            data_dir: Some(data_dir.to_path_buf()),
+            ..DaemonConfig::default()
+        };
+        Arc::new(crate::server::AppState {
+            scheduler_notify: Arc::new(Notify::new()),
+            config: Arc::new(config),
+            start_time: Instant::now(),
+            shutdown_tx: None,
+            workflow_event_tx,
+            workflow_store: wf_store,
+            workflow_run_store: run_store,
+            kill_signals: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        })
+    }
+
+    /// Stage a run record + on-disk log file inside `data_dir`.
+    async fn stage_run_with_log(
+        run_store: &InMemoryRunStore,
+        wf: &Workflow,
+        steps: Vec<crate::models::workflow::StepRun>,
+        log_bytes: &[u8],
+        data_dir: &std::path::Path,
+    ) -> Uuid {
+        let run_id = Uuid::now_v7();
+        let run = WorkflowRun {
+            run_id,
+            workflow_id: wf.id,
+            workflow_version: wf.version,
+            workflow_snapshot: wf.clone(),
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            status: RunStatus::Completed,
+            trigger_input: None,
+            steps,
+            total_cost_usd: None,
+            total_duration_ms: None,
+        };
+        run_store.create_run(run).await.unwrap();
+
+        let log_dir = data_dir.join("logs").join(wf.id.to_string());
+        tokio::fs::create_dir_all(&log_dir).await.unwrap();
+        tokio::fs::write(log_dir.join(format!("{}.log", run_id)), log_bytes)
+            .await
+            .unwrap();
+        run_id
+    }
+
+    fn step_record(
+        index: usize,
+        id: &str,
+        start: u64,
+        end: Option<u64>,
+    ) -> crate::models::workflow::StepRun {
+        crate::models::workflow::StepRun {
+            step_index: index,
+            step_id: id.to_string(),
+            kind: "shell".to_string(),
+            status: RunStatus::Completed,
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            exit_code: Some(0),
+            log_byte_offset_start: start,
+            log_byte_offset_end: end,
+            cost_usd: None,
+            error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_run_log_returns_full_file_when_no_step_index() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wf_store = Arc::new(InMemoryWorkflowStore::new());
+        let wf = wf_store
+            .create_workflow(make_new_workflow("log-full"))
+            .await
+            .unwrap();
+        let run_store = Arc::new(InMemoryRunStore::new());
+
+        let log_bytes = b"step0-bytes-step1-bytes";
+        let steps = vec![
+            step_record(0, "s0", 0, Some(11)),
+            step_record(1, "s1", 11, Some(23)),
+        ];
+        let run_id = stage_run_with_log(&run_store, &wf, steps, log_bytes, tmp.path()).await;
+
+        let state = make_state_with_data_dir(
+            Arc::clone(&wf_store) as Arc<dyn WorkflowStore>,
+            Arc::clone(&run_store) as Arc<dyn WorkflowRunStore>,
+            tmp.path(),
+        );
+        let app = crate::server::create_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{}/log", run_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], log_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_get_run_log_returns_step_slice() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wf_store = Arc::new(InMemoryWorkflowStore::new());
+        let wf = wf_store
+            .create_workflow(make_new_workflow("log-slice"))
+            .await
+            .unwrap();
+        let run_store = Arc::new(InMemoryRunStore::new());
+
+        let log_bytes = b"AAAAABBBBBCCCCC";
+        let steps = vec![
+            step_record(0, "s0", 0, Some(5)),
+            step_record(1, "s1", 5, Some(10)),
+            step_record(2, "s2", 10, Some(15)),
+        ];
+        let run_id = stage_run_with_log(&run_store, &wf, steps, log_bytes, tmp.path()).await;
+
+        let state = make_state_with_data_dir(
+            Arc::clone(&wf_store) as Arc<dyn WorkflowStore>,
+            Arc::clone(&run_store) as Arc<dyn WorkflowRunStore>,
+            tmp.path(),
+        );
+        let app = crate::server::create_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{}/log?step_index=1", run_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], b"BBBBB");
+    }
+
+    #[tokio::test]
+    async fn test_get_run_log_step_index_not_found_returns_404() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wf_store = Arc::new(InMemoryWorkflowStore::new());
+        let wf = wf_store
+            .create_workflow(make_new_workflow("log-404-step"))
+            .await
+            .unwrap();
+        let run_store = Arc::new(InMemoryRunStore::new());
+
+        let steps = vec![step_record(0, "s0", 0, Some(3))];
+        let run_id = stage_run_with_log(&run_store, &wf, steps, b"abc", tmp.path()).await;
+
+        let state = make_state_with_data_dir(
+            Arc::clone(&wf_store) as Arc<dyn WorkflowStore>,
+            Arc::clone(&run_store) as Arc<dyn WorkflowRunStore>,
+            tmp.path(),
+        );
+        let app = crate::server::create_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{}/log?step_index=99", run_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_run_log_unknown_run_returns_404() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = make_state_with_data_dir(
+            Arc::new(InMemoryWorkflowStore::new()) as Arc<dyn WorkflowStore>,
+            Arc::new(InMemoryRunStore::new()) as Arc<dyn WorkflowRunStore>,
+            tmp.path(),
+        );
+        let app = crate::server::create_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{}/log", Uuid::now_v7()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_run_log_missing_log_file_returns_404() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wf_store = Arc::new(InMemoryWorkflowStore::new());
+        let wf = wf_store
+            .create_workflow(make_new_workflow("log-missing-file"))
+            .await
+            .unwrap();
+        let run_store = Arc::new(InMemoryRunStore::new());
+
+        // Insert a run record but never write the log file to disk.
+        let run = WorkflowRun {
+            run_id: Uuid::now_v7(),
+            workflow_id: wf.id,
+            workflow_version: wf.version,
+            workflow_snapshot: wf.clone(),
+            started_at: Utc::now(),
+            finished_at: None,
+            status: RunStatus::Running,
+            trigger_input: None,
+            steps: vec![],
+            total_cost_usd: None,
+            total_duration_ms: None,
+        };
+        let run_id = run.run_id;
+        run_store.create_run(run).await.unwrap();
+
+        let state = make_state_with_data_dir(
+            Arc::clone(&wf_store) as Arc<dyn WorkflowStore>,
+            Arc::clone(&run_store) as Arc<dyn WorkflowRunStore>,
+            tmp.path(),
+        );
+        let app = crate::server::create_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{}/log", run_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

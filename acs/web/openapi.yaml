@@ -7,7 +7,7 @@ info:
     ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
     Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "4.2.0"
+  version: "4.2.1"
   license:
     name: MIT
 
@@ -47,7 +47,7 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "4.2.0"
+                version: "4.2.1"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
                 service:
                   registered: true
@@ -425,6 +425,63 @@ paths:
                 message: "Run with id '0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678' not found"
         "500":
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/runs/{run_id}/log:
+    get:
+      operationId: getRunLog
+      summary: Fetch a run's combined log file (or a single step's slice)
+      description: |
+        Returns the on-disk log captured for a workflow run as `text/plain`.
+        The file contains the concatenated stdout/stderr of every step in
+        execution order. Each `StepRun` records the byte range it occupies
+        via `log_byte_offset_start` / `log_byte_offset_end`; supplying
+        `step_index` returns just that range.
+
+        While a run is still in progress the active step's
+        `log_byte_offset_end` is null, and the response tails to end-of-file.
+      tags: [WorkflowRuns]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          description: UUID of the workflow run.
+          schema:
+            type: string
+            format: uuid
+        - name: step_index
+          in: query
+          required: false
+          description: |
+            If supplied, return only the bytes belonging to the StepRun with
+            this `step_index`. Otherwise the entire log file is returned.
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: Log content (or the requested step slice).
+          content:
+            text/plain:
+              schema:
+                type: string
+        "404":
+          description: Run, step, or log file not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          description: run_id is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error.
           content:
             application/json:
               schema:
@@ -1387,10 +1444,6 @@ components:
           nullable: true
           description: Error message if the step failed to start or errored.
           example: null
-        output_summary:
-          nullable: true
-          description: Parsed output summary (JSON). Shape depends on the step's capture parser.
-          example: { "result": "ok" }
 
     WorkflowRun:
       type: object

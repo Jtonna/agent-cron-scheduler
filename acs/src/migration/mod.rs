@@ -28,6 +28,7 @@
 pub mod legacy_types;
 mod m001_jobs_to_workflows;
 mod m002_json_to_sqlite;
+mod m003_drop_step_output_summary;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -67,6 +68,7 @@ fn registry() -> Vec<Box<dyn Migration>> {
     vec![
         Box::new(m001_jobs_to_workflows::JobsToWorkflows),
         Box::new(m002_json_to_sqlite::JsonToSqlite),
+        Box::new(m003_drop_step_output_summary::DropStepOutputSummary),
     ]
 }
 
