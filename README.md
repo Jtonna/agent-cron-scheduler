@@ -1,17 +1,18 @@
 # Agent Cron Scheduler (ACS)
 
-A cross-platform cron scheduler daemon with a CLI and REST API. Manages scheduled jobs using standard 5-field cron expressions, spawns processes through a pluggable `PtySpawner` trait (production uses `NoPtySpawner` with piped stdio via `std::process::Command`; the `portable-pty` crate provides the `CommandBuilder` interface), and streams output in real time via Server-Sent Events (SSE).
+A cross-platform multi-step workflow scheduler daemon with a CLI, REST API, and built-in web UI. Workflows run on standard cron schedules and chain together shell commands, scripts, HTTP calls, branching logic, and AI-agent invocations -- with live output streaming over Server-Sent Events.
 
-Supports Windows, macOS, and Linux.
+Supports Windows, macOS, and Linux. Current version: **4.2.5**.
 
 ## Features
 
-- **Cron scheduling** -- standard 5-field cron expressions with timezone support
-- **REST API** -- full CRUD for jobs, paginated run history, real-time SSE streaming
-- **CLI** -- manage jobs, view logs, trigger runs from the terminal
-- **Cross-platform** -- Windows (Registry Run key), macOS (launchd), Linux (systemd) service integration
-- **Persistent storage** -- JSON-backed job store with atomic writes and corruption recovery
-- **Run capture** -- stdout/stderr captured and stored per-run with automatic log rotation
+- **Multi-step workflows** -- chain `shell`, `script`, `http`, `match`, `set_var`, and `agent` steps with per-step failure policies, retries, timeouts, and stdin/env routing
+- **Cron scheduling** -- 5- or 6-field expressions with IANA timezone support; `Cron` or `WaitForCompletion` schedule modes
+- **REST API + OpenAPI** -- full workflow CRUD, paginated run history, per-step log slicing, live SSE event stream; Swagger UI served at `http://127.0.0.1:8377/`
+- **CLI** -- `agentcronsystem workflows {create,list,get,update,delete,trigger,runs}` plus daemon lifecycle commands
+- **Cross-platform service integration** -- Windows (Registry Run key), macOS (launchd), Linux (systemd user unit)
+- **SQLite-backed storage** -- workflow definitions and run history persisted to `acs.db` (WAL mode); combined per-run log files with per-step byte-offset indexing
+- **Agent steps** -- first-class `claude_code_cli` step kind for AI-assisted workflows
 
 ## Installing a Production Release
 
@@ -37,55 +38,78 @@ agentcronsystem update
 # Start the daemon (registers as a system service, runs in background)
 agentcronsystem start
 
-# Add a job that runs every minute
-agentcronsystem add -n "hello" -s "* * * * *" -c "echo hello world"
+# Create a workflow from a JSON file
+agentcronsystem workflows create --file hello.json
 
-# Trigger it immediately and follow the output
-agentcronsystem trigger hello --follow
+# List workflows
+agentcronsystem workflows list
 
-# List all jobs
-agentcronsystem list
+# Trigger a workflow manually (by name or UUID)
+agentcronsystem workflows trigger hello
+
+# List recent runs for a workflow
+agentcronsystem workflows runs hello
 
 # Check daemon status
 agentcronsystem status
-
-# View recent runs for a job
-agentcronsystem logs hello
 
 # Stop the daemon
 agentcronsystem stop
 ```
 
-The daemon starts an HTTP server on `127.0.0.1:8377`. Once running, you can also interact via the REST API:
+A minimal `hello.json`:
+
+```json
+{
+  "name": "hello",
+  "schedule": "* * * * *",
+  "steps": [
+    { "kind": "shell", "id": "say-hi", "command": "echo hello world" }
+  ]
+}
+```
+
+The daemon serves an HTTP API on `127.0.0.1:8377`. The same operations via curl:
 
 ```sh
 # Health check
 curl http://127.0.0.1:8377/health
 
-# List jobs
-curl http://127.0.0.1:8377/api/jobs
+# List workflows
+curl http://127.0.0.1:8377/api/workflows
 
-# Create a job
-curl -X POST http://127.0.0.1:8377/api/jobs \
+# Create a workflow
+curl -X POST http://127.0.0.1:8377/api/workflows \
   -H "Content-Type: application/json" \
-  -d '{"name":"curl-test","schedule":"* * * * *","execution":{"type":"ShellCommand","value":"echo from curl"}}'
+  -d '{
+    "name": "curl-test",
+    "schedule": "* * * * *",
+    "steps": [
+      { "kind": "shell", "id": "step1", "command": "echo from curl" }
+    ]
+  }'
 
-# Stream events (SSE)
-curl -N http://127.0.0.1:8377/api/events
+# Trigger a workflow (returns 202 + run_id)
+curl -X POST http://127.0.0.1:8377/api/workflows/curl-test/trigger \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# Subscribe to the live event stream (SSE)
+curl -N http://127.0.0.1:8377/api/events/workflows
 ```
+
+Open `http://127.0.0.1:8377/` in a browser for the embedded Swagger UI.
 
 ---
 
 ## Developer Guide
 
-### Installing a Development Environment
-
-#### Prerequisites
+### Prerequisites
 
 - [Rust](https://rustup.rs/) stable toolchain (1.88+)
-- [Node.js](https://nodejs.org/) 20+ (for frontend development only -- not required for `cargo build`)
+- [Node.js](https://nodejs.org/) 20+ (only required for frontend development; not needed for `cargo build`)
 
-#### Clone and Build
+### Clone and Build
 
 ```sh
 git clone https://github.com/Jtonna/agent-cron-scheduler.git
@@ -103,7 +127,7 @@ cargo install --path .
 
 The binary is at `acs/target/debug/agentcronsystem` (or `acs/target/release/agentcronsystem`).
 
-`cargo build` does not build the frontend. The `web/` directory contains Swagger UI API documentation (an `openapi.yaml` spec plus Swagger JS/CSS assets) embedded into the binary via `rust-embed`. The `build.rs` script verifies that `web/` exists but does not run npm or any frontend build step.
+`cargo build` does not build the frontend. The `web/` directory contains Swagger UI assets and the `openapi.yaml` spec, embedded into the binary via `rust-embed`. The `build.rs` script verifies that `web/` exists; it does not run npm.
 
 ### Running in Development
 
@@ -122,8 +146,8 @@ In a second terminal:
 
 ```sh
 cargo run -- status
-cargo run -- add -n "test" -s "* * * * *" -c "echo hello"
-cargo run -- trigger test --follow
+cargo run -- workflows create --file ./hello.json
+cargo run -- workflows trigger hello
 cargo run -- stop
 ```
 
@@ -140,7 +164,7 @@ cd electron/packages/frontend && npm run dev
 # Open http://localhost:3000 (Next.js default port; may vary if 3000 is in use)
 ```
 
-The dev server proxies `/api/*` and `/health` to `http://127.0.0.1:8377` via rewrites in `next.config.ts`. The backend includes CORS middleware so direct cross-origin requests also work.
+The dev server proxies `/api/*` and `/health` to `http://127.0.0.1:8377` via rewrites in `next.config.ts`. The backend ships with CORS middleware so direct cross-origin requests also work.
 
 ### Testing
 
@@ -152,10 +176,9 @@ cargo test
 cargo test storage::
 cargo test daemon::scheduler::
 
-# Integration tests only
-cargo test --test api_tests
+# Integration tests
+cargo test --test workflow_api_tests
 cargo test --test cli_tests
-cargo test --test scheduler_tests
 
 # Lint and format checks
 cargo clippy -- -D warnings
@@ -170,31 +193,40 @@ acs/                     # Rust project root
     main.rs              # Entry point, CLI dispatch
     lib.rs               # Re-exports all public modules
     errors.rs            # Custom error types (AcsError)
-    models/              # Job, JobRun, DaemonConfig, DispatchRequest, TriggerParams structs
-      dispatch.rs        # Dispatch request and trigger parameter models
-      run.rs             # Run models
-    storage/             # JobStore + LogStore traits and implementations
-    daemon/              # Daemon bootstrap, scheduler, executor, events, service registration
+    models/
+      workflow.rs        # Workflow, NewWorkflow, StepDef, WorkflowRun, TriggerParams, etc.
+      config.rs          # DaemonConfig
+    storage/             # WorkflowStore + WorkflowRunStore (SQLite) + log sinks
+    daemon/              # Daemon bootstrap, scheduler, workflow executor, events, service registration
     server/              # Axum router, REST routes, SSE handler, health endpoint
-    cli/                 # Clap CLI definition, subcommand handlers
+    cli/                 # Clap CLI definitions and subcommand handlers
     pty/                 # Process spawning abstraction
-  web/                   # Swagger UI API documentation (embedded via rust-embed)
-  tests/                 # Integration tests (api, cli, scheduler)
+  web/                   # Swagger UI + openapi.yaml (embedded via rust-embed)
+  tests/                 # Integration tests (workflow_api_tests, cli_tests)
 electron/                # Electron app and frontend
   packages/
-    frontend/            # Next.js interactive dashboard (independent)
-docs/                    # Documentation
+    frontend/            # Next.js dashboard (independent)
+docs/                    # Markdown documentation -- start at docs/INDEX.md
 ```
 
 ---
 
 ## AI-Assisted Development
 
-This project uses [starterpack](https://github.com/Jtonna/starterpack) to augment AI agent workflows for writing code, documentation, testing, and lifecycle management including GitHub issue tracking via [beads](https://github.com/steveyegge/beads).
+This project uses [starterpack](https://github.com/Jtonna/starterpack) to augment AI agent workflows for writing code, documentation, testing, and lifecycle management, including GitHub issue tracking via [beads](https://github.com/steveyegge/beads).
 
 ## Documentation
 
-Full system documentation for developers and AI agents is available in the [docs/](docs/INDEX.md) directory.
+Full system documentation lives in [docs/INDEX.md](docs/INDEX.md). Highlights:
+
+- [Architecture](docs/architecture.md) -- modules, data flow, concurrency model
+- [CLI Reference](docs/cli-reference.md) -- every `agentcronsystem` subcommand
+- [API Reference](docs/api-reference.md) -- REST endpoints, SSE events, schemas
+- [Workflow Management](docs/workflow-management.md) -- step kinds, template substitution, failure policies
+- [Configuration](docs/configuration.md) -- config file format and data directories
+- [Storage](docs/storage.md) -- SQLite layout, log sinks, migrations
+- [Service Registration](docs/service-registration.md) -- platform-specific service setup
+- [Troubleshooting](docs/troubleshooting.md) -- common problems and fixes
 
 ## License
 
