@@ -1461,7 +1461,8 @@ mod tests {
                 },
                 agent_type: AgentType::ClaudeCodeCli,
                 prompt: "do something".to_string(),
-                command_template: None,
+                model: None,
+                extra_args: vec![],
             })],
         );
 

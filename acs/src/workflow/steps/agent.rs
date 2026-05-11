@@ -11,39 +11,6 @@ use crate::workflow::template;
 
 pub use crate::models::workflow::AgentStep;
 
-/// Substitute the literal `${prompt}` token in `template` with `prompt_value`.
-///
-/// This is a distinct second substitution pass, separate from the `${input.*}` /
-/// `${steps.*}` pass done by `template::substitute`. A workflow author writes:
-///
-///   prompt: "review ${input.repo}"
-///
-/// and the template engine substitutes `${input.repo}` → e.g. "acme/widgets". Then
-/// `${prompt}` in the command template is substituted with the resolved prompt
-/// string. Two passes prevents recursive/double expansion of `${}` sequences that
-/// appear inside the resolved prompt value.
-fn substitute_prompt(template_str: &str, prompt_value: &str) -> String {
-    template_str.replace("${prompt}", prompt_value)
-}
-
-/// Build a `portable_pty::CommandBuilder` for a shell command string.
-/// Mirrors the same logic in shell.rs.
-fn build_command(command: &str) -> portable_pty::CommandBuilder {
-    #[cfg(windows)]
-    {
-        let mut cmd = portable_pty::CommandBuilder::new("cmd");
-        cmd.arg(format!("/C {}", command));
-        cmd
-    }
-    #[cfg(not(windows))]
-    {
-        let mut cmd = portable_pty::CommandBuilder::new("sh");
-        cmd.arg("-c");
-        cmd.arg(command);
-        cmd
-    }
-}
-
 /// Parse raw captured bytes into a `serde_json::Value` based on the parser spec.
 /// Mirrors the same logic in shell.rs.
 fn parse_output(buf: &[u8], parser: Option<&str>, step_id: &str) -> Value {
@@ -84,32 +51,10 @@ async fn execute_with_spawner(
     }
     let resolved_prompt = prompt_sub.output;
 
-    // Step 2: Resolve the command template.
-    // First substitute ${input.*}/${steps.*} (user might embed those in a custom template).
-    let raw_template = step
-        .command_template
-        .as_deref()
-        .unwrap_or_else(|| agent.default_command_template());
-    let template_sub = template::substitute(raw_template, &ctx.input, &ctx.steps);
-    for warn in &template_sub.warnings {
-        tracing::warn!(step_id = %step.common.id, "command_template warning: {}", warn);
-    }
-    // Then substitute ${prompt} with the resolved prompt value.
-    // This is a separate pass — see substitute_prompt() for rationale.
-    let final_command = substitute_prompt(&template_sub.output, &resolved_prompt);
+    // Step 2: Build argv via the agent runner — no shell wrapper, no escaping.
+    let argv = agent.build_argv(&resolved_prompt, step.model.as_deref(), &step.extra_args);
 
-    // Step 3: Build the command.
-    let mut cmd = build_command(&final_command);
-
-    // Set working dir and env.
-    if let Some(ref dir) = ctx.working_dir {
-        cmd.cwd(dir);
-    }
-    for (k, v) in &ctx.env {
-        cmd.env(k, v);
-    }
-
-    // Step 4: Write START marker.
+    // Step 3: Write START marker.
     let log_byte_offset_start = ctx
         .log_sink
         .write_step_start(&step.common.id, Utc::now())
@@ -117,15 +62,15 @@ async fn execute_with_spawner(
         .map_err(StepError::Io)?;
     ctx.current_step_log_offset_start = Some(log_byte_offset_start);
 
-    // Step 5: Spawn the process.
+    // Step 4: Spawn the process via argv-array (no shell).
     let mut process = spawner
-        .spawn(cmd, 24, 80)
+        .spawn_argv(&argv, ctx.working_dir.as_deref(), &ctx.env, 24, 80)
         .map_err(|e| StepError::Spawn(e.to_string()))?;
 
     // No stdin for agent steps.
     process.close_stdin();
 
-    // Step 6: Stream output with timeout.
+    // Step 5: Stream output with timeout.
     let max_bytes = step.common.capture.stdout_max_bytes;
     let mut capture_buf: Vec<u8> = Vec::with_capacity(std::cmp::min(max_bytes, 65536));
 
@@ -314,7 +259,7 @@ mod tests {
     use crate::pty::MockPtySpawner;
     use crate::workflow::step::{LogSink, Step, StepContext};
 
-    use super::{execute_with_spawner, substitute_prompt};
+    use super::execute_with_spawner;
 
     // ── Mock LogSink ──────────────────────────────────────────────────────────
 
@@ -388,7 +333,8 @@ mod tests {
             },
             agent_type: AgentType::ClaudeCodeCli,
             prompt: prompt.to_string(),
-            command_template: None,
+            model: None,
+            extra_args: vec![],
         }
     }
 
@@ -401,10 +347,10 @@ mod tests {
         format!("{}\n{}\n", system_line, result_line).into_bytes()
     }
 
-    // ── Test 1: Default command template renders with literal prompt ──────────
+    // ── Test 1: argv-array spawn with literal prompt ──────────────────────────
 
     #[tokio::test]
-    async fn test_default_command_template_with_literal_prompt() {
+    async fn test_argv_spawn_with_literal_prompt() {
         let ndjson = make_claude_ndjson(0.001, 500, 1, "test answer");
         let spawner = MockPtySpawner::with_output_and_exit(vec![ndjson], 0);
 
@@ -416,7 +362,6 @@ mod tests {
             .await
             .expect("execute should succeed");
 
-        // The mock spawner records the command used; we verify cost was captured.
         assert_eq!(output.exit_code, Some(0));
         let cost = output.cost.expect("should have cost");
         assert!((cost.total_cost_usd.unwrap() - 0.001).abs() < 1e-9);
@@ -424,12 +369,21 @@ mod tests {
             output.stdout,
             Some(Value::String("test answer".to_string()))
         );
+
+        // Verify spawner received argv (not a shell string)
+        let argv = spawner.recorded_argv().expect("argv should be recorded");
+        assert_eq!(argv[0], "claude");
+        assert_eq!(argv[1], "-p");
+        assert_eq!(argv[2], "hello");
+        assert!(argv.contains(&"--output-format".to_string()));
+        assert!(argv.contains(&"stream-json".to_string()));
+        assert!(argv.contains(&"--dangerously-skip-permissions".to_string()));
     }
 
-    // ── Test 2: Custom command_template with ${prompt} and ${input.*} ─────────
+    // ── Test 2: argv with extra_args (replaces custom command_template) ────────
 
     #[tokio::test]
-    async fn test_custom_command_template_both_substitutions() {
+    async fn test_argv_spawn_with_extra_args() {
         let ndjson = make_claude_ndjson(0.002, 800, 2, "done");
         let spawner = MockPtySpawner::with_output_and_exit(vec![ndjson], 0);
 
@@ -449,9 +403,8 @@ mod tests {
             },
             agent_type: AgentType::ClaudeCodeCli,
             prompt: "go".to_string(),
-            command_template: Some(
-                r#"claude -p "${prompt}" --resume ${input.session}"#.to_string(),
-            ),
+            model: None,
+            extra_args: vec!["--resume".to_string(), "uuid-123".to_string()],
         };
 
         let output = execute_with_spawner(&step, &mut ctx, &spawner)
@@ -459,16 +412,19 @@ mod tests {
             .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
-        // The mock produces NDJSON so final_message should be "done"
         assert_eq!(output.stdout, Some(Value::String("done".to_string())));
+
+        // Verify extra_args appear at the end of argv
+        let argv = spawner.recorded_argv().expect("argv should be recorded");
+        let last_two: Vec<&str> = argv.iter().rev().take(2).map(|s| s.as_str()).collect();
+        assert_eq!(last_two[0], "uuid-123");
+        assert_eq!(last_two[1], "--resume");
     }
 
     // ── Test 3: Prompt with ${input.*} substitution ───────────────────────────
 
     #[tokio::test]
     async fn test_prompt_with_input_substitution() {
-        // We can verify the prompt was substituted by checking that the spawner
-        // would have received the resolved command. We use a mock that produces NDJSON.
         let ndjson = make_claude_ndjson(0.003, 600, 1, "reviewed acme/widgets");
         let spawner = MockPtySpawner::with_output_and_exit(vec![ndjson], 0);
 
@@ -482,8 +438,11 @@ mod tests {
             .expect("execute should succeed");
 
         assert_eq!(output.exit_code, Some(0));
-        // The mock returns canned output so we just verify it ran without error.
         assert!(output.cost.is_some());
+
+        // Verify the prompt was substituted and passed as a discrete argv element
+        let argv = spawner.recorded_argv().expect("argv should be recorded");
+        assert_eq!(argv[2], "review acme/widgets");
     }
 
     // ── Test 4: Mock NDJSON cost extraction ──────────────────────────────────
@@ -517,7 +476,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_cost_data_cost_none() {
-        // Plain shell text, no JSON
         let plain_output = b"Hello from shell\nSome output\n".to_vec();
         let spawner = MockPtySpawner::with_output_and_exit(vec![plain_output], 0);
 
@@ -561,25 +519,68 @@ mod tests {
         );
     }
 
-    // ── Unit test: substitute_prompt helper ──────────────────────────────────
+    // ── Test 7: argv with model override ─────────────────────────────────────
 
-    #[test]
-    fn test_substitute_prompt_replaces_token() {
-        let result = substitute_prompt(r#"claude -p "${prompt}" --verbose"#, "hello world");
-        assert_eq!(result, r#"claude -p "hello world" --verbose"#);
+    #[tokio::test]
+    async fn test_argv_spawn_with_model_override() {
+        let ndjson = make_claude_ndjson(0.005, 1000, 2, "model answer");
+        let spawner = MockPtySpawner::with_output_and_exit(vec![ndjson], 0);
+
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+
+        let step = AgentStep {
+            common: StepDefCommon {
+                id: "a7".to_string(),
+                on_failure: None,
+                always_run: false,
+                timeout_secs: None,
+                working_dir: None,
+                env_vars: None,
+                capture: CaptureSpec::default(),
+            },
+            agent_type: AgentType::ClaudeCodeCli,
+            prompt: "test".to_string(),
+            model: Some("claude-opus-4-5".to_string()),
+            extra_args: vec![],
+        };
+
+        let output = execute_with_spawner(&step, &mut ctx, &spawner)
+            .await
+            .expect("execute should succeed");
+        assert_eq!(output.exit_code, Some(0));
+
+        let argv = spawner.recorded_argv().expect("argv should be recorded");
+        let model_pos = argv
+            .iter()
+            .position(|a| a == "--model")
+            .expect("--model should be present");
+        assert_eq!(argv[model_pos + 1], "claude-opus-4-5");
     }
 
-    #[test]
-    fn test_substitute_prompt_no_token_passthrough() {
-        let result = substitute_prompt("echo no_prompt_here", "ignored");
-        assert_eq!(result, "echo no_prompt_here");
-    }
+    // ── Test 8: Prompt with special chars — no shell escaping needed ──────────
 
-    #[test]
-    fn test_substitute_prompt_dollar_in_prompt_not_re_expanded() {
-        // Prompt containing ${...} should not be recursively expanded.
-        let result = substitute_prompt(r#"claude -p "${prompt}""#, "review ${input.repo}");
-        assert_eq!(result, r#"claude -p "review ${input.repo}""#);
+    #[tokio::test]
+    async fn test_prompt_with_special_chars_no_escaping_needed() {
+        let ndjson = make_claude_ndjson(0.001, 300, 1, "ok");
+        let spawner = MockPtySpawner::with_output_and_exit(vec![ndjson], 0);
+
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+
+        let tricky_prompt = "Review: \"foo, bar?\" & newline\nsecond line";
+        let step = make_agent_step("a8", tricky_prompt);
+
+        let output = execute_with_spawner(&step, &mut ctx, &spawner)
+            .await
+            .expect("execute should succeed");
+        assert_eq!(output.exit_code, Some(0));
+
+        // argv-array spawn: the prompt is element [2], verbatim, no escaping.
+        let argv = spawner.recorded_argv().expect("argv should be recorded");
+        assert_eq!(argv[2], tricky_prompt);
+        assert!(argv[2].contains('"'));
+        assert!(argv[2].contains('\n'));
     }
 
     // ── Test: kind() returns "agent" ──────────────────────────────────────────

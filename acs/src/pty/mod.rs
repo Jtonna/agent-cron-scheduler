@@ -12,6 +12,23 @@ pub trait PtySpawner: Send + Sync {
         rows: u16,
         cols: u16,
     ) -> anyhow::Result<Box<dyn PtyProcess>>;
+
+    /// Spawn a process from a plain argv array without any shell wrapper.
+    ///
+    /// `argv[0]` is the program; `argv[1..]` are its arguments. No shell
+    /// (`cmd /C` or `sh -c`) is involved — the OS receives each argument as a
+    /// discrete string, eliminating all shell-escaping concerns.
+    ///
+    /// `cwd` sets the working directory when present. `env` variables are
+    /// layered on top of the inherited environment.
+    fn spawn_argv(
+        &self,
+        argv: &[String],
+        cwd: Option<&std::path::Path>,
+        env: &std::collections::HashMap<String, String>,
+        rows: u16,
+        cols: u16,
+    ) -> anyhow::Result<Box<dyn PtyProcess>>;
 }
 
 /// Trait for interacting with a spawned PTY process.
@@ -192,6 +209,129 @@ impl PtySpawner for NoPtySpawner {
             leftover: Vec::new(),
         }))
     }
+
+    fn spawn_argv(
+        &self,
+        argv: &[String],
+        cwd: Option<&std::path::Path>,
+        env: &std::collections::HashMap<String, String>,
+        _rows: u16,
+        _cols: u16,
+    ) -> anyhow::Result<Box<dyn PtyProcess>> {
+        use std::process::{Command, Stdio};
+
+        if argv.is_empty() {
+            return Err(anyhow::anyhow!("spawn_argv: empty argv"));
+        }
+
+        let mut command = Command::new(&argv[0]);
+        command.args(&argv[1..]);
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::piped());
+
+        if let Some(dir) = cwd {
+            command.current_dir(dir);
+        }
+        for (k, v) in env {
+            command.env(k, v);
+        }
+
+        // Create a new process group so that kill signals propagate to the
+        // entire process tree (not just the immediate child).
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        }
+
+        let mut child = command.spawn()?;
+
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        let (tx, rx) = std::sync::mpsc::channel::<io::Result<Vec<u8>>>();
+
+        if let Some(stdout) = stdout {
+            let tx_stdout = tx.clone();
+            std::thread::Builder::new()
+                .name("stdout-reader".to_string())
+                .spawn(move || {
+                    use std::io::Read;
+                    let mut reader = stdout;
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match reader.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                if tx_stdout.send(Ok(buf[..n].to_vec())).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e)
+                                if e.kind() == io::ErrorKind::BrokenPipe
+                                    || e.kind() == io::ErrorKind::UnexpectedEof =>
+                            {
+                                break;
+                            }
+                            Err(e) => {
+                                let _ = tx_stdout.send(Err(e));
+                                break;
+                            }
+                        }
+                    }
+                })?;
+        }
+
+        if let Some(stderr) = stderr {
+            std::thread::Builder::new()
+                .name("stderr-reader".to_string())
+                .spawn(move || {
+                    use std::io::Read;
+                    let mut reader = stderr;
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match reader.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                if tx.send(Ok(buf[..n].to_vec())).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e)
+                                if e.kind() == io::ErrorKind::BrokenPipe
+                                    || e.kind() == io::ErrorKind::UnexpectedEof =>
+                            {
+                                break;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Err(e));
+                                break;
+                            }
+                        }
+                    }
+                })?;
+        }
+
+        Ok(Box::new(NoPtyProcess {
+            child,
+            rx,
+            leftover: Vec::new(),
+        }))
+    }
 }
 
 struct NoPtyProcess {
@@ -272,12 +412,15 @@ pub struct MockPtyConfig {
 /// Mock PTY spawner for testing.
 pub struct MockPtySpawner {
     config: Arc<Mutex<MockPtyConfig>>,
+    /// Records the last argv passed to spawn_argv for test assertions.
+    pub last_argv: Arc<Mutex<Option<Vec<String>>>>,
 }
 
 impl MockPtySpawner {
     pub fn new(config: MockPtyConfig) -> Self {
         Self {
             config: Arc::new(Mutex::new(config)),
+            last_argv: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -308,6 +451,11 @@ impl MockPtySpawner {
             ..Default::default()
         })
     }
+
+    /// Return the argv recorded from the most recent `spawn_argv` call, if any.
+    pub fn recorded_argv(&self) -> Option<Vec<String>> {
+        self.last_argv.lock().unwrap().clone()
+    }
 }
 
 impl PtySpawner for MockPtySpawner {
@@ -317,6 +465,32 @@ impl PtySpawner for MockPtySpawner {
         _rows: u16,
         _cols: u16,
     ) -> anyhow::Result<Box<dyn PtyProcess>> {
+        let config = self.config.lock().unwrap().clone();
+
+        if let Some(error) = config.spawn_error {
+            return Err(anyhow::anyhow!(error));
+        }
+
+        Ok(Box::new(MockPtyProcess {
+            output_chunks: config.output,
+            chunk_index: 0,
+            exit_code: config.exit_code,
+            chunk_delay_ms: config.chunk_delay_ms,
+            killed: Arc::new(AtomicBool::new(false)),
+        }))
+    }
+
+    fn spawn_argv(
+        &self,
+        argv: &[String],
+        _cwd: Option<&std::path::Path>,
+        _env: &std::collections::HashMap<String, String>,
+        _rows: u16,
+        _cols: u16,
+    ) -> anyhow::Result<Box<dyn PtyProcess>> {
+        // Record argv for test assertions.
+        *self.last_argv.lock().unwrap() = Some(argv.to_vec());
+
         let config = self.config.lock().unwrap().clone();
 
         if let Some(error) = config.spawn_error {

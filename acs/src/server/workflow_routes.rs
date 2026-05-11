@@ -31,6 +31,49 @@ use crate::models::workflow::{
 use crate::workflow::{EventEmittingLogSink, FileLogSink};
 
 // ---------------------------------------------------------------------------
+// AgentStep.command_template guard
+// ---------------------------------------------------------------------------
+
+/// Walk a JSON steps array and return `true` if any step has `kind: "agent"`
+/// and a `command_template` key. Used by POST and PATCH handlers to reject
+/// payloads that reference the removed field.
+fn steps_contain_command_template(steps: &serde_json::Value) -> bool {
+    let arr = match steps.as_array() {
+        Some(a) => a,
+        None => return false,
+    };
+    for step in arr {
+        let obj = match step.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+        if obj.get("kind").and_then(|v| v.as_str()) == Some("agent")
+            && obj.contains_key("command_template")
+        {
+            return true;
+        }
+        // Recurse into MatchStep branches
+        if let Some(cases) = obj.get("cases").and_then(|v| v.as_object()) {
+            for branch in cases.values() {
+                if steps_contain_command_template(branch) {
+                    return true;
+                }
+            }
+        }
+        if let Some(default_steps) = obj.get("default") {
+            if steps_contain_command_template(default_steps) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+const COMMAND_TEMPLATE_REMOVED_ERROR: &str = "command_template_removed";
+const COMMAND_TEMPLATE_REMOVED_MESSAGE: &str =
+    "AgentStep.command_template was removed in v4.2.7. Use 'model' and 'extra_args' fields instead. See docs/workflow-management.md.";
+
+// ---------------------------------------------------------------------------
 // Error response
 // ---------------------------------------------------------------------------
 
@@ -294,8 +337,33 @@ fn sanitize_workflow_name(name: &str) -> String {
 
 pub async fn create_workflow(
     State(state): State<Arc<AppState>>,
-    Json(mut body): Json<NewWorkflow>,
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    // Reject payloads that reference the removed command_template field before
+    // deserialising into the typed struct, so callers get a clear error message.
+    if let Some(steps) = raw.get("steps") {
+        if steps_contain_command_template(steps) {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                COMMAND_TEMPLATE_REMOVED_ERROR,
+                COMMAND_TEMPLATE_REMOVED_MESSAGE,
+            )
+            .into_response();
+        }
+    }
+
+    let mut body: NewWorkflow = match serde_json::from_value(raw) {
+        Ok(b) => b,
+        Err(e) => {
+            return error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "deserialization_error",
+                &e.to_string(),
+            )
+            .into_response();
+        }
+    };
+
     // Apply daemon-config defaults for fields the caller left unspecified.
     if let Err(e) = apply_new_workflow_defaults(&mut body, &state.config) {
         return error_response(
@@ -355,8 +423,32 @@ pub async fn get_workflow(
 pub async fn update_workflow(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(body): Json<WorkflowUpdate>,
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    // Reject payloads that reference the removed command_template field.
+    if let Some(steps) = raw.get("steps") {
+        if steps_contain_command_template(steps) {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                COMMAND_TEMPLATE_REMOVED_ERROR,
+                COMMAND_TEMPLATE_REMOVED_MESSAGE,
+            )
+            .into_response();
+        }
+    }
+
+    let body: WorkflowUpdate = match serde_json::from_value(raw) {
+        Ok(b) => b,
+        Err(e) => {
+            return error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "deserialization_error",
+                &e.to_string(),
+            )
+            .into_response();
+        }
+    };
+
     let wf = match resolve_workflow(&state, &id).await {
         Ok(w) => w,
         Err((status, body)) => return (status, body).into_response(),

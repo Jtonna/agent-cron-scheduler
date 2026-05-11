@@ -239,7 +239,9 @@ pub struct AgentStep {
     pub agent_type: AgentType,
     pub prompt: String,
     #[serde(default)]
-    pub command_template: Option<String>,
+    pub model: Option<String>,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -712,12 +714,36 @@ mod tests {
             },
             agent_type: AgentType::ClaudeCodeCli,
             prompt: "Analyze this code and provide feedback.".to_string(),
-            command_template: Some("claude --output-format json".to_string()),
+            model: Some("claude-opus-4-5".to_string()),
+            extra_args: vec!["--resume".to_string(), "session-id".to_string()],
         });
         let json = serde_json::to_string(&step).expect("serialize");
         assert!(json.contains("\"kind\":\"agent\""), "json: {}", json);
+        assert!(
+            json.contains("\"model\""),
+            "json should contain model: {}",
+            json
+        );
+        assert!(
+            json.contains("\"extra_args\""),
+            "json should contain extra_args: {}",
+            json
+        );
         let deserialized: StepDef = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(step, deserialized);
+    }
+
+    #[test]
+    fn test_step_def_agent_defaults_model_none_extra_args_empty() {
+        // When model and extra_args are absent in JSON, defaults kick in.
+        let json = r#"{"kind":"agent","id":"a1","agent_type":"claude_code_cli","prompt":"hello"}"#;
+        let step: StepDef = serde_json::from_str(json).expect("deserialize");
+        if let StepDef::Agent(a) = step {
+            assert!(a.model.is_none());
+            assert!(a.extra_args.is_empty());
+        } else {
+            panic!("expected Agent variant");
+        }
     }
 
     // ── StepDefCommon flatten ─────────────────────────────────────────────────

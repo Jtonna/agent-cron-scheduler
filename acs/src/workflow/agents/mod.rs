@@ -3,9 +3,14 @@ use crate::workflow::step::CostFragment;
 /// An agent runtime that ACS knows how to invoke and parse output from.
 /// Each variant of `AgentType` (in models::workflow) maps to one impl.
 pub trait AgentImpl: Send + Sync {
-    /// The default command template used when AgentStep.command_template is None.
-    /// The placeholder `${prompt}` (note: dollar-brace) is substituted with the actual prompt.
-    fn default_command_template(&self) -> &str;
+    /// Build the argv array for spawning this agent.
+    ///
+    /// `prompt` is the fully-resolved prompt string (already substituted by the
+    /// template engine). `model` overrides the default model when present.
+    /// `extra_args` are appended verbatim at the end of the argument list.
+    ///
+    /// The returned Vec always has at least one element (the program name).
+    fn build_argv(&self, prompt: &str, model: Option<&str>, extra_args: &[String]) -> Vec<String>;
     /// Construct a fresh streaming output parser. Called once per run of this agent step.
     fn output_parser(&self) -> Box<dyn AgentOutputParser>;
 }

@@ -4,12 +4,22 @@ use crate::workflow::step::CostFragment;
 pub struct ClaudeCodeCli;
 
 impl AgentImpl for ClaudeCodeCli {
-    fn default_command_template(&self) -> &str {
-        // The prompt placeholder is ${prompt}. The substitute() function in template.rs
-        // handles ${input.*} and ${steps.*.*}, but for agent steps we ALSO want to support
-        // ${prompt} as a special token that AgentStep::execute() substitutes after the
-        // input/steps pass.
-        r#"claude -p "${prompt}" --output-format stream-json --verbose --dangerously-skip-permissions"#
+    fn build_argv(&self, prompt: &str, model: Option<&str>, extra_args: &[String]) -> Vec<String> {
+        let mut argv = vec![
+            "claude".to_string(),
+            "-p".to_string(),
+            prompt.to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ];
+        if let Some(m) = model {
+            argv.push("--model".to_string());
+            argv.push(m.to_string());
+        }
+        argv.extend(extra_args.iter().cloned());
+        argv
     }
 
     fn output_parser(&self) -> Box<dyn AgentOutputParser> {
@@ -177,6 +187,60 @@ impl AgentOutputParser for ClaudeStreamParser {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ── build_argv tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_argv_no_model_no_extra_args() {
+        let cli = ClaudeCodeCli;
+        let argv = cli.build_argv("hello world", None, &[]);
+        assert_eq!(
+            argv,
+            vec![
+                "claude",
+                "-p",
+                "hello world",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--dangerously-skip-permissions",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_argv_with_model() {
+        let cli = ClaudeCodeCli;
+        let argv = cli.build_argv("hello", Some("claude-opus-4-5"), &[]);
+        assert!(argv.contains(&"--model".to_string()), "argv: {:?}", argv);
+        let model_pos = argv.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(argv[model_pos + 1], "claude-opus-4-5");
+    }
+
+    #[test]
+    fn test_build_argv_with_extra_args() {
+        let cli = ClaudeCodeCli;
+        let extra = vec!["--resume".to_string(), "session-id".to_string()];
+        let argv = cli.build_argv("hello", None, &extra);
+        let last_two: Vec<&str> = argv.iter().rev().take(2).map(|s| s.as_str()).collect();
+        // last element should be "session-id", second-to-last should be "--resume"
+        assert_eq!(last_two[0], "session-id");
+        assert_eq!(last_two[1], "--resume");
+    }
+
+    #[test]
+    fn test_build_argv_prompt_with_special_chars() {
+        // Prompt with quotes, commas, question marks — all treated as a single argv element
+        let cli = ClaudeCodeCli;
+        let prompt = r#"Review this: "foo, bar?" and newline
+second line"#;
+        let argv = cli.build_argv(prompt, None, &[]);
+        // The prompt must be the 3rd element (index 2) and must be passed verbatim
+        assert_eq!(argv[2], prompt);
+        // No shell escaping should occur — it's a plain string
+        assert!(argv[2].contains('"'));
+        assert!(argv[2].contains('\n'));
+    }
 
     // ── Test 1: Single invocation NDJSON ──────────────────────────────────────
 

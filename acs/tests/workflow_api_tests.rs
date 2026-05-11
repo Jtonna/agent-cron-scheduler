@@ -1801,6 +1801,221 @@ async fn test_run_log_slice_422_when_start_offset_past_eof() {
     assert_eq!(json["error"], "log_offset_out_of_range");
 }
 
+// ---------------------------------------------------------------------------
+// AgentStep.command_template rejection tests (v4.2.7)
+// ---------------------------------------------------------------------------
+
+/// POST /api/workflows with an AgentStep that includes the removed
+/// `command_template` field must return 400 command_template_removed.
+#[tokio::test]
+async fn test_post_workflow_with_command_template_returns_400() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let body = serde_json::json!({
+        "name": "test-ct-post",
+        "schedule": "*/5 * * * *",
+        "steps": [
+            {
+                "kind": "agent",
+                "id": "a1",
+                "agent_type": "claude_code_cli",
+                "prompt": "hello",
+                "command_template": "claude -p \"${prompt}\""
+            }
+        ]
+    });
+
+    let resp = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).unwrap())
+        .send()
+        .await
+        .expect("POST");
+    assert_eq!(resp.status(), 400, "expected 400 for command_template");
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        json["error"].as_str().unwrap_or(""),
+        "command_template_removed"
+    );
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("command_template"),
+        "message should mention command_template: {:?}",
+        json["message"]
+    );
+}
+
+/// PATCH /api/workflows/{id} with steps containing `command_template`
+/// must return 400.
+#[tokio::test]
+async fn test_patch_workflow_with_command_template_returns_400() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // First, create a valid workflow.
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("ct-patch-test")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    // PATCH with an agent step containing command_template.
+    let patch_body = serde_json::json!({
+        "steps": [
+            {
+                "kind": "agent",
+                "id": "a1",
+                "agent_type": "claude_code_cli",
+                "prompt": "hello",
+                "command_template": "claude -p \"${prompt}\""
+            }
+        ]
+    });
+    let resp = client
+        .patch(format!("{}/api/workflows/{}", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&patch_body).unwrap())
+        .send()
+        .await
+        .expect("PATCH");
+    assert_eq!(
+        resp.status(),
+        400,
+        "expected 400 for command_template on PATCH"
+    );
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        json["error"].as_str().unwrap_or(""),
+        "command_template_removed"
+    );
+}
+
+/// POST /api/workflows with a valid AgentStep using the new `model` and
+/// `extra_args` fields must be accepted (201).
+#[tokio::test]
+async fn test_post_workflow_with_agent_step_model_and_extra_args_accepted() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let body = serde_json::json!({
+        "name": "test-agent-new-shape",
+        "schedule": "*/5 * * * *",
+        "steps": [
+            {
+                "kind": "agent",
+                "id": "a1",
+                "agent_type": "claude_code_cli",
+                "prompt": "hello",
+                "model": "claude-opus-4-5",
+                "extra_args": ["--resume", "session-id"]
+            }
+        ]
+    });
+
+    let resp = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).unwrap())
+        .send()
+        .await
+        .expect("POST");
+    assert_eq!(
+        resp.status(),
+        201,
+        "new agent step shape should be accepted"
+    );
+    let json: serde_json::Value = resp.json().await.unwrap();
+    // Verify the model and extra_args are persisted correctly.
+    let steps = json["steps"].as_array().expect("steps");
+    let agent_step = &steps[0];
+    assert_eq!(
+        agent_step["model"].as_str().unwrap_or(""),
+        "claude-opus-4-5"
+    );
+    let extra = agent_step["extra_args"].as_array().expect("extra_args");
+    assert_eq!(extra[0].as_str().unwrap_or(""), "--resume");
+    assert_eq!(extra[1].as_str().unwrap_or(""), "session-id");
+}
+
+/// PATCH /api/workflows/{id} with a valid agent step shape (model + extra_args)
+/// must be accepted (200).
+#[tokio::test]
+async fn test_patch_workflow_with_agent_step_new_shape_accepted() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("ct-patch-valid")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let patch_body = serde_json::json!({
+        "steps": [
+            {
+                "kind": "agent",
+                "id": "a1",
+                "agent_type": "claude_code_cli",
+                "prompt": "hello",
+                "model": "claude-sonnet-4-5",
+                "extra_args": []
+            }
+        ]
+    });
+    let resp = client
+        .patch(format!("{}/api/workflows/{}", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&patch_body).unwrap())
+        .send()
+        .await
+        .expect("PATCH");
+    assert_eq!(
+        resp.status(),
+        200,
+        "new agent step shape should be accepted on PATCH"
+    );
+}
+
 /// Item 2: a step that times out must record `log_byte_offset_start` at the
 /// offset of its START marker (not 0) so the slice endpoint returns the
 /// step's bytes rather than the whole log file.

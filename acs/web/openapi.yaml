@@ -7,7 +7,7 @@ info:
     ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
     Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "4.2.5"
+  version: "4.2.7"
   license:
     name: MIT
 
@@ -47,7 +47,7 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "4.2.5"
+                version: "4.2.7"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
                 service:
                   registered: true
@@ -722,7 +722,7 @@ components:
         version:
           type: string
           description: Daemon version string.
-          example: "4.2.5"
+          example: "4.2.7"
         data_dir:
           type: string
           description: Filesystem path to the data directory.
@@ -1011,6 +1011,9 @@ components:
                 BUILD_VERSION: "1.2.3"
 
     AgentStep:
+      description: |
+        Invokes a configured agent (currently `claude_code_cli`) with a templated prompt.
+        The runner controls the canonical argv shape; only `model` and `extra_args` are overridable.
       allOf:
         - $ref: "#/components/schemas/StepDefCommon"
         - type: object
@@ -1023,19 +1026,29 @@ components:
               $ref: "#/components/schemas/AgentType"
             prompt:
               type: string
-              description: Prompt text sent to the agent.
+              description: |
+                Prompt text sent to the agent. The resolved prompt is passed directly as the
+                `-p` argument to claude, with `${input.*}` / `${steps.*}` substitution applied first.
               example: "Analyze the build output and report any issues."
-            command_template:
+            model:
               type: string
               nullable: true
               description: |
-                Custom command template to invoke the agent CLI. When null the daemon uses its
-                configured default for the agent type (for claude_code_cli: `claude -p "${prompt}"
-                --output-format stream-json --verbose --dangerously-skip-permissions`). The
-                `${prompt}` token is required when overriding — the runner does plain string
-                substitution and has no stdin fallback; omitting `${prompt}` causes claude to
-                error on startup.
+                Optional Claude model identifier to override the runner's default.
+                Passed as `--model <value>` to the `claude` CLI.
+                Example: `claude-haiku-4-5-20251001`.
               example: null
+            extra_args:
+              type: array
+              items:
+                type: string
+              default: []
+              description: |
+                Additional command-line arguments appended verbatim to the `claude` invocation.
+                Useful for passing custom flags like `--allowedTools <tool>` or
+                `--model-config <path>`. Each item becomes a separate argv element;
+                no shell parsing or escaping is applied.
+              example: []
 
     StepDef:
       description: |
