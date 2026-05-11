@@ -137,6 +137,12 @@ Executes an inline shell command string.
 }
 ```
 
+**Windows: shell-step stdout includes CRLF.** PowerShell's default output pipeline (e.g. `Get-Random`, `Write-Output`) appends a trailing `\r\n`. When a shell step's stdout is captured with `parser: null` (raw) and substituted into a downstream step's template via `${steps.<id>.stdout}`, the CRLF is injected verbatim — splitting a quoted argument mid-string and breaking the next step's command.
+
+For example, `"command": "powershell -NoProfile -Command \"@('A','B') | Get-Random\""` produces stdout `A\r\n` (or `B\r\n`). Using `${steps.pick.stdout}` in the next step injects the CRLF into the command line.
+
+Workaround: strip trailing whitespace with `.Trim()` — `"powershell -NoProfile -Command \"(@('A','B') | Get-Random).Trim()\""`. This applies to any shell step whose output you template into another step's args. On Unix, `echo` adds a trailing `\n`; mitigate with `echo -n` or `tr -d '\r\n'`.
+
 ---
 
 ### Script
@@ -307,6 +313,12 @@ First-class invocation of an LLM agent runtime. Currently supports `claude_code_
 
 ```
 claude -p "${prompt}" --output-format stream-json --verbose --dangerously-skip-permissions
+```
+
+**`${prompt}` is required in custom templates.** If you provide a custom `command_template`, the `${prompt}` token is required — the agent runner does plain string substitution, has no stdin fallback, and `claude` will refuse to start without a prompt source (error: `Input must be provided either through stdin or as a prompt argument when using --print`). To override only the model, for example, keep the full structure intact:
+
+```
+claude --model claude-haiku-4-5-20251001 -p "${prompt}" --output-format stream-json --verbose --dangerously-skip-permissions
 ```
 
 **Two-pass substitution.** The `prompt` field is first resolved through the standard template engine (substituting `${input.*}` and `${steps.*}`). Then `${prompt}` in the command template is replaced with the resolved prompt string. These are separate passes to prevent any `${}` sequences embedded in the resolved prompt from being interpreted a second time.

@@ -561,8 +561,8 @@ paths:
         - `step_started` — a step within a run has begun. Fields: `run_id`, `workflow_id`, `step_index`, `step_id`, `kind`, `started_at`
         - `step_output` — incremental stdout/stderr chunk from a running step. Fields: `run_id`, `workflow_id`, `step_index`, `step_id`, `data`, `timestamp`
         - `step_completed` — a step finished (succeeded or failed). Fields: `run_id`, `workflow_id`, `step_index`, `step_id`, `exit_code`, `cost_usd`, `finished_at`
-        - `run_completed` — the run finished (all steps done). Fields: `run_id`, `workflow_id`, `status`, `total_cost_usd`, `finished_at`
-        - `run_failed` — the run terminated with an infrastructure error or was killed. Fields: `run_id`, `workflow_id`, `error`, `finished_at`
+        - `run_completed` — Emitted when a workflow run finishes successfully (terminal status Completed). Runs that end as Failed or Killed emit run_failed instead. Fields: `run_id`, `workflow_id`, `status`, `total_cost_usd`, `finished_at`
+        - `run_failed` — Emitted when a run finishes in any non-success terminal state — that is, when the run's final RunStatus is Failed (a step aborted, timed out, or hit an infrastructure error) or Killed (cancelled via POST /api/runs/{run_id}/kill, daemon shutdown, or concurrency policy). Fields: `run_id`, `workflow_id`, `error`, `finished_at`
         - `workflow_changed` — a workflow definition was created, updated, or deleted. Fields: `workflow_id`, `version` (workflow version after the change), `change_kind`
       tags: [Events]
       parameters:
@@ -1029,8 +1029,12 @@ components:
               type: string
               nullable: true
               description: |
-                Custom command template to invoke the agent CLI. When null the
-                daemon uses its configured default for the agent type.
+                Custom command template to invoke the agent CLI. When null the daemon uses its
+                configured default for the agent type (for claude_code_cli: `claude -p "${prompt}"
+                --output-format stream-json --verbose --dangerously-skip-permissions`). The
+                `${prompt}` token is required when overriding — the runner does plain string
+                substitution and has no stdin fallback; omitting `${prompt}` causes claude to
+                error on startup.
               example: null
 
     StepDef:
@@ -1082,7 +1086,7 @@ components:
         version:
           type: integer
           format: int32
-          description: Monotonically incrementing version counter; bumped on every update.
+          description: "Auto-incrementing version. Bumps on changes to any of name, schedule, timezone, schedule_mode, steps, default_input, working_dir, env_vars, allow_concurrent, or on_failure. Toggling enabled alone does NOT bump version."
           example: 1
         schedule:
           type: string
