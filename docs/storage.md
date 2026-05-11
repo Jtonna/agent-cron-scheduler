@@ -376,11 +376,22 @@ written.  The executor stores these offsets in `StepRun.log_byte_offset_start`
 and `StepRun.log_byte_offset_end` respectively, enabling fast random access to
 any step's output without scanning the entire file.
 
+`log_byte_offset_end` is populated on every exit path that reached the run
+loop, including kill, timeout, IO error, and non-zero exit, because the step
+impls write the END marker before surfacing the error. The only cases where
+`log_byte_offset_end` stays `null` are:
+
+* The step is still running (the live tail case).
+* The step erred **before** `write_step_start` ran — for example a
+  template-substitution failure or a spawn failure where no run loop ever
+  started. In that scenario `log_byte_offset_start` is also unset and the
+  slice endpoint falls back to `0` for the start and "tail to EOF" for the end.
+
 Per-step output lives only in this log file — the SQLite `workflow_runs.steps_json`
 blob carries the byte offsets but not the bytes themselves. Clients fetch step
 output via `GET /api/runs/{run_id}/log?step_index=N`, which seeks to
 `log_byte_offset_start` and reads through `log_byte_offset_end` (or end-of-file
-when the step is still running and `_end` is `null`).
+when `_end` is `null`).
 
 ---
 
@@ -436,6 +447,9 @@ On every `write_chunk(data)`:
 **Sources:** `acs/src/migration/mod.rs`,
 `acs/src/migration/m001_jobs_to_workflows.rs`,
 `acs/src/migration/m002_json_to_sqlite.rs`,
+`acs/src/migration/m003_drop_step_output_summary.rs`,
+`acs/src/migration/m004_drop_input_schema.rs`,
+`acs/src/migration/m005_shell_claude_to_agent.rs`,
 `acs/src/migration/legacy_types.rs`
 
 ### Design
@@ -462,9 +476,20 @@ Applied migration names are tracked in `{data_dir}/migrations.json`:
 
 ```json
 {
-  "applied": ["m001_jobs_to_workflows", "m002_json_to_sqlite"]
+  "applied": [
+    "m001_jobs_to_workflows",
+    "m002_json_to_sqlite",
+    "m003_drop_step_output_summary",
+    "m004_drop_input_schema",
+    "m005_shell_claude_to_agent"
+  ]
 }
 ```
+
+Migration status is **not** exposed through `/health`. The on-disk
+`migrations.json` is the only structured surface; per-migration outcomes are
+also written to `daemon.log` via `tracing::info!` lines (e.g.
+`"Migration m003 complete: stripped output_summary from N workflow_runs row(s)"`).
 
 `run_pending()` reads this file at daemon startup, skips already-applied
 migrations, and writes the updated state after each successful migration.
@@ -551,6 +576,85 @@ underlying problem is fixed.  The error is propagated through
 
 `migrations.json` is **not** moved into the `meta` table; it remains the
 canonical migration-state file alongside `acs.db` in the data directory.
+
+### m003_drop_step_output_summary
+
+`m003_drop_step_output_summary` walks every row in `workflow_runs` and strips
+the legacy `output_summary` key from each persisted `StepRun` JSON record.
+Per-step output now lives exclusively in
+`{data_dir}/logs/{workflow_id}/{run_id}.log`, framed by each `StepRun`'s
+`log_byte_offset_start` / `log_byte_offset_end` pair, so the inline copy is
+redundant.
+
+| Condition | Action |
+|---|---|
+| `acs.db` does not exist | No-op (return `Ok(false)`) |
+| No row in `workflow_runs` carries an `output_summary` key | No-op (return `Ok(false)`) — drops the read-only transaction without committing |
+| Otherwise | BEGIN transaction → for each row whose `steps_json` contains at least one `output_summary` key: parse, strip, re-serialise, `UPDATE workflow_runs SET steps_json = ? WHERE run_id = ?` → COMMIT |
+
+On any parse / serialise / UPDATE error the transaction is rolled back and the
+error is propagated through `run_pending()`, which aborts daemon startup. The
+migration is idempotent: re-running on a database that already has no
+`output_summary` keys returns `Ok(false)` and the runner does not write it
+into the applied set.
+
+### m004_drop_input_schema
+
+`m004_drop_input_schema` removes the `input_schema` column from the
+`workflows` table. `input_schema` is no longer carried on `Workflow`,
+`NewWorkflow`, or `WorkflowUpdate` and is not consumed by the runtime; the
+column must be dropped so that INSERT/UPDATE statements that no longer
+reference it succeed.
+
+| Condition | Action |
+|---|---|
+| `acs.db` does not exist | No-op (return `Ok(false)`) |
+| `workflows.input_schema` column is absent (fresh install or already migrated) | No-op (return `Ok(false)`) |
+| Column is present | `ALTER TABLE workflows DROP COLUMN input_schema` |
+
+Column existence is checked via `PRAGMA table_info(workflows)`. The migration
+is idempotent: a second run sees the column is absent and returns `Ok(false)`.
+
+### m005_shell_claude_to_agent
+
+`m005_shell_claude_to_agent` rewrites legacy `shell` steps that wrap a
+`claude -p ... --output-format stream-json` invocation as proper `agent` steps
+of type `claude_code_cli`, so that the streaming NDJSON cost parser captures
+`cost_usd`. The cost parser only runs on `AgentStep` — shell-wrapped calls
+were correct functionally but always produced a `null` `cost_usd`.
+
+A step is rewritten when **all** of the following hold:
+
+* `kind == "shell"`
+* The command, trimmed of leading whitespace, starts with the literal token
+  `claude` (`"claude"` exactly, `"claude "`, or `"claude\t"`).
+* The command contains the substring `--output-format stream-json`.
+
+The prompt is extracted from the first `-p` flag's value. Supported syntaxes
+are `-p "double-quoted"`, `-p 'single-quoted'`, `-p=value`, `-p="value"`, and
+`-p='value'`. Embedded `\n`, `\t`, escaped quotes, and `\\` sequences inside
+the quoted prompt are preserved verbatim (de-quoted without de-escaping).
+
+If the residual flags (after removing `-p <value>`) exactly match
+`--output-format stream-json --verbose --dangerously-skip-permissions` —
+the default `claude_code_cli` tail — the rewritten step has
+`command_template = None` (it inherits the default). Otherwise the residual
+flags are preserved by emitting a full `command_template` so callers retain
+custom flags like `--model`, `--session-id`, or `-c`.
+
+**Skip case:** if the command matches the detection criterion but has no
+`-p` flag, the prompt is being fed via stdin. Automatically migrating that
+case would lose the stdin source, so the migration emits a `tracing::warn!`
+and leaves the step as `shell`.
+
+| Condition | Action |
+|---|---|
+| `acs.db` does not exist | No-op (return `Ok(false)`) |
+| No workflow contains a shell-claude step matching the criterion | No-op (return `Ok(false)`) |
+| Otherwise | BEGIN transaction → for each workflow whose `steps_json` carries at least one rewritten step: walk the step array (including recursion into every `MatchStep` `cases.<value>` array and `default` array), rewrite each shell-claude step in place, bump `workflows.version`, set `updated_at`, UPDATE → COMMIT |
+
+Rollback on error mirrors m003. The migration is idempotent: after rewriting,
+the step's `kind` is `agent` and the detection criterion no longer matches.
 
 ---
 

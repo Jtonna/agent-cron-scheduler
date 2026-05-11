@@ -114,11 +114,14 @@ acs/src/
                                    #   AgentOutput, impl_for()
       claude_code_cli.rs           # ClaudeCodeCli impl + ClaudeStreamParser
   migration/
-    mod.rs                         # Migration trait, run_pending(), registry,
-                                   #   MigrationRunReport, state file I/O
-    legacy_types.rs                # Legacy Job/ExecutionType types (migration read only)
-    m001_jobs_to_workflows.rs      # JobsToWorkflows migration
-    m002_json_to_sqlite.rs         # JsonToSqlite migration
+    mod.rs                              # Migration trait, run_pending(), registry,
+                                        #   MigrationRunReport, state file I/O
+    legacy_types.rs                     # Legacy Job/ExecutionType types (migration read only)
+    m001_jobs_to_workflows.rs           # JobsToWorkflows migration
+    m002_json_to_sqlite.rs              # JsonToSqlite migration
+    m003_drop_step_output_summary.rs    # DropStepOutputSummary migration
+    m004_drop_input_schema.rs           # DropInputSchema migration
+    m005_shell_claude_to_agent.rs       # ShellClaudeToAgent migration
   process_kill.rs                  # kill_process_tree(), force_kill_process_tree()
   pty/
     mod.rs                         # PtySpawner trait, PtyProcess trait,
@@ -243,7 +246,7 @@ See [Storage](storage.md) for implementation details.
 
 - **`Migration` trait** (`acs/src/migration/mod.rs`): `fn name() -> &'static str; async fn run(data_dir) -> Result<bool, AcsError>`. `Ok(true)` = work done; `Ok(false)` = nothing to do (idempotent).
 - **`run_pending()`**: Called at daemon startup. Reads `<data_dir>/migrations.json` for already-applied names. For each unapplied migration in the registry, calls `run()`. Writes state atomically after each `Ok(true)`. Stops on first error (partial progress is preserved).
-- **Registry** (ordered): `m001_jobs_to_workflows::JobsToWorkflows`, `m002_json_to_sqlite::JsonToSqlite`.
+- **Registry** (ordered): `m001_jobs_to_workflows::JobsToWorkflows`, `m002_json_to_sqlite::JsonToSqlite`, `m003_drop_step_output_summary::DropStepOutputSummary`, `m004_drop_input_schema::DropInputSchema`, `m005_shell_claude_to_agent::ShellClaudeToAgent`.
 - **`legacy_types`** (`acs/src/migration/legacy_types.rs`): Read-only legacy `Job` and `ExecutionType` structs used only by the migration code to deserialize old `jobs.json` files.
 
 ---
@@ -260,7 +263,12 @@ See [Storage](storage.md) for implementation details.
 3.  resolve_data_dir()             — Determine data directory
 4.  create_data_dirs()             — Ensure data/, data/logs/, data/scripts/ exist
 5.  migration::run_pending()       — Run any unapplied numbered migrations
-                                     (m002 creates acs.db on a fresh install).
+                                     against the data directory. Each
+                                     migration is idempotent; the runner
+                                     stops at the first error and preserves
+                                     partial progress in migrations.json.
+                                     Migration outcomes are written to
+                                     daemon.log only (not /health).
 6.  Set up tracing                 — Truncate daemon.log on startup, then open with
                                      SizeManagedWriter (auto-drops oldest 25% at 1 GB).
                                      Falls back to stderr-only on error.
@@ -630,6 +638,9 @@ The migration system (`acs/src/migration/`) supports forward-only, numbered data
 |---|---|---|
 | `m001_jobs_to_workflows` | `m001_jobs_to_workflows.rs` | Reads `jobs.json` (legacy). For each `Job`: creates a `Workflow` with the same schedule/name/timezone/etc. Synthesizes steps from `pre_hook` (if present and `pre_hook_script_type` is shell/null → `ShellStep("pre_hook", always_run=false)`; if non-shell type → hook body written to `migrated_scripts/{id}_pre_hook.{ext}` and a `ScriptStep` pointing at that file), `execution` → `ShellStep`/`ScriptStep("main")`, `post_hook` (same script_type logic, `always_run=true`). Creates `migrated_scripts/` directory when needed. Preserves the original `Job.allow_concurrent` value. Writes `workflows.json`. Renames `jobs.json` to `jobs.json.migrated.<ts>`. Returns `Ok(false)` on fresh install (no `jobs.json`). |
 | `m002_json_to_sqlite` | `m002_json_to_sqlite.rs` | Populates `<data_dir>/acs.db`. If `acs.db` already exists, returns `Ok(false)`. If neither `workflows.json` nor `runs/` exists, creates an empty `acs.db` with the schema applied and returns `Ok(true)`. Otherwise opens `acs.db`, BEGINs a transaction, INSERTs every workflow from `workflows.json` and every run from `runs/<workflow_id>/<run_id>.json`, verifies row counts match the source, sample-verifies one row of each, COMMITs, then deletes `workflows.json` and the `runs/` directory. On any failure during insert/verify the transaction is rolled back, the partial `acs.db` (and WAL/SHM sidecars) are removed, and the JSON sources are left in place. `runs/index.json` is ignored on read and removed implicitly with the parent directory on success. `migrations.json` is left in place — it remains the canonical migration-state file. |
+| `m003_drop_step_output_summary` | `m003_drop_step_output_summary.rs` | Strips the legacy `output_summary` key from every `StepRun` record in `workflow_runs.steps_json`. Per-step output now lives only in the combined run log, indexed by `log_byte_offset_start` / `log_byte_offset_end`. Skips when `acs.db` is missing or no row carries the key. Runs in a single transaction with rollback on parse/serialise failure. Idempotent. |
+| `m004_drop_input_schema` | `m004_drop_input_schema.rs` | Drops the `workflows.input_schema` column via `ALTER TABLE workflows DROP COLUMN input_schema`. `input_schema` is no longer carried on `Workflow` / `NewWorkflow` / `WorkflowUpdate`, so existing DBs need the column removed to keep INSERT/UPDATE statements valid. Skips when `acs.db` is missing or the column is already absent (PRAGMA `table_info` check). Idempotent. |
+| `m005_shell_claude_to_agent` | `m005_shell_claude_to_agent.rs` | Rewrites legacy `shell` steps wrapping `claude -p ... --output-format stream-json` into `agent` steps of type `claude_code_cli`, so the streaming NDJSON cost parser captures `cost_usd`. Detection requires `kind == "shell"`, the command starting with the `claude` token, and the `--output-format stream-json` marker. The prompt is extracted from the first `-p` flag (quoted, unquoted, or `-p=`); embedded escapes are preserved verbatim. Steps whose prompt is fed via stdin (no `-p` flag) are left as `shell` with a `tracing::warn!` so an operator can rewrite them by hand. Residual flags equal to `--output-format stream-json --verbose --dangerously-skip-permissions` leave `command_template = None`; any other residual flags produce a full `command_template`. Recurses into `MatchStep` `cases.<value>` and `default` branches. Rewritten workflows have `version` bumped and `updated_at` refreshed. Idempotent. |
 
 **Adding a new migration**: Create `src/migration/mNNN_<name>.rs`, implement `Migration`, append to `registry()` in `mod.rs`.
 
@@ -656,13 +667,13 @@ The migration system (`acs/src/migration/`) supports forward-only, numbered data
 
 ### Integration Tests (`cargo test --tests`)
 
-- **`tests/workflow_api_tests.rs`** (24 tests): Full HTTP round-trip tests via a real in-process daemon. Covers workflow CRUD, trigger, run retrieval, kill endpoint, SSE event ordering, run snapshot integrity, concurrent runs, WaitForCompletion mode.
+- **`tests/workflow_api_tests.rs`** (32 tests): Full HTTP round-trip tests via a real in-process daemon. Covers workflow CRUD, trigger, run retrieval, kill endpoint, SSE event ordering, run snapshot integrity, concurrent runs, WaitForCompletion mode.
 - **`tests/cli_tests.rs`** (9 tests): CLI subcommand integration tests (daemon start/stop, `acs workflows list`, `acs workflows runs`, etc.).
 
 ### Test Counts
 
-- `cargo test --lib`: 430 pass
-- `cargo test --tests`: 33 pass (9 cli + 24 workflow_api)
+- `cargo test --lib`: 498 pass
+- `cargo test --tests`: 41 pass (9 cli + 32 workflow_api)
 
 ---
 
