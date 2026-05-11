@@ -311,7 +311,7 @@ claude -p "${prompt}" --output-format stream-json --verbose --dangerously-skip-p
 
 **Two-pass substitution.** The `prompt` field is first resolved through the standard template engine (substituting `${input.*}` and `${steps.*}`). Then `${prompt}` in the command template is replaced with the resolved prompt string. These are separate passes to prevent any `${}` sequences embedded in the resolved prompt from being interpreted a second time.
 
-**Cost tracking.** Agent steps stream Claude's NDJSON output through a `ClaudeStreamParser`. The parser extracts `total_cost_usd`, `duration_ms`, `num_turns`, `model`, and `usage` from `result` events and accumulates them across multiple invocations. Costs from agent steps are summed into `WorkflowRun.total_cost_usd`. Only `AgentStep` produces cost data; a `ShellStep` that happens to call `claude -p` directly does not.
+**Cost tracking.** Agent steps stream Claude's NDJSON output through a `ClaudeStreamParser`. The parser extracts `total_cost_usd`, `duration_ms`, `num_turns`, `model`, and `usage` from `result` events and accumulates them across multiple invocations. Costs from agent steps are summed into `WorkflowRun.total_cost_usd`. Only `AgentStep` produces cost data; a `ShellStep` that happens to call `claude -p` directly does not, and the legacy stdin-fed pattern `echo "prompt" | claude --output-format stream-json` (note: no `-p` flag) still runs fine as a shell step but is **not** auto-rewritten into an `AgentStep` and does **not** get first-class cost tracking. Convert it to an `AgentStep` (or a `ShellStep` calling `claude -p "..."`) to participate in cost aggregation.
 
 **stdout.** The `result` field from the last Claude `result` event becomes `StepOutput.stdout` (as `Value::String`). If no structured result is present (no `result` event in the output), the raw captured output is used as a fallback.
 
@@ -585,7 +585,7 @@ Use this mode for long-running workflows where overlapping or back-to-back execu
 
 ### `WorkflowRun`
 
-Each execution creates a `WorkflowRun` persisted under `<data_dir>/runs/<workflow_id>/<run_id>.json`.
+Each execution creates a `WorkflowRun` row in the `workflow_runs` table of `<data_dir>/acs.db` (SQLite). The full `Workflow` snapshot, the `StepRun` list, and the trigger input are stored as JSON-encoded columns; everything else is a typed column. See [`storage.md`](./storage.md) for the schema.
 
 | Field | Type | Description |
 |---|---|---|
@@ -605,7 +605,7 @@ Each execution creates a `WorkflowRun` persisted under `<data_dir>/runs/<workflo
 
 | Field | Type | Description |
 |---|---|---|
-| `step_index` | `usize` | 1-based position in the runtime execution sequence. The executor increments this counter before each step executes, so the first step has `step_index: 1`, the second has `step_index: 2`, and so on. Branch steps inside a `MatchStep` continue the counter from where the match step left off. Matches the `step_index` carried in `StepStarted` / `StepCompleted` SSE events. |
+| `step_index` | `usize` | 0-based position in the runtime execution sequence. The first executed step has `step_index: 0`, the second has `step_index: 1`, and so on. Branch steps inside a `MatchStep` continue the counter from where the match step left off. Matches the `step_index` carried in `StepStarted` / `StepCompleted` SSE events and the `step_index` query parameter on `GET /api/runs/{run_id}/log`. |
 | `step_id` | `String` | Matches `StepDefCommon.id`. |
 | `kind` | `String` | `"shell"`, `"script"`, `"http"`, `"match"`, `"set_var"`, or `"agent"`. |
 | `status` | `RunStatus` | `Running`, `Completed`, `Failed`, or `Killed`. |
@@ -613,7 +613,7 @@ Each execution creates a `WorkflowRun` persisted under `<data_dir>/runs/<workflo
 | `finished_at` | `Option<DateTime<Utc>>` | When the step ended. |
 | `exit_code` | `Option<i32>` | Process exit code (shell/script/agent steps). `null` for non-process steps or on kill/timeout. |
 | `log_byte_offset_start` | `u64` | Byte offset in the run's combined log file where this step's START marker begins. |
-| `log_byte_offset_end` | `Option<u64>` | Byte offset just after this step's END marker. |
+| `log_byte_offset_end` | `Option<u64>` | Byte offset just after this step's END marker. Populated for `Completed`, `Failed`, `Killed`, and timed-out steps — every subprocess step writes the END marker before surfacing its error. `null` only when the step errored before `write_step_end` ran (e.g. a spawn failure with no run loop, or template-substitution failure before START). For a synthetic `MatchStep` record, the offsets are patched to span its child branch; if no children ran, end stays `null` (the slice endpoint treats `null` as "tail to EOF"). |
 | `cost_usd` | `Option<f64>` | Cost in USD extracted from the agent's streaming output. Present for `AgentStep` only. |
 | `error` | `Option<String>` | Error description for `Failed` or `Killed` steps. |
 
