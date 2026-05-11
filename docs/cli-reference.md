@@ -210,7 +210,7 @@ agentcronsystem update [OPTIONS]
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--version` | | `String` | latest | Target version (e.g., `1.6.0` or `v1.6.0`). If omitted, checks GitHub for the latest release. |
+| `--version` | | `String` | latest | Target version (e.g., `4.2.5` or `v4.2.5`). If omitted, checks GitHub for the latest release. |
 | `--force` | | flag | `false` | Force update even if already on the target version |
 
 #### Platform Support
@@ -246,7 +246,7 @@ Other platforms are not supported and will return an error.
 agentcronsystem update
 
 # Update to a specific version
-agentcronsystem update --version 1.5.0
+agentcronsystem update --version 4.2.4
 
 # Force update even if already on the latest version
 agentcronsystem update --force

@@ -554,7 +554,7 @@ paths:
         This structure comes from the `#[serde(tag = "type")]` attribute on the
         `WorkflowEvent` enum.
 
-        The server sends a keepalive data event (`data: keepalive`) every 15 seconds.
+        The server sends a keepalive comment (rendered as `: keepalive\n\n`) every 15 seconds.
 
         Event types:
         - `run_started` — a workflow run has begun. Fields: `run_id`, `workflow_id`, `workflow_version`, `started_at`
@@ -722,7 +722,7 @@ components:
         version:
           type: string
           description: Daemon version string.
-          example: "1.6.0"
+          example: "4.2.5"
         data_dir:
           type: string
           description: Filesystem path to the data directory.
@@ -1031,7 +1031,7 @@ components:
               description: |
                 Custom command template to invoke the agent CLI. When null the
                 daemon uses its configured default for the agent type.
-              example: "claude --output-format json"
+              example: null
 
     StepDef:
       description: |

@@ -228,7 +228,7 @@ When `pass_stdin: true`, a Shell or Script step receives the stdout of the step 
 `daemon.log` (and the daemon's stderr in foreground mode) carries `INFO`-level lines for the operational lifecycle. Step stdout/stderr is **not** written here — that lives in per-run files under `logs/<workflow_id>/<run_id>.log`.
 
 Lines you will see:
-- **Startup / shutdown**: tracing init, data dir, PID/port file acquisition, migrations applied, graceful shutdown.
+- **Startup / shutdown**: tracing init, data dir, PID/port file acquisition, migrations applied, graceful shutdown. Each `mNNN` migration logs a `Migration mNNN complete: ...` line here — this is the only place migration outcomes are surfaced; `/health` does not expose migration status (Flyway-style: succeed on startup or abort).
 - **HTTP access log**: one line per inbound request. Format example:
   `INFO http_request{method=POST uri=/api/workflows}: agent_cron_scheduler::server: -> 201 (4ms)`
 - **Workflow CRUD**: emitted on success only. `workflow created`, `workflow updated` (with the list of changed fields), `workflow deleted`, `workflow triggered` (with the new `run_id`), `workflow run killed`.

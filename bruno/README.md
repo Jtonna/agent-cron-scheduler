@@ -6,7 +6,7 @@ A [Bruno](https://www.usebruno.com/) collection covering every HTTP endpoint exp
 
 | Folder | Endpoints |
 |---|---|
-| `Health/` | `/health` (liveness, summary stats, platform service registration, applied migrations) |
+| `Health/` | `/health` (liveness, summary stats, platform service registration) |
 | `Workflows/` | CRUD for workflow definitions (`/api/workflows[/:id]`), plus the trigger endpoint. |
 | `Runs/` | Run records (`/api/runs/:id`), per-workflow run lists, run kill. |
 | `SSE/` | Server-Sent Events stream (`/api/events/workflows`) with optional `run_id` / `workflow_id` filters. |
