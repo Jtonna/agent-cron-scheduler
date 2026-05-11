@@ -109,7 +109,7 @@ Returns daemon health status, including uptime, workflow counts, version, and pl
   "uptime_seconds": 3600,
   "active_jobs": 5,
   "total_jobs": 8,
-  "version": "0.2.0",
+  "version": "4.2.5",
   "data_dir": "/home/user/.local/share/agent-cron-scheduler",
   "service": {
     "registered": true,
@@ -537,7 +537,7 @@ Fetch the on-disk run log as `text/plain`. The log holds the concatenated stdout
 | `step_index` | integer | No       | If supplied, return only the bytes belonging to the StepRun with this `step_index`.        |
 
 When `step_index` is omitted the entire log file is returned.
-When the active step's `log_byte_offset_end` is `null` (run still in progress) the response tails to end-of-file.
+When the requested step's `log_byte_offset_end` is `null` the response tails to end-of-file. `_end` is `null` only for the currently-running step or for steps that errored before their `write_step_start`/`write_step_end` markers landed (e.g. template-substitution or spawn failures); for Killed, Failed, and Timeout outcomes where the END marker was written, `_end` is populated and the slice is exact.
 
 **Response:**
 
@@ -546,6 +546,7 @@ When the active step's `log_byte_offset_end` is `null` (run still in progress) t
 | 200 OK | `text/plain` body containing the requested bytes. |
 | 400 Bad Request | `run_id` is not a valid UUID. |
 | 404 Not Found | Run, requested `step_index`, or log file is missing. |
+| 422 Unprocessable Entity | `error: "log_offset_out_of_range"` — the recorded `log_byte_offset_start` for the requested step extends past the actual log file length (e.g. the log was truncated or replaced after the run was persisted). |
 | 500 Internal Server Error | Failed to read the log file. |
 
 The log file lives at `<data_dir>/logs/<workflow_id>/<run_id>.log` and uses the boundary markers documented under [`StepRun`](#steprun).
@@ -684,7 +685,7 @@ The full workflow object returned by GET, POST (201), and PATCH (200) endpoints.
 |-------------------|---------------------------------------|----------|------------------------------------------------------------------------------------|
 | `id`              | string (UUID)                         | No       | Unique identifier, auto-generated as UUIDv7.                                       |
 | `name`            | string                                | No       | Unique human-readable name (slug).                                                 |
-| `version`         | integer (u32)                         | No       | Auto-incrementing version. Bumps when `name`, `schedule`, or `steps` change.       |
+| `version`         | integer (u32)                         | No       | Auto-incrementing version. Bumps on changes to any of `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, or `on_failure`. Toggling `enabled` alone does NOT bump version. |
 | `schedule`        | string                                | No       | Cron expression (5-field standard syntax).                                         |
 | `timezone`        | string                                | Yes      | IANA timezone name, or `null` for UTC.                                             |
 | `schedule_mode`   | string                                | No       | One of `"Cron"` or `"WaitForCompletion"`. Default: `"Cron"`.                      |
@@ -986,7 +987,7 @@ Represents the execution record for one step within a run.
 | `finished_at`          | string (ISO 8601)       | Yes      | When the step finished, or `null` if still running.                          |
 | `exit_code`            | integer (i32)           | Yes      | Process exit code, or `null` for non-process steps (`set_var`, `match`).     |
 | `log_byte_offset_start`| integer (u64)           | No       | Byte offset into the combined run log file where this step's output begins.  |
-| `log_byte_offset_end`  | integer (u64)           | Yes      | Byte offset where this step's output ends. `null` while the step is running. |
+| `log_byte_offset_end`  | integer (u64)           | Yes      | Byte offset where this step's output ends. `null` while the step is running and also for steps that errored before their END marker landed (e.g. template-substitution or spawn failures); populated for Completed, Killed, Failed, and Timeout outcomes that reached `write_step_end`. |
 | `cost_usd`             | number (f64)            | Yes      | Cost for this step in USD. Non-null only for `AgentStep`.                    |
 | `error`                | string                  | Yes      | Human-readable error description on failure, or `null`.                      |
 
@@ -1135,7 +1136,7 @@ SSE event name: `step_completed`
 
 ### run_completed
 
-Emitted when a workflow run finishes (any terminal status).
+Emitted when a workflow run finishes successfully (terminal status `Completed`). Runs that end as `Failed` or `Killed` emit [`run_failed`](#run_failed) instead.
 
 SSE event name: `run_completed`
 
@@ -1160,7 +1161,7 @@ SSE event name: `run_completed`
 
 ### run_failed
 
-Emitted when a run fails due to an infrastructure error (spawn failure, executor panic, etc.) rather than a step-level failure.
+Emitted when a run finishes in any non-success terminal state — that is, when the run's final `RunStatus` is `Failed` (a step aborted, timed out, or hit an infrastructure error) or `Killed` (cancelled via `POST /api/runs/{run_id}/kill`, daemon shutdown, or concurrency policy). The `error` field carries the first per-step error message recorded on the run; the final status is whatever was persisted on the `WorkflowRun` and can be retrieved via `GET /api/runs/{run_id}`.
 
 SSE event name: `run_failed`
 
