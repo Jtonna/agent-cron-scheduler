@@ -122,6 +122,7 @@ acs/src/
     m003_drop_step_output_summary.rs    # DropStepOutputSummary migration
     m004_drop_input_schema.rs           # DropInputSchema migration
     m005_shell_claude_to_agent.rs       # ShellClaudeToAgent migration
+    m006_agent_step_normalize.rs        # AgentStepNormalize migration
   process_kill.rs                  # kill_process_tree(), force_kill_process_tree()
   pty/
     mod.rs                         # PtySpawner trait, PtyProcess trait,
