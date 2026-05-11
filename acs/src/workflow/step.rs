@@ -104,6 +104,19 @@ pub struct StepContext {
     /// `HttpStep`, `AgentStep`) ignore this value silently. A non-matching id
     /// is also ignored silently — the workflow runs without stdin routing.
     pub target_step: Option<String>,
+    /// Byte offset just past the START marker of the currently-executing step.
+    ///
+    /// Step impls write this immediately after `LogSink::write_step_start`
+    /// succeeds. When the step subsequently errors (timeout, kill, spawn
+    /// failure, IO error during the read loop) the executor uses this value to
+    /// populate `StepRun.log_byte_offset_start` on the failed step record, so
+    /// slicing a failed step's log returns just that step's bytes instead of
+    /// the whole file.
+    ///
+    /// Reset to `None` by `execute_steps` before each step runs. `None` means
+    /// the step erred before reaching `write_step_start` (in which case slicing
+    /// falls back to start = 0).
+    pub current_step_log_offset_start: Option<u64>,
 }
 
 /// A future that resolves when the kill receiver is signalled with `true`.

@@ -57,6 +57,7 @@ impl Step for ScriptStep {
             .write_step_start(&self.common.id, Utc::now())
             .await
             .map_err(StepError::Io)?;
+        ctx.current_step_log_offset_start = Some(log_byte_offset_start);
 
         // 4. Spawn via NoPtySpawner
         let spawner = NoPtySpawner;
@@ -459,6 +460,7 @@ mod tests {
             event_tx: None,
             kill_rx: None,
             target_step: None,
+            current_step_log_offset_start: None,
         }
     }
 

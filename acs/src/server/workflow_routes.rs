@@ -201,43 +201,68 @@ pub async fn list_workflows(State(state): State<Arc<AppState>>) -> impl IntoResp
 // POST /api/workflows
 // ---------------------------------------------------------------------------
 
+/// Error returned by [`apply_new_workflow_defaults`] when it cannot populate a
+/// missing `working_dir`. Surfaced by [`create_workflow`] as a 422 response so
+/// the caller knows the workflow was NOT persisted (instead of being saved with
+/// a silent `working_dir = null`).
+struct DefaultWorkingDirError {
+    path: std::path::PathBuf,
+    io_err: std::io::Error,
+}
+
 /// Fill in daemon-config-driven defaults on a freshly-deserialised
 /// `NewWorkflow` body. Called from `create_workflow` before the body reaches
 /// the store.
 ///
 /// Currently fills in:
 ///   * `timezone` ← `config.display_timezone`
-///   * `working_dir` ← `<documents>/agent-cron-scheduler/<sanitized-name>/`
-///     (created on disk if missing; left as `None` if creation fails)
-fn apply_new_workflow_defaults(body: &mut NewWorkflow, config: &crate::models::DaemonConfig) {
+///   * `working_dir` ← `<root>/<sanitized-name>/`, where `<root>` is
+///     `config.display_workflow_dir_root` when set, otherwise
+///     `<documents>/agent-cron-scheduler`. The directory is created on disk;
+///     on `create_dir_all` failure this function returns
+///     `Err(DefaultWorkingDirError)` so the caller can reject the request with
+///     a 422 instead of persisting a workflow with `working_dir = null`.
+fn apply_new_workflow_defaults(
+    body: &mut NewWorkflow,
+    config: &crate::models::DaemonConfig,
+) -> Result<(), DefaultWorkingDirError> {
     if body.timezone.is_none() {
         body.timezone = Some(config.display_timezone.clone());
     }
 
     if body.working_dir.is_none() {
-        if let Some(docs) = dirs::document_dir() {
-            let sanitized = sanitize_workflow_name(&body.name);
-            let target = docs.join("agent-cron-scheduler").join(&sanitized);
-            match std::fs::create_dir_all(&target) {
-                Ok(()) => {
-                    body.working_dir = Some(target.to_string_lossy().into_owned());
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        workflow_name = %body.name,
-                        path = ?target,
-                        "failed to create default working_dir: {} — persisting workflow with working_dir = null",
-                        e
-                    );
+        let root: Option<std::path::PathBuf> = match config.display_workflow_dir_root.as_deref() {
+            Some(p) => Some(p.to_path_buf()),
+            None => dirs::document_dir().map(|d| d.join("agent-cron-scheduler")),
+        };
+
+        match root {
+            Some(root_path) => {
+                let sanitized = sanitize_workflow_name(&body.name);
+                let target = root_path.join(&sanitized);
+                match std::fs::create_dir_all(&target) {
+                    Ok(()) => {
+                        body.working_dir = Some(target.to_string_lossy().into_owned());
+                    }
+                    Err(e) => {
+                        return Err(DefaultWorkingDirError {
+                            path: target,
+                            io_err: e,
+                        });
+                    }
                 }
             }
-        } else {
-            tracing::warn!(
-                workflow_name = %body.name,
-                "could not resolve user Documents dir — persisting workflow with working_dir = null"
-            );
+            None => {
+                tracing::warn!(
+                    workflow_name = %body.name,
+                    "could not resolve user Documents dir and no \
+                     display_workflow_dir_root configured — persisting workflow \
+                     with working_dir = null"
+                );
+            }
         }
     }
+    Ok(())
 }
 
 /// Sanitize a workflow name for use as a directory component.
@@ -272,7 +297,18 @@ pub async fn create_workflow(
     Json(mut body): Json<NewWorkflow>,
 ) -> impl IntoResponse {
     // Apply daemon-config defaults for fields the caller left unspecified.
-    apply_new_workflow_defaults(&mut body, &state.config);
+    if let Err(e) = apply_new_workflow_defaults(&mut body, &state.config) {
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "working_dir_create_failed",
+            &format!(
+                "Could not create default working_dir at {}: {}. Specify working_dir explicitly.",
+                e.path.display(),
+                e.io_err
+            ),
+        )
+        .into_response();
+    }
 
     match state.workflow_store.create_workflow(body).await {
         Ok(wf) => {
@@ -925,6 +961,12 @@ pub async fn get_run_log(
 
 /// Read `[start, end)` from `path`. When `end` is `None` the step is still
 /// running and we tail to end-of-file.
+///
+/// Returns `Err(UnexpectedEof)` when `start` exceeds the file length so the
+/// handler can map it to a `422 log_offset_out_of_range` instead of returning
+/// an empty body. Without this check, `seek` past EOF followed by `read_to_end`
+/// silently produces `Ok(empty)`, which is indistinguishable from "step
+/// produced no output".
 async fn read_step_slice(
     path: &std::path::Path,
     start: u64,
@@ -932,6 +974,16 @@ async fn read_step_slice(
 ) -> std::io::Result<Vec<u8>> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     let mut file = tokio::fs::File::open(path).await?;
+    let file_len = file.metadata().await?.len();
+    if start > file_len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!(
+                "step start offset {} exceeds log file length {}",
+                start, file_len
+            ),
+        ));
+    }
     file.seek(std::io::SeekFrom::Start(start)).await?;
 
     let mut buf = Vec::new();
@@ -1303,9 +1355,22 @@ mod tests {
         run_store: Arc<dyn WorkflowRunStore>,
     ) -> Arc<crate::server::AppState> {
         let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(256);
+        // Point the default-working-dir root at a per-process tempdir under
+        // std::env::temp_dir() so unit tests don't leak directories into the
+        // user's real Documents folder. The tempdir is unique per process so
+        // parallel test workers don't collide.
+        let mut config = DaemonConfig::default();
+        let test_root = std::env::temp_dir()
+            .join("acs-unit-test-workflow-dirs")
+            .join(format!("p{}", std::process::id()));
+        // Best-effort create — failures are non-fatal since
+        // `apply_new_workflow_defaults` will call `create_dir_all` again on
+        // each sub-path it needs.
+        let _ = std::fs::create_dir_all(&test_root);
+        config.display_workflow_dir_root = Some(test_root);
         Arc::new(crate::server::AppState {
             scheduler_notify: Arc::new(Notify::new()),
-            config: Arc::new(DaemonConfig::default()),
+            config: Arc::new(config),
             start_time: Instant::now(),
             shutdown_tx: None,
             workflow_event_tx,
@@ -1397,9 +1462,12 @@ mod tests {
     #[tokio::test]
     async fn test_create_workflow_fills_default_working_dir_and_creates_it() {
         let state = make_state_default(Arc::new(InMemoryWorkflowStore::new()));
+        let configured_root = state
+            .config
+            .display_workflow_dir_root
+            .clone()
+            .expect("test state sets display_workflow_dir_root");
         let app = crate::server::create_router(state);
-        // Unique name so the sanitized directory does not collide with other
-        // test runs sharing the user's Documents directory.
         let unique_name = format!("wd-default-{}", Uuid::now_v7());
         let body = serde_json::to_string(&make_new_workflow(&unique_name)).unwrap();
         let resp = app
@@ -1415,24 +1483,23 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
         let json = body_json(resp.into_body()).await;
-        // If the test environment cannot resolve the user's Documents dir at
-        // all (some sandboxed CI environments), working_dir falls back to
-        // null — we allow that here to keep the test portable.
-        if let Some(wd) = json["working_dir"].as_str() {
-            assert!(
-                wd.contains("agent-cron-scheduler"),
-                "default working_dir should be under agent-cron-scheduler, got: {}",
-                wd
-            );
-            assert!(
-                std::path::Path::new(wd).exists(),
-                "default working_dir should be created on disk: {}",
-                wd
-            );
-            // Best-effort cleanup so the user's Documents folder doesn't fill
-            // up with test artifacts.
-            let _ = std::fs::remove_dir_all(wd);
-        }
+        let wd = json["working_dir"]
+            .as_str()
+            .expect("working_dir must be auto-filled when config root is set");
+        let wd_path = std::path::Path::new(wd);
+        assert!(
+            wd_path.starts_with(&configured_root),
+            "default working_dir {:?} must live under the configured root {:?}",
+            wd_path,
+            configured_root
+        );
+        assert!(
+            wd_path.exists(),
+            "default working_dir should be created on disk: {}",
+            wd
+        );
+        // Best-effort cleanup so the temp area doesn't accumulate across runs.
+        let _ = std::fs::remove_dir_all(wd);
     }
 
     #[tokio::test]

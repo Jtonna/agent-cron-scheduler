@@ -115,6 +115,7 @@ async fn execute_with_spawner(
         .write_step_start(&step.common.id, Utc::now())
         .await
         .map_err(StepError::Io)?;
+    ctx.current_step_log_offset_start = Some(log_byte_offset_start);
 
     // Step 5: Spawn the process.
     let mut process = spawner
@@ -365,6 +366,7 @@ mod tests {
             event_tx: None,
             kill_rx: None,
             target_step: None,
+            current_step_log_offset_start: None,
         }
     }
 

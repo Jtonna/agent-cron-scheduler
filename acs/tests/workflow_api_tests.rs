@@ -52,8 +52,15 @@ async fn spawn_test_server(
 ) -> (String, Arc<AppState>, tokio::task::JoinHandle<()>) {
     let (workflow_event_tx, _) = broadcast::channel::<WorkflowEvent>(4096);
 
-    let mut config = DaemonConfig::default();
-    config.data_dir = Some(data_dir);
+    // Route auto-created workflow working_dirs to a subfolder of the test's
+    // data_dir (a tempdir) so the test doesn't pollute the user's real
+    // Documents folder. The TempDir's `Drop` cleans this up when the test
+    // returns.
+    let config = DaemonConfig {
+        display_workflow_dir_root: Some(data_dir.join("workflow_dirs")),
+        data_dir: Some(data_dir),
+        ..DaemonConfig::default()
+    };
 
     let state = Arc::new(AppState {
         scheduler_notify: Arc::new(Notify::new()),
@@ -1595,5 +1602,354 @@ async fn test_killed_run_populates_workflow_last_run_fields() {
         got["last_run_status"].as_str(),
         Some("Killed"),
         "killed run should propagate Killed to workflow.last_run_status"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ACS-22 v4.2.4 follow-ups
+// ---------------------------------------------------------------------------
+
+/// Regression: test fixtures must NOT create real folders under the user's
+/// Documents directory. When `display_workflow_dir_root` is set on the test
+/// daemon config, auto-created workflow dirs land there (under the tempdir).
+#[tokio::test]
+async fn test_default_working_dir_routed_to_config_root_not_documents() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let tmp_path = tmp.path().to_path_buf();
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp_path.clone(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Use a recognisable, unique workflow name so we can assert on its
+    // sanitised directory.
+    let name = format!("doc-dir-regression-{}", Uuid::now_v7());
+    let body = serde_json::to_string(&make_new_workflow(&name)).unwrap();
+    let resp = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .expect("POST /api/workflows");
+    assert_eq!(resp.status(), 201);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    let working_dir = json["working_dir"]
+        .as_str()
+        .expect("working_dir should be auto-filled");
+
+    // The auto-created path must live under <tempdir>/workflow_dirs/, not
+    // under the user's real Documents folder.
+    let expected_root = tmp_path.join("workflow_dirs");
+    let wd_path = std::path::Path::new(working_dir);
+    assert!(
+        wd_path.starts_with(&expected_root),
+        "working_dir {:?} must live under the test-configured root {:?}",
+        wd_path,
+        expected_root
+    );
+    assert!(wd_path.exists(), "working_dir should be created on disk");
+
+    // Hard assertion: nothing should have been created under the real
+    // Documents/agent-cron-scheduler/<sanitised-name>/ path.
+    if let Some(docs) = dirs::document_dir() {
+        let leaked = docs
+            .join("agent-cron-scheduler")
+            .join(name.replace('_', "-").to_ascii_lowercase());
+        assert!(
+            !leaked.exists(),
+            "test must not create a directory under the user's Documents folder: {:?}",
+            leaked
+        );
+    }
+}
+
+/// Item 3c: when `create_dir_all` fails for the auto-created working_dir, the
+/// API must return 422 `working_dir_create_failed` rather than persisting the
+/// workflow with a silent `working_dir = null`.
+#[tokio::test]
+async fn test_create_workflow_422_when_default_dir_unwriteable() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let tmp_path = tmp.path().to_path_buf();
+    // Stage the root as a regular FILE so create_dir_all fails on every
+    // platform (it can't create a directory inside a file).
+    let blocking_root = tmp_path.join("workflow_dirs");
+    std::fs::write(&blocking_root, b"not a directory").expect("create blocking file");
+
+    let (base_url, _state, _handle) =
+        spawn_test_server(Arc::clone(&wf_store), Arc::clone(&run_store), tmp_path).await;
+    let client = reqwest::Client::new();
+
+    let body = serde_json::to_string(&make_new_workflow("dir-fail")).unwrap();
+    let resp = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .expect("POST /api/workflows");
+    assert_eq!(
+        resp.status(),
+        422,
+        "create_dir_all failure must surface as 422, not silent null"
+    );
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        json["error"], "working_dir_create_failed",
+        "error code should match"
+    );
+
+    // Verify the workflow was NOT persisted.
+    let list_resp = client
+        .get(format!("{}/api/workflows", base_url))
+        .send()
+        .await
+        .expect("GET")
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert!(
+        list_resp.as_array().unwrap().is_empty(),
+        "workflow must not be persisted when default_dir creation fails"
+    );
+}
+
+/// Item 3b: `read_step_slice` must surface a 422 `log_offset_out_of_range`
+/// when `log_byte_offset_start` is beyond the log file length. Previously the
+/// endpoint silently returned an empty body.
+#[tokio::test]
+async fn test_run_log_slice_422_when_start_offset_past_eof() {
+    use agent_cron_scheduler::models::workflow::{RunStatus, StepRun, WorkflowRun};
+
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let tmp_path = tmp.path().to_path_buf();
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp_path.clone(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Create a workflow so we have a valid workflow_id to attach the run to.
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("slice-oob")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Build a synthetic run whose only StepRun records a start offset far
+    // beyond the actual log file size.
+    let run_id = uuid::Uuid::now_v7();
+    let log_dir = tmp_path.join("logs").join(wf_id.to_string());
+    std::fs::create_dir_all(&log_dir).expect("create log dir");
+    let log_path = log_dir.join(format!("{}.log", run_id));
+    // Write a small log file: ~16 bytes.
+    std::fs::write(&log_path, b"tiny log body\n").expect("write log");
+
+    let step_run = StepRun {
+        step_index: 0,
+        step_id: "phantom".to_string(),
+        kind: "shell".to_string(),
+        status: RunStatus::Failed,
+        started_at: Utc::now(),
+        finished_at: Some(Utc::now()),
+        exit_code: None,
+        log_byte_offset_start: 999_999, // way past file_len
+        log_byte_offset_end: None,
+        cost_usd: None,
+        error: Some("synthetic".to_string()),
+    };
+
+    let run = WorkflowRun {
+        run_id,
+        workflow_id: wf_id,
+        workflow_version: wf.version,
+        workflow_snapshot: wf.clone(),
+        started_at: Utc::now(),
+        finished_at: Some(Utc::now()),
+        status: RunStatus::Failed,
+        trigger_input: None,
+        steps: vec![step_run],
+        total_cost_usd: None,
+        total_duration_ms: None,
+    };
+    run_store.create_run(run).await.expect("create_run");
+
+    // Hit the slice endpoint with step_index=0; expect 422.
+    let resp = client
+        .get(format!("{}/api/runs/{}/log?step_index=0", base_url, run_id))
+        .send()
+        .await
+        .expect("GET run log slice");
+    assert_eq!(
+        resp.status(),
+        422,
+        "start offset past EOF must surface as 422 log_offset_out_of_range"
+    );
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(json["error"], "log_offset_out_of_range");
+}
+
+/// Item 2: a step that times out must record `log_byte_offset_start` at the
+/// offset of its START marker (not 0) so the slice endpoint returns the
+/// step's bytes rather than the whole log file.
+///
+/// We use a 2-step workflow: step-1 writes a known prefix to the log, step-2
+/// runs a sleep with a tight `timeout_secs` so it times out. After the run
+/// finishes, step-2's StepRun must carry a non-zero `log_byte_offset_start`
+/// (the byte offset just before its START marker).
+#[tokio::test]
+async fn test_timed_out_step_records_log_byte_offset_start() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let tmp_path = tmp.path().to_path_buf();
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp_path.clone(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    #[cfg(windows)]
+    let prefix_cmd = "echo PREFIX-MARKER";
+    #[cfg(not(windows))]
+    let prefix_cmd = "echo PREFIX-MARKER";
+
+    #[cfg(windows)]
+    let slow_cmd = "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"";
+    #[cfg(not(windows))]
+    let slow_cmd = "sleep 30";
+
+    let prefix_step = StepDef::Shell(ShellStep {
+        common: StepDefCommon {
+            id: "prefix".to_string(),
+            on_failure: None,
+            always_run: false,
+            timeout_secs: Some(30),
+            working_dir: None,
+            env_vars: None,
+            capture: CaptureSpec::default(),
+        },
+        command: prefix_cmd.to_string(),
+        pass_stdin: false,
+    });
+    let slow_step = StepDef::Shell(ShellStep {
+        common: StepDefCommon {
+            id: "slow".to_string(),
+            on_failure: None,
+            always_run: false,
+            timeout_secs: Some(2), // tight timeout → step times out
+            working_dir: None,
+            env_vars: None,
+            capture: CaptureSpec::default(),
+        },
+        command: slow_cmd.to_string(),
+        pass_stdin: false,
+    });
+    let wf = NewWorkflow {
+        name: "timeout-offset-capture".to_string(),
+        schedule: "*/5 * * * *".to_string(),
+        timezone: None,
+        schedule_mode: Default::default(),
+        enabled: true,
+        steps: vec![prefix_step, slow_step],
+        default_input: None,
+        working_dir: None,
+        env_vars: None,
+        allow_concurrent: None,
+        on_failure: FailurePolicy::default(),
+    };
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&wf).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+    let run_id = trigger_json["run_id"].as_str().unwrap();
+
+    // Poll until the run finishes (should be ~2-3s).
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
+    let final_run = loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("run {} did not finish within 15s", run_id);
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        let run_resp = client
+            .get(format!("{}/api/runs/{}", base_url, run_id))
+            .send()
+            .await
+            .expect("GET run");
+        if run_resp.status() == 200 {
+            let run_json: serde_json::Value = run_resp.json().await.unwrap();
+            let status = run_json["status"].as_str().unwrap_or("");
+            if matches!(status, "Failed" | "Completed" | "Killed") {
+                break run_json;
+            }
+        }
+    };
+
+    // Locate the slow step (step_index 1).
+    let steps = final_run["steps"].as_array().expect("steps array");
+    let slow = steps
+        .iter()
+        .find(|s| s["step_id"] == "slow")
+        .expect("slow step recorded");
+
+    let start = slow["log_byte_offset_start"]
+        .as_u64()
+        .expect("log_byte_offset_start present");
+    assert!(
+        start > 0,
+        "timed-out step must capture its START-marker offset; got {} (would have been 0 before the fix)",
+        start
+    );
+    // End offset must remain null because the END marker was never written.
+    assert!(
+        slow["log_byte_offset_end"].is_null(),
+        "log_byte_offset_end must be null for a step that erred before write_step_end"
+    );
+
+    // Sanity: GET /api/runs/{id}/log?step_index=1 should return bytes
+    // starting from the slow step's START marker — must NOT contain the
+    // prefix step's "PREFIX-MARKER" output.
+    let slice_resp = client
+        .get(format!("{}/api/runs/{}/log?step_index=1", base_url, run_id))
+        .send()
+        .await
+        .expect("GET slice");
+    assert_eq!(slice_resp.status(), 200);
+    let body = slice_resp.text().await.expect("read body");
+    assert!(
+        !body.contains("PREFIX-MARKER"),
+        "step slice must not include the prior step's output. body={:?}",
+        body
     );
 }

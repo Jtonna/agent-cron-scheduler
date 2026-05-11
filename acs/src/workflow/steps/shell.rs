@@ -42,6 +42,9 @@ impl Step for ShellStep {
             .write_step_start(&self.common.id, Utc::now())
             .await
             .map_err(StepError::Io)?;
+        // Record the offset on the context so the executor can stamp it onto
+        // the StepRun if this step subsequently errors (timeout / kill / IO).
+        ctx.current_step_log_offset_start = Some(log_byte_offset_start);
 
         // 4. Spawn via NoPtySpawner
         let spawner = NoPtySpawner;
@@ -334,6 +337,7 @@ mod tests {
             event_tx: None,
             kill_rx: None,
             target_step: None,
+            current_step_log_offset_start: None,
         }
     }
 

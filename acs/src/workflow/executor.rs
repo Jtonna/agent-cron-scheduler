@@ -162,6 +162,12 @@ async fn execute_steps(
             // `log_byte_offset_start` / `_end` AFTER the branch finishes by
             // tracking the first / last child step that was pushed during
             // the recursion.
+            // `log_byte_offset_start` is initialised to `u64::MAX` as an
+            // obvious sentinel: if a branch executes, the patch below
+            // overwrites it with the first child's start offset. If no
+            // children run, the patch below replaces the sentinel with 0 so
+            // the slice endpoint returns the whole file (the match step
+            // itself emits no log bytes, so this is the best we can do).
             let match_run = StepRun {
                 step_index,
                 step_id: m.common.id.clone(),
@@ -170,7 +176,7 @@ async fn execute_steps(
                 started_at,
                 finished_at: Some(Utc::now()),
                 exit_code: Some(0),
-                log_byte_offset_start: 0,
+                log_byte_offset_start: u64::MAX,
                 log_byte_offset_end: None,
                 cost_usd: None,
                 error: None,
@@ -231,9 +237,9 @@ async fn execute_steps(
                 let post_len = step_runs.len();
 
                 // Patch the match_run's byte offsets to span the children that
-                // were just pushed (if any). The first child's _start becomes
-                // the match step's _start; the last child's _end (or None if
-                // it never finished) becomes the match step's _end.
+                // were just pushed. The first child's _start becomes the match
+                // step's _start; the last child's _end (or None if it never
+                // finished) becomes the match step's _end.
                 if post_len > pre_len {
                     let first_start = step_runs[pre_len].log_byte_offset_start;
                     let last_end = step_runs[post_len - 1].log_byte_offset_end;
@@ -241,11 +247,17 @@ async fn execute_steps(
                         slot.log_byte_offset_start = first_start;
                         slot.log_byte_offset_end = last_end;
                     }
+                } else if let Some(slot) = step_runs.get_mut(match_run_idx) {
+                    // No children ran (branch_steps was empty or all skipped):
+                    // replace the `u64::MAX` sentinel with 0 so the slice
+                    // endpoint returns the whole file rather than treating
+                    // the sentinel as a real offset.
+                    slot.log_byte_offset_start = 0;
                 }
-                // If no children ran (branch_steps was empty or all skipped),
-                // the match step has no log slice — leave offsets as the
-                // defaults (0 / None), which the log endpoint serves as
-                // "tail to EOF".
+            } else if let Some(slot) = step_runs.get_mut(match_run_idx) {
+                // No branch was matched (no `cases` hit and no `default`):
+                // replace the sentinel with 0 for the same reason.
+                slot.log_byte_offset_start = 0;
             }
 
             continue;
@@ -293,6 +305,12 @@ async fn execute_steps(
             .on_failure
             .clone()
             .unwrap_or_else(|| workflow.on_failure.clone());
+
+        // Clear the per-step log offset slot before dispatching. Step impls
+        // populate this after their `write_step_start` succeeds; if the step
+        // returns Err before that, the slot remains None and the executor
+        // falls back to `log_byte_offset_start = 0` for the failed StepRun.
+        ctx.current_step_log_offset_start = None;
 
         let result = run_step_with_policy(step_def, ctx, effective_policy, started_at).await;
 
@@ -463,7 +481,8 @@ async fn run_step_with_policy(
     match policy {
         FailurePolicy::Abort | FailurePolicy::Continue => {
             let result = dispatch_step(step_def, ctx).await;
-            build_step_run_result(common, result, policy, started_at)
+            let partial_offset = ctx.current_step_log_offset_start;
+            build_step_run_result(common, result, policy, started_at, partial_offset)
         }
         FailurePolicy::Retry {
             attempts,
@@ -478,6 +497,11 @@ async fn run_step_with_policy(
                 if attempt > 0 && backoff_ms > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                 }
+
+                // Reset the per-attempt offset so that a later attempt that
+                // errs before `write_step_start` doesn't inherit the offset
+                // a prior attempt happened to record.
+                ctx.current_step_log_offset_start = None;
 
                 match dispatch_step(step_def, ctx).await {
                     Ok(output) => {
@@ -501,7 +525,12 @@ async fn run_step_with_policy(
                     }
                     Err(StepError::Killed) => {
                         // Kill is always terminal regardless of policy.
-                        let run = make_failed_step_run(common, started_at, "kill requested");
+                        let run = make_failed_step_run(
+                            common,
+                            started_at,
+                            "kill requested",
+                            ctx.current_step_log_offset_start,
+                        );
                         return StepRunResult::Killed(run);
                     }
                     Err(e) => {
@@ -514,7 +543,12 @@ async fn run_step_with_policy(
             let err_msg = last_err
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "unknown error".to_string());
-            let run = make_failed_step_run(common, started_at, &err_msg);
+            let run = make_failed_step_run(
+                common,
+                started_at,
+                &err_msg,
+                ctx.current_step_log_offset_start,
+            );
             StepRunResult::Failed(run)
         }
     }
@@ -525,6 +559,7 @@ fn build_step_run_result(
     result: Result<StepOutput, StepError>,
     policy: FailurePolicy,
     started_at: chrono::DateTime<Utc>,
+    partial_log_offset_start: Option<u64>,
 ) -> StepRunResult {
     match result {
         Ok(output) => {
@@ -556,12 +591,17 @@ fn build_step_run_result(
             }
         }
         Err(StepError::Killed) => {
-            let run = make_failed_step_run(common, started_at, "kill requested");
+            let run = make_failed_step_run(
+                common,
+                started_at,
+                "kill requested",
+                partial_log_offset_start,
+            );
             StepRunResult::Killed(run)
         }
         Err(e) => {
             let err_msg = e.to_string();
-            let run = make_failed_step_run(common, started_at, &err_msg);
+            let run = make_failed_step_run(common, started_at, &err_msg, partial_log_offset_start);
             match policy {
                 FailurePolicy::Continue => {
                     // No output from an Err variant — use a placeholder.
@@ -607,13 +647,20 @@ fn make_failed_step_run(
     common: &crate::models::workflow::StepDefCommon,
     started_at: chrono::DateTime<Utc>,
     error: &str,
+    partial_log_offset_start: Option<u64>,
 ) -> StepRun {
-    // Err paths from step impls do not surface byte offsets (the step impl
-    // already returned). We record `log_byte_offset_start = 0` and
-    // `_end = None`; the GET /api/runs/{id}/log?step_index=N handler treats
-    // `_end = None` as "tail to EOF", which gives a sensible best-effort slice
-    // for a failed/killed step (it returns everything from the very start of
-    // the log, but at least the endpoint still serves bytes).
+    // `partial_log_offset_start` is the offset returned by
+    // `LogSink::write_step_start` for this step, captured on the
+    // `StepContext` by the step impl immediately after the START marker was
+    // written. It is `Some` for any failure that occurred after the START
+    // marker landed (timeout, kill mid-execution, IO error in the read loop,
+    // non-zero exit). It is `None` when the step erred before
+    // `write_step_start` ran (e.g. a template-substitution or template-fed
+    // spawn failure), in which case we fall back to 0 so the slice endpoint
+    // serves bytes from the beginning of the file.
+    //
+    // `log_byte_offset_end` stays `None` because the END marker was never
+    // written; the slice endpoint treats `end = None` as "tail to EOF".
     StepRun {
         step_index: 0, // patched at call site in execute_steps via mut run.step_index
         step_id: common.id.clone(),
@@ -622,7 +669,7 @@ fn make_failed_step_run(
         started_at,
         finished_at: Some(Utc::now()),
         exit_code: None,
-        log_byte_offset_start: 0,
+        log_byte_offset_start: partial_log_offset_start.unwrap_or(0),
         log_byte_offset_end: None,
         cost_usd: None,
         error: Some(error.to_string()),
@@ -722,6 +769,7 @@ pub async fn run_workflow(
         event_tx: event_tx.clone(),
         kill_rx: Some(kill_rx),
         target_step: trigger.target_step.clone(),
+        current_step_log_offset_start: None,
     };
 
     let mut step_runs: Vec<StepRun> = Vec::new();

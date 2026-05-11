@@ -33,6 +33,15 @@ pub struct DaemonConfig {
     /// to match the cost-analytics display target.
     #[serde(default = "default_display_timezone")]
     pub display_timezone: String,
+    /// Root directory under which the daemon auto-creates per-workflow
+    /// `working_dir` folders for newly-created workflows that don't supply
+    /// `working_dir` explicitly.
+    ///
+    /// When `Some`, this overrides the `dirs::document_dir() /
+    /// agent-cron-scheduler` fallback. Tests set this to a tempdir so they
+    /// don't leak directories into the user's real Documents folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_workflow_dir_root: Option<PathBuf>,
 }
 
 fn default_host() -> String {
@@ -86,6 +95,7 @@ impl Default for DaemonConfig {
             default_allow_concurrent: false,
             default_schedule_mode: ScheduleMode::Cron,
             display_timezone: default_display_timezone(),
+            display_workflow_dir_root: None,
         }
     }
 }

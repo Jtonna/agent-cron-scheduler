@@ -34,6 +34,7 @@ impl Step for SetVarStep {
             .write_step_start(&self.common.id, Utc::now())
             .await
             .map_err(StepError::Io)?;
+        ctx.current_step_log_offset_start = Some(log_byte_offset_start);
 
         // 2. For each (export_name, template_str): substitute then try-parse as JSON.
         let mut exports: HashMap<String, serde_json::Value> = HashMap::new();
@@ -143,6 +144,7 @@ mod tests {
             event_tx: None,
             kill_rx: None,
             target_step: None,
+            current_step_log_offset_start: None,
         }
     }
 
