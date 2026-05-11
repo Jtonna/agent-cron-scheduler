@@ -206,14 +206,14 @@ See [Storage](storage.md) for implementation details.
 - **`HttpStep`**: Uses `reqwest`. Template-substitutes `url`, header values, and `body`. Validates response status against `expect_status`. Kill is implemented by dropping the in-flight future via `tokio::select!`.
 - **`SetVarStep`**: Pure context mutation; no subprocess. Template-substitutes each `exports` value and inserts into `ctx.steps` as named exports. Never fails.
 - **`MatchStep`**: Handled directly by `execute_steps()` in the executor rather than through the `Step` trait dispatch, because it needs to recursively call `execute_steps()` on its chosen branch.
-- **`AgentStep`**: Resolves `AgentType` to an `AgentImpl` via `agents::impl_for()`, builds the command string (substituting the prompt into the `command_template`), spawns via `NoPtySpawner`, and streams output through `AgentOutputParser::parse_chunk()`. On completion calls `finalize()` to extract `AgentOutput` (cost, final message). Participates in kill/timeout select.
+- **`AgentStep`**: Resolves `AgentType` to an `AgentImpl` via `agents::impl_for()`, builds an argv array directly: `[claude, -p, <resolved_prompt>, --output-format, stream-json, --verbose, --dangerously-skip-permissions]`, with `--model <value>` inserted when `model` is set and `extra_args` appended verbatim. Spawns via `PtySpawner::spawn_argv` — no `cmd /C` / `sh -c` wrapper — which eliminates shell-escaping concerns for arbitrary prompt content. Streams output through `AgentOutputParser::parse_chunk()`. On completion calls `finalize()` to extract `AgentOutput` (cost, final message). Participates in kill/timeout select.
 
 #### `workflow::agents` -- Agent Module
 
-- **`AgentImpl` trait**: `fn default_command_template(&self) -> &str; fn output_parser(&self) -> Box<dyn AgentOutputParser>`.
+- **`AgentImpl` trait**: `fn build_argv(&self, prompt: &str, model: Option<&str>, extra_args: &[String]) -> Vec<String>; fn output_parser(&self) -> Box<dyn AgentOutputParser>`.
 - **`AgentOutputParser` trait**: `fn parse_chunk(chunk: &[u8]); fn finalize(self: Box<Self>) -> AgentOutput`.
 - **`AgentOutput`**: `cost: Option<CostFragment>`, `final_message: Option<String>`. Note: `CostFragment` is defined in `acs/src/workflow/step.rs`, not in `agents/mod.rs`.
-- **`ClaudeCodeCli`** (`acs/src/workflow/agents/claude_code_cli.rs`): Default command template is `claude -p "${prompt}" --output-format stream-json --verbose --dangerously-skip-permissions`. Parser (`ClaudeStreamParser`) buffers partial lines, processes `type=system` (model extraction) and `type=result` (cost, duration, turns, final message) NDJSON records, and accumulates totals across multiple invocations.
+- **`ClaudeCodeCli`** (`acs/src/workflow/agents/claude_code_cli.rs`): Builds argv: `[claude, -p, <prompt>, --output-format, stream-json, --verbose, --dangerously-skip-permissions]`, with `--model <val>` insertion point and `extra_args` appended. Parser (`ClaudeStreamParser`) buffers partial lines, processes `type=system` (model extraction) and `type=result` (cost, duration, turns, final message) NDJSON records, and accumulates totals across multiple invocations.
 
 #### `workflow::log_sink` -- Log Sinks
 
@@ -246,7 +246,7 @@ See [Storage](storage.md) for implementation details.
 
 - **`Migration` trait** (`acs/src/migration/mod.rs`): `fn name() -> &'static str; async fn run(data_dir) -> Result<bool, AcsError>`. `Ok(true)` = work done; `Ok(false)` = nothing to do (idempotent).
 - **`run_pending()`**: Called at daemon startup. Reads `<data_dir>/migrations.json` for already-applied names. For each unapplied migration in the registry, calls `run()`. Writes state atomically after each `Ok(true)`. Stops on first error (partial progress is preserved).
-- **Registry** (ordered): `m001_jobs_to_workflows::JobsToWorkflows`, `m002_json_to_sqlite::JsonToSqlite`, `m003_drop_step_output_summary::DropStepOutputSummary`, `m004_drop_input_schema::DropInputSchema`, `m005_shell_claude_to_agent::ShellClaudeToAgent`.
+- **Registry** (ordered): `m001_jobs_to_workflows::JobsToWorkflows`, `m002_json_to_sqlite::JsonToSqlite`, `m003_drop_step_output_summary::DropStepOutputSummary`, `m004_drop_input_schema::DropInputSchema`, `m005_shell_claude_to_agent::ShellClaudeToAgent`, `m006_agent_step_normalize::AgentStepNormalize`.
 - **`legacy_types`** (`acs/src/migration/legacy_types.rs`): Read-only legacy `Job` and `ExecutionType` structs used only by the migration code to deserialize old `jobs.json` files.
 
 ---
@@ -448,7 +448,7 @@ StepDef (tag = "kind")
 ├── Http(HttpStep)         { common, method, url, headers, body, expect_status }
 ├── Match(MatchStep)       { common, expr, cases: HashMap<String, Vec<StepDef>>, default }
 ├── SetVar(SetVarStep)     { common, exports: HashMap<String, String> }
-└── Agent(AgentStep)       { common, agent_type, prompt, command_template }
+└── Agent(AgentStep)       { common, agent_type, prompt, model, extra_args }
 ```
 
 `StepDefCommon` (flattened into every variant): `id`, `on_failure`, `always_run`, `timeout_secs`, `working_dir`, `env_vars`, `capture: CaptureSpec { stdout_max_bytes, parser }`.
@@ -641,6 +641,7 @@ The migration system (`acs/src/migration/`) supports forward-only, numbered data
 | `m003_drop_step_output_summary` | `m003_drop_step_output_summary.rs` | Strips the legacy `output_summary` key from every `StepRun` record in `workflow_runs.steps_json`. Per-step output now lives only in the combined run log, indexed by `log_byte_offset_start` / `log_byte_offset_end`. Skips when `acs.db` is missing or no row carries the key. Runs in a single transaction with rollback on parse/serialise failure. Idempotent. |
 | `m004_drop_input_schema` | `m004_drop_input_schema.rs` | Drops the `workflows.input_schema` column via `ALTER TABLE workflows DROP COLUMN input_schema`. `input_schema` is no longer carried on `Workflow` / `NewWorkflow` / `WorkflowUpdate`, so existing DBs need the column removed to keep INSERT/UPDATE statements valid. Skips when `acs.db` is missing or the column is already absent (PRAGMA `table_info` check). Idempotent. |
 | `m005_shell_claude_to_agent` | `m005_shell_claude_to_agent.rs` | Rewrites legacy `shell` steps wrapping `claude -p ... --output-format stream-json` into `agent` steps of type `claude_code_cli`, so the streaming NDJSON cost parser captures `cost_usd`. Detection requires `kind == "shell"`, the command starting with the `claude` token, and the `--output-format stream-json` marker. The prompt is extracted from the first `-p` flag (quoted, unquoted, or `-p=`); embedded escapes are preserved verbatim. Steps whose prompt is fed via stdin (no `-p` flag) are left as `shell` with a `tracing::warn!` so an operator can rewrite them by hand. Residual flags equal to `--output-format stream-json --verbose --dangerously-skip-permissions` leave `command_template = None`; any other residual flags produce a full `command_template`. Recurses into `MatchStep` `cases.<value>` and `default` branches. Rewritten workflows have `version` bumped and `updated_at` refreshed. Idempotent. |
+| `m006_agent_step_normalize` | `m006_agent_step_normalize.rs` | Normalizes legacy AgentStep records that still carry `command_template`. Parses the template, extracts `--model <val>` if present into the structured `model` field, strips the canonical baseline tokens (`claude`, `-p <value>`, `--output-format stream-json`, `--verbose`, `--dangerously-skip-permissions`), keeps any leftover tokens as `extra_args`, drops the `command_template` key. Recurses into MatchStep `cases.<value>` and `default` branches. Preserves any pre-existing `model` field when the template has no `--model`. Bumps `workflows.version` and refreshes `updated_at`. Leaves non-claude or unparseable templates untouched with a `tracing::warn!`. Idempotent. Single transaction with rollback on parse/UPDATE error. |
 
 **Adding a new migration**: Create `src/migration/mNNN_<name>.rs`, implement `Migration`, append to `registry()` in `mod.rs`.
 
@@ -672,8 +673,8 @@ The migration system (`acs/src/migration/`) supports forward-only, numbered data
 
 ### Test Counts
 
-- `cargo test --lib`: 498 pass
-- `cargo test --tests`: 41 pass (9 cli + 32 workflow_api)
+- `cargo test --lib`: 520 pass
+- `cargo test --tests`: 45 pass (9 cli + 36 api)
 
 ---
 

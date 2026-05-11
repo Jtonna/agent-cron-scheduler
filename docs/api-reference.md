@@ -230,6 +230,7 @@ Create a new workflow.
 | Status | Description |
 |--------|-------------|
 | 201 Created | Workflow created. Returns the full [Workflow](#workflow) object. |
+| 400 Bad Request | `error: "command_template_removed"` — the payload contains an `AgentStep` with the removed `command_template` field. Migrate to `model` / `extra_args`. |
 | 409 Conflict | A workflow with the same `name` already exists. |
 | 422 Unprocessable Entity | Validation failed (empty name, UUID name, invalid cron, invalid timezone, no steps, duplicate step ids, invalid capture parser). |
 | 500 Internal Server Error | Storage failure. |
@@ -283,6 +284,7 @@ Partially update an existing workflow. Only the fields you include in the reques
 | Status | Description |
 |--------|-------------|
 | 200 OK | Returns the full updated [Workflow](#workflow) object. |
+| 400 Bad Request | `error: "command_template_removed"` — the payload contains an `AgentStep` with the removed `command_template` field. Migrate to `model` / `extra_args`. |
 | 404 Not Found | Workflow not found. |
 | 409 Conflict | Another workflow already has the requested `name`. |
 | 422 Unprocessable Entity | Validation failed on one or more fields. |
@@ -879,21 +881,24 @@ First-class invocation of an AI agent (currently Claude Code CLI).
   "id": "review",
   "agent_type": "claude_code_cli",
   "prompt": "Review the diff at ${steps.fetch.exports.diff_path} and summarize issues.",
-  "command_template": null,
+  "model": null,
+  "extra_args": [],
   "timeout_secs": 120
 }
 ```
 
-| Extra Field        | Type   | Default  | Description                                                                                                |
-|--------------------|--------|----------|------------------------------------------------------------------------------------------------------------|
-| `agent_type`       | string | required | Agent to invoke. Currently only `"claude_code_cli"`.                                                       |
-| `prompt`           | string | required | Prompt string. Supports template substitution.                                                             |
-| `command_template` | string | `null`   | Override the default command template. `null` uses the built-in default for the agent type. Supports template substitution. |
+| Extra Field  | Type           | Default  | Description                                                                                                |
+|--------------|----------------|----------|------------------------------------------------------------------------------------------------------------|
+| `agent_type` | string         | required | Agent to invoke. Currently only `"claude_code_cli"`.                                                       |
+| `prompt`     | string         | required | Prompt string. Supports template substitution.                                                             |
+| `model`      | string (nullable) | `null` | Optional Claude model identifier passed as `--model <value>`. Example: `claude-haiku-4-5-20251001`.       |
+| `extra_args` | array\<string\> | `[]`    | Additional verbatim argv elements appended to the `claude` invocation.                                     |
 
-For `claude_code_cli`, the built-in default command template is:
+For `claude_code_cli`, the runner builds argv directly — there is no template string to override. The canonical baseline argv is:
 ```
-claude -p "PROMPT_PLACEHOLDER" --output-format stream-json --verbose --dangerously-skip-permissions
+claude -p <resolved_prompt> --output-format stream-json --verbose --dangerously-skip-permissions
 ```
+If `model` is set, `--model <value>` is inserted. If `extra_args` is non-empty, each item is appended verbatim as a separate argv element. The process is spawned directly (no shell wrapper), so shell-escaping concerns do not apply.
 
 Cost is captured per `AgentStep` via streaming NDJSON parsing and stored in `StepRun.cost_usd` / `WorkflowRun.total_cost_usd`.
 

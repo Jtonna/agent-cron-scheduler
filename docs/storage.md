@@ -450,6 +450,7 @@ On every `write_chunk(data)`:
 `acs/src/migration/m003_drop_step_output_summary.rs`,
 `acs/src/migration/m004_drop_input_schema.rs`,
 `acs/src/migration/m005_shell_claude_to_agent.rs`,
+`acs/src/migration/m006_agent_step_normalize.rs`,
 `acs/src/migration/legacy_types.rs`
 
 ### Design
@@ -481,7 +482,8 @@ Applied migration names are tracked in `{data_dir}/migrations.json`:
     "m002_json_to_sqlite",
     "m003_drop_step_output_summary",
     "m004_drop_input_schema",
-    "m005_shell_claude_to_agent"
+    "m005_shell_claude_to_agent",
+    "m006_agent_step_normalize"
   ]
 }
 ```
@@ -655,6 +657,45 @@ and leaves the step as `shell`.
 
 Rollback on error mirrors m003. The migration is idempotent: after rewriting,
 the step's `kind` is `agent` and the detection criterion no longer matches.
+
+### m006_agent_step_normalize
+
+`m006_agent_step_normalize` walks every row in `workflows`, finds `agent` steps that
+still carry a legacy `command_template` field, and rewrites them into the structured
+v4.2.7 shape (`model` + `extra_args`). The `command_template` field was removed in
+v4.2.7 because the agent runner now builds argv directly without going through a shell,
+eliminating a whole class of escaping bugs.
+
+Detection criteria for rewriting a step:
+
+* `kind == "agent"`
+* `command_template` key is present on the step JSON
+
+For each match the migration:
+
+1. Tokenizes `command_template` (handles quoted values, `--flag=value` and `--flag value`
+   forms, single/double quotes, escaped quotes).
+2. Extracts `--model <value>` (or `--model=<value>`) if present and sets the `model`
+   field. If `--model` is absent, any pre-existing `model` value on the step is
+   preserved untouched.
+3. Strips the canonical baseline tokens: `claude` (first token), `-p <value>`,
+   `--output-format stream-json`, `--verbose`, `--dangerously-skip-permissions`.
+4. Whatever tokens remain become `extra_args` (an array of strings, defaulting to `[]`).
+5. Removes the `command_template` key entirely.
+6. Recurses into `MatchStep` `cases.<value>` and `default` arrays so rewrites apply
+   throughout branching workflows.
+
+Templates whose first token is not `claude`, or whose quoting is malformed, are left
+unchanged with a `tracing::warn!`. Operators can rewrite those by hand.
+
+| Condition | Action |
+|---|---|
+| `acs.db` does not exist | No-op (return `Ok(false)`) |
+| No workflow has an AgentStep with `command_template` | No-op (return `Ok(false)`) |
+| Otherwise | BEGIN transaction → for each workflow whose `steps_json` is rewritten: bump `version`, refresh `updated_at`, UPDATE → COMMIT |
+
+Rollback on parse/UPDATE error. Idempotent: after rewriting, no `command_template` keys
+remain, so a second run sees no candidates and returns `Ok(false)`.
 
 ---
 

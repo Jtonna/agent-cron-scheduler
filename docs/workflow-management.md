@@ -307,21 +307,20 @@ First-class invocation of an LLM agent runtime. Currently supports `claude_code_
 |---|---|---|---|
 | `agent_type` | `AgentType` | required | `"claude_code_cli"` is the only current value. Serializes as a snake_case string. |
 | `prompt` | `String` | required | Prompt to send to the agent. Supports `${input.*}` and `${steps.*}` template substitution. |
-| `command_template` | `Option<String>` | `null` | Custom command template. When `null`, the agent's built-in default is used. The special token `${prompt}` in the template is replaced with the resolved prompt string after `${input.*}`/`${steps.*}` substitution. |
+| `model` | `Option<String>` | `null` | Optional Claude model identifier. Passed as `--model <value>` to the `claude` CLI. Example: `"claude-haiku-4-5-20251001"`. `None` = use whatever model `claude` defaults to. |
+| `extra_args` | `Vec<String>` | `[]` | Additional command-line arguments appended verbatim to the `claude` invocation as separate argv elements. Useful for flags like `--allowedTools <tool>`, `--resume <session>`, or `--model-config <path>`. No shell parsing or escaping is applied — each item becomes one argv element. |
 
-**Default command template for `claude_code_cli`:**
+**Canonical argv baseline for `claude_code_cli`:**
 
-```
-claude -p "${prompt}" --output-format stream-json --verbose --dangerously-skip-permissions
-```
-
-**`${prompt}` is required in custom templates.** If you provide a custom `command_template`, the `${prompt}` token is required — the agent runner does plain string substitution, has no stdin fallback, and `claude` will refuse to start without a prompt source (error: `Input must be provided either through stdin or as a prompt argument when using --print`). To override only the model, for example, keep the full structure intact:
+The `claude_code_cli` runner builds argv directly — there is no template string to override. The canonical baseline argv is:
 
 ```
-claude --model claude-haiku-4-5-20251001 -p "${prompt}" --output-format stream-json --verbose --dangerously-skip-permissions
+claude -p <resolved_prompt> --output-format stream-json --verbose --dangerously-skip-permissions
 ```
 
-**Two-pass substitution.** The `prompt` field is first resolved through the standard template engine (substituting `${input.*}` and `${steps.*}`). Then `${prompt}` in the command template is replaced with the resolved prompt string. These are separate passes to prevent any `${}` sequences embedded in the resolved prompt from being interpreted a second time.
+If `model` is set, `--model <value>` is inserted. If `extra_args` is non-empty, each item is appended verbatim as a separate argv element. The process is spawned directly (no `cmd /C` or `sh -c` wrapper), so shell-escaping concerns do not apply.
+
+**Prompt substitution.** The `prompt` field is rendered through the standard `${input.*}` / `${steps.<id>.stdout}` / `${steps.<id>.exports.<name>}` template substitution before being passed as a single argv element. Because the prompt is passed as one discrete argv argument (no shell), any character — including `?`, commas, quotes, newlines, backslashes — is delivered verbatim to `claude`.
 
 **Cost tracking.** Agent steps stream Claude's NDJSON output through a `ClaudeStreamParser`. The parser extracts `total_cost_usd`, `duration_ms`, `num_turns`, `model`, and `usage` from `result` events and accumulates them across multiple invocations. Costs from agent steps are summed into `WorkflowRun.total_cost_usd`. Only `AgentStep` produces cost data; a `ShellStep` that happens to call `claude -p` directly does not, and the legacy stdin-fed pattern `echo "prompt" | claude --output-format stream-json` (note: no `-p` flag) still runs fine as a shell step but is **not** auto-rewritten into an `AgentStep` and does **not** get first-class cost tracking. Convert it to an `AgentStep` (or a `ShellStep` calling `claude -p "..."`) to participate in cost aggregation.
 
@@ -340,17 +339,19 @@ claude --model claude-haiku-4-5-20251001 -p "${prompt}" --output-format stream-j
 }
 ```
 
-**Advanced — custom command template with session resume:**
+**Advanced — session resume with `extra_args`:**
 
 ```json
 {
   "kind": "agent",
-  "id": "continue-session",
   "agent_type": "claude_code_cli",
-  "prompt": "Continue the task.",
-  "command_template": "claude -p \"${prompt}\" --resume ${steps.start.exports.session_id} --output-format stream-json --verbose --dangerously-skip-permissions"
+  "prompt": "Continue the analysis from the prior session.",
+  "model": "claude-haiku-4-5-20251001",
+  "extra_args": ["--resume", "${steps.start.exports.session_id}"]
 }
 ```
+
+Each `extra_args` item is template-substituted before being passed as a discrete argv element, so `${steps.*}` references work as expected.
 
 ---
 
@@ -451,7 +452,8 @@ A reference that cannot be resolved (step not yet run, field not in input, unkno
 - `HttpStep.url`, `HttpStep.headers` (values), `HttpStep.body`
 - `MatchStep.expr`
 - `SetVarStep.exports` (values)
-- `AgentStep.prompt`, `AgentStep.command_template` (first `${input.*}`/`${steps.*}` pass; then `${prompt}` is substituted separately)
+- `AgentStep.prompt` (supports `${input.*}`, `${steps.*}`)
+- `AgentStep.extra_args[]` — each item supports `${input.*}`, `${steps.*}`
 
 ---
 
