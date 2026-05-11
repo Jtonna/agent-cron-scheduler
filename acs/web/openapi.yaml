@@ -7,7 +7,7 @@ info:
     ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
     Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "4.2.4"
+  version: "4.2.5"
   license:
     name: MIT
 
@@ -33,7 +33,7 @@ paths:
       summary: Health check
       description: |
         Returns daemon health status including uptime, workflow counts, version,
-        platform service registration, and applied migrations.
+        and platform service registration.
       tags: [Health]
       responses:
         "200":
@@ -47,15 +47,12 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "4.2.4"
+                version: "4.2.5"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
                 service:
                   registered: true
                   platform: windows
                   details: "Registry: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\AgentCronScheduler"
-                migrations:
-                  applied:
-                    - m001_jobs_to_workflows
 
   # -------------------------------------------------------------------------
   # Workflows
@@ -704,7 +701,6 @@ components:
         - version
         - data_dir
         - service
-        - migrations
       properties:
         status:
           type: string
@@ -733,8 +729,6 @@ components:
           example: "C:\\Users\\J\\AppData\\Local\\acs\\data"
         service:
           $ref: "#/components/schemas/HealthService"
-        migrations:
-          $ref: "#/components/schemas/HealthMigrations"
 
     HealthService:
       type: object
@@ -760,21 +754,6 @@ components:
             Filesystem path or registry location of the service registration.
             Omitted when `registered` is false.
           example: "Registry: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\AgentCronScheduler"
-
-    HealthMigrations:
-      type: object
-      required: [applied]
-      description: Applied-migration tracking block.
-      properties:
-        applied:
-          type: array
-          items:
-            type: string
-          description: |
-            Names of migrations that have been applied, sorted ascending. Read
-            from `<data_dir>/migrations.json`. Empty when the file is absent.
-          example:
-            - m001_jobs_to_workflows
 
     # -----------------------------------------------------------------------
     # RunStatus enum

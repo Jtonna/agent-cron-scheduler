@@ -306,11 +306,13 @@ async fn execute_steps(
             .clone()
             .unwrap_or_else(|| workflow.on_failure.clone());
 
-        // Clear the per-step log offset slot before dispatching. Step impls
-        // populate this after their `write_step_start` succeeds; if the step
-        // returns Err before that, the slot remains None and the executor
-        // falls back to `log_byte_offset_start = 0` for the failed StepRun.
+        // Clear the per-step log offset slots before dispatching. Step impls
+        // populate these after their `write_step_start` / `write_step_end`
+        // succeed; if the step returns Err before that, the slot remains None
+        // and the executor falls back to `log_byte_offset_start = 0` /
+        // `log_byte_offset_end = None` for the failed StepRun.
         ctx.current_step_log_offset_start = None;
+        ctx.current_step_log_offset_end = None;
 
         let result = run_step_with_policy(step_def, ctx, effective_policy, started_at).await;
 
@@ -481,8 +483,16 @@ async fn run_step_with_policy(
     match policy {
         FailurePolicy::Abort | FailurePolicy::Continue => {
             let result = dispatch_step(step_def, ctx).await;
-            let partial_offset = ctx.current_step_log_offset_start;
-            build_step_run_result(common, result, policy, started_at, partial_offset)
+            let partial_offset_start = ctx.current_step_log_offset_start;
+            let partial_offset_end = ctx.current_step_log_offset_end;
+            build_step_run_result(
+                common,
+                result,
+                policy,
+                started_at,
+                partial_offset_start,
+                partial_offset_end,
+            )
         }
         FailurePolicy::Retry {
             attempts,
@@ -498,10 +508,11 @@ async fn run_step_with_policy(
                     tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                 }
 
-                // Reset the per-attempt offset so that a later attempt that
-                // errs before `write_step_start` doesn't inherit the offset
-                // a prior attempt happened to record.
+                // Reset the per-attempt offsets so that a later attempt that
+                // errs before `write_step_start` / `write_step_end` doesn't
+                // inherit the offset a prior attempt happened to record.
                 ctx.current_step_log_offset_start = None;
+                ctx.current_step_log_offset_end = None;
 
                 match dispatch_step(step_def, ctx).await {
                     Ok(output) => {
@@ -530,6 +541,7 @@ async fn run_step_with_policy(
                             started_at,
                             "kill requested",
                             ctx.current_step_log_offset_start,
+                            ctx.current_step_log_offset_end,
                         );
                         return StepRunResult::Killed(run);
                     }
@@ -548,6 +560,7 @@ async fn run_step_with_policy(
                 started_at,
                 &err_msg,
                 ctx.current_step_log_offset_start,
+                ctx.current_step_log_offset_end,
             );
             StepRunResult::Failed(run)
         }
@@ -560,6 +573,7 @@ fn build_step_run_result(
     policy: FailurePolicy,
     started_at: chrono::DateTime<Utc>,
     partial_log_offset_start: Option<u64>,
+    partial_log_offset_end: Option<u64>,
 ) -> StepRunResult {
     match result {
         Ok(output) => {
@@ -596,12 +610,19 @@ fn build_step_run_result(
                 started_at,
                 "kill requested",
                 partial_log_offset_start,
+                partial_log_offset_end,
             );
             StepRunResult::Killed(run)
         }
         Err(e) => {
             let err_msg = e.to_string();
-            let run = make_failed_step_run(common, started_at, &err_msg, partial_log_offset_start);
+            let run = make_failed_step_run(
+                common,
+                started_at,
+                &err_msg,
+                partial_log_offset_start,
+                partial_log_offset_end,
+            );
             match policy {
                 FailurePolicy::Continue => {
                     // No output from an Err variant — use a placeholder.
@@ -648,6 +669,7 @@ fn make_failed_step_run(
     started_at: chrono::DateTime<Utc>,
     error: &str,
     partial_log_offset_start: Option<u64>,
+    partial_log_offset_end: Option<u64>,
 ) -> StepRun {
     // `partial_log_offset_start` is the offset returned by
     // `LogSink::write_step_start` for this step, captured on the
@@ -659,8 +681,14 @@ fn make_failed_step_run(
     // spawn failure), in which case we fall back to 0 so the slice endpoint
     // serves bytes from the beginning of the file.
     //
-    // `log_byte_offset_end` stays `None` because the END marker was never
-    // written; the slice endpoint treats `end = None` as "tail to EOF".
+    // `partial_log_offset_end` is the offset returned by
+    // `LogSink::write_step_end`, captured the same way after the END marker
+    // landed. It is `Some` when the step impl wrote the END marker before
+    // surfacing the error (the standard kill/timeout exit path in shell,
+    // script, http, set_var, and agent steps writes the END marker
+    // unconditionally). It stays `None` when the step erred before
+    // `write_step_end` ran (e.g. a spawn failure with no run loop), in which
+    // case the slice endpoint treats `end = None` as "tail to EOF".
     StepRun {
         step_index: 0, // patched at call site in execute_steps via mut run.step_index
         step_id: common.id.clone(),
@@ -670,7 +698,7 @@ fn make_failed_step_run(
         finished_at: Some(Utc::now()),
         exit_code: None,
         log_byte_offset_start: partial_log_offset_start.unwrap_or(0),
-        log_byte_offset_end: None,
+        log_byte_offset_end: partial_log_offset_end,
         cost_usd: None,
         error: Some(error.to_string()),
     }
@@ -770,6 +798,7 @@ pub async fn run_workflow(
         kill_rx: Some(kill_rx),
         target_step: trigger.target_step.clone(),
         current_step_log_offset_start: None,
+        current_step_log_offset_end: None,
     };
 
     let mut step_runs: Vec<StepRun> = Vec::new();

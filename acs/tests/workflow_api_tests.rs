@@ -1931,10 +1931,17 @@ async fn test_timed_out_step_records_log_byte_offset_start() {
         "timed-out step must capture its START-marker offset; got {} (would have been 0 before the fix)",
         start
     );
-    // End offset must remain null because the END marker was never written.
+    // The step impl writes the END marker on the timeout path before
+    // surfacing `StepError::Timeout`, so the executor stamps that offset
+    // onto the failed StepRun. `end` must be `Some(N)` with `N > start`.
+    let end = slow["log_byte_offset_end"].as_u64().expect(
+        "log_byte_offset_end must be Some(N) — the END marker is written on the timeout path",
+    );
     assert!(
-        slow["log_byte_offset_end"].is_null(),
-        "log_byte_offset_end must be null for a step that erred before write_step_end"
+        end > start,
+        "end offset ({}) must exceed start offset ({})",
+        end,
+        start
     );
 
     // Sanity: GET /api/runs/{id}/log?step_index=1 should return bytes
@@ -1951,5 +1958,143 @@ async fn test_timed_out_step_records_log_byte_offset_start() {
         !body.contains("PREFIX-MARKER"),
         "step slice must not include the prior step's output. body={:?}",
         body
+    );
+}
+
+/// A killed step must record `log_byte_offset_end` on its `StepRun`. The step
+/// impls write the END marker to the log file even on the kill path (before
+/// surfacing the `StepError::Killed`), so the executor can capture that
+/// offset and persist it onto the `StepRun.log_byte_offset_end` field.
+///
+/// We trigger a long-sleep workflow, POST `/kill`, wait for the run to
+/// transition to `Killed`, then assert:
+///   1. `log_byte_offset_start` is `> 0` (the START marker landed)
+///   2. `log_byte_offset_end` is `Some(N)` with `N > log_byte_offset_start`
+#[tokio::test]
+async fn test_killed_step_records_log_byte_offset_end() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let tmp_path = tmp.path().to_path_buf();
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp_path.clone(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    #[cfg(windows)]
+    let sleep_cmd = "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"";
+    #[cfg(not(windows))]
+    let sleep_cmd = "sleep 30";
+
+    let slow_step = StepDef::Shell(ShellStep {
+        common: StepDefCommon {
+            id: "slow".to_string(),
+            on_failure: None,
+            always_run: false,
+            timeout_secs: Some(60),
+            working_dir: None,
+            env_vars: None,
+            capture: CaptureSpec::default(),
+        },
+        command: sleep_cmd.to_string(),
+        pass_stdin: false,
+    });
+    let wf = NewWorkflow {
+        name: "kill-end-offset-capture".to_string(),
+        schedule: "*/5 * * * *".to_string(),
+        timezone: None,
+        schedule_mode: Default::default(),
+        enabled: true,
+        steps: vec![slow_step],
+        default_input: None,
+        working_dir: None,
+        env_vars: None,
+        allow_concurrent: None,
+        on_failure: FailurePolicy::default(),
+    };
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&wf).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+    let run_id = trigger_json["run_id"].as_str().unwrap();
+
+    // Give the executor a moment to start the step (write START marker).
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Send the kill.
+    let kill_resp = client
+        .post(format!("{}/api/runs/{}/kill", base_url, run_id))
+        .send()
+        .await
+        .expect("POST /kill");
+    assert_eq!(kill_resp.status(), 202, "kill endpoint should return 202");
+
+    // Poll until terminal.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+    let final_run = loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("run {} did not finish within 10s after kill", run_id);
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        let run_resp = client
+            .get(format!("{}/api/runs/{}", base_url, run_id))
+            .send()
+            .await
+            .expect("GET run");
+        if run_resp.status() == 200 {
+            let run_json: serde_json::Value = run_resp.json().await.unwrap();
+            let status = run_json["status"].as_str().unwrap_or("");
+            if matches!(status, "Killed" | "Failed" | "Completed") {
+                break run_json;
+            }
+        }
+    };
+
+    assert_eq!(
+        final_run["status"].as_str().unwrap_or(""),
+        "Killed",
+        "run should finish with Killed status after kill signal"
+    );
+
+    let steps = final_run["steps"].as_array().expect("steps array");
+    let slow = steps
+        .iter()
+        .find(|s| s["step_id"] == "slow")
+        .expect("slow step recorded");
+
+    let start = slow["log_byte_offset_start"]
+        .as_u64()
+        .expect("log_byte_offset_start present");
+    // The exact value of `start` is not asserted — depends on log header
+    // bytes written before any step. The invariant we care about is that
+    // `log_byte_offset_end` is Some and strictly exceeds it.
+    let end = slow["log_byte_offset_end"]
+        .as_u64()
+        .expect("log_byte_offset_end must be Some(N) for a killed step that wrote the END marker on its kill-path");
+    assert!(
+        end > start,
+        "end offset ({}) must be strictly greater than start offset ({})",
+        end,
+        start
     );
 }

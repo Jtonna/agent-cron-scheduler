@@ -11,15 +11,11 @@ get {
 }
 
 docs {
-  Returns daemon liveness, summary stats, platform service registration, and
-  applied migrations.
+  Returns daemon liveness, summary stats, and platform service registration.
 
   The `service` block reports whether ACS is registered with the platform
   service manager (Windows registry Run key, macOS launchd plist, or Linux
   systemd user unit). `service.details` is omitted when `registered` is false.
-
-  The `migrations.applied` array lists migration names recorded in
-  `<data_dir>/migrations.json`, sorted ascending. Empty on a fresh install.
 
   Response 200 example:
   ```json
@@ -28,15 +24,12 @@ docs {
     "uptime_seconds": 1234,
     "active_jobs": 3,        // count of enabled workflows (legacy field name)
     "total_jobs": 7,         // count of all workflows (legacy field name)
-    "version": "4.0.0",
+    "version": "4.2.5",
     "data_dir": "C:\\Users\\J\\AppData\\Local\\agent-cron-scheduler",
     "service": {
       "registered": true,
       "platform": "windows",
       "details": "Registry: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\AgentCronScheduler"
-    },
-    "migrations": {
-      "applied": ["m001_jobs_to_workflows"]
     }
   }
   ```

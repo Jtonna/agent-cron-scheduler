@@ -368,7 +368,7 @@ You can directly query the health endpoint for scripting or monitoring:
 curl http://127.0.0.1:8377/health
 ```
 
-This returns a JSON object with daemon status, version, uptime, workflow counts, data directory, platform service registration (`service` block), and applied migrations (`migrations` block).
+This returns a JSON object with daemon status, version, uptime, workflow counts, data directory, and platform service registration (`service` block).
 
 ---
 

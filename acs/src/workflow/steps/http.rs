@@ -147,6 +147,10 @@ impl Step for HttpStep {
             .write_step_end(&self.common.id, Some(exit_code), Utc::now())
             .await
             .map_err(StepError::Io)?;
+        // Record the end offset on the context so the executor can stamp it
+        // onto the StepRun if this step subsequently surfaces an error after
+        // the END marker has already been written.
+        ctx.current_step_log_offset_end = Some(log_byte_offset_end);
 
         // 12. Build StepOutput.stdout
         let stdout = parse_response_body(
@@ -298,6 +302,7 @@ mod tests {
             kill_rx: None,
             target_step: None,
             current_step_log_offset_start: None,
+            current_step_log_offset_end: None,
         }
     }
 

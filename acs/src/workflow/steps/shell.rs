@@ -181,6 +181,10 @@ impl Step for ShellStep {
             .write_step_end(&self.common.id, exit_code, Utc::now())
             .await
             .map_err(StepError::Io)?;
+        // Record the end offset on the context so the executor can stamp it
+        // onto the StepRun if this step subsequently surfaces a Killed /
+        // Timeout error after the END marker has already been written.
+        ctx.current_step_log_offset_end = Some(log_byte_offset_end);
 
         if killed {
             return Err(StepError::Killed);
@@ -338,6 +342,7 @@ mod tests {
             kill_rx: None,
             target_step: None,
             current_step_log_offset_start: None,
+            current_step_log_offset_end: None,
         }
     }
 

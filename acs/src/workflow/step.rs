@@ -117,6 +117,21 @@ pub struct StepContext {
     /// the step erred before reaching `write_step_start` (in which case slicing
     /// falls back to start = 0).
     pub current_step_log_offset_start: Option<u64>,
+    /// Byte offset just past the END marker of the currently-executing step.
+    ///
+    /// Step impls write this immediately after `LogSink::write_step_end`
+    /// succeeds. When the step subsequently errors after the END marker landed
+    /// (e.g. a `StepError::Killed` returned from the kill-path after the
+    /// terminal END marker write) the executor uses this value to populate
+    /// `StepRun.log_byte_offset_end` on the failed step record, so slicing a
+    /// killed step's log returns just that step's bytes instead of tailing
+    /// to EOF.
+    ///
+    /// Reset to `None` by `execute_steps` before each top-level step and by
+    /// `run_step_with_policy` before each retry attempt. `None` means the
+    /// step impl never reached `write_step_end` (e.g. spawn failure before
+    /// execution), in which case the slice endpoint treats end as EOF.
+    pub current_step_log_offset_end: Option<u64>,
 }
 
 /// A future that resolves when the kill receiver is signalled with `true`.
