@@ -135,79 +135,8 @@ impl PtySpawner for NoPtySpawner {
             command.creation_flags(CREATE_NEW_PROCESS_GROUP);
         }
 
-        let mut child = command.spawn()?;
-
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        let (tx, rx) = std::sync::mpsc::channel::<io::Result<Vec<u8>>>();
-
-        if let Some(stdout) = stdout {
-            let tx_stdout = tx.clone();
-            std::thread::Builder::new()
-                .name("stdout-reader".to_string())
-                .spawn(move || {
-                    use std::io::Read;
-                    let mut reader = stdout;
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        match reader.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                if tx_stdout.send(Ok(buf[..n].to_vec())).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(e)
-                                if e.kind() == io::ErrorKind::BrokenPipe
-                                    || e.kind() == io::ErrorKind::UnexpectedEof =>
-                            {
-                                break;
-                            }
-                            Err(e) => {
-                                let _ = tx_stdout.send(Err(e));
-                                break;
-                            }
-                        }
-                    }
-                })?;
-        }
-
-        if let Some(stderr) = stderr {
-            std::thread::Builder::new()
-                .name("stderr-reader".to_string())
-                .spawn(move || {
-                    use std::io::Read;
-                    let mut reader = stderr;
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        match reader.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                if tx.send(Ok(buf[..n].to_vec())).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(e)
-                                if e.kind() == io::ErrorKind::BrokenPipe
-                                    || e.kind() == io::ErrorKind::UnexpectedEof =>
-                            {
-                                break;
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Err(e));
-                                break;
-                            }
-                        }
-                    }
-                })?;
-        }
-
-        Ok(Box::new(NoPtyProcess {
-            child,
-            rx,
-            leftover: Vec::new(),
-        }))
+        let child = command.spawn()?;
+        finish_spawn(child)
     }
 
     fn spawn_argv(
@@ -258,80 +187,86 @@ impl PtySpawner for NoPtySpawner {
             command.creation_flags(CREATE_NEW_PROCESS_GROUP);
         }
 
-        let mut child = command.spawn()?;
-
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        let (tx, rx) = std::sync::mpsc::channel::<io::Result<Vec<u8>>>();
-
-        if let Some(stdout) = stdout {
-            let tx_stdout = tx.clone();
-            std::thread::Builder::new()
-                .name("stdout-reader".to_string())
-                .spawn(move || {
-                    use std::io::Read;
-                    let mut reader = stdout;
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        match reader.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                if tx_stdout.send(Ok(buf[..n].to_vec())).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(e)
-                                if e.kind() == io::ErrorKind::BrokenPipe
-                                    || e.kind() == io::ErrorKind::UnexpectedEof =>
-                            {
-                                break;
-                            }
-                            Err(e) => {
-                                let _ = tx_stdout.send(Err(e));
-                                break;
-                            }
-                        }
-                    }
-                })?;
-        }
-
-        if let Some(stderr) = stderr {
-            std::thread::Builder::new()
-                .name("stderr-reader".to_string())
-                .spawn(move || {
-                    use std::io::Read;
-                    let mut reader = stderr;
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        match reader.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                if tx.send(Ok(buf[..n].to_vec())).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(e)
-                                if e.kind() == io::ErrorKind::BrokenPipe
-                                    || e.kind() == io::ErrorKind::UnexpectedEof =>
-                            {
-                                break;
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Err(e));
-                                break;
-                            }
-                        }
-                    }
-                })?;
-        }
-
-        Ok(Box::new(NoPtyProcess {
-            child,
-            rx,
-            leftover: Vec::new(),
-        }))
+        let child = command.spawn()?;
+        finish_spawn(child)
     }
+}
+
+/// Wire stdout/stderr reader threads and wrap a freshly-spawned `Child` into a
+/// `Box<dyn PtyProcess>`. This is the shared post-spawn machinery extracted
+/// from `NoPtySpawner::spawn` and `NoPtySpawner::spawn_argv`.
+fn finish_spawn(mut child: std::process::Child) -> anyhow::Result<Box<dyn PtyProcess>> {
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let (tx, rx) = std::sync::mpsc::channel::<io::Result<Vec<u8>>>();
+
+    if let Some(stdout) = stdout {
+        let tx_stdout = tx.clone();
+        std::thread::Builder::new()
+            .name("stdout-reader".to_string())
+            .spawn(move || {
+                use std::io::Read;
+                let mut reader = stdout;
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if tx_stdout.send(Ok(buf[..n].to_vec())).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e)
+                            if e.kind() == io::ErrorKind::BrokenPipe
+                                || e.kind() == io::ErrorKind::UnexpectedEof =>
+                        {
+                            break;
+                        }
+                        Err(e) => {
+                            let _ = tx_stdout.send(Err(e));
+                            break;
+                        }
+                    }
+                }
+            })?;
+    }
+
+    if let Some(stderr) = stderr {
+        std::thread::Builder::new()
+            .name("stderr-reader".to_string())
+            .spawn(move || {
+                use std::io::Read;
+                let mut reader = stderr;
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if tx.send(Ok(buf[..n].to_vec())).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e)
+                            if e.kind() == io::ErrorKind::BrokenPipe
+                                || e.kind() == io::ErrorKind::UnexpectedEof =>
+                        {
+                            break;
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(e));
+                            break;
+                        }
+                    }
+                }
+            })?;
+    }
+
+    Ok(Box::new(NoPtyProcess {
+        child,
+        rx,
+        leftover: Vec::new(),
+    }))
 }
 
 struct NoPtyProcess {
