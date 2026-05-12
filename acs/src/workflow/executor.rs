@@ -1029,7 +1029,6 @@ mod tests {
             next_run_at: None,
             created_at: n,
             updated_at: n,
-            cost_summary: None,
         }
     }
 

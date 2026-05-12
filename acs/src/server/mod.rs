@@ -74,6 +74,15 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             post(workflow_routes::kill_workflow_run),
         )
         .route("/api/runs/{run_id}/log", get(workflow_routes::get_run_log))
+        // ── Cost routes ──────────────────────────────────────────────────────
+        .route(
+            "/api/cost/workflows",
+            get(workflow_routes::list_workflow_costs),
+        )
+        .route(
+            "/api/cost/workflows/{id}",
+            get(workflow_routes::get_workflow_costs),
+        )
         // SSE for WorkflowEvent.
         .route("/api/events/workflows", get(sse::workflow_events_handler))
         .route("/api/shutdown", post(routes::shutdown))

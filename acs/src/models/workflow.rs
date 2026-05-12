@@ -37,14 +37,30 @@ pub struct CostSummary {
     pub daily_buckets: Vec<DailyBucket>,
 }
 
-// ─── WorkflowListResponse ─────────────────────────────────────────────────────
+// ─── Cost endpoint response types ────────────────────────────────────────────
 
-/// Response body for `GET /workflows` — workflow list plus the system-wide
-/// cost summary (aggregated across all workflows).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowListResponse {
-    pub workflows: Vec<Workflow>,
+/// Per-workflow entry returned by `GET /api/cost/workflows`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowCostEntry {
+    pub workflow_id: Uuid,
+    pub workflow_name: String,
+    pub cost_summary: CostSummary,
+}
+
+/// Response body for `GET /api/cost/workflows` — all workflows with their cost
+/// summaries plus the system-wide aggregate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CostWorkflowsListResponse {
+    pub workflows: Vec<WorkflowCostEntry>,
     pub system_cost_summary: CostSummary,
+}
+
+/// Response body for `GET /api/cost/workflows/{id}` — single workflow cost.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CostWorkflowResponse {
+    pub workflow_id: Uuid,
+    pub workflow_name: String,
+    pub cost_summary: CostSummary,
 }
 
 // ─── ScheduleMode ─────────────────────────────────────────────────────────────
@@ -94,8 +110,6 @@ pub struct Workflow {
     pub next_run_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub cost_summary: Option<CostSummary>,
 }
 
 impl PartialEq for Workflow {
@@ -119,7 +133,6 @@ impl PartialEq for Workflow {
             && self.created_at == other.created_at
             && self.updated_at == other.updated_at
         // next_run_at is skipped (computed, not persisted)
-        // cost_summary is not persisted to disk; omit from PartialEq
     }
 }
 
@@ -579,7 +592,6 @@ mod tests {
             next_run_at: None,
             created_at: now,
             updated_at: now,
-            cost_summary: None,
         }
     }
 

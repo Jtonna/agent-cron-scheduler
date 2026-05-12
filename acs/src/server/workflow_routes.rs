@@ -27,8 +27,8 @@ use super::AppState;
 use crate::daemon::events::{WorkflowChangeKind, WorkflowEvent};
 use crate::errors::AcsError;
 use crate::models::workflow::{
-    CostSummary, NewWorkflow, RunStatus, TriggerParams, Workflow, WorkflowListResponse,
-    WorkflowRun, WorkflowUpdate,
+    CostSummary, CostWorkflowResponse, CostWorkflowsListResponse, NewWorkflow, RunStatus,
+    TriggerParams, Workflow, WorkflowCostEntry, WorkflowRun, WorkflowUpdate,
 };
 use crate::workflow::{EventEmittingLogSink, FileLogSink};
 
@@ -359,115 +359,13 @@ fn resolve_window(
 // GET /api/workflows
 // ---------------------------------------------------------------------------
 
-pub async fn list_workflows(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<CostWindowParams>,
-) -> impl IntoResponse {
-    // Parse display_tz from config.
-    let display_tz: Tz = match state.config.display_timezone.parse() {
-        Ok(tz) => tz,
-        Err(_) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                &format!(
-                    "Invalid display_timezone in daemon config: {}",
-                    state.config.display_timezone
-                ),
-            )
-            .into_response();
-        }
-    };
-
-    // Validate and resolve cost window.
-    let (since, until) = match resolve_window(&params, display_tz) {
-        Ok(w) => w,
-        Err((status, body)) => return (status, body).into_response(),
-    };
-
+pub async fn list_workflows(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.workflow_store.list_workflows().await {
-        Ok(mut workflows) => {
-            // Attach per-workflow cost summary + daily buckets.
-            for wf in &mut workflows {
-                match state.cost_cache.get(wf.id).await {
-                    Ok(mut summary) => {
-                        match state
-                            .cost_cache
-                            .get_daily_buckets_for(wf.id, since, until)
-                            .await
-                        {
-                            Ok(buckets) => summary.daily_buckets = buckets,
-                            Err(e) => {
-                                tracing::warn!(
-                                    workflow_id = %wf.id,
-                                    "cost_cache.get_daily_buckets_for failed: {}",
-                                    e
-                                );
-                            }
-                        }
-                        wf.cost_summary = Some(summary);
-                    }
-                    Err(e) => {
-                        tracing::warn!(workflow_id = %wf.id, "cost_cache.get failed: {}", e);
-                    }
-                }
-            }
-
-            // Build system_cost_summary by aggregating per-workflow scalars
-            // and fetching system-wide daily buckets.
-            let system_last_30_days_total_usd: f64 = workflows
-                .iter()
-                .filter_map(|wf| wf.cost_summary.as_ref())
-                .map(|s| s.last_30_days_total_usd)
-                .sum();
-            let system_last_30_days_runs: u64 = workflows
-                .iter()
-                .filter_map(|wf| wf.cost_summary.as_ref())
-                .map(|s| s.last_30_days_runs)
-                .sum();
-            let system_last_year_total_usd: f64 = workflows
-                .iter()
-                .filter_map(|wf| wf.cost_summary.as_ref())
-                .map(|s| s.last_year_total_usd)
-                .sum();
-            let system_last_year_runs: u64 = workflows
-                .iter()
-                .filter_map(|wf| wf.cost_summary.as_ref())
-                .map(|s| s.last_year_runs)
-                .sum();
-
-            let system_daily_buckets = match state
-                .cost_cache
-                .get_system_daily_buckets(since, until)
-                .await
-            {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!("cost_cache.get_system_daily_buckets failed: {}", e);
-                    vec![]
-                }
-            };
-
-            let system_cost_summary = CostSummary {
-                last_30_days_total_usd: system_last_30_days_total_usd,
-                last_30_days_runs: system_last_30_days_runs,
-                last_year_total_usd: system_last_year_total_usd,
-                last_year_runs: system_last_year_runs,
-                computed_at: Utc::now(),
-                daily_buckets: system_daily_buckets,
-            };
-
-            let response = WorkflowListResponse {
-                workflows,
-                system_cost_summary,
-            };
-
-            (
-                StatusCode::OK,
-                Json(serde_json::to_value(response).unwrap()),
-            )
-                .into_response()
-        }
+        Ok(workflows) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(workflows).unwrap()),
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!("Failed to list workflows: {}", e);
             error_response(
@@ -649,9 +547,21 @@ pub async fn create_workflow(
 pub async fn get_workflow(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+) -> impl IntoResponse {
+    match resolve_workflow(&state, &id).await {
+        Ok(wf) => (StatusCode::OK, Json(serde_json::to_value(wf).unwrap())).into_response(),
+        Err((status, body)) => (status, body).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/cost/workflows
+// ---------------------------------------------------------------------------
+
+pub async fn list_workflow_costs(
+    State(state): State<Arc<AppState>>,
     Query(params): Query<CostWindowParams>,
 ) -> impl IntoResponse {
-    // Parse display_tz from config.
     let display_tz: Tz = match state.config.display_timezone.parse() {
         Ok(tz) => tz,
         Err(_) => {
@@ -667,40 +577,177 @@ pub async fn get_workflow(
         }
     };
 
-    // Validate and resolve cost window.
     let (since, until) = match resolve_window(&params, display_tz) {
         Ok(w) => w,
         Err((status, body)) => return (status, body).into_response(),
     };
 
-    match resolve_workflow(&state, &id).await {
-        Ok(mut wf) => {
-            match state.cost_cache.get(wf.id).await {
-                Ok(mut summary) => {
-                    match state
-                        .cost_cache
-                        .get_daily_buckets_for(wf.id, since, until)
-                        .await
-                    {
-                        Ok(buckets) => summary.daily_buckets = buckets,
-                        Err(e) => {
-                            tracing::warn!(
-                                workflow_id = %wf.id,
-                                "cost_cache.get_daily_buckets_for failed: {}",
-                                e
-                            );
-                        }
-                    }
-                    wf.cost_summary = Some(summary);
-                }
-                Err(e) => {
-                    tracing::warn!(workflow_id = %wf.id, "cost_cache.get failed: {}", e);
-                }
-            }
-            (StatusCode::OK, Json(serde_json::to_value(wf).unwrap())).into_response()
+    let workflows = match state.workflow_store.list_workflows().await {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!("Failed to list workflows for cost: {}", e);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &e.to_string(),
+            )
+            .into_response();
         }
-        Err((status, body)) => (status, body).into_response(),
+    };
+
+    let mut entries = Vec::with_capacity(workflows.len());
+    let mut system_30d_total = 0.0f64;
+    let mut system_30d_runs = 0u64;
+    let mut system_year_total = 0.0f64;
+    let mut system_year_runs = 0u64;
+
+    for wf in &workflows {
+        let mut cost_summary = match state.cost_cache.get(wf.id).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(workflow_id = %wf.id, "cost_cache.get failed: {}", e);
+                continue;
+            }
+        };
+        match state
+            .cost_cache
+            .get_daily_buckets_for(wf.id, since, until)
+            .await
+        {
+            Ok(buckets) => cost_summary.daily_buckets = buckets,
+            Err(e) => {
+                tracing::warn!(workflow_id = %wf.id, "cost_cache.get_daily_buckets_for failed: {}", e);
+            }
+        }
+        system_30d_total += cost_summary.last_30_days_total_usd;
+        system_30d_runs += cost_summary.last_30_days_runs;
+        system_year_total += cost_summary.last_year_total_usd;
+        system_year_runs += cost_summary.last_year_runs;
+        entries.push(WorkflowCostEntry {
+            workflow_id: wf.id,
+            workflow_name: wf.name.clone(),
+            cost_summary,
+        });
     }
+
+    let system_buckets = match state
+        .cost_cache
+        .get_system_daily_buckets(since, until)
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("cost_cache.get_system_daily_buckets failed: {}", e);
+            vec![]
+        }
+    };
+
+    let system_cost_summary = CostSummary {
+        last_30_days_total_usd: system_30d_total,
+        last_30_days_runs: system_30d_runs,
+        last_year_total_usd: system_year_total,
+        last_year_runs: system_year_runs,
+        computed_at: Utc::now(),
+        daily_buckets: system_buckets,
+    };
+
+    (
+        StatusCode::OK,
+        Json(
+            serde_json::to_value(CostWorkflowsListResponse {
+                workflows: entries,
+                system_cost_summary,
+            })
+            .unwrap(),
+        ),
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/cost/workflows/{id}
+// ---------------------------------------------------------------------------
+
+pub async fn get_workflow_costs(
+    State(state): State<Arc<AppState>>,
+    Path(workflow_id): Path<Uuid>,
+    Query(params): Query<CostWindowParams>,
+) -> impl IntoResponse {
+    let display_tz: Tz = match state.config.display_timezone.parse() {
+        Ok(tz) => tz,
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!(
+                    "Invalid display_timezone in daemon config: {}",
+                    state.config.display_timezone
+                ),
+            )
+            .into_response();
+        }
+    };
+
+    let (since, until) = match resolve_window(&params, display_tz) {
+        Ok(w) => w,
+        Err((status, body)) => return (status, body).into_response(),
+    };
+
+    let workflow = match state.workflow_store.get_workflow(workflow_id).await {
+        Ok(Some(wf)) => wf,
+        Ok(None) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                &format!("Workflow with id '{}' not found", workflow_id),
+            )
+            .into_response();
+        }
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &e.to_string(),
+            )
+            .into_response();
+        }
+    };
+
+    let mut cost_summary = match state.cost_cache.get(workflow_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &e.to_string(),
+            )
+            .into_response();
+        }
+    };
+
+    match state
+        .cost_cache
+        .get_daily_buckets_for(workflow_id, since, until)
+        .await
+    {
+        Ok(buckets) => cost_summary.daily_buckets = buckets,
+        Err(e) => {
+            tracing::warn!(workflow_id = %workflow_id, "cost_cache.get_daily_buckets_for failed: {}", e);
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(
+            serde_json::to_value(CostWorkflowResponse {
+                workflow_id,
+                workflow_name: workflow.name,
+                cost_summary,
+            })
+            .unwrap(),
+        ),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -1542,7 +1589,6 @@ mod tests {
                 next_run_at: None,
                 created_at: now,
                 updated_at: now,
-                cost_summary: None,
             };
             wfs.push(wf.clone());
             Ok(wf)
@@ -1820,8 +1866,8 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let json = body_json(resp.into_body()).await;
-        // v4.2.9: response is wrapped as {workflows, system_cost_summary}
-        assert!(json["workflows"].as_array().unwrap().is_empty());
+        // v4.2.10: response reverted to plain array
+        assert!(json.as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

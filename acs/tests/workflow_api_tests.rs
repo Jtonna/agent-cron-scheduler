@@ -161,8 +161,7 @@ async fn test_create_workflow_with_shell_step() {
     assert_eq!(json["steps"].as_array().unwrap().len(), 1);
 }
 
-/// 2. GET /api/workflows lists includes the created workflow
-/// (v4.2.9: response is wrapped as {workflows, system_cost_summary})
+/// 2. GET /api/workflows lists includes the created workflow (plain array, no wrapping)
 #[tokio::test]
 async fn test_list_workflows_includes_created() {
     let (wf_store, run_store, tmp) = make_stores().await;
@@ -186,8 +185,8 @@ async fn test_list_workflows_includes_created() {
         .expect("GET /api/workflows");
     assert_eq!(resp.status(), 200);
     let json: serde_json::Value = resp.json().await.unwrap();
-    // v4.2.9: response is now wrapped — navigate into the `workflows` field.
-    let arr = json["workflows"].as_array().unwrap();
+    // v4.2.10: response is a plain array again (cost data moved to /api/cost/workflows).
+    let arr = json.as_array().unwrap();
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["name"], "list-test");
 }
@@ -1171,10 +1170,10 @@ async fn insert_running_run(
 // Cost summary tests (v4.2.8)
 // ---------------------------------------------------------------------------
 
-/// CS-1. cost_summary is present on every workflow in GET /api/workflows.
-/// (v4.2.9: response is wrapped as {workflows, system_cost_summary})
+/// CS-1. cost_summary is present on every workflow entry in GET /api/cost/workflows.
+/// (v4.2.10: cost data relocated from /api/workflows to /api/cost/workflows)
 #[tokio::test]
-async fn test_cost_summary_present_on_get_workflows_list() {
+async fn test_cost_summary_present_on_get_cost_workflows_list() {
     let (wf_store, run_store, tmp) = make_stores().await;
     let (base_url, _state, _handle) = spawn_test_server(
         Arc::clone(&wf_store),
@@ -1198,20 +1197,20 @@ async fn test_cost_summary_present_on_get_workflows_list() {
     }
 
     let resp = client
-        .get(format!("{}/api/workflows", base_url))
+        .get(format!("{}/api/cost/workflows", base_url))
         .send()
         .await
-        .expect("GET /api/workflows");
+        .expect("GET /api/cost/workflows");
     assert_eq!(resp.status(), 200);
     let json: serde_json::Value = resp.json().await.unwrap();
-    // v4.2.9: response is wrapped — navigate into the `workflows` field.
+    // v4.2.10: /api/cost/workflows returns { workflows: Vec<WorkflowCostEntry>, system_cost_summary }.
     let arr = json["workflows"]
         .as_array()
         .expect("workflows field is array");
     assert_eq!(arr.len(), 2);
 
-    for wf in arr {
-        let cs = &wf["cost_summary"];
+    for entry in arr {
+        let cs = &entry["cost_summary"];
         assert!(!cs.is_null(), "cost_summary must be present");
         assert_eq!(cs["last_30_days_total_usd"], 0.0);
         assert_eq!(cs["last_30_days_runs"], 0);
@@ -1227,9 +1226,10 @@ async fn test_cost_summary_present_on_get_workflows_list() {
     }
 }
 
-/// CS-2. cost_summary is present on GET /api/workflows/{id}.
+/// CS-2. cost_summary is present on GET /api/cost/workflows/{id}.
+/// (v4.2.10: cost data relocated from /api/workflows/{id} to /api/cost/workflows/{id})
 #[tokio::test]
-async fn test_cost_summary_present_on_get_workflow_singular() {
+async fn test_cost_summary_present_on_get_cost_workflow_singular() {
     let (wf_store, run_store, tmp) = make_stores().await;
     let (base_url, _state, _handle) = spawn_test_server(
         Arc::clone(&wf_store),
@@ -1252,13 +1252,14 @@ async fn test_cost_summary_present_on_get_workflow_singular() {
     let id = created["id"].as_str().unwrap();
 
     let resp = client
-        .get(format!("{}/api/workflows/{}", base_url, id))
+        .get(format!("{}/api/cost/workflows/{}", base_url, id))
         .send()
         .await
-        .expect("GET singular");
+        .expect("GET /api/cost/workflows/{id}");
     assert_eq!(resp.status(), 200);
     let json: serde_json::Value = resp.json().await.unwrap();
 
+    // v4.2.10: /api/cost/workflows/{id} returns { workflow_id, workflow_name, cost_summary }.
     let cs = &json["cost_summary"];
     assert!(!cs.is_null(), "cost_summary must be present");
     assert_eq!(cs["last_30_days_total_usd"], 0.0);
@@ -1317,10 +1318,10 @@ async fn test_cost_summary_aggregates_terminal_runs() {
     }
 
     let resp: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .get(format!("{}/api/cost/workflows/{}", base_url, wf_id_str))
         .send()
         .await
-        .expect("GET singular")
+        .expect("GET /api/cost/workflows/{id}")
         .json()
         .await
         .unwrap();
@@ -1378,10 +1379,10 @@ async fn test_cost_summary_excludes_running_runs() {
     }
 
     let resp: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .get(format!("{}/api/cost/workflows/{}", base_url, wf_id_str))
         .send()
         .await
-        .expect("GET singular")
+        .expect("GET /api/cost/workflows/{id}")
         .json()
         .await
         .unwrap();
@@ -1451,10 +1452,10 @@ async fn test_cost_summary_excludes_runs_outside_window() {
     }
 
     let resp: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .get(format!("{}/api/cost/workflows/{}", base_url, wf_id_str))
         .send()
         .await
-        .expect("GET singular")
+        .expect("GET /api/cost/workflows/{id}")
         .json()
         .await
         .unwrap();
@@ -1530,10 +1531,10 @@ async fn test_cost_summary_handles_null_cost_in_sum() {
     .await;
 
     let resp: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .get(format!("{}/api/cost/workflows/{}", base_url, wf_id_str))
         .send()
         .await
-        .expect("GET singular")
+        .expect("GET /api/cost/workflows/{id}")
         .json()
         .await
         .unwrap();
@@ -1589,10 +1590,10 @@ async fn test_cost_summary_cache_invalidates_on_run_completion() {
 
     // First GET — should show 1 run, $0.10.
     let resp1: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .get(format!("{}/api/cost/workflows/{}", base_url, wf_id_str))
         .send()
         .await
-        .expect("GET 1")
+        .expect("GET /api/cost/workflows/{id} 1")
         .json()
         .await
         .unwrap();
@@ -1624,10 +1625,10 @@ async fn test_cost_summary_cache_invalidates_on_run_completion() {
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
     let final_runs: u64 = loop {
         let resp: serde_json::Value = client
-            .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+            .get(format!("{}/api/cost/workflows/{}", base_url, wf_id_str))
             .send()
             .await
-            .expect("GET 2")
+            .expect("GET /api/cost/workflows/{id} 2")
             .json()
             .await
             .unwrap();
@@ -1686,12 +1687,12 @@ async fn test_cost_summary_cache_evicted_on_workflow_delete() {
     )
     .await;
 
-    // GET to populate cache.
+    // GET to populate cache via the cost endpoint.
     let resp1: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .get(format!("{}/api/cost/workflows/{}", base_url, wf_id_str))
         .send()
         .await
-        .expect("GET before delete")
+        .expect("GET /api/cost/workflows/{id} before delete")
         .json()
         .await
         .unwrap();
@@ -1738,13 +1739,13 @@ async fn test_cost_summary_cache_evicted_on_workflow_delete() {
 
     let resp2: serde_json::Value = client
         .get(format!(
-            "{}/api/workflows/{}",
+            "{}/api/cost/workflows/{}",
             base_url,
             recreated["id"].as_str().unwrap()
         ))
         .send()
         .await
-        .expect("GET recreated")
+        .expect("GET /api/cost/workflows/{id} recreated")
         .json()
         .await
         .unwrap();
@@ -2360,7 +2361,7 @@ async fn test_create_workflow_422_when_default_dir_unwriteable() {
     );
 
     // Verify the workflow was NOT persisted.
-    // v4.2.9: response is wrapped — navigate into the `workflows` field.
+    // v4.2.10: response is a plain array (cost data moved to /api/cost/workflows).
     let list_resp = client
         .get(format!("{}/api/workflows", base_url))
         .send()
@@ -2370,7 +2371,7 @@ async fn test_create_workflow_422_when_default_dir_unwriteable() {
         .await
         .unwrap();
     assert!(
-        list_resp["workflows"].as_array().unwrap().is_empty(),
+        list_resp.as_array().unwrap().is_empty(),
         "workflow must not be persisted when default_dir creation fails"
     );
 }
@@ -2862,10 +2863,11 @@ async fn insert_dated_run(
     .await
 }
 
-/// DB-1. GET /api/workflows returns a wrapped object (not a bare array).
-/// Verifies {workflows, system_cost_summary} shape and that daily_buckets exists.
+/// DB-1. GET /api/cost/workflows returns a wrapped CostWorkflowsListResponse.
+/// (v4.2.10: cost data relocated from /api/workflows to /api/cost/workflows)
+/// Verifies {workflows: Vec<WorkflowCostEntry>, system_cost_summary} shape.
 #[tokio::test]
-async fn test_list_response_is_wrapped() {
+async fn test_cost_list_response_is_wrapped() {
     let (wf_store, run_store, tmp) = make_stores().await;
     let (base_url, _state, _handle) = spawn_test_server(
         Arc::clone(&wf_store),
@@ -2888,22 +2890,22 @@ async fn test_list_response_is_wrapped() {
     }
 
     let resp = client
-        .get(format!("{}/api/workflows", base_url))
+        .get(format!("{}/api/cost/workflows", base_url))
         .send()
         .await
-        .expect("GET /api/workflows");
+        .expect("GET /api/cost/workflows");
     assert_eq!(resp.status(), 200);
     let json: serde_json::Value = resp.json().await.unwrap();
 
-    // Root must be an object, not an array.
-    assert!(json.is_object(), "response must be an object, not an array");
+    // Root must be an object with `workflows` + `system_cost_summary`.
+    assert!(json.is_object(), "response must be an object");
 
-    // `workflows` field must contain the 2 created workflows.
+    // `workflows` field must contain WorkflowCostEntry objects for both workflows.
     let workflows = json["workflows"].as_array().expect("workflows is array");
-    assert_eq!(workflows.len(), 2, "expected 2 workflows");
+    assert_eq!(workflows.len(), 2, "expected 2 cost entries");
     let names: Vec<&str> = workflows
         .iter()
-        .map(|w| w["name"].as_str().unwrap())
+        .map(|w| w["workflow_name"].as_str().unwrap())
         .collect();
     assert!(names.contains(&"db1-wf-a"), "db1-wf-a should be present");
     assert!(names.contains(&"db1-wf-b"), "db1-wf-b should be present");
@@ -2924,10 +2926,10 @@ async fn test_list_response_is_wrapped() {
     );
 }
 
-/// DB-2. GET /api/workflows/{id} returns a plain Workflow (not wrapped).
-/// `cost_summary.daily_buckets` exists as an array.
+/// DB-2. GET /api/cost/workflows/{id} returns a CostWorkflowResponse (with daily_buckets).
+/// (v4.2.10: cost data relocated from /api/workflows/{id} to /api/cost/workflows/{id})
 #[tokio::test]
-async fn test_singular_workflow_unwrapped() {
+async fn test_cost_workflow_singular_response() {
     let (wf_store, run_store, tmp) = make_stores().await;
     let (base_url, _state, _handle) = spawn_test_server(
         Arc::clone(&wf_store),
@@ -2950,22 +2952,22 @@ async fn test_singular_workflow_unwrapped() {
     let id = created["id"].as_str().unwrap();
 
     let json: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}", base_url, id))
+        .get(format!("{}/api/cost/workflows/{}", base_url, id))
         .send()
         .await
-        .expect("GET singular")
+        .expect("GET /api/cost/workflows/{id}")
         .json()
         .await
         .unwrap();
 
-    // Must be a Workflow object — `id` field present at root, NOT a `workflows` wrapper.
+    // Must be a CostWorkflowResponse: { workflow_id, workflow_name, cost_summary }.
     assert!(
-        json["id"].is_string(),
-        "singular response should have top-level id"
+        json["workflow_id"].is_string(),
+        "CostWorkflowResponse should have workflow_id at root"
     );
     assert!(
-        json["workflows"].is_null() || !json.as_object().unwrap().contains_key("workflows"),
-        "singular response must not be wrapped"
+        json["workflow_name"].is_string(),
+        "CostWorkflowResponse should have workflow_name at root"
     );
 
     // `cost_summary.daily_buckets` must exist as an array.
@@ -2973,7 +2975,7 @@ async fn test_singular_workflow_unwrapped() {
     assert!(!cs.is_null(), "cost_summary must be present");
     assert!(
         cs["daily_buckets"].is_array(),
-        "cost_summary.daily_buckets must be an array on singular GET"
+        "cost_summary.daily_buckets must be an array on singular cost GET"
     );
 }
 
@@ -3022,7 +3024,10 @@ async fn test_daily_buckets_aggregate_completed() {
     }
 
     let json: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+        .get(format!(
+            "{}/api/cost/workflows/{}?days=30",
+            base_url, wf_id_str
+        ))
         .send()
         .await
         .expect("GET singular")
@@ -3139,7 +3144,10 @@ async fn test_daily_buckets_status_breakdown() {
     insert_dated_run(&run_store, wf_id, &wf, RunStatus::Killed, &today, None).await;
 
     let json: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+        .get(format!(
+            "{}/api/cost/workflows/{}?days=30",
+            base_url, wf_id_str
+        ))
         .send()
         .await
         .expect("GET singular")
@@ -3243,7 +3251,10 @@ async fn test_daily_buckets_omits_zero_days() {
     .await;
 
     let json: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+        .get(format!(
+            "{}/api/cost/workflows/{}?days=30",
+            base_url, wf_id_str
+        ))
         .send()
         .await
         .expect("GET singular")
@@ -3326,7 +3337,10 @@ async fn test_daily_buckets_ascending_order() {
     .await;
 
     let json: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+        .get(format!(
+            "{}/api/cost/workflows/{}?days=30",
+            base_url, wf_id_str
+        ))
         .send()
         .await
         .expect("GET singular")
@@ -3395,10 +3409,10 @@ async fn test_system_aggregate_sums_across_workflows() {
     }
 
     let list_json: serde_json::Value = client
-        .get(format!("{}/api/workflows", base_url))
+        .get(format!("{}/api/cost/workflows", base_url))
         .send()
         .await
-        .expect("GET list")
+        .expect("GET /api/cost/workflows list")
         .json()
         .await
         .unwrap();
@@ -3488,10 +3502,10 @@ async fn test_query_days_30_default() {
     .await;
 
     let json: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .get(format!("{}/api/cost/workflows/{}", base_url, wf_id_str))
         .send()
         .await
-        .expect("GET (no params → default days=30)")
+        .expect("GET /api/cost/workflows/{id} (no params → default days=30)")
         .json()
         .await
         .unwrap();
@@ -3571,7 +3585,10 @@ async fn test_query_days_7() {
     .await;
 
     let json: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}?days=7", base_url, wf_id_str))
+        .get(format!(
+            "{}/api/cost/workflows/{}?days=7",
+            base_url, wf_id_str
+        ))
         .send()
         .await
         .expect("GET ?days=7")
@@ -3655,7 +3672,7 @@ async fn test_query_since_until_absolute() {
 
     let json: serde_json::Value = client
         .get(format!(
-            "{}/api/workflows/{}?since=2026-04-01&until=2026-05-01",
+            "{}/api/cost/workflows/{}?since=2026-04-01&until=2026-05-01",
             base_url, wf_id_str
         ))
         .send()
@@ -3704,7 +3721,7 @@ async fn test_query_both_days_and_since_returns_400() {
 
     let resp = client
         .get(format!(
-            "{}/api/workflows/{}?days=30&since=2026-01-01",
+            "{}/api/cost/workflows/{}?days=30&since=2026-01-01",
             base_url, wf_id
         ))
         .send()
@@ -3740,7 +3757,10 @@ async fn test_query_days_over_365_returns_400() {
     let wf_id = created["id"].as_str().unwrap();
 
     let resp = client
-        .get(format!("{}/api/workflows/{}?days=400", base_url, wf_id))
+        .get(format!(
+            "{}/api/cost/workflows/{}?days=400",
+            base_url, wf_id
+        ))
         .send()
         .await
         .expect("GET with days=400");
@@ -3775,7 +3795,7 @@ async fn test_query_since_after_until_returns_400() {
 
     let resp = client
         .get(format!(
-            "{}/api/workflows/{}?since=2026-05-01&until=2026-04-01",
+            "{}/api/cost/workflows/{}?since=2026-05-01&until=2026-04-01",
             base_url, wf_id
         ))
         .send()
@@ -3812,7 +3832,7 @@ async fn test_query_only_since_no_until_returns_400() {
 
     let resp = client
         .get(format!(
-            "{}/api/workflows/{}?since=2026-04-01",
+            "{}/api/cost/workflows/{}?since=2026-04-01",
             base_url, wf_id
         ))
         .send()
@@ -3871,7 +3891,10 @@ async fn test_daily_buckets_refresh_on_run_completion() {
 
     // Prime the cache with a GET — should show 1 bucket.
     let resp1: serde_json::Value = client
-        .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+        .get(format!(
+            "{}/api/cost/workflows/{}?days=30",
+            base_url, wf_id_str
+        ))
         .send()
         .await
         .expect("GET 1")
@@ -3904,7 +3927,10 @@ async fn test_daily_buckets_refresh_on_run_completion() {
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
     let updated_runs: u64 = loop {
         let resp: serde_json::Value = client
-            .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+            .get(format!(
+                "{}/api/cost/workflows/{}?days=30",
+                base_url, wf_id_str
+            ))
             .send()
             .await
             .expect("GET 2")
@@ -3930,6 +3956,114 @@ async fn test_daily_buckets_refresh_on_run_completion() {
     assert_eq!(
         updated_runs, 2,
         "after cache invalidation, bucket should reflect 2 completed runs"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// v4.2.10 lean /api/workflows verification tests
+// ---------------------------------------------------------------------------
+
+/// v4.2.10-L1. GET /api/workflows returns a plain array with no cost_summary on each entry.
+#[tokio::test]
+async fn test_workflows_list_does_not_include_cost_summary() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("lean-list-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .error_for_status()
+        .expect("201 created");
+
+    let resp = client
+        .get(format!("{}/api/workflows", base_url))
+        .send()
+        .await
+        .expect("GET /api/workflows");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+
+    // Response must be a plain array (not wrapped).
+    let arr = json
+        .as_array()
+        .expect("GET /api/workflows must return a plain array");
+    assert_eq!(arr.len(), 1);
+
+    // No workflow in the array must carry a cost_summary key.
+    for wf in arr {
+        assert!(
+            wf.get("cost_summary").is_none() || wf["cost_summary"].is_null(),
+            "workflow in list must not include cost_summary (moved to /api/cost/workflows)"
+        );
+    }
+}
+
+/// v4.2.10-L2. GET /api/workflows/{id} returns a lean Workflow with no cost_summary.
+#[tokio::test]
+async fn test_workflows_singular_does_not_include_cost_summary() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("lean-singular-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    let json: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}", base_url, id))
+        .send()
+        .await
+        .expect("GET /api/workflows/{id}")
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(json["id"].as_str().unwrap(), id);
+    assert!(
+        json.get("cost_summary").is_none() || json["cost_summary"].is_null(),
+        "GET /api/workflows/{{id}} must not include cost_summary (moved to /api/cost/workflows/{{id}})"
+    );
+}
+
+/// v4.2.10-L3. GET /api/workflows?days=30 ignores cost query params and returns 200.
+/// (The lean /api/workflows endpoint does not validate or use cost query params.)
+#[tokio::test]
+async fn test_workflows_list_ignores_cost_query_params() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    // The lean endpoint should return 200 and a plain array regardless of cost params.
+    let resp = client
+        .get(format!("{}/api/workflows?days=30", base_url))
+        .send()
+        .await
+        .expect("GET /api/workflows?days=30");
+    assert_eq!(
+        resp.status(),
+        200,
+        "GET /api/workflows?days=30 should return 200 (params ignored by lean endpoint)"
+    );
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        json.is_array(),
+        "response must still be a plain array when cost query params are passed to lean endpoint"
     );
 }
 
