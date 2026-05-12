@@ -1,11 +1,13 @@
 //! SQLite implementation of [`WorkflowRunStore`].
 
 use async_trait::async_trait;
+use chrono::TimeZone;
+use chrono_tz::Tz;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
 use crate::errors::AcsError;
-use crate::models::workflow::{RunStatus, StepRun, Workflow, WorkflowRun};
+use crate::models::workflow::{CostSummary, RunStatus, StepRun, Workflow, WorkflowRun};
 use crate::storage::sqlite::row_helpers::{
     map_serde_err, map_uuid_err, parse_dt, parse_opt_dt, run_status_str,
 };
@@ -246,6 +248,74 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                 c.execute("DELETE FROM workflow_runs WHERE run_id = ?", [id_s])
                     .map_err(|e| AcsError::Storage(e.to_string()))?;
                 Ok(())
+            })
+            .await
+    }
+
+    async fn cost_summary_for(
+        &self,
+        workflow_id: Uuid,
+        display_tz: &Tz,
+    ) -> Result<CostSummary, AcsError> {
+        // Compute calendar-day boundaries in display_tz.
+        let now_in_tz = chrono::Utc::now().with_timezone(display_tz);
+        let today_naive = now_in_tz.date_naive();
+        // Start of today in display_tz (midnight), then convert to UTC.
+        #[allow(deprecated)]
+        let today_midnight_local = today_naive
+            .and_hms_opt(0, 0, 0)
+            .expect("00:00:00 is always valid");
+        let today_midnight_in_tz = display_tz
+            .from_local_datetime(&today_midnight_local)
+            .earliest()
+            .unwrap_or_else(|| {
+                // During spring-forward gap, fall back to the next valid instant.
+                display_tz
+                    .from_local_datetime(&today_midnight_local)
+                    .latest()
+                    .expect("at least one mapping must exist")
+            });
+
+        let last_30_days_start =
+            (today_midnight_in_tz - chrono::Duration::days(30)).with_timezone(&chrono::Utc);
+        let last_year_start =
+            (today_midnight_in_tz - chrono::Duration::days(365)).with_timezone(&chrono::Utc);
+
+        let last_30_days_start_s = last_30_days_start.to_rfc3339();
+        let last_year_start_s = last_year_start.to_rfc3339();
+        let wf_id_s = workflow_id.to_string();
+
+        self.db
+            .with_conn(move |c| {
+                let (last_30d_total, last_30d_runs, last_year_total, last_year_runs): (
+                    f64,
+                    i64,
+                    f64,
+                    i64,
+                ) = c
+                    .query_row(
+                        "SELECT
+                          COALESCE(SUM(CASE WHEN finished_at >= ?1 THEN total_cost_usd END), 0.0) AS last_30d_total,
+                          COALESCE(SUM(CASE WHEN finished_at >= ?1 THEN 1 END), 0)                AS last_30d_runs,
+                          COALESCE(SUM(CASE WHEN finished_at >= ?2 THEN total_cost_usd END), 0.0) AS last_year_total,
+                          COALESCE(SUM(CASE WHEN finished_at >= ?2 THEN 1 END), 0)               AS last_year_runs
+                        FROM workflow_runs
+                        WHERE workflow_id = ?3
+                          AND status IN ('Completed', 'Failed', 'Killed')
+                          AND finished_at IS NOT NULL
+                          AND finished_at >= ?2",
+                        params![last_30_days_start_s, last_year_start_s, wf_id_s],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .map_err(|e| AcsError::Storage(format!("cost_summary query failed: {}", e)))?;
+
+                Ok(CostSummary {
+                    last_30_days_total_usd: last_30d_total,
+                    last_30_days_runs: last_30d_runs as u64,
+                    last_year_total_usd: last_year_total,
+                    last_year_runs: last_year_runs as u64,
+                    computed_at: chrono::Utc::now(),
+                })
             })
             .await
     }
@@ -547,5 +617,286 @@ mod tests {
             .delete_run(Uuid::now_v7())
             .await
             .expect("must not error on missing run");
+    }
+
+    // ── cost_summary_for ──────────────────────────────────────────────────────
+
+    /// Helper: insert a raw run row with explicit finished_at + status +
+    /// optional total_cost_usd directly via SQL so we can place runs at
+    /// arbitrary timestamps without going through the ORM.
+    async fn seed_raw_run(
+        store: &SqliteWorkflowRunStore,
+        workflow: &Workflow,
+        status: &str,
+        finished_at: Option<&str>,
+        cost_usd: Option<f64>,
+    ) {
+        let run_id = Uuid::now_v7().to_string();
+        let wf_id = workflow.id.to_string();
+        let snapshot = serde_json::to_string(workflow).expect("serialize snapshot");
+        let started_at = "2025-01-01T00:00:00+00:00".to_string();
+        let db_conn = store.db.clone();
+        let status = status.to_string();
+        let finished_at = finished_at.map(|s| s.to_string());
+
+        db_conn
+            .with_conn(move |c| {
+                c.execute(
+                    "INSERT INTO workflow_runs (
+                        run_id, workflow_id, workflow_version, workflow_snapshot,
+                        started_at, finished_at, status, trigger_input, steps_json,
+                        total_cost_usd, total_duration_ms
+                     ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, NULL, '[]', ?7, NULL)",
+                    params![
+                        run_id,
+                        wf_id,
+                        snapshot,
+                        started_at,
+                        finished_at,
+                        status,
+                        cost_usd,
+                    ],
+                )
+                .map_err(|e| AcsError::Storage(e.to_string()))?;
+                Ok(())
+            })
+            .await
+            .expect("seed raw run");
+    }
+
+    // 1. Empty case — workflow with no runs returns zeros.
+    #[tokio::test]
+    async fn test_cost_summary_empty_returns_zeros() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "cost-empty").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+        assert_eq!(summary.last_30_days_total_usd, 0.0);
+        assert_eq!(summary.last_30_days_runs, 0);
+        assert_eq!(summary.last_year_total_usd, 0.0);
+        assert_eq!(summary.last_year_runs, 0);
+        // computed_at should be close to now
+        let age = (Utc::now() - summary.computed_at).num_seconds().abs();
+        assert!(age < 5, "computed_at should be recent");
+    }
+
+    // 2. All runs outside the year window — returns zeros.
+    #[tokio::test]
+    async fn test_cost_summary_all_outside_window_returns_zeros() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "cost-outside").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        // 400 days ago — outside the 365-day window
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some("2024-01-01T00:00:00+00:00"),
+            Some(1.0),
+        )
+        .await;
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+        assert_eq!(summary.last_30_days_runs, 0);
+        assert_eq!(summary.last_year_runs, 0);
+    }
+
+    // 3. Mixed null/non-null total_cost_usd — sum skips nulls, count includes all terminal runs.
+    #[tokio::test]
+    async fn test_cost_summary_mixed_null_costs() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "cost-null-mix").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let recent = "2026-05-09T12:00:00+00:00";
+        // run with cost 0.5
+        seed_raw_run(&run_store, &wf, "Completed", Some(recent), Some(0.5)).await;
+        // run with null cost — counted but not summed
+        seed_raw_run(&run_store, &wf, "Completed", Some(recent), None).await;
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+        // 2 runs counted, only 0.5 summed
+        assert_eq!(summary.last_30_days_runs, 2);
+        assert!((summary.last_30_days_total_usd - 0.5).abs() < 1e-9);
+    }
+
+    // 4. Failed + Killed runs included.
+    #[tokio::test]
+    async fn test_cost_summary_failed_and_killed_included() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "cost-statuses").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let recent = "2026-05-09T12:00:00+00:00";
+        seed_raw_run(&run_store, &wf, "Failed", Some(recent), Some(0.1)).await;
+        seed_raw_run(&run_store, &wf, "Killed", Some(recent), Some(0.2)).await;
+        seed_raw_run(&run_store, &wf, "Completed", Some(recent), Some(0.3)).await;
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+        assert_eq!(summary.last_30_days_runs, 3);
+        assert!((summary.last_30_days_total_usd - 0.6).abs() < 1e-9);
+    }
+
+    // 5. Running (non-terminal) runs excluded.
+    #[tokio::test]
+    async fn test_cost_summary_running_excluded() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "cost-running").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let recent = "2026-05-09T12:00:00+00:00";
+        seed_raw_run(&run_store, &wf, "Running", Some(recent), Some(5.0)).await;
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+        assert_eq!(summary.last_30_days_runs, 0);
+        assert_eq!(summary.last_year_runs, 0);
+    }
+
+    // 6. 30-day vs 1-year window: run from 60 days ago shows in year only.
+    #[tokio::test]
+    async fn test_cost_summary_60_days_ago_in_year_only() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "cost-windows").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        // 60 days ago is outside the 30-day window but inside the year window.
+        let sixty_days_ago = (Utc::now() - chrono::Duration::days(60)).to_rfc3339();
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some(&sixty_days_ago),
+            Some(1.0),
+        )
+        .await;
+        // 10 days ago is inside the 30-day window.
+        let recent = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        seed_raw_run(&run_store, &wf, "Completed", Some(&recent), Some(2.0)).await;
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+        // Only the recent run is in the 30-day window
+        assert_eq!(summary.last_30_days_runs, 1);
+        assert!((summary.last_30_days_total_usd - 2.0).abs() < 1e-9);
+        // Both runs are in the year window
+        assert_eq!(summary.last_year_runs, 2);
+        assert!((summary.last_year_total_usd - 3.0).abs() < 1e-9);
+    }
+
+    // 7. Calendar-day boundary in display_tz.
+    // A run that finished 15 days ago (clearly within 30d) in UTC should be
+    // counted in both UTC and LA timezone windows.
+    #[tokio::test]
+    async fn test_cost_summary_calendar_boundary_in_display_tz() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "cost-tz-boundary").await;
+        let la_tz: Tz = "America/Los_Angeles".parse().unwrap();
+        // 15 days ago at noon UTC — solidly within the 30-day window in any tz.
+        let run_ts = (Utc::now() - chrono::Duration::days(15)).to_rfc3339();
+        seed_raw_run(&run_store, &wf, "Completed", Some(&run_ts), Some(1.0)).await;
+        let summary = run_store
+            .cost_summary_for(wf.id, &la_tz)
+            .await
+            .expect("cost_summary");
+        assert_eq!(
+            summary.last_30_days_runs, 1,
+            "run should be in 30-day window"
+        );
+    }
+
+    // 8. DST transition — spring-forward boundary in America/Los_Angeles.
+    // This test verifies that the 30-day window boundary is computed at midnight
+    // local time (not 01:00 due to DST). We use relative timestamps rather than
+    // hardcoded dates so the test passes regardless of when it runs.
+    //
+    // Strategy: place one run 10 days ago (clearly in window) and one run 365+
+    // days ago (clearly out of year window). Verify counts.
+    #[tokio::test]
+    async fn test_cost_summary_dst_transition_spring_forward() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let la_tz: Tz = "America/Los_Angeles".parse().unwrap();
+
+        // wf1: run 10 days ago — should be in the 30-day window.
+        let wf1 = seed_workflow(&wf_store, "cost-dst-in").await;
+        let in_window = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        seed_raw_run(&run_store, &wf1, "Completed", Some(&in_window), Some(2.5)).await;
+        let s1 = run_store
+            .cost_summary_for(wf1.id, &la_tz)
+            .await
+            .expect("cost_summary s1");
+        assert_eq!(
+            s1.last_30_days_runs, 1,
+            "run 10 days ago should be in 30-day window"
+        );
+
+        // wf2: run 400 days ago — should be outside the 365-day window.
+        let wf2 = seed_workflow(&wf_store, "cost-dst-out").await;
+        let out_of_window = (Utc::now() - chrono::Duration::days(400)).to_rfc3339();
+        seed_raw_run(
+            &run_store,
+            &wf2,
+            "Completed",
+            Some(&out_of_window),
+            Some(1.0),
+        )
+        .await;
+        let s2 = run_store
+            .cost_summary_for(wf2.id, &la_tz)
+            .await
+            .expect("cost_summary s2");
+        assert_eq!(
+            s2.last_year_runs, 0,
+            "run 400 days ago should be outside the year window"
+        );
+    }
+
+    // 9. Year boundary — a run from 100 days ago is within 365 days but NOT
+    // within 30 days.
+    #[tokio::test]
+    async fn test_cost_summary_year_boundary() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "cost-year-boundary").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        // 100 days ago is clearly within the year but outside the 30-day window.
+        let run_ts = (Utc::now() - chrono::Duration::days(100)).to_rfc3339();
+        seed_raw_run(&run_store, &wf, "Completed", Some(&run_ts), Some(3.0)).await;
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+        assert_eq!(
+            summary.last_year_runs, 1,
+            "run 100 days ago should appear in last-year window"
+        );
+        // NOT within the 30-day window.
+        assert_eq!(
+            summary.last_30_days_runs, 0,
+            "run 100 days ago should not appear in last-30-days window"
+        );
+    }
+
+    // 10. Default timezone (UTC) — verify basic operation.
+    #[tokio::test]
+    async fn test_cost_summary_utc_timezone() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "cost-utc").await;
+        let utc_tz: Tz = "UTC".parse().unwrap();
+        let recent = "2026-05-09T00:00:00+00:00";
+        seed_raw_run(&run_store, &wf, "Completed", Some(recent), Some(1.5)).await;
+        let summary = run_store
+            .cost_summary_for(wf.id, &utc_tz)
+            .await
+            .expect("cost_summary");
+        assert_eq!(summary.last_30_days_runs, 1);
+        assert!((summary.last_30_days_total_usd - 1.5).abs() < 1e-9);
+        assert_eq!(summary.last_year_runs, 1);
     }
 }

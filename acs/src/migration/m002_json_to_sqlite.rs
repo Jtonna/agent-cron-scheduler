@@ -646,6 +646,7 @@ mod tests {
             next_run_at: None,
             created_at: now,
             updated_at: now,
+            cost_summary: None,
         }
     }
 

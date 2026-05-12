@@ -7,7 +7,7 @@ info:
     ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
     Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "4.2.7"
+  version: "4.2.8"
   license:
     name: MIT
 
@@ -47,7 +47,7 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "4.2.7"
+                version: "4.2.8"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
                 service:
                   registered: true
@@ -722,7 +722,7 @@ components:
         version:
           type: string
           description: Daemon version string.
-          example: "4.2.7"
+          example: "4.2.8"
         data_dir:
           type: string
           description: Filesystem path to the data directory.
@@ -1188,6 +1188,52 @@ components:
           format: date-time
           description: ISO 8601 timestamp when the workflow was last modified.
           example: "2024-01-15T12:00:00Z"
+        cost_summary:
+          $ref: '#/components/schemas/CostSummary'
+          nullable: true
+          description: |
+            Populated by the API on GET responses (list, singular, and after mutations). Not persisted on disk. Absent (or `null`) on responses where cost data was not loaded.
+
+    CostSummary:
+      type: object
+      description: |
+        Aggregated cost and run-count data for a workflow over two rolling windows.
+        Windows are bounded by calendar-day midnight in the daemon's `display_timezone`
+        config (defaults to America/Los_Angeles). Includes all terminal runs
+        (Completed, Failed, Killed); excludes Running.
+      required:
+        - last_30_days_total_usd
+        - last_30_days_runs
+        - last_year_total_usd
+        - last_year_runs
+        - computed_at
+      properties:
+        last_30_days_total_usd:
+          type: number
+          format: double
+          description: Sum of total_cost_usd across all terminal runs in the last 30 calendar days (in display_timezone). Null cost contributions are ignored by the sum.
+          example: 5.67
+        last_30_days_runs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Count of all terminal runs in the last 30 calendar days, regardless of whether they had cost.
+          example: 20
+        last_year_total_usd:
+          type: number
+          format: double
+          description: Sum of total_cost_usd across all terminal runs in the last 365 days.
+          example: 42.10
+        last_year_runs:
+          type: integer
+          format: int64
+          minimum: 0
+          example: 142
+        computed_at:
+          type: string
+          format: date-time
+          description: When this summary was computed. Cached server-side and invalidated on each terminal run for the workflow plus at midnight in display_timezone.
+          example: "2026-05-11T23:14:22Z"
 
     NewWorkflow:
       type: object

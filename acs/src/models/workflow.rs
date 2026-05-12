@@ -6,6 +6,17 @@ use uuid::Uuid;
 
 use crate::errors::AcsError;
 
+// ─── CostSummary ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CostSummary {
+    pub last_30_days_total_usd: f64,
+    pub last_30_days_runs: u64,
+    pub last_year_total_usd: f64,
+    pub last_year_runs: u64,
+    pub computed_at: DateTime<Utc>,
+}
+
 // ─── ScheduleMode ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -53,6 +64,8 @@ pub struct Workflow {
     pub next_run_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cost_summary: Option<CostSummary>,
 }
 
 impl PartialEq for Workflow {
@@ -76,6 +89,7 @@ impl PartialEq for Workflow {
             && self.created_at == other.created_at
             && self.updated_at == other.updated_at
         // next_run_at is skipped (computed, not persisted)
+        // cost_summary is not persisted to disk; omit from PartialEq
     }
 }
 
@@ -535,6 +549,7 @@ mod tests {
             next_run_at: None,
             created_at: now,
             updated_at: now,
+            cost_summary: None,
         }
     }
 

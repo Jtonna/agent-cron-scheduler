@@ -104,6 +104,7 @@ fn row_to_workflow(row: &Row<'_>) -> rusqlite::Result<Workflow> {
         next_run_at: None,
         created_at,
         updated_at,
+        cost_summary: None,
     })
 }
 
@@ -216,6 +217,7 @@ impl WorkflowStore for SqliteWorkflowStore {
             next_run_at: None,
             created_at: now,
             updated_at: now,
+            cost_summary: None,
         };
 
         let wf_clone = workflow.clone();

@@ -6,16 +6,18 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use agent_cron_scheduler::daemon::cost_cache::CostCache;
 use agent_cron_scheduler::daemon::events::WorkflowEvent;
 use agent_cron_scheduler::models::workflow::{
-    CaptureSpec, FailurePolicy, NewWorkflow, ShellStep, StepDef, StepDefCommon, WorkflowUpdate,
+    CaptureSpec, FailurePolicy, NewWorkflow, RunStatus, ShellStep, StepDef, StepDefCommon,
+    WorkflowRun, WorkflowUpdate,
 };
 use agent_cron_scheduler::models::DaemonConfig;
 use agent_cron_scheduler::server::{self, AppState};
 use agent_cron_scheduler::storage::workflow_runs::WorkflowRunStore;
 use agent_cron_scheduler::storage::workflows::WorkflowStore;
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use tokio::sync::{broadcast, Notify};
 use uuid::Uuid;
 
@@ -62,6 +64,9 @@ async fn spawn_test_server(
         ..DaemonConfig::default()
     };
 
+    let display_tz: chrono_tz::Tz = config.display_timezone.parse().unwrap_or(chrono_tz::UTC);
+    let cost_cache = Arc::new(CostCache::new(Arc::clone(&workflow_run_store), display_tz));
+
     let state = Arc::new(AppState {
         scheduler_notify: Arc::new(Notify::new()),
         config: Arc::new(config),
@@ -73,6 +78,7 @@ async fn spawn_test_server(
         kill_signals: std::sync::Arc::new(tokio::sync::RwLock::new(
             std::collections::HashMap::new(),
         )),
+        cost_cache,
     });
 
     let router = server::create_router(Arc::clone(&state));
@@ -720,7 +726,6 @@ async fn insert_runs(
     wf: &agent_cron_scheduler::models::workflow::Workflow,
     count: usize,
 ) -> Vec<uuid::Uuid> {
-    use agent_cron_scheduler::models::workflow::{RunStatus, WorkflowRun};
     let mut run_ids = vec![];
     for _ in 0..count {
         // Small delay so UUIDv7 ordering is distinct.
@@ -1098,6 +1103,652 @@ async fn test_list_runs_resolves_workflow_by_name() {
     assert_eq!(resp["total"], 2);
     assert_eq!(resp["runs"].as_array().unwrap().len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// Cost summary helpers
+// ---------------------------------------------------------------------------
+
+/// Insert a single terminal run directly into the store with explicit
+/// `finished_at` and `total_cost_usd`.
+async fn insert_terminal_run(
+    run_store: &Arc<dyn WorkflowRunStore>,
+    workflow_id: uuid::Uuid,
+    wf: &agent_cron_scheduler::models::workflow::Workflow,
+    status: RunStatus,
+    finished_at: chrono::DateTime<Utc>,
+    total_cost_usd: Option<f64>,
+) -> uuid::Uuid {
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let run_id = uuid::Uuid::now_v7();
+    let run = WorkflowRun {
+        run_id,
+        workflow_id,
+        workflow_version: wf.version,
+        workflow_snapshot: wf.clone(),
+        started_at: finished_at - Duration::seconds(10),
+        finished_at: Some(finished_at),
+        status,
+        trigger_input: None,
+        steps: vec![],
+        total_cost_usd,
+        total_duration_ms: Some(10_000),
+    };
+    run_store
+        .create_run(run)
+        .await
+        .expect("insert terminal run");
+    run_id
+}
+
+/// Insert a single running (non-terminal) run with no `finished_at`.
+async fn insert_running_run(
+    run_store: &Arc<dyn WorkflowRunStore>,
+    workflow_id: uuid::Uuid,
+    wf: &agent_cron_scheduler::models::workflow::Workflow,
+) -> uuid::Uuid {
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let run_id = uuid::Uuid::now_v7();
+    let run = WorkflowRun {
+        run_id,
+        workflow_id,
+        workflow_version: wf.version,
+        workflow_snapshot: wf.clone(),
+        started_at: Utc::now(),
+        finished_at: None,
+        status: RunStatus::Running,
+        trigger_input: None,
+        steps: vec![],
+        total_cost_usd: None,
+        total_duration_ms: None,
+    };
+    run_store.create_run(run).await.expect("insert running run");
+    run_id
+}
+
+// ---------------------------------------------------------------------------
+// Cost summary tests (v4.2.8)
+// ---------------------------------------------------------------------------
+
+/// CS-1. cost_summary is present on every workflow in GET /api/workflows.
+#[tokio::test]
+async fn test_cost_summary_present_on_get_workflows_list() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Create 2 workflows with no runs.
+    for name in ["cs-list-wf-a", "cs-list-wf-b"] {
+        client
+            .post(format!("{}/api/workflows", base_url))
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&make_new_workflow(name)).unwrap())
+            .send()
+            .await
+            .expect("POST workflow")
+            .error_for_status()
+            .expect("201 created");
+    }
+
+    let resp = client
+        .get(format!("{}/api/workflows", base_url))
+        .send()
+        .await
+        .expect("GET /api/workflows");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    let arr = json.as_array().expect("response is array");
+    assert_eq!(arr.len(), 2);
+
+    for wf in arr {
+        let cs = &wf["cost_summary"];
+        assert!(!cs.is_null(), "cost_summary must be present");
+        assert_eq!(cs["last_30_days_total_usd"], 0.0);
+        assert_eq!(cs["last_30_days_runs"], 0);
+        assert_eq!(cs["last_year_total_usd"], 0.0);
+        assert_eq!(cs["last_year_runs"], 0);
+        assert!(
+            cs["computed_at"].is_string(),
+            "computed_at must be an ISO-8601 string"
+        );
+        // Verify it actually parses as a timestamp.
+        chrono::DateTime::parse_from_rfc3339(cs["computed_at"].as_str().unwrap())
+            .expect("computed_at should parse as RFC-3339");
+    }
+}
+
+/// CS-2. cost_summary is present on GET /api/workflows/{id}.
+#[tokio::test]
+async fn test_cost_summary_present_on_get_workflow_singular() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("cs-singular-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    let resp = client
+        .get(format!("{}/api/workflows/{}", base_url, id))
+        .send()
+        .await
+        .expect("GET singular");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+
+    let cs = &json["cost_summary"];
+    assert!(!cs.is_null(), "cost_summary must be present");
+    assert_eq!(cs["last_30_days_total_usd"], 0.0);
+    assert_eq!(cs["last_30_days_runs"], 0);
+    assert_eq!(cs["last_year_total_usd"], 0.0);
+    assert_eq!(cs["last_year_runs"], 0);
+    assert!(cs["computed_at"].is_string());
+    chrono::DateTime::parse_from_rfc3339(cs["computed_at"].as_str().unwrap())
+        .expect("computed_at should parse as RFC-3339");
+}
+
+/// CS-3. cost_summary aggregates terminal runs within the 30-day window.
+#[tokio::test]
+async fn test_cost_summary_aggregates_terminal_runs() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("cs-agg-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Seed 5 terminal runs (mix Completed/Failed/Killed) within the last 30 days.
+    let statuses = [
+        RunStatus::Completed,
+        RunStatus::Failed,
+        RunStatus::Killed,
+        RunStatus::Completed,
+        RunStatus::Failed,
+    ];
+    for status in statuses {
+        insert_terminal_run(
+            &run_store,
+            wf_id,
+            &wf,
+            status,
+            Utc::now() - Duration::days(5),
+            Some(0.10),
+        )
+        .await;
+    }
+
+    let resp: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+
+    let cs = &resp["cost_summary"];
+    let total = cs["last_30_days_total_usd"].as_f64().expect("f64");
+    assert!(
+        (total - 0.50).abs() < 1e-9,
+        "last_30_days_total_usd should be ~0.50, got {}",
+        total
+    );
+    assert_eq!(cs["last_30_days_runs"], 5);
+}
+
+/// CS-4. cost_summary excludes Running (non-terminal) runs.
+#[tokio::test]
+async fn test_cost_summary_excludes_running_runs() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("cs-excl-running-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // 3 Completed runs + 2 Running runs.
+    for _ in 0..3 {
+        insert_terminal_run(
+            &run_store,
+            wf_id,
+            &wf,
+            RunStatus::Completed,
+            Utc::now() - Duration::days(2),
+            Some(0.10),
+        )
+        .await;
+    }
+    for _ in 0..2 {
+        insert_running_run(&run_store, wf_id, &wf).await;
+    }
+
+    let resp: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+
+    let cs = &resp["cost_summary"];
+    assert_eq!(
+        cs["last_30_days_runs"], 3,
+        "only terminal runs should count"
+    );
+    let total = cs["last_30_days_total_usd"].as_f64().expect("f64");
+    assert!(
+        (total - 0.30).abs() < 1e-9,
+        "total should be ~0.30, got {}",
+        total
+    );
+}
+
+/// CS-5. cost_summary respects 30-day vs 1-year window boundaries.
+#[tokio::test]
+async fn test_cost_summary_excludes_runs_outside_window() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("cs-window-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // 3 runs from 60 days ago (outside 30-day window but inside 1-year).
+    for _ in 0..3 {
+        insert_terminal_run(
+            &run_store,
+            wf_id,
+            &wf,
+            RunStatus::Completed,
+            Utc::now() - Duration::days(60),
+            Some(0.10),
+        )
+        .await;
+    }
+    // 2 runs from 5 days ago (inside both windows).
+    for _ in 0..2 {
+        insert_terminal_run(
+            &run_store,
+            wf_id,
+            &wf,
+            RunStatus::Completed,
+            Utc::now() - Duration::days(5),
+            Some(0.10),
+        )
+        .await;
+    }
+
+    let resp: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+
+    let cs = &resp["cost_summary"];
+
+    // 30-day window: only the 2 recent runs.
+    assert_eq!(cs["last_30_days_runs"], 2);
+    let total_30 = cs["last_30_days_total_usd"].as_f64().expect("f64");
+    assert!(
+        (total_30 - 0.20).abs() < 1e-9,
+        "30-day total should be ~0.20, got {}",
+        total_30
+    );
+
+    // 1-year window: all 5 runs.
+    assert_eq!(cs["last_year_runs"], 5);
+    let total_yr = cs["last_year_total_usd"].as_f64().expect("f64");
+    assert!(
+        (total_yr - 0.50).abs() < 1e-9,
+        "1-year total should be ~0.50, got {}",
+        total_yr
+    );
+}
+
+/// CS-6. cost_summary handles null total_cost_usd: run is counted but not summed.
+#[tokio::test]
+async fn test_cost_summary_handles_null_cost_in_sum() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("cs-null-cost-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // 3 Killed runs with null cost.
+    for _ in 0..3 {
+        insert_terminal_run(
+            &run_store,
+            wf_id,
+            &wf,
+            RunStatus::Killed,
+            Utc::now() - Duration::days(3),
+            None,
+        )
+        .await;
+    }
+    // 1 Completed run with $0.50.
+    insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        Utc::now() - Duration::days(1),
+        Some(0.50),
+    )
+    .await;
+
+    let resp: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+
+    let cs = &resp["cost_summary"];
+    // All 4 runs counted regardless of null cost.
+    assert_eq!(cs["last_30_days_runs"], 4);
+    let total = cs["last_30_days_total_usd"].as_f64().expect("f64");
+    assert!(
+        (total - 0.50).abs() < 1e-9,
+        "total should be ~0.50 (null costs skipped), got {}",
+        total
+    );
+}
+
+/// CS-7. cost_summary cache invalidates when a new terminal run is added.
+#[tokio::test]
+async fn test_cost_summary_cache_invalidates_on_run_completion() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Create a workflow with a fast echo step.
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("cs-invalidate-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Seed one initial terminal run with $0.10.
+    insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        Utc::now() - Duration::days(1),
+        Some(0.10),
+    )
+    .await;
+
+    // First GET — should show 1 run, $0.10.
+    let resp1: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET 1")
+        .json()
+        .await
+        .unwrap();
+    let cs1 = &resp1["cost_summary"];
+    assert_eq!(cs1["last_30_days_runs"], 1);
+    let total1 = cs1["last_30_days_total_usd"].as_f64().unwrap();
+    assert!(
+        (total1 - 0.10).abs() < 1e-9,
+        "initial total should be ~0.10"
+    );
+
+    // Insert a second terminal run.
+    insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        Utc::now() - Duration::hours(1),
+        Some(0.10),
+    )
+    .await;
+
+    // Invalidate the cache entry to simulate what the production cache-invalidation
+    // path does when it receives a RunCompleted/RunFailed event.
+    state.cost_cache.forget(wf_id).await;
+
+    // Poll until the second GET reflects the new run (with a small retry loop in
+    // case of any residual propagation latency).
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    let final_runs: u64 = loop {
+        let resp: serde_json::Value = client
+            .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+            .send()
+            .await
+            .expect("GET 2")
+            .json()
+            .await
+            .unwrap();
+        let runs = resp["cost_summary"]["last_30_days_runs"]
+            .as_u64()
+            .unwrap_or(0);
+        if runs >= 2 {
+            break runs;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break runs;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_eq!(
+        final_runs, 2,
+        "cache should reflect the second run after invalidation"
+    );
+}
+
+/// CS-8. cost_summary cache is evicted on workflow delete; re-created workflow
+///       starts with a fresh (zero) cost summary.
+#[tokio::test]
+async fn test_cost_summary_cache_evicted_on_workflow_delete() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Create workflow and seed a run to populate the cache.
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("cs-evict-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    let run_id = insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        Utc::now() - Duration::days(1),
+        Some(1.00),
+    )
+    .await;
+
+    // GET to populate cache.
+    let resp1: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET before delete")
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp1["cost_summary"]["last_30_days_runs"], 1);
+
+    // Delete the child run first to satisfy the workflow_runs.workflow_id FK,
+    // then DELETE the workflow.
+    run_store
+        .delete_run(run_id)
+        .await
+        .expect("delete child run");
+    let del_resp = client
+        .delete(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("DELETE");
+    assert_eq!(del_resp.status(), 204);
+
+    // Subsequent GET returns 404.
+    let get_resp = client
+        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET after delete");
+    assert_eq!(get_resp.status(), 404);
+
+    // Re-create a workflow with the same name — it gets a new UUID and fresh
+    // (zero) cost summary; no leftover state from the deleted workflow.
+    let recreated: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("cs-evict-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST recreate")
+        .json()
+        .await
+        .unwrap();
+    assert_ne!(
+        recreated["id"].as_str().unwrap(),
+        wf_id_str,
+        "recreated workflow should have a new UUID"
+    );
+
+    let resp2: serde_json::Value = client
+        .get(format!(
+            "{}/api/workflows/{}",
+            base_url,
+            recreated["id"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .expect("GET recreated")
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp2["cost_summary"]["last_30_days_runs"], 0,
+        "recreated workflow should have zero runs in cost_summary"
+    );
+}
+
+// ---------------------------------------------------------------------------
 
 /// 20. Restart simulation: runs persisted by instance A are readable by instance B
 ///     pointing at the same data_dir.

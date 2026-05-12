@@ -15,6 +15,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
+use crate::daemon::cost_cache::CostCache;
 use crate::daemon::events::WorkflowEvent;
 use crate::models::DaemonConfig;
 use crate::storage::workflow_runs::WorkflowRunStore;
@@ -39,6 +40,8 @@ pub struct AppState {
     /// removes it when the run finishes. The kill endpoint looks up the sender
     /// and sends `true` to terminate the running step tree.
     pub kill_signals: Arc<RwLock<HashMap<Uuid, KillSender>>>,
+    /// Per-workflow cost summary cache. Eagerly invalidated when runs complete.
+    pub cost_cache: Arc<CostCache>,
 }
 
 /// Create the Axum router with all routes.

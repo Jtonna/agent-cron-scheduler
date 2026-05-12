@@ -1,8 +1,9 @@
 use async_trait::async_trait;
+use chrono_tz::Tz;
 use uuid::Uuid;
 
 use crate::errors::AcsError;
-use crate::models::workflow::WorkflowRun;
+use crate::models::workflow::{CostSummary, WorkflowRun};
 
 // ─── WorkflowRunStore trait ───────────────────────────────────────────────────
 
@@ -31,4 +32,12 @@ pub trait WorkflowRunStore: Send + Sync {
 
     /// Delete a run record. Best-effort.
     async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError>;
+
+    /// Compute cost aggregates for a workflow over the last 30 days and last
+    /// year, using calendar-day boundaries in `display_tz`.
+    async fn cost_summary_for(
+        &self,
+        workflow_id: Uuid,
+        display_tz: &Tz,
+    ) -> Result<CostSummary, AcsError>;
 }

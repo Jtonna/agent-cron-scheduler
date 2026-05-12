@@ -408,6 +408,7 @@ fn build_workflow(job: Job, steps: Vec<StepDef>) -> Workflow {
         next_run_at: None,
         created_at: job.created_at,
         updated_at: job.updated_at,
+        cost_summary: None,
     }
 }
 

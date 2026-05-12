@@ -223,11 +223,21 @@ async fn resolve_workflow(
 
 pub async fn list_workflows(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.workflow_store.list_workflows().await {
-        Ok(workflows) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(workflows).unwrap()),
-        )
-            .into_response(),
+        Ok(mut workflows) => {
+            for wf in &mut workflows {
+                match state.cost_cache.get(wf.id).await {
+                    Ok(summary) => wf.cost_summary = Some(summary),
+                    Err(e) => {
+                        tracing::warn!(workflow_id = %wf.id, "cost_cache.get failed: {}", e);
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(workflows).unwrap()),
+            )
+                .into_response()
+        }
         Err(e) => {
             tracing::error!("Failed to list workflows: {}", e);
             error_response(
@@ -411,7 +421,15 @@ pub async fn get_workflow(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match resolve_workflow(&state, &id).await {
-        Ok(wf) => (StatusCode::OK, Json(serde_json::to_value(wf).unwrap())).into_response(),
+        Ok(mut wf) => {
+            match state.cost_cache.get(wf.id).await {
+                Ok(summary) => wf.cost_summary = Some(summary),
+                Err(e) => {
+                    tracing::warn!(workflow_id = %wf.id, "cost_cache.get failed: {}", e);
+                }
+            }
+            (StatusCode::OK, Json(serde_json::to_value(wf).unwrap())).into_response()
+        }
         Err((status, body)) => (status, body).into_response(),
     }
 }
@@ -538,6 +556,8 @@ pub async fn delete_workflow(
 
     match state.workflow_store.delete_workflow(workflow_id).await {
         Ok(()) => {
+            // Evict cache entry for the deleted workflow.
+            state.cost_cache.forget(workflow_id).await;
             // Broadcast WorkflowChanged{Deleted}
             let _ = state
                 .workflow_event_tx
@@ -1253,6 +1273,7 @@ mod tests {
                 next_run_at: None,
                 created_at: now,
                 updated_at: now,
+                cost_summary: None,
             };
             wfs.push(wf.clone());
             Ok(wf)
@@ -1406,6 +1427,19 @@ mod tests {
             self.runs.lock().await.remove(&run_id);
             Ok(())
         }
+        async fn cost_summary_for(
+            &self,
+            _workflow_id: Uuid,
+            _display_tz: &chrono_tz::Tz,
+        ) -> Result<crate::models::workflow::CostSummary, AcsError> {
+            Ok(crate::models::workflow::CostSummary {
+                last_30_days_total_usd: 0.0,
+                last_30_days_runs: 0,
+                last_year_total_usd: 0.0,
+                last_year_runs: 0,
+                computed_at: chrono::Utc::now(),
+            })
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1460,6 +1494,11 @@ mod tests {
         // each sub-path it needs.
         let _ = std::fs::create_dir_all(&test_root);
         config.display_workflow_dir_root = Some(test_root);
+        let display_tz: chrono_tz::Tz = "America/Los_Angeles".parse().unwrap();
+        let cost_cache = Arc::new(crate::daemon::cost_cache::CostCache::new(
+            Arc::clone(&run_store),
+            display_tz,
+        ));
         Arc::new(crate::server::AppState {
             scheduler_notify: Arc::new(Notify::new()),
             config: Arc::new(config),
@@ -1469,6 +1508,7 @@ mod tests {
             workflow_store: wf_store,
             workflow_run_store: run_store,
             kill_signals: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            cost_cache,
         })
     }
 
@@ -2006,6 +2046,11 @@ mod tests {
             data_dir: Some(data_dir.to_path_buf()),
             ..DaemonConfig::default()
         };
+        let display_tz: chrono_tz::Tz = "America/Los_Angeles".parse().unwrap();
+        let cost_cache = Arc::new(crate::daemon::cost_cache::CostCache::new(
+            Arc::clone(&run_store),
+            display_tz,
+        ));
         Arc::new(crate::server::AppState {
             scheduler_notify: Arc::new(Notify::new()),
             config: Arc::new(config),
@@ -2015,6 +2060,7 @@ mod tests {
             workflow_store: wf_store,
             workflow_run_store: run_store,
             kill_signals: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            cost_cache,
         })
     }
 
