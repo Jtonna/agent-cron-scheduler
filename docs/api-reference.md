@@ -31,6 +31,9 @@ All request and response bodies use JSON (`Content-Type: application/json`) unle
   - [GET /api/logs](#get-apilogs)
 - [Data Models](#data-models)
   - [Workflow](#workflow)
+  - [WorkflowListResponse](#workflowlistresponse)
+  - [CostSummary](#costsummary)
+  - [DailyBucket](#dailybucket)
   - [NewWorkflow](#newworkflow)
   - [WorkflowUpdate](#workflowupdate)
   - [StepDef](#stepdef)
@@ -145,52 +148,103 @@ The platform service manager is the Windows Run key (`HKCU\Software\Microsoft\Wi
 
 List all workflows.
 
-**Request:** No body, no query parameters.
+> **Breaking change in v4.2.9:** This endpoint no longer returns a bare JSON array. The response is now a [WorkflowListResponse](#workflowlistresponse) object with a `workflows` array and a `system_cost_summary` field. Clients that previously parsed the response as `Workflow[]` must navigate into `response.workflows`.
+
+**Request:** No body.
+
+**Query Parameters:**
+
+| Parameter | Type   | Required | Default | Description |
+|-----------|--------|----------|---------|-------------|
+| `days`    | integer | No      | `30`    | Return daily cost buckets for the last N days. Max `365`. Mutually exclusive with `since`/`until`. |
+| `since`   | string  | No      | —       | ISO date (`YYYY-MM-DD`). Start of absolute window. Must be paired with `until`. Mutually exclusive with `days`. |
+| `until`   | string  | No      | —       | ISO date (`YYYY-MM-DD`). End of absolute window (inclusive). Must be paired with `since`. |
 
 **Response:**
 
 | Status | Description |
 |--------|-------------|
-| 200 OK | Returns a JSON array of Workflow objects |
+| 200 OK | Returns a [WorkflowListResponse](#workflowlistresponse) object |
+| 400 Bad Request | Invalid query parameter combination (see [Query param errors](#400-query-param-errors)) |
 | 500 Internal Server Error | Storage failure |
 
 ```json
-[
-  {
-    "id": "01941234-5678-7abc-def0-123456789abc",
-    "name": "nightly-analysis",
-    "version": 1,
-    "schedule": "0 2 * * *",
-    "timezone": "America/New_York",
-    "schedule_mode": "Cron",
-    "enabled": true,
-    "steps": [
-      {
-        "kind": "shell",
-        "id": "fetch",
-        "command": "git pull origin main",
-        "pass_stdin": false,
-        "on_failure": null,
-        "always_run": false,
-        "timeout_secs": 60,
-        "working_dir": null,
-        "env_vars": null,
-        "capture": { "stdout_max_bytes": 65536, "parser": null }
+{
+  "workflows": [
+    {
+      "id": "01941234-5678-7abc-def0-123456789abc",
+      "name": "nightly-analysis",
+      "version": 1,
+      "schedule": "0 2 * * *",
+      "timezone": "America/New_York",
+      "schedule_mode": "Cron",
+      "enabled": true,
+      "steps": [
+        {
+          "kind": "shell",
+          "id": "fetch",
+          "command": "git pull origin main",
+          "pass_stdin": false,
+          "on_failure": null,
+          "always_run": false,
+          "timeout_secs": 60,
+          "working_dir": null,
+          "env_vars": null,
+          "capture": { "stdout_max_bytes": 65536, "parser": null }
+        }
+      ],
+      "default_input": null,
+      "working_dir": "/workspace",
+      "env_vars": { "LANG": "en_US.UTF-8" },
+      "allow_concurrent": true,
+      "on_failure": "abort",
+      "last_run_at": "2025-01-16T02:00:00Z",
+      "last_run_status": "Completed",
+      "last_run_id": "01941234-aaaa-7abc-def0-123456789abc",
+      "next_run_at": "2025-01-17T02:00:00Z",
+      "created_at": "2025-01-15T10:30:00Z",
+      "updated_at": "2025-01-15T10:30:00Z",
+      "cost_summary": {
+        "last_30_days_total_usd": 5.67,
+        "last_30_days_runs": 20,
+        "last_year_total_usd": 42.10,
+        "last_year_runs": 142,
+        "computed_at": "2026-05-10T23:14:22Z",
+        "daily_buckets": [
+          {
+            "date": "2026-05-09",
+            "total_usd": 0.28,
+            "cost_from_completed": 0.28,
+            "cost_from_failed": 0.0,
+            "cost_from_killed": 0.0,
+            "runs_completed": 3,
+            "runs_failed": 0,
+            "runs_killed": 0
+          }
+        ]
       }
-    ],
-    "default_input": null,
-    "working_dir": "/workspace",
-    "env_vars": { "LANG": "en_US.UTF-8" },
-    "allow_concurrent": true,
-    "on_failure": "abort",
-    "last_run_at": "2025-01-16T02:00:00Z",
-    "last_run_status": "Completed",
-    "last_run_id": "01941234-aaaa-7abc-def0-123456789abc",
-    "next_run_at": "2025-01-17T02:00:00Z",
-    "created_at": "2025-01-15T10:30:00Z",
-    "updated_at": "2025-01-15T10:30:00Z"
+    }
+  ],
+  "system_cost_summary": {
+    "last_30_days_total_usd": 5.67,
+    "last_30_days_runs": 20,
+    "last_year_total_usd": 42.10,
+    "last_year_runs": 142,
+    "computed_at": "2026-05-10T23:14:22Z",
+    "daily_buckets": [
+      {
+        "date": "2026-05-09",
+        "total_usd": 0.28,
+        "cost_from_completed": 0.28,
+        "cost_from_failed": 0.0,
+        "cost_from_killed": 0.0,
+        "runs_completed": 3,
+        "runs_failed": 0,
+        "runs_killed": 0
+      }
+    ]
   }
-]
+}
 ```
 
 The `next_run_at` field is computed at runtime for enabled workflows and is `null` for disabled workflows. It is never persisted to disk; the serde annotation `skip_deserializing` ensures it is always re-derived on read.
@@ -249,11 +303,20 @@ Retrieve a single workflow by UUID or name.
 |-----------|--------|----------------------------------------------|
 | `id`      | string | Workflow UUID or name (see [Workflow Identifier Resolution](#workflow-identifier-resolution)). |
 
+**Query Parameters:**
+
+| Parameter | Type    | Required | Default | Description |
+|-----------|---------|----------|---------|-------------|
+| `days`    | integer | No       | `30`    | Return daily cost buckets for the last N days. Max `365`. Mutually exclusive with `since`/`until`. |
+| `since`   | string  | No       | —       | ISO date (`YYYY-MM-DD`). Start of absolute window. Must be paired with `until`. Mutually exclusive with `days`. |
+| `until`   | string  | No       | —       | ISO date (`YYYY-MM-DD`). End of absolute window (inclusive). Must be paired with `since`. |
+
 **Response:**
 
 | Status | Description |
 |--------|-------------|
-| 200 OK | Returns the full [Workflow](#workflow) object. |
+| 200 OK | Returns the full [Workflow](#workflow) object (with `cost_summary.daily_buckets` populated). |
+| 400 Bad Request | Invalid query parameter combination (see [Query param errors](#400-query-param-errors)). |
 | 404 Not Found | No workflow matching the given UUID or name. |
 | 500 Internal Server Error | Storage failure. |
 
@@ -708,9 +771,20 @@ The full workflow object returned by GET, POST (201), and PATCH (200) endpoints.
 
 ---
 
+### WorkflowListResponse
+
+The response shape for `GET /api/workflows` (introduced in v4.2.9, replacing the previous bare `Workflow[]` array).
+
+| Field                 | Type                            | Description |
+|-----------------------|---------------------------------|-------------|
+| `workflows`           | array of [Workflow](#workflow)  | All workflow definitions, each including their individual `cost_summary` (with `daily_buckets` for the requested window). |
+| `system_cost_summary` | [CostSummary](#costsummary)     | Aggregated cost summary across **all** workflows. `daily_buckets` is a system-wide aggregation for the requested window. |
+
+---
+
 ### CostSummary
 
-Aggregated cost and run-count data over rolling windows. Returned embedded in `Workflow` responses.
+Aggregated cost and run-count data over rolling windows. Returned embedded in `Workflow` responses and as `system_cost_summary` in `WorkflowListResponse`.
 
 | Field | Type | Description |
 |---|---|---|
@@ -719,10 +793,26 @@ Aggregated cost and run-count data over rolling windows. Returned embedded in `W
 | `last_year_total_usd` | float | Same as 30-day, but over the last 365 days. |
 | `last_year_runs` | integer | Same. |
 | `computed_at` | string (ISO 8601) | When the summary was computed. Reflects cache freshness: each entry is recomputed on the next terminal run for the workflow, or at midnight in `display_timezone` (whichever comes first). |
-
-Per-day/week/month bucketing is computed client-side by the UI using the per-run `total_cost_usd` exposed by `GET /api/workflows/{id}/runs`. The server does not pre-bucket beyond the 30-day and 1-year totals.
+| `daily_buckets` | array of [DailyBucket](#dailybucket) | Per-day cost breakdown for the requested window (controlled by `?days=N` or `?since=...&until=...`). Zero-days are omitted; the array is sorted ascending by date. |
 
 Note: `total_cost_usd` may be `null` on runs that were killed mid-turn before Claude emitted a `result` event. Those runs contribute to `last_*_runs` count but not to `last_*_total_usd`. Tracked as a separate concern in [ACS-23](https://linear.app/jtonna/issue/ACS-23).
+
+---
+
+### DailyBucket
+
+A single day's cost breakdown within a `CostSummary.daily_buckets` array. Only days with at least one terminal run are emitted (no zero-padding).
+
+| Field | Type | Description |
+|---|---|---|
+| `date` | string (`YYYY-MM-DD`) | The local calendar date in the daemon's `display_timezone`. |
+| `total_usd` | float | Sum of all terminal run costs for this day (`cost_from_completed + cost_from_failed + cost_from_killed`). Null-cost runs contribute 0. |
+| `cost_from_completed` | float | Sum of `total_cost_usd` for runs that ended with status `Completed` on this day. |
+| `cost_from_failed` | float | Sum of `total_cost_usd` for runs that ended with status `Failed` on this day. |
+| `cost_from_killed` | float | Sum of `total_cost_usd` for runs that ended with status `Killed` on this day. |
+| `runs_completed` | integer | Count of `Completed` runs on this day. |
+| `runs_failed` | integer | Count of `Failed` runs on this day. |
+| `runs_killed` | integer | Count of `Killed` runs on this day. |
 
 ---
 

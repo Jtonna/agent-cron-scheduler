@@ -29,4 +29,4 @@ Override `baseUrl` if you've started the daemon on a different port (`agentcrons
 - **Kill an active run:** `Runs/Kill run.bru` POSTs to `/api/runs/:run_id/kill` (no body). Returns 204.
 - **Concurrency rejection:** trigger a workflow that has `allow_concurrent: false` while a run is active — you get HTTP `409 Conflict` with body `{"error":"concurrent_run_active",...}`.
 - **Identifiers:** anywhere a route says `:id`, you can pass either the workflow's UUID or its `name`. The daemon resolves both.
-- **Cost analytics:** workflow GET responses include a `cost_summary` block with 30-day and 1-year cost totals and run counts, populated from the daemon's in-memory cost cache.
+- **Cost analytics:** `GET /api/workflows/{id}` responses include a `cost_summary` block with 30-day and 1-year cost totals, run counts, and a `daily_buckets` array for per-day breakdown (default last 30 days). Use `?days=N` or `?since=YYYY-MM-DD&until=YYYY-MM-DD` to control the bucket window. `GET /api/workflows` (list) is now a wrapped object `{workflows, system_cost_summary}` — not a bare array — and includes both per-workflow and system-wide daily buckets.

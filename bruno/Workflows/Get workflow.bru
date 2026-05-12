@@ -14,6 +14,12 @@ params:path {
   id: {{workflowId}}
 }
 
+params:query {
+  ~days: 30
+  ~since: 2026-04-01
+  ~until: 2026-05-01
+}
+
 docs {
   Returns one `Workflow` by UUID OR by name. Both forms work in the same path.
 
@@ -22,15 +28,104 @@ docs {
 
   404 if not found.
 
-  Response includes a `cost_summary` block with aggregated cost analytics:
+  ## Query params (pick one style)
+
+  **Rolling window (default):**
+  `GET /api/workflows/:id?days=30`
+  - `days` — number of days for the `daily_buckets` window (default 30, max 365)
+
+  **Absolute window:**
+  `GET /api/workflows/:id?since=2026-04-01&until=2026-05-01`
+  - `since` / `until` — ISO dates (`YYYY-MM-DD`); both required if either is supplied
+  - Mutually exclusive with `days` — mixing them returns `400 conflicting_params`
+
+  ## Response shape
+
+  The response is a plain `Workflow` object (not wrapped). The `cost_summary`
+  block includes `daily_buckets` populated for the requested window.
 
   ```json
-  "cost_summary": {
-    "last_30_days_total_usd": 5.67,
-    "last_30_days_runs": 20,
-    "last_year_total_usd": 42.10,
-    "last_year_runs": 142,
-    "computed_at": "2026-05-11T23:14:22Z"
+  {
+    "id": "019df531-5c1d-7600-8801-3b1c7995e5a8",
+    "name": "weather-agent",
+    "version": 3,
+    "schedule": "0 8 * * *",
+    "timezone": "America/Los_Angeles",
+    "schedule_mode": "Cron",
+    "enabled": true,
+    "steps": [
+      {
+        "kind": "agent",
+        "id": "fetch-weather",
+        "agent_type": "claude_code_cli",
+        "prompt": "Fetch the weather forecast for Seattle and summarize it.",
+        "model": null,
+        "extra_args": []
+      }
+    ],
+    "default_input": null,
+    "working_dir": "/home/user/Documents/agent-cron-scheduler/weather-agent",
+    "env_vars": null,
+    "allow_concurrent": false,
+    "on_failure": "abort",
+    "last_run_at": "2026-05-10T15:00:00Z",
+    "last_run_status": "Completed",
+    "last_run_id": "019df600-aaaa-7abc-def0-123456789abc",
+    "next_run_at": "2026-05-11T15:00:00Z",
+    "created_at": "2026-04-01T10:00:00Z",
+    "updated_at": "2026-05-01T09:30:00Z",
+    "cost_summary": {
+      "last_30_days_total_usd": 5.67,
+      "last_30_days_runs": 20,
+      "last_year_total_usd": 42.10,
+      "last_year_runs": 142,
+      "computed_at": "2026-05-10T23:14:22Z",
+      "daily_buckets": [
+        {
+          "date": "2026-04-11",
+          "total_usd": 0.22,
+          "cost_from_completed": 0.22,
+          "cost_from_failed": 0.00,
+          "cost_from_killed": 0.00,
+          "runs_completed": 1,
+          "runs_failed": 0,
+          "runs_killed": 0
+        },
+        {
+          "date": "2026-04-12",
+          "total_usd": 0.19,
+          "cost_from_completed": 0.19,
+          "cost_from_failed": 0.00,
+          "cost_from_killed": 0.00,
+          "runs_completed": 1,
+          "runs_failed": 0,
+          "runs_killed": 0
+        },
+        {
+          "date": "2026-05-09",
+          "total_usd": 0.28,
+          "cost_from_completed": 0.28,
+          "cost_from_failed": 0.00,
+          "cost_from_killed": 0.00,
+          "runs_completed": 1,
+          "runs_failed": 0,
+          "runs_killed": 0
+        },
+        {
+          "date": "2026-05-10",
+          "total_usd": 0.25,
+          "cost_from_completed": 0.25,
+          "cost_from_failed": 0.00,
+          "cost_from_killed": 0.00,
+          "runs_completed": 1,
+          "runs_failed": 0,
+          "runs_killed": 0
+        }
+      ]
+    }
   }
   ```
+
+  The `daily_buckets` array is sorted ascending by date. Zero-days (days with
+  no terminal runs) are omitted — the array is sparse, not padded.
 }

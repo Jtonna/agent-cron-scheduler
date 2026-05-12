@@ -176,6 +176,8 @@ See [CLI Reference](cli-reference.md) for the full command documentation.
 
 **Cost analytics caching.** Workflow cost summaries (30-day + 1-year totals) are computed on demand by `acs::storage::sqlite::SqliteWorkflowRunStore::cost_summary_for(workflow_id, display_tz)` and cached in memory by `acs::daemon::cost_cache::CostCache`, held in the shared daemon state alongside the workflow/run stores. The cache subscribes to the internal `tokio::sync::broadcast::Sender<WorkflowEvent>` via a background task; when `RunCompleted` or `RunFailed` fires (covering Completed/Failed/Killed terminal statuses), the affected workflow's cache entry is eagerly recomputed. Each cached entry also carries a `valid_until` timestamp set to the next calendar-day midnight in `display_timezone`, after which the next read triggers a recompute. Workflow deletion evicts the entry via `CostCache::forget`.
 
+**Daily cost buckets (v4.2.9).** In addition to the rolled-up 30-day and 1-year scalars, the cache also holds a 365-day array of `DailyBucket` entries per workflow plus a system-wide 365-day array. Each entry carries the day's local date (in `display_timezone`), total cost, and status-broken counts + cost (`cost_from_completed`, `cost_from_failed`, `cost_from_killed`, `runs_completed`, `runs_failed`, `runs_killed`). Sub-window requests slice the cached array in memory. The eager invalidator on `RunCompleted`/`RunFailed` refreshes both the affected workflow's 365-day array AND the system 365-day array.
+
 See [Storage](storage.md) for implementation details.
 
 #### `models` -- Data Types

@@ -10,24 +10,107 @@ get {
   auth: none
 }
 
+params:query {
+  ~days: 30
+  ~since: 2026-04-01
+  ~until: 2026-05-01
+}
+
 docs {
-  Returns the full array of workflow definitions. No pagination — this returns
-  every workflow stored in `acs.db`.
+  Returns all workflow definitions wrapped in a `WorkflowListResponse` object.
 
-  Each item is a complete `Workflow` object with: id, name, version, schedule,
-  timezone, schedule_mode, enabled, steps[], default_input,
-  working_dir, env_vars, allow_concurrent, on_failure, last_run_*, next_run_at,
-  created_at, updated_at, and cost_summary.
+  **Breaking change in v4.2.9:** The response is no longer a bare JSON array.
+  It is now an object with `workflows` (the array) and `system_cost_summary`.
+  Clients must navigate into `response.workflows` to iterate workflows.
 
-  Each workflow includes a `cost_summary` block with aggregated cost analytics:
+  ## Query params (pick one style)
+
+  **Rolling window (default):**
+  `GET /api/workflows?days=30`
+  - `days` — number of days for the `daily_buckets` window (default 30, max 365)
+
+  **Absolute window:**
+  `GET /api/workflows?since=2026-04-01&until=2026-05-01`
+  - `since` / `until` — ISO dates (`YYYY-MM-DD`); both required if either is supplied
+  - Mutually exclusive with `days` — mixing them returns `400 conflicting_params`
+
+  ## Response shape
 
   ```json
-  "cost_summary": {
-    "last_30_days_total_usd": 5.67,
-    "last_30_days_runs": 20,
-    "last_year_total_usd": 42.10,
-    "last_year_runs": 142,
-    "computed_at": "2026-05-11T23:14:22Z"
+  {
+    "workflows": [
+      {
+        "id": "01941234-5678-7abc-def0-123456789abc",
+        "name": "nightly-analysis",
+        "schedule": "0 2 * * *",
+        "enabled": true,
+        "cost_summary": {
+          "last_30_days_total_usd": 5.67,
+          "last_30_days_runs": 20,
+          "last_year_total_usd": 42.10,
+          "last_year_runs": 142,
+          "computed_at": "2026-05-10T23:14:22Z",
+          "daily_buckets": [
+            {
+              "date": "2026-05-09",
+              "total_usd": 0.28,
+              "cost_from_completed": 0.28,
+              "cost_from_failed": 0.00,
+              "cost_from_killed": 0.00,
+              "runs_completed": 3,
+              "runs_failed": 0,
+              "runs_killed": 0
+            },
+            {
+              "date": "2026-05-10",
+              "total_usd": 0.15,
+              "cost_from_completed": 0.10,
+              "cost_from_failed": 0.05,
+              "cost_from_killed": 0.00,
+              "runs_completed": 1,
+              "runs_failed": 1,
+              "runs_killed": 0
+            }
+          ]
+        }
+      }
+    ],
+    "system_cost_summary": {
+      "last_30_days_total_usd": 5.67,
+      "last_30_days_runs": 20,
+      "last_year_total_usd": 42.10,
+      "last_year_runs": 142,
+      "computed_at": "2026-05-10T23:14:22Z",
+      "daily_buckets": [
+        {
+          "date": "2026-05-09",
+          "total_usd": 0.28,
+          "cost_from_completed": 0.28,
+          "cost_from_failed": 0.00,
+          "cost_from_killed": 0.00,
+          "runs_completed": 3,
+          "runs_failed": 0,
+          "runs_killed": 0
+        },
+        {
+          "date": "2026-05-10",
+          "total_usd": 0.15,
+          "cost_from_completed": 0.10,
+          "cost_from_failed": 0.05,
+          "cost_from_killed": 0.00,
+          "runs_completed": 1,
+          "runs_failed": 1,
+          "runs_killed": 0
+        }
+      ]
+    }
   }
   ```
+
+  Each workflow includes a `cost_summary` block with aggregated cost analytics
+  and a `daily_buckets` array for the requested window. Zero-days are omitted
+  from `daily_buckets`; the array is sorted ascending by date.
+
+  The `system_cost_summary` aggregates costs across ALL workflows. Its
+  `daily_buckets` array is the union of all per-workflow buckets, summed by day.
 }
