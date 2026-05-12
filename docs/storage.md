@@ -323,6 +323,8 @@ The `workflow_runs` table has three secondary indexes:
 | `idx_workflow_runs_finished_at` | `(finished_at)` | Cross-workflow recency queries. |
 | `idx_workflow_runs_status` | `(status)` | Filters that pick out e.g. all currently-running rows. |
 
+The cost-analytics aggregation query — `SUM(CASE WHEN finished_at >= ? THEN total_cost_usd END)` plus `COUNT(...)` over two windows — runs once per workflow per `GET /api/workflows[/{id}]` cache miss. The `idx_workflow_runs_workflow_id_finished_at` composite index established in m002 covers this access pattern: the WHERE clause filters by `workflow_id`, `status IN (...)`, and `finished_at >= ?`, with the conditional SUMs evaluated over the filtered rows.
+
 ---
 
 ## 7. FileLogSink

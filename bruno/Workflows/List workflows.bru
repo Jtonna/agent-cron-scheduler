@@ -12,10 +12,22 @@ get {
 
 docs {
   Returns the full array of workflow definitions. No pagination — this returns
-  every workflow on disk in `workflows.json`.
+  every workflow stored in `acs.db`.
 
   Each item is a complete `Workflow` object with: id, name, version, schedule,
   timezone, schedule_mode, enabled, steps[], default_input,
   working_dir, env_vars, allow_concurrent, on_failure, last_run_*, next_run_at,
-  created_at, updated_at.
+  created_at, updated_at, and cost_summary.
+
+  Each workflow includes a `cost_summary` block with aggregated cost analytics:
+
+  ```json
+  "cost_summary": {
+    "last_30_days_total_usd": 5.67,
+    "last_30_days_runs": 20,
+    "last_year_total_usd": 42.10,
+    "last_year_runs": 142,
+    "computed_at": "2026-05-11T23:14:22Z"
+  }
+  ```
 }

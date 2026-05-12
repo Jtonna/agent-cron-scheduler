@@ -174,6 +174,8 @@ See [CLI Reference](cli-reference.md) for the full command documentation.
 - **`WorkflowRunStore` trait**: Async trait with `create_run`, `update_run`, `get_run`, `list_runs(workflow_id, limit, offset)`, `count_runs`, `delete_run`. (`acs/src/storage/workflow_runs.rs`)
 - **`SqliteWorkflowRunStore`**: Concrete `WorkflowRunStore` backed by the `workflow_runs` table in `<data_dir>/acs.db`. Shares the same `SqliteDb` handle as `SqliteWorkflowStore`. `list_runs` orders by `run_id DESC`, which is latest-first because `run_id` is a UUIDv7.
 
+**Cost analytics caching.** Workflow cost summaries (30-day + 1-year totals) are computed on demand by `acs::storage::sqlite::SqliteWorkflowRunStore::cost_summary_for(workflow_id, display_tz)` and cached in memory by `acs::daemon::cost_cache::CostCache`, held in the shared daemon state alongside the workflow/run stores. The cache subscribes to the internal `tokio::sync::broadcast::Sender<WorkflowEvent>` via a background task; when `RunCompleted` or `RunFailed` fires (covering Completed/Failed/Killed terminal statuses), the affected workflow's cache entry is eagerly recomputed. Each cached entry also carries a `valid_until` timestamp set to the next calendar-day midnight in `display_timezone`, after which the next read triggers a recompute. Workflow deletion evicts the entry via `CostCache::forget`.
+
 See [Storage](storage.md) for implementation details.
 
 #### `models` -- Data Types

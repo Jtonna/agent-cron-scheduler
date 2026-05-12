@@ -21,4 +21,16 @@ docs {
   - `GET /api/workflows/weather-agent`
 
   404 if not found.
+
+  Response includes a `cost_summary` block with aggregated cost analytics:
+
+  ```json
+  "cost_summary": {
+    "last_30_days_total_usd": 5.67,
+    "last_30_days_runs": 20,
+    "last_year_total_usd": 42.10,
+    "last_year_runs": 142,
+    "computed_at": "2026-05-11T23:14:22Z"
+  }
+  ```
 }
