@@ -1,9 +1,10 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use uuid::Uuid;
 
 use crate::errors::AcsError;
-use crate::models::workflow::{CostSummary, WorkflowRun};
+use crate::models::workflow::{CostSummary, DailyBucket, WorkflowRun};
 
 // ─── WorkflowRunStore trait ───────────────────────────────────────────────────
 
@@ -40,4 +41,17 @@ pub trait WorkflowRunStore: Send + Sync {
         workflow_id: Uuid,
         display_tz: &Tz,
     ) -> Result<CostSummary, AcsError>;
+
+    /// Return per-day cost buckets for the given time window.
+    ///
+    /// `workflow_id = None` aggregates across all workflows (system-wide).
+    /// Results are in ascending date order; days with no terminal runs are omitted.
+    /// Date grouping uses `display_tz` for calendar-day boundaries.
+    async fn daily_buckets_for(
+        &self,
+        workflow_id: Option<Uuid>,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        display_tz: &Tz,
+    ) -> Result<Vec<DailyBucket>, AcsError>;
 }

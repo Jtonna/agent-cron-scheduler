@@ -1,13 +1,15 @@
 //! SQLite implementation of [`WorkflowRunStore`].
 
 use async_trait::async_trait;
-use chrono::TimeZone;
+use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
 use crate::errors::AcsError;
-use crate::models::workflow::{CostSummary, RunStatus, StepRun, Workflow, WorkflowRun};
+use crate::models::workflow::{
+    CostSummary, DailyBucket, RunStatus, StepRun, Workflow, WorkflowRun,
+};
 use crate::storage::sqlite::row_helpers::{
     map_serde_err, map_uuid_err, parse_dt, parse_opt_dt, run_status_str,
 };
@@ -315,9 +317,129 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                     last_year_total_usd: last_year_total,
                     last_year_runs: last_year_runs as u64,
                     computed_at: chrono::Utc::now(),
+                    daily_buckets: Vec::new(),
                 })
             })
             .await
+    }
+
+    async fn daily_buckets_for(
+        &self,
+        workflow_id: Option<Uuid>,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        display_tz: &Tz,
+    ) -> Result<Vec<DailyBucket>, AcsError> {
+        let since_s = since.to_rfc3339();
+        let until_s = until.to_rfc3339();
+        let wf_id_s = workflow_id.map(|id| id.to_string());
+        let tz = *display_tz;
+
+        // Fetch rows via the async with_conn helper (like other methods in this file).
+        let rows: Vec<(String, String, Option<f64>)> = self
+            .db
+            .with_conn(move |c| {
+                let sql = if wf_id_s.is_some() {
+                    "SELECT finished_at, status, total_cost_usd \
+                     FROM workflow_runs \
+                     WHERE status IN ('Completed', 'Failed', 'Killed') \
+                       AND finished_at IS NOT NULL \
+                       AND finished_at >= ?1 \
+                       AND finished_at < ?2 \
+                       AND workflow_id = ?3 \
+                     ORDER BY finished_at ASC"
+                } else {
+                    "SELECT finished_at, status, total_cost_usd \
+                     FROM workflow_runs \
+                     WHERE status IN ('Completed', 'Failed', 'Killed') \
+                       AND finished_at IS NOT NULL \
+                       AND finished_at >= ?1 \
+                       AND finished_at < ?2 \
+                     ORDER BY finished_at ASC"
+                };
+
+                let mut stmt = c
+                    .prepare(sql)
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+
+                type Row = (String, String, Option<f64>);
+                let mut out: Vec<Row> = Vec::new();
+
+                if let Some(ref wf_id) = wf_id_s {
+                    let row_iter = stmt
+                        .query_map(rusqlite::params![since_s, until_s, wf_id], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<f64>>(2)?,
+                            ))
+                        })
+                        .map_err(|e| AcsError::Storage(e.to_string()))?;
+                    for r in row_iter {
+                        out.push(r.map_err(|e| AcsError::Storage(e.to_string()))?);
+                    }
+                } else {
+                    let row_iter = stmt
+                        .query_map(rusqlite::params![since_s, until_s], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<f64>>(2)?,
+                            ))
+                        })
+                        .map_err(|e| AcsError::Storage(e.to_string()))?;
+                    for r in row_iter {
+                        out.push(r.map_err(|e| AcsError::Storage(e.to_string()))?);
+                    }
+                }
+                Ok(out)
+            })
+            .await?;
+
+        // Aggregate rows into per-day buckets in Rust (timezone-aware).
+        use std::collections::BTreeMap;
+
+        let mut buckets: BTreeMap<chrono::NaiveDate, DailyBucket> = BTreeMap::new();
+
+        for (finished_at_str, status, cost_opt) in rows {
+            let finished_at_utc = chrono::DateTime::parse_from_rfc3339(&finished_at_str)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|e| {
+                    AcsError::Storage(format!("parse finished_at '{}': {}", finished_at_str, e))
+                })?;
+            let finished_at_local = finished_at_utc.with_timezone(&tz);
+            let date_local = finished_at_local.date_naive();
+            let cost = cost_opt.unwrap_or(0.0);
+
+            let bucket = buckets.entry(date_local).or_insert_with(|| DailyBucket {
+                date: date_local,
+                total_usd: 0.0,
+                cost_from_completed: 0.0,
+                cost_from_failed: 0.0,
+                cost_from_killed: 0.0,
+                runs_completed: 0,
+                runs_failed: 0,
+                runs_killed: 0,
+            });
+            bucket.total_usd += cost;
+            match status.as_str() {
+                "Completed" => {
+                    bucket.runs_completed += 1;
+                    bucket.cost_from_completed += cost;
+                }
+                "Failed" => {
+                    bucket.runs_failed += 1;
+                    bucket.cost_from_failed += cost;
+                }
+                "Killed" => {
+                    bucket.runs_killed += 1;
+                    bucket.cost_from_killed += cost;
+                }
+                _ => { /* impossible given WHERE clause */ }
+            }
+        }
+
+        Ok(buckets.into_values().collect())
     }
 }
 
@@ -898,5 +1020,373 @@ mod tests {
         assert_eq!(summary.last_30_days_runs, 1);
         assert!((summary.last_30_days_total_usd - 1.5).abs() < 1e-9);
         assert_eq!(summary.last_year_runs, 1);
+    }
+
+    // ── daily_buckets_for tests ───────────────────────────────────────────────
+
+    fn year_window() -> (DateTime<Utc>, DateTime<Utc>) {
+        let now = Utc::now();
+        let since = now - chrono::Duration::days(365);
+        (since, now)
+    }
+
+    // 1. Workflow with no runs returns Vec::new().
+    #[tokio::test]
+    async fn test_daily_buckets_empty() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "db-empty").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let (since, until) = year_window();
+        let buckets = run_store
+            .daily_buckets_for(Some(wf.id), since, until, &tz)
+            .await
+            .expect("daily_buckets_for");
+        assert!(buckets.is_empty(), "no runs → empty bucket list");
+    }
+
+    // 2. Runs spanning a display_tz midnight boundary end up in two buckets.
+    #[tokio::test]
+    async fn test_daily_buckets_groups_by_local_date() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "db-group-date").await;
+        // America/Los_Angeles is UTC-7 (PDT) in summer.
+        // 2026-06-01T06:30:00Z is 2026-05-31T23:30:00 PDT → May 31.
+        // 2026-06-01T08:30:00Z is 2026-06-01T01:30:00 PDT → June 1.
+        // Both are on the same UTC day (June 1) but different local days.
+        let la_tz: Tz = "America/Los_Angeles".parse().unwrap();
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some("2026-06-01T06:30:00+00:00"),
+            Some(1.0),
+        )
+        .await;
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some("2026-06-01T08:30:00+00:00"),
+            Some(2.0),
+        )
+        .await;
+
+        let since: DateTime<Utc> = "2026-05-01T00:00:00+00:00".parse().unwrap();
+        let until: DateTime<Utc> = "2026-07-01T00:00:00+00:00".parse().unwrap();
+        let buckets = run_store
+            .daily_buckets_for(Some(wf.id), since, until, &la_tz)
+            .await
+            .expect("daily_buckets_for");
+
+        assert_eq!(
+            buckets.len(),
+            2,
+            "expected 2 date buckets, got: {:?}",
+            buckets.iter().map(|b| b.date).collect::<Vec<_>>()
+        );
+        // Verify distinct dates
+        assert_ne!(buckets[0].date, buckets[1].date);
+    }
+
+    // 3. All three statuses land in their respective sub-fields.
+    #[tokio::test]
+    async fn test_daily_buckets_includes_all_statuses() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "db-all-statuses").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let day = "2026-05-09T12:00:00+00:00";
+        seed_raw_run(&run_store, &wf, "Completed", Some(day), Some(1.0)).await;
+        seed_raw_run(&run_store, &wf, "Failed", Some(day), Some(0.5)).await;
+        seed_raw_run(&run_store, &wf, "Killed", Some(day), Some(0.25)).await;
+
+        let since: DateTime<Utc> = "2026-05-01T00:00:00+00:00".parse().unwrap();
+        let until: DateTime<Utc> = "2026-06-01T00:00:00+00:00".parse().unwrap();
+        let buckets = run_store
+            .daily_buckets_for(Some(wf.id), since, until, &tz)
+            .await
+            .expect("daily_buckets_for");
+
+        assert_eq!(buckets.len(), 1);
+        let b = &buckets[0];
+        assert_eq!(b.runs_completed, 1);
+        assert_eq!(b.runs_failed, 1);
+        assert_eq!(b.runs_killed, 1);
+        assert!((b.cost_from_completed - 1.0).abs() < 1e-9);
+        assert!((b.cost_from_failed - 0.5).abs() < 1e-9);
+        assert!((b.cost_from_killed - 0.25).abs() < 1e-9);
+        assert!((b.total_usd - 1.75).abs() < 1e-9);
+    }
+
+    // 4. Running runs are excluded from buckets.
+    #[tokio::test]
+    async fn test_daily_buckets_excludes_running() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "db-excl-running").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let day = "2026-05-09T12:00:00+00:00";
+        seed_raw_run(&run_store, &wf, "Completed", Some(day), Some(1.0)).await;
+        seed_raw_run(&run_store, &wf, "Completed", Some(day), Some(2.0)).await;
+        seed_raw_run(&run_store, &wf, "Running", Some(day), Some(99.0)).await;
+
+        let since: DateTime<Utc> = "2026-05-01T00:00:00+00:00".parse().unwrap();
+        let until: DateTime<Utc> = "2026-06-01T00:00:00+00:00".parse().unwrap();
+        let buckets = run_store
+            .daily_buckets_for(Some(wf.id), since, until, &tz)
+            .await
+            .expect("daily_buckets_for");
+
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0].runs_completed, 2);
+        assert_eq!(buckets[0].runs_failed, 0);
+        assert_eq!(buckets[0].runs_killed, 0);
+        assert!((buckets[0].total_usd - 3.0).abs() < 1e-9);
+    }
+
+    // 5. Null cost_usd treated as 0.0; run is still counted.
+    #[tokio::test]
+    async fn test_daily_buckets_null_cost_handling() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "db-null-cost").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let day = "2026-05-09T12:00:00+00:00";
+        seed_raw_run(&run_store, &wf, "Completed", Some(day), Some(0.50)).await;
+        seed_raw_run(&run_store, &wf, "Completed", Some(day), Some(0.50)).await;
+        seed_raw_run(&run_store, &wf, "Killed", Some(day), None).await;
+
+        let since: DateTime<Utc> = "2026-05-01T00:00:00+00:00".parse().unwrap();
+        let until: DateTime<Utc> = "2026-06-01T00:00:00+00:00".parse().unwrap();
+        let buckets = run_store
+            .daily_buckets_for(Some(wf.id), since, until, &tz)
+            .await
+            .expect("daily_buckets_for");
+
+        assert_eq!(buckets.len(), 1);
+        let b = &buckets[0];
+        assert!(
+            (b.total_usd - 1.0).abs() < 1e-9,
+            "total_usd={}",
+            b.total_usd
+        );
+        assert_eq!(b.runs_killed, 1);
+        assert!((b.cost_from_killed - 0.0).abs() < 1e-9);
+    }
+
+    // 6. Window filtering — only runs in [since, until) appear.
+    #[tokio::test]
+    async fn test_daily_buckets_window_filter() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "db-window-filter").await;
+        let tz: Tz = "UTC".parse().unwrap();
+
+        // Seed 60 days of data (one run per day).
+        let base: DateTime<Utc> = "2026-01-01T12:00:00+00:00".parse().unwrap();
+        for d in 0i64..60 {
+            let ts = (base + chrono::Duration::days(d)).to_rfc3339();
+            seed_raw_run(&run_store, &wf, "Completed", Some(&ts), Some(1.0)).await;
+        }
+
+        // Request only days 20–30 (10 days).
+        let since = base + chrono::Duration::days(20);
+        let until = base + chrono::Duration::days(30);
+        let buckets = run_store
+            .daily_buckets_for(Some(wf.id), since, until, &tz)
+            .await
+            .expect("daily_buckets_for");
+
+        assert_eq!(buckets.len(), 10, "should have exactly 10 day-buckets");
+    }
+
+    // 7. DST spring-forward — run at 02:30 UTC on spring-forward day.
+    // 2026-03-08 is the spring-forward day in America/Los_Angeles.
+    // At 02:00 PST (10:00 UTC on Mar 7), clocks spring forward to 03:00 PDT.
+    // So 10:30 UTC on 2026-03-08 = 02:30 AM (which doesn't exist in LA) →
+    // in practice, runs stored at 10:30 UTC on Mar 8 fall on Mar 8 local time.
+    #[tokio::test]
+    async fn test_daily_buckets_dst_spring_forward() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "db-dst-spring").await;
+        let la_tz: Tz = "America/Los_Angeles".parse().unwrap();
+
+        // 2026-03-08T10:30:00Z → in LA this is Mar 8, 02:30 (skipped hour),
+        // but chrono resolves it to Mar 8 local date.
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some("2026-03-08T10:30:00+00:00"),
+            Some(1.0),
+        )
+        .await;
+
+        let since: DateTime<Utc> = "2026-03-01T00:00:00+00:00".parse().unwrap();
+        let until: DateTime<Utc> = "2026-04-01T00:00:00+00:00".parse().unwrap();
+        let buckets = run_store
+            .daily_buckets_for(Some(wf.id), since, until, &la_tz)
+            .await
+            .expect("daily_buckets_for");
+
+        assert_eq!(buckets.len(), 1, "should be exactly one date bucket");
+        // The run should land on March 8 local date.
+        let expected_date = chrono::NaiveDate::from_ymd_opt(2026, 3, 8).unwrap();
+        assert_eq!(
+            buckets[0].date, expected_date,
+            "run should be on 2026-03-08 local"
+        );
+    }
+
+    // 8. Year boundary — runs around Dec 31 / Jan 1 get the right local dates.
+    #[tokio::test]
+    async fn test_daily_buckets_year_boundary() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "db-year-boundary").await;
+        let tz: Tz = "UTC".parse().unwrap();
+
+        // Dec 31, 2025 at noon UTC.
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some("2025-12-31T12:00:00+00:00"),
+            Some(1.0),
+        )
+        .await;
+        // Jan 1, 2026 at noon UTC.
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some("2026-01-01T12:00:00+00:00"),
+            Some(2.0),
+        )
+        .await;
+
+        let since: DateTime<Utc> = "2025-12-01T00:00:00+00:00".parse().unwrap();
+        let until: DateTime<Utc> = "2026-02-01T00:00:00+00:00".parse().unwrap();
+        let buckets = run_store
+            .daily_buckets_for(Some(wf.id), since, until, &tz)
+            .await
+            .expect("daily_buckets_for");
+
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(
+            buckets[0].date,
+            chrono::NaiveDate::from_ymd_opt(2025, 12, 31).unwrap()
+        );
+        assert_eq!(
+            buckets[1].date,
+            chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
+        );
+    }
+
+    // 9. workflow_id filter — Some(A) returns only A's runs; None returns combined.
+    #[tokio::test]
+    async fn test_daily_buckets_workflow_id_filter() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf_a = seed_workflow(&wf_store, "db-filter-a").await;
+        let wf_b = seed_workflow(&wf_store, "db-filter-b").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let day_a = "2026-05-05T12:00:00+00:00";
+        let day_b = "2026-05-06T12:00:00+00:00";
+
+        seed_raw_run(&run_store, &wf_a, "Completed", Some(day_a), Some(1.0)).await;
+        seed_raw_run(&run_store, &wf_b, "Completed", Some(day_b), Some(2.0)).await;
+
+        let since: DateTime<Utc> = "2026-05-01T00:00:00+00:00".parse().unwrap();
+        let until: DateTime<Utc> = "2026-06-01T00:00:00+00:00".parse().unwrap();
+
+        // Filter by wf_a only.
+        let buckets_a = run_store
+            .daily_buckets_for(Some(wf_a.id), since, until, &tz)
+            .await
+            .expect("daily_buckets_for wf_a");
+        assert_eq!(buckets_a.len(), 1);
+        assert_eq!(
+            buckets_a[0].date,
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 5).unwrap()
+        );
+
+        // System aggregate (None) returns both.
+        let buckets_all = run_store
+            .daily_buckets_for(None, since, until, &tz)
+            .await
+            .expect("daily_buckets_for all");
+        assert_eq!(buckets_all.len(), 2);
+    }
+
+    // 10. Results are in ascending date order.
+    #[tokio::test]
+    async fn test_daily_buckets_ascending_order() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "db-asc-order").await;
+        let tz: Tz = "UTC".parse().unwrap();
+
+        // Insert 5 runs across 3 different days (out-of-order insertion).
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some("2026-05-10T12:00:00+00:00"),
+            Some(3.0),
+        )
+        .await;
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some("2026-05-08T12:00:00+00:00"),
+            Some(1.0),
+        )
+        .await;
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some("2026-05-09T12:00:00+00:00"),
+            Some(2.0),
+        )
+        .await;
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some("2026-05-08T15:00:00+00:00"),
+            Some(1.0),
+        )
+        .await;
+        seed_raw_run(
+            &run_store,
+            &wf,
+            "Completed",
+            Some("2026-05-10T15:00:00+00:00"),
+            Some(3.0),
+        )
+        .await;
+
+        let since: DateTime<Utc> = "2026-05-01T00:00:00+00:00".parse().unwrap();
+        let until: DateTime<Utc> = "2026-06-01T00:00:00+00:00".parse().unwrap();
+        let buckets = run_store
+            .daily_buckets_for(Some(wf.id), since, until, &tz)
+            .await
+            .expect("daily_buckets_for");
+
+        assert_eq!(buckets.len(), 3, "should have 3 date buckets");
+        // Ascending order.
+        assert!(buckets[0].date < buckets[1].date);
+        assert!(buckets[1].date < buckets[2].date);
+        assert_eq!(
+            buckets[0].date,
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 8).unwrap()
+        );
+        assert_eq!(
+            buckets[1].date,
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 9).unwrap()
+        );
+        assert_eq!(
+            buckets[2].date,
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 10).unwrap()
+        );
+        // Aggregation correct.
+        assert_eq!(buckets[0].runs_completed, 2);
+        assert_eq!(buckets[2].runs_completed, 2);
     }
 }

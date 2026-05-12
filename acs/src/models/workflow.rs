@@ -6,6 +6,23 @@ use uuid::Uuid;
 
 use crate::errors::AcsError;
 
+// ─── DailyBucket ─────────────────────────────────────────────────────────────
+
+/// Cost and run-count aggregates for a single calendar day (in display_tz).
+/// Dates serialize as "YYYY-MM-DD" strings via chrono's NaiveDate default.
+/// Days with zero runs are omitted from the enclosing Vec.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DailyBucket {
+    pub date: chrono::NaiveDate,
+    pub total_usd: f64,
+    pub cost_from_completed: f64,
+    pub cost_from_failed: f64,
+    pub cost_from_killed: f64,
+    pub runs_completed: u64,
+    pub runs_failed: u64,
+    pub runs_killed: u64,
+}
+
 // ─── CostSummary ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -15,6 +32,19 @@ pub struct CostSummary {
     pub last_year_total_usd: f64,
     pub last_year_runs: u64,
     pub computed_at: DateTime<Utc>,
+    /// Per-day cost buckets, ascending by date. Days with no terminal runs are omitted.
+    #[serde(default)]
+    pub daily_buckets: Vec<DailyBucket>,
+}
+
+// ─── WorkflowListResponse ─────────────────────────────────────────────────────
+
+/// Response body for `GET /workflows` — workflow list plus the system-wide
+/// cost summary (aggregated across all workflows).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowListResponse {
+    pub workflows: Vec<Workflow>,
+    pub system_cost_summary: CostSummary,
 }
 
 // ─── ScheduleMode ─────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@ info:
     ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
     Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "4.2.8"
+  version: "4.2.9"
   license:
     name: MIT
 
@@ -47,7 +47,7 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "4.2.8"
+                version: "4.2.9"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
                 service:
                   registered: true
@@ -62,18 +62,73 @@ paths:
       operationId: listWorkflows
       summary: List all workflows
       description: |
-        Returns all configured workflows. Each returned workflow includes a
-        computed `next_run_at` field (if enabled).
+        Returns all configured workflows wrapped in a `WorkflowListResponse`
+        envelope that also includes a system-wide cost summary. Each workflow
+        includes `cost_summary` with `daily_buckets` for the requested window.
+
+        **Breaking change in v4.2.9**: response is now `WorkflowListResponse`
+        (an object with `workflows` and `system_cost_summary`), not a bare array.
       tags: [Workflows]
+      parameters:
+        - name: days
+          in: query
+          required: false
+          description: |
+            Rolling window in days (default 30, max 365). Mutually exclusive
+            with `since`/`until`.
+          schema:
+            type: integer
+            default: 30
+            maximum: 365
+            minimum: 1
+        - name: since
+          in: query
+          required: false
+          description: |
+            Window start date (YYYY-MM-DD, inclusive). Must be paired with
+            `until`. Mutually exclusive with `days`.
+          schema:
+            type: string
+            format: date
+            example: "2026-04-01"
+        - name: until
+          in: query
+          required: false
+          description: |
+            Window end date (YYYY-MM-DD, exclusive). Must be paired with
+            `since`. Mutually exclusive with `days`.
+          schema:
+            type: string
+            format: date
+            example: "2026-05-01"
       responses:
         "200":
-          description: Array of workflows
+          description: Workflow list with system cost summary
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Workflow"
+                $ref: "#/components/schemas/WorkflowListResponse"
+        "400":
+          description: |
+            Invalid cost window parameters. `error` is one of:
+            `conflicting_params`, `window_too_large`, `invalid_window`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                conflicting_params:
+                  value:
+                    error: conflicting_params
+                    message: "use either `days` OR `since`+`until`, not both"
+                window_too_large:
+                  value:
+                    error: window_too_large
+                    message: "max window is 365 days"
+                invalid_window:
+                  value:
+                    error: invalid_window
+                    message: "`since` must be before `until`"
         "500":
           description: Internal server error
           content:
@@ -150,10 +205,42 @@ paths:
       description: |
         Retrieves a single workflow. The `{id}` parameter can be either a UUID
         or the workflow's unique name. The response includes a computed
-        `next_run_at` field if the workflow is enabled.
+        `next_run_at` field if the workflow is enabled. `cost_summary` includes
+        `daily_buckets` for the requested window (default last 30 days).
       tags: [Workflows]
       parameters:
         - $ref: "#/components/parameters/WorkflowId"
+        - name: days
+          in: query
+          required: false
+          description: |
+            Rolling window in days (default 30, max 365). Mutually exclusive
+            with `since`/`until`.
+          schema:
+            type: integer
+            default: 30
+            maximum: 365
+            minimum: 1
+        - name: since
+          in: query
+          required: false
+          description: |
+            Window start date (YYYY-MM-DD, inclusive). Must be paired with
+            `until`. Mutually exclusive with `days`.
+          schema:
+            type: string
+            format: date
+            example: "2026-04-01"
+        - name: until
+          in: query
+          required: false
+          description: |
+            Window end date (YYYY-MM-DD, exclusive). Must be paired with
+            `since`. Mutually exclusive with `days`.
+          schema:
+            type: string
+            format: date
+            example: "2026-05-01"
       responses:
         "200":
           description: Workflow found
@@ -161,6 +248,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Workflow"
+        "400":
+          description: |
+            Invalid cost window parameters. `error` is one of:
+            `conflicting_params`, `window_too_large`, `invalid_window`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                conflicting_params:
+                  value:
+                    error: conflicting_params
+                    message: "use either `days` OR `since`+`until`, not both"
+                window_too_large:
+                  value:
+                    error: window_too_large
+                    message: "max window is 365 days"
+                invalid_window:
+                  value:
+                    error: invalid_window
+                    message: "`since` must be before `until`"
         "404":
           description: Workflow not found
           content:
@@ -722,7 +830,7 @@ components:
         version:
           type: string
           description: Daemon version string.
-          example: "4.2.8"
+          example: "4.2.9"
         data_dir:
           type: string
           description: Filesystem path to the data directory.
@@ -1194,6 +1302,93 @@ components:
           description: |
             Populated by the API on GET responses (list, singular, and after mutations). Not persisted on disk. Absent (or `null`) on responses where cost data was not loaded.
 
+    # -----------------------------------------------------------------------
+    # DailyBucket
+    # -----------------------------------------------------------------------
+    DailyBucket:
+      type: object
+      description: |
+        Cost and run-count aggregates for a single calendar day (in the daemon's
+        `display_timezone`). Days with zero terminal runs are omitted from the
+        enclosing `daily_buckets` array.
+      required:
+        - date
+        - total_usd
+        - cost_from_completed
+        - cost_from_failed
+        - cost_from_killed
+        - runs_completed
+        - runs_failed
+        - runs_killed
+      properties:
+        date:
+          type: string
+          format: date
+          description: Calendar date in display_timezone (YYYY-MM-DD).
+          example: "2026-05-12"
+        total_usd:
+          type: number
+          format: double
+          description: Total cost across all terminal runs on this day.
+          example: 1.23
+        cost_from_completed:
+          type: number
+          format: double
+          description: Portion of total_usd from Completed runs.
+          example: 0.80
+        cost_from_failed:
+          type: number
+          format: double
+          description: Portion of total_usd from Failed runs.
+          example: 0.30
+        cost_from_killed:
+          type: number
+          format: double
+          description: Portion of total_usd from Killed runs.
+          example: 0.13
+        runs_completed:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Count of Completed runs on this day.
+          example: 5
+        runs_failed:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Count of Failed runs on this day.
+          example: 2
+        runs_killed:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Count of Killed runs on this day.
+          example: 1
+
+    # -----------------------------------------------------------------------
+    # WorkflowListResponse
+    # -----------------------------------------------------------------------
+    WorkflowListResponse:
+      type: object
+      description: |
+        Response envelope for `GET /api/workflows`. Wraps the workflow array
+        with a system-wide cost summary aggregated across all workflows.
+      required:
+        - workflows
+        - system_cost_summary
+      properties:
+        workflows:
+          type: array
+          items:
+            $ref: "#/components/schemas/Workflow"
+          description: All configured workflows with per-workflow cost_summary populated.
+        system_cost_summary:
+          $ref: "#/components/schemas/CostSummary"
+          description: |
+            System-wide cost summary. Scalar fields (last_30_days_*, last_year_*)
+            are summed across all workflows. `daily_buckets` are aggregated
+            across all workflows for the requested window.
+
     CostSummary:
       type: object
       description: |
@@ -1234,6 +1429,15 @@ components:
           format: date-time
           description: When this summary was computed. Cached server-side and invalidated on each terminal run for the workflow plus at midnight in display_timezone.
           example: "2026-05-11T23:14:22Z"
+        daily_buckets:
+          type: array
+          items:
+            $ref: "#/components/schemas/DailyBucket"
+          default: []
+          description: |
+            Per-day cost buckets for the requested window, ascending by date.
+            Days with no terminal runs are omitted. Populated on GET /api/workflows
+            and GET /api/workflows/{id}; empty array on other responses.
 
     NewWorkflow:
       type: object
