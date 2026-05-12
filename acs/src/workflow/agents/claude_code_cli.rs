@@ -40,6 +40,8 @@ pub struct ClaudeStreamParser {
     saw_any_result: bool,
     aggregated_usage: Option<serde_json::Value>,
     final_message: Option<String>,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
 }
 
 impl Default for ClaudeStreamParser {
@@ -59,6 +61,8 @@ impl ClaudeStreamParser {
             saw_any_result: false,
             aggregated_usage: None,
             final_message: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         }
     }
 
@@ -97,8 +101,63 @@ impl ClaudeStreamParser {
                 if let Some(msg) = val.get("result").and_then(|v| v.as_str()) {
                     self.final_message = Some(msg.to_string());
                 }
-                // Merge usage token fields across invocations.
+                // Merge usage token fields across invocations and extract
+                // input_tokens + output_tokens for run-level persistence.
                 if let Some(serde_json::Value::Object(new_usage)) = val.get("usage").cloned() {
+                    // Sum input/output tokens from this result event.
+                    // Try usage.iterations[] first (per-turn breakdowns), then
+                    // fall back to top-level usage.input_tokens/output_tokens.
+                    let mut event_input: u64 = 0;
+                    let mut event_output: u64 = 0;
+                    let mut extracted_from_iterations = false;
+
+                    if let Some(serde_json::Value::Array(iterations)) = new_usage.get("iterations")
+                    {
+                        for iter in iterations {
+                            event_input += iter
+                                .get("input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            event_output += iter
+                                .get("output_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                        }
+                        extracted_from_iterations = true;
+                    }
+
+                    if !extracted_from_iterations {
+                        // Fall back to modelUsage map if present.
+                        if let Some(serde_json::Value::Object(model_usage)) =
+                            new_usage.get("modelUsage")
+                        {
+                            for (_model, mu) in model_usage {
+                                event_input +=
+                                    mu.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                event_output += mu
+                                    .get("output_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                            }
+                        } else if let (Some(inp), Some(out)) = (
+                            new_usage.get("input_tokens").and_then(|v| v.as_u64()),
+                            new_usage.get("output_tokens").and_then(|v| v.as_u64()),
+                        ) {
+                            event_input = inp;
+                            event_output = out;
+                        } else {
+                            tracing::warn!(
+                                "ClaudeStreamParser: result event has no recognizable \
+                                 token usage structure; defaulting to 0"
+                            );
+                        }
+                    }
+
+                    self.total_input_tokens += event_input;
+                    self.total_output_tokens += event_output;
+
+                    // Also merge the raw usage object for backward-compat / callers
+                    // that inspect the aggregated_usage field directly.
                     let merged = self
                         .aggregated_usage
                         .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
@@ -173,6 +232,8 @@ impl AgentOutputParser for ClaudeStreamParser {
             num_turns: Some(this.total_num_turns),
             model: this.current_model,
             usage: this.aggregated_usage,
+            input_tokens: this.total_input_tokens,
+            output_tokens: this.total_output_tokens,
         };
         AgentOutput {
             cost: Some(cost),
@@ -394,5 +455,127 @@ second line"#;
         let usage = cost.usage.expect("should have usage");
         assert_eq!(usage["input_tokens"], json!(200));
         assert_eq!(usage["output_tokens"], json!(100));
+    }
+
+    // ── Test 7: Token extraction from top-level usage fields ─────────────────
+
+    #[test]
+    fn test_token_extraction_from_top_level_usage() {
+        let ndjson = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-opus-4-5"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.005,"duration_ms":1000,"num_turns":2,"result":"done","usage":{"input_tokens":500,"output_tokens":200}}"#,
+            "\n",
+        );
+
+        let mut parser = Box::new(ClaudeStreamParser::new());
+        parser.parse_chunk(ndjson.as_bytes());
+        let output = parser.finalize();
+
+        let cost = output.cost.expect("should have cost");
+        assert_eq!(cost.input_tokens, 500);
+        assert_eq!(cost.output_tokens, 200);
+    }
+
+    // ── Test 8: Token extraction from usage.iterations[] ─────────────────────
+
+    #[test]
+    fn test_token_extraction_from_iterations() {
+        let ndjson = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-opus-4-5"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.01,"duration_ms":2000,"num_turns":3,"result":"done","usage":{"iterations":[{"input_tokens":100,"output_tokens":50},{"input_tokens":200,"output_tokens":80},{"input_tokens":150,"output_tokens":60}]}}"#,
+            "\n",
+        );
+
+        let mut parser = Box::new(ClaudeStreamParser::new());
+        parser.parse_chunk(ndjson.as_bytes());
+        let output = parser.finalize();
+
+        let cost = output.cost.expect("should have cost");
+        // Sum across all 3 iterations: input = 100+200+150 = 450, output = 50+80+60 = 190
+        assert_eq!(cost.input_tokens, 450);
+        assert_eq!(cost.output_tokens, 190);
+    }
+
+    // ── Test 9: Token extraction from usage.modelUsage{} ─────────────────────
+
+    #[test]
+    fn test_token_extraction_from_model_usage() {
+        let ndjson = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-opus-4-5"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.008,"duration_ms":1500,"num_turns":2,"result":"done","usage":{"modelUsage":{"claude-opus-4-5":{"input_tokens":300,"output_tokens":100},"claude-sonnet-4-5":{"input_tokens":150,"output_tokens":60}}}}"#,
+            "\n",
+        );
+
+        let mut parser = Box::new(ClaudeStreamParser::new());
+        parser.parse_chunk(ndjson.as_bytes());
+        let output = parser.finalize();
+
+        let cost = output.cost.expect("should have cost");
+        // Sum across both models: input = 300+150 = 450, output = 100+60 = 160
+        assert_eq!(cost.input_tokens, 450);
+        assert_eq!(cost.output_tokens, 160);
+    }
+
+    // ── Test 10: Token extraction summed across multiple result events ─────────
+
+    #[test]
+    fn test_token_extraction_summed_across_multiple_results() {
+        let ndjson = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-opus-4-5"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.001,"duration_ms":500,"num_turns":1,"result":"r1","usage":{"input_tokens":100,"output_tokens":40}}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.002,"duration_ms":700,"num_turns":1,"result":"r2","usage":{"input_tokens":200,"output_tokens":60}}"#,
+            "\n",
+        );
+
+        let mut parser = Box::new(ClaudeStreamParser::new());
+        parser.parse_chunk(ndjson.as_bytes());
+        let output = parser.finalize();
+
+        let cost = output.cost.expect("should have cost");
+        assert_eq!(cost.input_tokens, 300); // 100 + 200
+        assert_eq!(cost.output_tokens, 100); // 40 + 60
+    }
+
+    // ── Test 11: No result events → token counts are 0 ───────────────────────
+
+    #[test]
+    fn test_no_result_events_tokens_zero() {
+        let ndjson = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-opus-4-5"}"#,
+            "\n",
+            "plain shell output\n",
+        );
+
+        let mut parser = Box::new(ClaudeStreamParser::new());
+        parser.parse_chunk(ndjson.as_bytes());
+        let output = parser.finalize();
+
+        // No result events → cost is None (not just tokens being 0)
+        assert!(output.cost.is_none());
+    }
+
+    // ── Test 12: Result with no usage → token counts default to 0 ────────────
+
+    #[test]
+    fn test_result_without_usage_tokens_zero() {
+        let ndjson = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-opus-4-5"}"#,
+            "\n",
+            r#"{"type":"result","total_cost_usd":0.001,"duration_ms":500,"num_turns":1,"result":"done"}"#,
+            "\n",
+        );
+
+        let mut parser = Box::new(ClaudeStreamParser::new());
+        parser.parse_chunk(ndjson.as_bytes());
+        let output = parser.finalize();
+
+        let cost = output.cost.expect("should have cost");
+        assert_eq!(cost.input_tokens, 0);
+        assert_eq!(cost.output_tokens, 0);
     }
 }

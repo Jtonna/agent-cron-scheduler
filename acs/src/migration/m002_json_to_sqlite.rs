@@ -662,6 +662,8 @@ mod tests {
             steps: vec![],
             total_cost_usd: None,
             total_duration_ms: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         }
     }
 

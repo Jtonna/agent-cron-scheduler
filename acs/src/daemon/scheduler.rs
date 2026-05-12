@@ -290,6 +290,8 @@ impl WorkflowScheduler {
                                     steps: vec![],
                                     total_cost_usd: None,
                                     total_duration_ms: None,
+                                    total_input_tokens: 0,
+                                    total_output_tokens: 0,
                                 };
                                 if let Err(e) = run_store.create_run(initial_run).await {
                                     tracing::error!(

@@ -52,8 +52,10 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     status              TEXT NOT NULL,
     trigger_input       TEXT,
     steps_json          TEXT NOT NULL,
-    total_cost_usd      REAL,
-    total_duration_ms   INTEGER,
+    total_cost_usd         REAL,
+    total_duration_ms      INTEGER,
+    total_input_tokens     INTEGER NOT NULL DEFAULT 0,
+    total_output_tokens    INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (workflow_id) REFERENCES workflows(id)
 );
 

@@ -19,7 +19,6 @@ pub type KillSender = watch::Sender<bool>;
 pub type KillReceiver = watch::Receiver<bool>;
 
 /// Cost / usage data extracted from an agent step's output.
-/// (Phase 4 will populate this from streaming NDJSON parsers.)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct CostFragment {
     pub total_cost_usd: Option<f64>,
@@ -27,6 +26,13 @@ pub struct CostFragment {
     pub num_turns: Option<u32>,
     pub model: Option<String>,
     pub usage: Option<serde_json::Value>,
+    /// Total input tokens consumed by this agent step (summed across all
+    /// iterations / invocations). Defaults to 0 when not reported.
+    #[serde(default)]
+    pub input_tokens: u64,
+    /// Total output tokens produced by this agent step. Defaults to 0.
+    #[serde(default)]
+    pub output_tokens: u64,
 }
 
 /// Output of a single step's execution. Returned by `Step::execute`.

@@ -600,6 +600,10 @@ pub async fn list_workflow_costs(
     let mut system_30d_runs = 0u64;
     let mut system_year_total = 0.0f64;
     let mut system_year_runs = 0u64;
+    let mut system_30d_input_tokens = 0u64;
+    let mut system_30d_output_tokens = 0u64;
+    let mut system_year_input_tokens = 0u64;
+    let mut system_year_output_tokens = 0u64;
 
     for wf in &workflows {
         let mut cost_summary = match state.cost_cache.get(wf.id).await {
@@ -623,6 +627,10 @@ pub async fn list_workflow_costs(
         system_30d_runs += cost_summary.last_30_days_runs;
         system_year_total += cost_summary.last_year_total_usd;
         system_year_runs += cost_summary.last_year_runs;
+        system_30d_input_tokens += cost_summary.last_30_days_input_tokens;
+        system_30d_output_tokens += cost_summary.last_30_days_output_tokens;
+        system_year_input_tokens += cost_summary.last_year_input_tokens;
+        system_year_output_tokens += cost_summary.last_year_output_tokens;
         entries.push(WorkflowCostEntry {
             workflow_id: wf.id,
             workflow_name: wf.name.clone(),
@@ -649,6 +657,10 @@ pub async fn list_workflow_costs(
         last_year_runs: system_year_runs,
         computed_at: Utc::now(),
         daily_buckets: system_buckets,
+        last_30_days_input_tokens: system_30d_input_tokens,
+        last_30_days_output_tokens: system_30d_output_tokens,
+        last_year_input_tokens: system_year_input_tokens,
+        last_year_output_tokens: system_year_output_tokens,
     };
 
     (
@@ -990,6 +1002,8 @@ pub async fn trigger_workflow(
         steps: vec![],
         total_cost_usd: None,
         total_duration_ms: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
     };
 
     if let Err(e) = state.workflow_run_store.create_run(initial_run).await {
@@ -1754,6 +1768,10 @@ mod tests {
                 last_year_runs: 0,
                 computed_at: chrono::Utc::now(),
                 daily_buckets: Vec::new(),
+                last_30_days_input_tokens: 0,
+                last_30_days_output_tokens: 0,
+                last_year_input_tokens: 0,
+                last_year_output_tokens: 0,
             })
         }
         async fn daily_buckets_for(
@@ -2144,6 +2162,8 @@ mod tests {
             steps: vec![],
             total_cost_usd: None,
             total_duration_ms: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         };
         let run_id = run.run_id;
         run_store.create_run(run).await.unwrap();
@@ -2234,6 +2254,8 @@ mod tests {
             steps: vec![],
             total_cost_usd: None,
             total_duration_ms: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         };
         let id = run.run_id;
         run_store.create_run(run).await.unwrap();
@@ -2411,6 +2433,8 @@ mod tests {
             steps,
             total_cost_usd: None,
             total_duration_ms: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         };
         run_store.create_run(run).await.unwrap();
 
@@ -2559,6 +2583,8 @@ mod tests {
             steps,
             total_cost_usd: None,
             total_duration_ms: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         };
         run_store.create_run(run).await.unwrap();
         let log_dir = tmp.path().join("logs").join(wf.id.to_string());
@@ -2703,6 +2729,8 @@ mod tests {
             steps: vec![],
             total_cost_usd: None,
             total_duration_ms: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         };
         let run_id = run.run_id;
         run_store.create_run(run).await.unwrap();

@@ -845,6 +845,21 @@ pub async fn run_workflow(
         }
     };
 
+    // Sum token counts across all agent step outputs stored on ctx.steps.
+    // Non-agent steps have no cost fragment and contribute 0 tokens.
+    let total_input_tokens: u64 = ctx
+        .steps
+        .values()
+        .filter_map(|o| o.cost.as_ref())
+        .map(|c| c.input_tokens)
+        .sum();
+    let total_output_tokens: u64 = ctx
+        .steps
+        .values()
+        .filter_map(|o| o.cost.as_ref())
+        .map(|c| c.output_tokens)
+        .sum();
+
     let total_duration_ms = (finished_at - started_at).num_milliseconds().max(0) as u64;
 
     // Emit RunCompleted or RunFailed.
@@ -922,6 +937,8 @@ pub async fn run_workflow(
         steps: step_runs,
         total_cost_usd,
         total_duration_ms: Some(total_duration_ms),
+        total_input_tokens,
+        total_output_tokens,
     }
 }
 

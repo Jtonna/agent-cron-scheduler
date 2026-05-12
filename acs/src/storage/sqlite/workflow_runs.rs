@@ -89,6 +89,14 @@ fn row_to_run(row: &Row<'_>) -> rusqlite::Result<WorkflowRun> {
         total_duration_ms: row
             .get::<_, Option<i64>>("total_duration_ms")?
             .map(|n| n as u64),
+        // Default to 0 for rows written before m007 (the DB DEFAULT handles
+        // the column value; here we just cast from i64).
+        total_input_tokens: row
+            .get::<_, Option<i64>>("total_input_tokens")?
+            .unwrap_or(0) as u64,
+        total_output_tokens: row
+            .get::<_, Option<i64>>("total_output_tokens")?
+            .unwrap_or(0) as u64,
     })
 }
 
@@ -112,19 +120,22 @@ fn upsert_run(conn: &Connection, run: &WorkflowRun) -> Result<(), AcsError> {
         "INSERT INTO workflow_runs (
             run_id, workflow_id, workflow_version, workflow_snapshot,
             started_at, finished_at, status, trigger_input, steps_json,
-            total_cost_usd, total_duration_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            total_cost_usd, total_duration_ms,
+            total_input_tokens, total_output_tokens
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(run_id) DO UPDATE SET
-            workflow_id       = excluded.workflow_id,
-            workflow_version  = excluded.workflow_version,
-            workflow_snapshot = excluded.workflow_snapshot,
-            started_at        = excluded.started_at,
-            finished_at       = excluded.finished_at,
-            status            = excluded.status,
-            trigger_input     = excluded.trigger_input,
-            steps_json        = excluded.steps_json,
-            total_cost_usd    = excluded.total_cost_usd,
-            total_duration_ms = excluded.total_duration_ms",
+            workflow_id          = excluded.workflow_id,
+            workflow_version     = excluded.workflow_version,
+            workflow_snapshot    = excluded.workflow_snapshot,
+            started_at           = excluded.started_at,
+            finished_at          = excluded.finished_at,
+            status               = excluded.status,
+            trigger_input        = excluded.trigger_input,
+            steps_json           = excluded.steps_json,
+            total_cost_usd       = excluded.total_cost_usd,
+            total_duration_ms    = excluded.total_duration_ms,
+            total_input_tokens   = excluded.total_input_tokens,
+            total_output_tokens  = excluded.total_output_tokens",
         params![
             run.run_id.to_string(),
             run.workflow_id.to_string(),
@@ -137,6 +148,8 @@ fn upsert_run(conn: &Connection, run: &WorkflowRun) -> Result<(), AcsError> {
             steps_json,
             run.total_cost_usd,
             run.total_duration_ms.map(|n| n as i64),
+            run.total_input_tokens as i64,
+            run.total_output_tokens as i64,
         ],
     )
     .map_err(|e| AcsError::Storage(format!("INSERT/UPDATE workflow_run failed: {}", e)))?;
@@ -289,25 +302,44 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
 
         self.db
             .with_conn(move |c| {
-                let (last_30d_total, last_30d_runs, last_year_total, last_year_runs): (
-                    f64,
-                    i64,
-                    f64,
-                    i64,
-                ) = c
+                let (
+                    last_30d_total,
+                    last_30d_runs,
+                    last_30d_input_tokens,
+                    last_30d_output_tokens,
+                    last_year_total,
+                    last_year_runs,
+                    last_year_input_tokens,
+                    last_year_output_tokens,
+                ): (f64, i64, i64, i64, f64, i64, i64, i64) = c
                     .query_row(
                         "SELECT
-                          COALESCE(SUM(CASE WHEN finished_at >= ?1 THEN total_cost_usd END), 0.0) AS last_30d_total,
-                          COALESCE(SUM(CASE WHEN finished_at >= ?1 THEN 1 END), 0)                AS last_30d_runs,
-                          COALESCE(SUM(CASE WHEN finished_at >= ?2 THEN total_cost_usd END), 0.0) AS last_year_total,
-                          COALESCE(SUM(CASE WHEN finished_at >= ?2 THEN 1 END), 0)               AS last_year_runs
+                          COALESCE(SUM(CASE WHEN finished_at >= ?1 THEN total_cost_usd END), 0.0)       AS last_30d_total,
+                          COALESCE(SUM(CASE WHEN finished_at >= ?1 THEN 1 END), 0)                      AS last_30d_runs,
+                          COALESCE(SUM(CASE WHEN finished_at >= ?1 THEN total_input_tokens END), 0)     AS last_30d_input_tokens,
+                          COALESCE(SUM(CASE WHEN finished_at >= ?1 THEN total_output_tokens END), 0)    AS last_30d_output_tokens,
+                          COALESCE(SUM(CASE WHEN finished_at >= ?2 THEN total_cost_usd END), 0.0)       AS last_year_total,
+                          COALESCE(SUM(CASE WHEN finished_at >= ?2 THEN 1 END), 0)                      AS last_year_runs,
+                          COALESCE(SUM(CASE WHEN finished_at >= ?2 THEN total_input_tokens END), 0)     AS last_year_input_tokens,
+                          COALESCE(SUM(CASE WHEN finished_at >= ?2 THEN total_output_tokens END), 0)    AS last_year_output_tokens
                         FROM workflow_runs
                         WHERE workflow_id = ?3
                           AND status IN ('Completed', 'Failed', 'Killed')
                           AND finished_at IS NOT NULL
                           AND finished_at >= ?2",
                         params![last_30_days_start_s, last_year_start_s, wf_id_s],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                                row.get(6)?,
+                                row.get(7)?,
+                            ))
+                        },
                     )
                     .map_err(|e| AcsError::Storage(format!("cost_summary query failed: {}", e)))?;
 
@@ -318,6 +350,10 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                     last_year_runs: last_year_runs as u64,
                     computed_at: chrono::Utc::now(),
                     daily_buckets: Vec::new(),
+                    last_30_days_input_tokens: last_30d_input_tokens as u64,
+                    last_30_days_output_tokens: last_30d_output_tokens as u64,
+                    last_year_input_tokens: last_year_input_tokens as u64,
+                    last_year_output_tokens: last_year_output_tokens as u64,
                 })
             })
             .await
@@ -336,11 +372,12 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
         let tz = *display_tz;
 
         // Fetch rows via the async with_conn helper (like other methods in this file).
-        let rows: Vec<(String, String, Option<f64>)> = self
+        let rows: Vec<(String, String, Option<f64>, i64, i64)> = self
             .db
             .with_conn(move |c| {
                 let sql = if wf_id_s.is_some() {
-                    "SELECT finished_at, status, total_cost_usd \
+                    "SELECT finished_at, status, total_cost_usd, \
+                            total_input_tokens, total_output_tokens \
                      FROM workflow_runs \
                      WHERE status IN ('Completed', 'Failed', 'Killed') \
                        AND finished_at IS NOT NULL \
@@ -349,7 +386,8 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                        AND workflow_id = ?3 \
                      ORDER BY finished_at ASC"
                 } else {
-                    "SELECT finished_at, status, total_cost_usd \
+                    "SELECT finished_at, status, total_cost_usd, \
+                            total_input_tokens, total_output_tokens \
                      FROM workflow_runs \
                      WHERE status IN ('Completed', 'Failed', 'Killed') \
                        AND finished_at IS NOT NULL \
@@ -362,7 +400,7 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                     .prepare(sql)
                     .map_err(|e| AcsError::Storage(e.to_string()))?;
 
-                type Row = (String, String, Option<f64>);
+                type Row = (String, String, Option<f64>, i64, i64);
                 let mut out: Vec<Row> = Vec::new();
 
                 if let Some(ref wf_id) = wf_id_s {
@@ -372,6 +410,8 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                                 row.get::<_, String>(0)?,
                                 row.get::<_, String>(1)?,
                                 row.get::<_, Option<f64>>(2)?,
+                                row.get::<_, i64>(3)?,
+                                row.get::<_, i64>(4)?,
                             ))
                         })
                         .map_err(|e| AcsError::Storage(e.to_string()))?;
@@ -385,6 +425,8 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                                 row.get::<_, String>(0)?,
                                 row.get::<_, String>(1)?,
                                 row.get::<_, Option<f64>>(2)?,
+                                row.get::<_, i64>(3)?,
+                                row.get::<_, i64>(4)?,
                             ))
                         })
                         .map_err(|e| AcsError::Storage(e.to_string()))?;
@@ -401,7 +443,7 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
 
         let mut buckets: BTreeMap<chrono::NaiveDate, DailyBucket> = BTreeMap::new();
 
-        for (finished_at_str, status, cost_opt) in rows {
+        for (finished_at_str, status, cost_opt, input_tokens, output_tokens) in rows {
             let finished_at_utc = chrono::DateTime::parse_from_rfc3339(&finished_at_str)
                 .map(|dt| dt.with_timezone(&chrono::Utc))
                 .map_err(|e| {
@@ -410,6 +452,8 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
             let finished_at_local = finished_at_utc.with_timezone(&tz);
             let date_local = finished_at_local.date_naive();
             let cost = cost_opt.unwrap_or(0.0);
+            let in_tok = input_tokens as u64;
+            let out_tok = output_tokens as u64;
 
             let bucket = buckets.entry(date_local).or_insert_with(|| DailyBucket {
                 date: date_local,
@@ -420,20 +464,36 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                 runs_completed: 0,
                 runs_failed: 0,
                 runs_killed: 0,
+                tokens_in_from_completed: 0,
+                tokens_in_from_failed: 0,
+                tokens_in_from_killed: 0,
+                tokens_out_from_completed: 0,
+                tokens_out_from_failed: 0,
+                tokens_out_from_killed: 0,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
             });
             bucket.total_usd += cost;
+            bucket.total_input_tokens += in_tok;
+            bucket.total_output_tokens += out_tok;
             match status.as_str() {
                 "Completed" => {
                     bucket.runs_completed += 1;
                     bucket.cost_from_completed += cost;
+                    bucket.tokens_in_from_completed += in_tok;
+                    bucket.tokens_out_from_completed += out_tok;
                 }
                 "Failed" => {
                     bucket.runs_failed += 1;
                     bucket.cost_from_failed += cost;
+                    bucket.tokens_in_from_failed += in_tok;
+                    bucket.tokens_out_from_failed += out_tok;
                 }
                 "Killed" => {
                     bucket.runs_killed += 1;
                     bucket.cost_from_killed += cost;
+                    bucket.tokens_in_from_killed += in_tok;
+                    bucket.tokens_out_from_killed += out_tok;
                 }
                 _ => { /* impossible given WHERE clause */ }
             }
@@ -507,6 +567,8 @@ mod tests {
             steps: vec![],
             total_cost_usd: None,
             total_duration_ms: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         }
     }
 
@@ -536,6 +598,8 @@ mod tests {
             }],
             total_cost_usd: Some(0.001),
             total_duration_ms: Some(500),
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         }
     }
 
@@ -753,6 +817,19 @@ mod tests {
         finished_at: Option<&str>,
         cost_usd: Option<f64>,
     ) {
+        seed_raw_run_with_tokens(store, workflow, status, finished_at, cost_usd, 0, 0).await;
+    }
+
+    /// Like `seed_raw_run` but also sets token counts.
+    async fn seed_raw_run_with_tokens(
+        store: &SqliteWorkflowRunStore,
+        workflow: &Workflow,
+        status: &str,
+        finished_at: Option<&str>,
+        cost_usd: Option<f64>,
+        input_tokens: i64,
+        output_tokens: i64,
+    ) {
         let run_id = Uuid::now_v7().to_string();
         let wf_id = workflow.id.to_string();
         let snapshot = serde_json::to_string(workflow).expect("serialize snapshot");
@@ -767,8 +844,9 @@ mod tests {
                     "INSERT INTO workflow_runs (
                         run_id, workflow_id, workflow_version, workflow_snapshot,
                         started_at, finished_at, status, trigger_input, steps_json,
-                        total_cost_usd, total_duration_ms
-                     ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, NULL, '[]', ?7, NULL)",
+                        total_cost_usd, total_duration_ms,
+                        total_input_tokens, total_output_tokens
+                     ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, NULL, '[]', ?7, NULL, ?8, ?9)",
                     params![
                         run_id,
                         wf_id,
@@ -777,6 +855,8 @@ mod tests {
                         finished_at,
                         status,
                         cost_usd,
+                        input_tokens,
+                        output_tokens,
                     ],
                 )
                 .map_err(|e| AcsError::Storage(e.to_string()))?;
@@ -1311,6 +1391,161 @@ mod tests {
             .await
             .expect("daily_buckets_for all");
         assert_eq!(buckets_all.len(), 2);
+    }
+
+    // ── Token-tracking tests (v4.2.11) ────────────────────────────────────────
+
+    // T1. cost_summary includes correct token totals.
+    #[tokio::test]
+    async fn test_cost_summary_includes_token_totals() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "tok-summary").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let recent = "2026-05-09T12:00:00+00:00";
+
+        // Seed three runs: Completed (100 in / 50 out), Failed (200 in / 80 out),
+        // Killed (300 in / 120 out).
+        seed_raw_run_with_tokens(
+            &run_store,
+            &wf,
+            "Completed",
+            Some(recent),
+            Some(0.1),
+            100,
+            50,
+        )
+        .await;
+        seed_raw_run_with_tokens(&run_store, &wf, "Failed", Some(recent), Some(0.2), 200, 80).await;
+        seed_raw_run_with_tokens(&run_store, &wf, "Killed", Some(recent), Some(0.3), 300, 120)
+            .await;
+
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+
+        // All three runs fall in the 30-day window.
+        assert_eq!(summary.last_30_days_input_tokens, 600);
+        assert_eq!(summary.last_30_days_output_tokens, 250);
+        // All three runs also fall in the year window.
+        assert_eq!(summary.last_year_input_tokens, 600);
+        assert_eq!(summary.last_year_output_tokens, 250);
+    }
+
+    // T2. daily_buckets token breakdown by status.
+    #[tokio::test]
+    async fn test_daily_buckets_token_breakdown_by_status() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "tok-status-breakdown").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let day = "2026-05-09T12:00:00+00:00";
+
+        seed_raw_run_with_tokens(&run_store, &wf, "Completed", Some(day), Some(0.1), 100, 50).await;
+        seed_raw_run_with_tokens(&run_store, &wf, "Failed", Some(day), Some(0.2), 200, 80).await;
+        seed_raw_run_with_tokens(&run_store, &wf, "Killed", Some(day), Some(0.3), 300, 120).await;
+
+        let since: DateTime<Utc> = "2026-05-01T00:00:00+00:00".parse().unwrap();
+        let until: DateTime<Utc> = "2026-06-01T00:00:00+00:00".parse().unwrap();
+        let buckets = run_store
+            .daily_buckets_for(Some(wf.id), since, until, &tz)
+            .await
+            .expect("daily_buckets_for");
+
+        assert_eq!(buckets.len(), 1);
+        let b = &buckets[0];
+        assert_eq!(b.tokens_in_from_completed, 100);
+        assert_eq!(b.tokens_out_from_completed, 50);
+        assert_eq!(b.tokens_in_from_failed, 200);
+        assert_eq!(b.tokens_out_from_failed, 80);
+        assert_eq!(b.tokens_in_from_killed, 300);
+        assert_eq!(b.tokens_out_from_killed, 120);
+    }
+
+    // T3. daily_buckets total_input/output_tokens = sum of per-status fields.
+    #[tokio::test]
+    async fn test_daily_buckets_total_tokens() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "tok-total").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let day = "2026-05-09T12:00:00+00:00";
+
+        seed_raw_run_with_tokens(&run_store, &wf, "Completed", Some(day), Some(0.1), 100, 50).await;
+        seed_raw_run_with_tokens(&run_store, &wf, "Failed", Some(day), Some(0.2), 200, 80).await;
+        seed_raw_run_with_tokens(&run_store, &wf, "Killed", Some(day), Some(0.3), 300, 120).await;
+
+        let since: DateTime<Utc> = "2026-05-01T00:00:00+00:00".parse().unwrap();
+        let until: DateTime<Utc> = "2026-06-01T00:00:00+00:00".parse().unwrap();
+        let buckets = run_store
+            .daily_buckets_for(Some(wf.id), since, until, &tz)
+            .await
+            .expect("daily_buckets_for");
+
+        assert_eq!(buckets.len(), 1);
+        let b = &buckets[0];
+        let expected_in =
+            b.tokens_in_from_completed + b.tokens_in_from_failed + b.tokens_in_from_killed;
+        let expected_out =
+            b.tokens_out_from_completed + b.tokens_out_from_failed + b.tokens_out_from_killed;
+        assert_eq!(b.total_input_tokens, expected_in);
+        assert_eq!(b.total_output_tokens, expected_out);
+        assert_eq!(b.total_input_tokens, 600);
+        assert_eq!(b.total_output_tokens, 250);
+    }
+
+    // T4. Workflow with only shell steps: token counts stay at 0.
+    #[tokio::test]
+    async fn test_cost_summary_for_workflow_with_zero_tokens() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "tok-zero").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let recent = "2026-05-09T12:00:00+00:00";
+
+        // Shell steps produce no tokens — seed runs with 0 for both columns.
+        seed_raw_run_with_tokens(&run_store, &wf, "Completed", Some(recent), Some(0.1), 0, 0).await;
+        seed_raw_run_with_tokens(&run_store, &wf, "Completed", Some(recent), Some(0.2), 0, 0).await;
+
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+        assert_eq!(summary.last_30_days_input_tokens, 0);
+        assert_eq!(summary.last_30_days_output_tokens, 0);
+        assert_eq!(summary.last_year_input_tokens, 0);
+        assert_eq!(summary.last_year_output_tokens, 0);
+    }
+
+    // T5. Token round-trip via WorkflowRun ORM (INSERT → GET).
+    #[tokio::test]
+    async fn test_workflow_run_token_fields_round_trip() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let parent = seed_workflow(&wf_store, "tok-roundtrip").await;
+        let now = Utc::now();
+        let run = WorkflowRun {
+            run_id: Uuid::now_v7(),
+            workflow_id: parent.id,
+            workflow_version: parent.version,
+            workflow_snapshot: parent.clone(),
+            started_at: now,
+            finished_at: Some(now),
+            status: RunStatus::Completed,
+            trigger_input: None,
+            steps: vec![],
+            total_cost_usd: Some(0.05),
+            total_duration_ms: Some(1000),
+            total_input_tokens: 1234,
+            total_output_tokens: 567,
+        };
+        let run_id = run.run_id;
+        run_store.create_run(run.clone()).await.expect("create");
+
+        let got = run_store
+            .get_run(run_id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got.total_input_tokens, 1234);
+        assert_eq!(got.total_output_tokens, 567);
+        assert_eq!(run, got);
     }
 
     // 10. Results are in ascending date order.

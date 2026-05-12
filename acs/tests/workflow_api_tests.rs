@@ -744,6 +744,8 @@ async fn insert_runs(
             steps: vec![],
             total_cost_usd: None,
             total_duration_ms: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         };
         run_store.create_run(run).await.expect("insert run");
         run_ids.push(run_id);
@@ -1119,6 +1121,32 @@ async fn insert_terminal_run(
     finished_at: chrono::DateTime<Utc>,
     total_cost_usd: Option<f64>,
 ) -> uuid::Uuid {
+    insert_terminal_run_with_tokens(
+        run_store,
+        workflow_id,
+        wf,
+        status,
+        finished_at,
+        total_cost_usd,
+        0,
+        0,
+    )
+    .await
+}
+
+/// Like `insert_terminal_run`, but also sets `total_input_tokens` and
+/// `total_output_tokens` on the WorkflowRun. Used by v4.2.11 token tests.
+#[allow(clippy::too_many_arguments)]
+async fn insert_terminal_run_with_tokens(
+    run_store: &Arc<dyn WorkflowRunStore>,
+    workflow_id: uuid::Uuid,
+    wf: &agent_cron_scheduler::models::workflow::Workflow,
+    status: RunStatus,
+    finished_at: chrono::DateTime<Utc>,
+    total_cost_usd: Option<f64>,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+) -> uuid::Uuid {
     tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     let run_id = uuid::Uuid::now_v7();
     let run = WorkflowRun {
@@ -1133,6 +1161,8 @@ async fn insert_terminal_run(
         steps: vec![],
         total_cost_usd,
         total_duration_ms: Some(10_000),
+        total_input_tokens,
+        total_output_tokens,
     };
     run_store
         .create_run(run)
@@ -1161,6 +1191,8 @@ async fn insert_running_run(
         steps: vec![],
         total_cost_usd: None,
         total_duration_ms: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
     };
     run_store.create_run(run).await.expect("insert running run");
     run_id
@@ -2442,6 +2474,8 @@ async fn test_run_log_slice_422_when_start_offset_past_eof() {
         steps: vec![step_run],
         total_cost_usd: None,
         total_duration_ms: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
     };
     run_store.create_run(run).await.expect("create_run");
 
@@ -4202,5 +4236,370 @@ async fn test_killed_step_records_log_byte_offset_end() {
         "end offset ({}) must be strictly greater than start offset ({})",
         end,
         start
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Token tracking on cost endpoints — v4.2.11
+// ---------------------------------------------------------------------------
+//
+// These tests assert that the cost API surfaces input/output token counts
+// alongside USD costs. Tokens come from ClaudeStreamParser (summing
+// `usage.iterations[]` across all agent steps in a run) and are persisted
+// onto WorkflowRun.total_input_tokens / total_output_tokens at run completion.
+//
+// CostSummary exposes rolling-window totals (last_30_days / last_year
+// × input / output) and each DailyBucket exposes per-status totals
+// (tokens_in_from_completed / _failed / _killed, tokens_out_from_*) plus
+// cross-status sums (total_input_tokens / total_output_tokens).
+
+/// TOK-1. GET /api/cost/workflows/{id} surfaces the four new CostSummary
+/// token fields, defaulting to 0 when no agent runs exist.
+#[tokio::test]
+async fn test_cost_summary_includes_token_fields_zero_default() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("tok1-empty-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    let json: serde_json::Value = client
+        .get(format!("{}/api/cost/workflows/{}", base_url, id))
+        .send()
+        .await
+        .expect("GET /api/cost/workflows/{id}")
+        .json()
+        .await
+        .unwrap();
+
+    let cs = &json["cost_summary"];
+    assert!(!cs.is_null(), "cost_summary must be present");
+
+    // All four new token fields must be present and default to 0.
+    for field in [
+        "last_30_days_input_tokens",
+        "last_30_days_output_tokens",
+        "last_year_input_tokens",
+        "last_year_output_tokens",
+    ] {
+        let v = &cs[field];
+        assert!(
+            v.is_number(),
+            "cost_summary.{} must be a number, got {:?}",
+            field,
+            v
+        );
+        assert_eq!(
+            v.as_u64().unwrap(),
+            0,
+            "cost_summary.{} must default to 0 when no runs exist",
+            field
+        );
+    }
+}
+
+/// TOK-2. GET /api/cost/workflows/{id} aggregates token totals across
+/// terminal runs and surfaces them on CostSummary (rolling-window)
+/// AND on each DailyBucket (per-status + cross-status totals).
+#[tokio::test]
+async fn test_cost_summary_aggregates_token_totals() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("tok2-agg-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Use yesterday (UTC-1d) so finished_at lands safely inside the
+    // 30-day window regardless of the test runner's local timezone.
+    let yesterday = Utc::now() - Duration::days(1);
+
+    // 2 Completed runs: 1000 in / 500 out and 2000 in / 1000 out.
+    insert_terminal_run_with_tokens(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        yesterday,
+        Some(0.10),
+        1000,
+        500,
+    )
+    .await;
+    insert_terminal_run_with_tokens(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        yesterday,
+        Some(0.20),
+        2000,
+        1000,
+    )
+    .await;
+    // 1 Failed run: 300 in / 100 out.
+    insert_terminal_run_with_tokens(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Failed,
+        yesterday,
+        Some(0.05),
+        300,
+        100,
+    )
+    .await;
+    // 1 Killed run: 50 in / 25 out.
+    insert_terminal_run_with_tokens(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Killed,
+        yesterday,
+        None,
+        50,
+        25,
+    )
+    .await;
+
+    let json: serde_json::Value = client
+        .get(format!(
+            "{}/api/cost/workflows/{}?days=30",
+            base_url, wf_id_str
+        ))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+
+    let cs = &json["cost_summary"];
+
+    // Rolling-window totals: completed (3000/1500) + failed (300/100) + killed (50/25).
+    let expected_in = 3000u64 + 300 + 50;
+    let expected_out = 1500u64 + 100 + 25;
+    assert_eq!(
+        cs["last_30_days_input_tokens"].as_u64().unwrap(),
+        expected_in,
+        "last_30_days_input_tokens should sum across all terminal statuses"
+    );
+    assert_eq!(
+        cs["last_30_days_output_tokens"].as_u64().unwrap(),
+        expected_out,
+        "last_30_days_output_tokens should sum across all terminal statuses"
+    );
+    // 1-year window is a superset of 30 days, so for this fixture it
+    // must contain at least the same counts (runs from yesterday).
+    assert!(
+        cs["last_year_input_tokens"].as_u64().unwrap() >= expected_in,
+        "last_year_input_tokens should be >= last_30_days_input_tokens"
+    );
+    assert!(
+        cs["last_year_output_tokens"].as_u64().unwrap() >= expected_out,
+        "last_year_output_tokens should be >= last_30_days_output_tokens"
+    );
+
+    // DailyBucket: locate yesterday's bucket and verify per-status splits +
+    // cross-status totals are present and add up.
+    let buckets = cs["daily_buckets"]
+        .as_array()
+        .expect("daily_buckets is array");
+    assert!(
+        !buckets.is_empty(),
+        "expected at least one bucket for yesterday's runs"
+    );
+
+    // Sum across all returned buckets — runs may be assigned to either
+    // yesterday or today depending on display_tz offset, but the totals
+    // must equal the input fixture.
+    let mut sum_in_c = 0u64;
+    let mut sum_in_f = 0u64;
+    let mut sum_in_k = 0u64;
+    let mut sum_out_c = 0u64;
+    let mut sum_out_f = 0u64;
+    let mut sum_out_k = 0u64;
+    let mut sum_total_in = 0u64;
+    let mut sum_total_out = 0u64;
+
+    for b in buckets {
+        // All eight new bucket fields must exist as numbers.
+        for field in [
+            "tokens_in_from_completed",
+            "tokens_in_from_failed",
+            "tokens_in_from_killed",
+            "tokens_out_from_completed",
+            "tokens_out_from_failed",
+            "tokens_out_from_killed",
+            "total_input_tokens",
+            "total_output_tokens",
+        ] {
+            assert!(
+                b[field].is_number(),
+                "DailyBucket.{} must be a number, got {:?}",
+                field,
+                b[field]
+            );
+        }
+
+        let in_c = b["tokens_in_from_completed"].as_u64().unwrap();
+        let in_f = b["tokens_in_from_failed"].as_u64().unwrap();
+        let in_k = b["tokens_in_from_killed"].as_u64().unwrap();
+        let out_c = b["tokens_out_from_completed"].as_u64().unwrap();
+        let out_f = b["tokens_out_from_failed"].as_u64().unwrap();
+        let out_k = b["tokens_out_from_killed"].as_u64().unwrap();
+        let tot_in = b["total_input_tokens"].as_u64().unwrap();
+        let tot_out = b["total_output_tokens"].as_u64().unwrap();
+
+        // Cross-status totals must equal the sum of the per-status fields.
+        assert_eq!(
+            tot_in,
+            in_c + in_f + in_k,
+            "DailyBucket.total_input_tokens must equal sum of tokens_in_from_{{completed,failed,killed}}"
+        );
+        assert_eq!(
+            tot_out,
+            out_c + out_f + out_k,
+            "DailyBucket.total_output_tokens must equal sum of tokens_out_from_{{completed,failed,killed}}"
+        );
+
+        sum_in_c += in_c;
+        sum_in_f += in_f;
+        sum_in_k += in_k;
+        sum_out_c += out_c;
+        sum_out_f += out_f;
+        sum_out_k += out_k;
+        sum_total_in += tot_in;
+        sum_total_out += tot_out;
+    }
+
+    assert_eq!(sum_in_c, 3000, "tokens_in_from_completed total");
+    assert_eq!(sum_in_f, 300, "tokens_in_from_failed total");
+    assert_eq!(sum_in_k, 50, "tokens_in_from_killed total");
+    assert_eq!(sum_out_c, 1500, "tokens_out_from_completed total");
+    assert_eq!(sum_out_f, 100, "tokens_out_from_failed total");
+    assert_eq!(sum_out_k, 25, "tokens_out_from_killed total");
+    assert_eq!(sum_total_in, expected_in);
+    assert_eq!(sum_total_out, expected_out);
+}
+
+/// TOK-3. GET /api/cost/workflows (system aggregate) surfaces the four new
+/// token fields on the wrapped `system_cost_summary` block, aggregating
+/// across all workflows.
+#[tokio::test]
+async fn test_system_cost_summary_includes_token_fields() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Two workflows, each with one Completed run carrying tokens.
+    let mut wf_token_pairs: Vec<(u64, u64)> = Vec::new();
+    for (name, in_tokens, out_tokens) in [
+        ("tok3-wf-a", 1000u64, 500u64),
+        ("tok3-wf-b", 2000u64, 750u64),
+    ] {
+        let created: serde_json::Value = client
+            .post(format!("{}/api/workflows", base_url))
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&make_new_workflow(name)).unwrap())
+            .send()
+            .await
+            .expect("POST workflow")
+            .json()
+            .await
+            .unwrap();
+        let wf_id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+        let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+        insert_terminal_run_with_tokens(
+            &run_store,
+            wf_id,
+            &wf,
+            RunStatus::Completed,
+            Utc::now() - Duration::days(1),
+            Some(0.10),
+            in_tokens,
+            out_tokens,
+        )
+        .await;
+        wf_token_pairs.push((in_tokens, out_tokens));
+    }
+
+    let json: serde_json::Value = client
+        .get(format!("{}/api/cost/workflows", base_url))
+        .send()
+        .await
+        .expect("GET /api/cost/workflows list")
+        .json()
+        .await
+        .unwrap();
+
+    let scs = &json["system_cost_summary"];
+    assert!(!scs.is_null(), "system_cost_summary must be present");
+
+    // All four new token fields must exist on the system aggregate.
+    for field in [
+        "last_30_days_input_tokens",
+        "last_30_days_output_tokens",
+        "last_year_input_tokens",
+        "last_year_output_tokens",
+    ] {
+        assert!(
+            scs[field].is_number(),
+            "system_cost_summary.{} must be a number",
+            field
+        );
+    }
+
+    let expected_in: u64 = wf_token_pairs.iter().map(|(i, _)| *i).sum();
+    let expected_out: u64 = wf_token_pairs.iter().map(|(_, o)| *o).sum();
+    assert_eq!(
+        scs["last_30_days_input_tokens"].as_u64().unwrap(),
+        expected_in
+    );
+    assert_eq!(
+        scs["last_30_days_output_tokens"].as_u64().unwrap(),
+        expected_out
+    );
+    assert_eq!(scs["last_year_input_tokens"].as_u64().unwrap(), expected_in);
+    assert_eq!(
+        scs["last_year_output_tokens"].as_u64().unwrap(),
+        expected_out
     );
 }

@@ -21,6 +21,25 @@ pub struct DailyBucket {
     pub runs_completed: u64,
     pub runs_failed: u64,
     pub runs_killed: u64,
+    /// Token totals broken out by terminal status (input side).
+    #[serde(default)]
+    pub tokens_in_from_completed: u64,
+    #[serde(default)]
+    pub tokens_in_from_failed: u64,
+    #[serde(default)]
+    pub tokens_in_from_killed: u64,
+    /// Token totals broken out by terminal status (output side).
+    #[serde(default)]
+    pub tokens_out_from_completed: u64,
+    #[serde(default)]
+    pub tokens_out_from_failed: u64,
+    #[serde(default)]
+    pub tokens_out_from_killed: u64,
+    /// Cross-status totals (= sum of the three per-status fields above).
+    #[serde(default)]
+    pub total_input_tokens: u64,
+    #[serde(default)]
+    pub total_output_tokens: u64,
 }
 
 // ─── CostSummary ─────────────────────────────────────────────────────────────
@@ -35,6 +54,16 @@ pub struct CostSummary {
     /// Per-day cost buckets, ascending by date. Days with no terminal runs are omitted.
     #[serde(default)]
     pub daily_buckets: Vec<DailyBucket>,
+    /// Rolling 30-day token totals across all terminal runs.
+    #[serde(default)]
+    pub last_30_days_input_tokens: u64,
+    #[serde(default)]
+    pub last_30_days_output_tokens: u64,
+    /// Rolling 365-day token totals across all terminal runs.
+    #[serde(default)]
+    pub last_year_input_tokens: u64,
+    #[serde(default)]
+    pub last_year_output_tokens: u64,
 }
 
 // ─── Cost endpoint response types ────────────────────────────────────────────
@@ -349,6 +378,14 @@ pub struct WorkflowRun {
     pub total_cost_usd: Option<f64>,
     #[serde(default)]
     pub total_duration_ms: Option<u64>,
+    /// Total input tokens consumed by all agent steps in this run.
+    /// Defaults to 0 for historical runs and non-agent runs.
+    #[serde(default)]
+    pub total_input_tokens: u64,
+    /// Total output tokens produced by all agent steps in this run.
+    /// Defaults to 0 for historical runs and non-agent runs.
+    #[serde(default)]
+    pub total_output_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -952,6 +989,8 @@ mod tests {
             }],
             total_cost_usd: Some(0.001),
             total_duration_ms: Some(500),
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         };
         let json = serde_json::to_string(&run).expect("serialize");
         let deserialized: WorkflowRun = serde_json::from_str(&json).expect("deserialize");

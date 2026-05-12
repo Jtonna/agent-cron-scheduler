@@ -412,6 +412,10 @@ mod tests {
             last_year_runs: 42,
             computed_at: Utc::now(),
             daily_buckets: Vec::new(),
+            last_30_days_input_tokens: 0,
+            last_30_days_output_tokens: 0,
+            last_year_input_tokens: 0,
+            last_year_output_tokens: 0,
         }
     }
 
@@ -425,6 +429,14 @@ mod tests {
             runs_completed: 1,
             runs_failed: 0,
             runs_killed: 0,
+            tokens_in_from_completed: 0,
+            tokens_in_from_failed: 0,
+            tokens_in_from_killed: 0,
+            tokens_out_from_completed: 0,
+            tokens_out_from_failed: 0,
+            tokens_out_from_killed: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         }
     }
 
