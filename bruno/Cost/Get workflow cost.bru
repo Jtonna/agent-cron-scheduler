@@ -1,0 +1,87 @@
+meta {
+  name: Get workflow cost
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/cost/workflows/:id
+  body: none
+  auth: none
+}
+
+params:path {
+  id: {{workflowId}}
+}
+
+params:query {
+  ~days: 30
+  ~since: 2026-04-01
+  ~until: 2026-05-01
+}
+
+docs {
+  Returns cost analytics for a single workflow as a `CostWorkflowResponse` object.
+  Accepts UUID or name in the path parameter (same resolution as other workflow endpoints).
+
+  - `GET /api/cost/workflows/019df531-5c1d-7600-8801-3b1c7995e5a8`
+  - `GET /api/cost/workflows/weather-agent`
+
+  404 if the workflow is not found.
+
+  **Introduced in v4.2.10:** Cost data was moved from `/api/workflows/:id` to this
+  dedicated endpoint. The workflow detail endpoint (`GET /api/workflows/:id`) now returns
+  a lean `Workflow` object with no `cost_summary`.
+
+  ## Query params (pick one style)
+
+  **Rolling window (default):**
+  `GET /api/cost/workflows/:id?days=30`
+  - `days` — number of days for the `daily_buckets` window (default 30, max 365)
+
+  **Absolute window:**
+  `GET /api/cost/workflows/:id?since=2026-04-01&until=2026-05-01`
+  - `since` / `until` — ISO dates (`YYYY-MM-DD`); both required if either is supplied
+  - Mutually exclusive with `days` — mixing them returns `400 conflicting_params`
+
+  ## Response shape
+
+  ```json
+  {
+    "workflow_id": "019df531-5c1d-7600-8801-3b1c7995e5a8",
+    "workflow_name": "weather-agent",
+    "cost_summary": {
+      "last_30_days_total_usd": 5.67,
+      "last_30_days_runs": 20,
+      "last_year_total_usd": 42.10,
+      "last_year_runs": 142,
+      "computed_at": "2026-05-10T23:14:22Z",
+      "daily_buckets": [
+        {
+          "date": "2026-04-11",
+          "total_usd": 0.22,
+          "cost_from_completed": 0.22,
+          "cost_from_failed": 0.00,
+          "cost_from_killed": 0.00,
+          "runs_completed": 1,
+          "runs_failed": 0,
+          "runs_killed": 0
+        },
+        {
+          "date": "2026-05-09",
+          "total_usd": 0.28,
+          "cost_from_completed": 0.28,
+          "cost_from_failed": 0.00,
+          "cost_from_killed": 0.00,
+          "runs_completed": 1,
+          "runs_failed": 0,
+          "runs_killed": 0
+        }
+      ]
+    }
+  }
+  ```
+
+  The `daily_buckets` array is sorted ascending by date. Zero-days (days with
+  no terminal runs) are omitted — the array is sparse, not padded.
+}

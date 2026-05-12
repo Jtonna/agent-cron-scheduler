@@ -7,7 +7,8 @@ A [Bruno](https://www.usebruno.com/) collection covering every HTTP endpoint exp
 | Folder | Endpoints |
 |---|---|
 | `Health/` | `/health` (liveness, summary stats, platform service registration) |
-| `Workflows/` | CRUD for workflow definitions (`/api/workflows[/:id]`), plus the trigger endpoint. |
+| `Workflows/` | CRUD for workflow definitions (`/api/workflows[/:id]`), plus the trigger endpoint. Lean responses — no cost data. |
+| `Cost/` | Cost analytics (`/api/cost/workflows[/:id]`) with per-workflow and system-wide 30-day/1-year totals and daily breakdowns. Supports `?days=N` and `?since=&until=` query params. |
 | `Runs/` | Run records (`/api/runs/:id`), per-workflow run lists, run kill. |
 | `SSE/` | Server-Sent Events stream (`/api/events/workflows`) with optional `run_id` / `workflow_id` filters. |
 | `Daemon/` | Daemon process control (`/api/shutdown`, `/api/restart`, `/api/logs`). |
@@ -29,4 +30,4 @@ Override `baseUrl` if you've started the daemon on a different port (`agentcrons
 - **Kill an active run:** `Runs/Kill run.bru` POSTs to `/api/runs/:run_id/kill` (no body). Returns 204.
 - **Concurrency rejection:** trigger a workflow that has `allow_concurrent: false` while a run is active — you get HTTP `409 Conflict` with body `{"error":"concurrent_run_active",...}`.
 - **Identifiers:** anywhere a route says `:id`, you can pass either the workflow's UUID or its `name`. The daemon resolves both.
-- **Cost analytics:** `GET /api/workflows/{id}` responses include a `cost_summary` block with 30-day and 1-year cost totals, run counts, and a `daily_buckets` array for per-day breakdown (default last 30 days). Use `?days=N` or `?since=YYYY-MM-DD&until=YYYY-MM-DD` to control the bucket window. `GET /api/workflows` (list) is now a wrapped object `{workflows, system_cost_summary}` — not a bare array — and includes both per-workflow and system-wide daily buckets.
+- **Cost analytics:** Use `GET /api/cost/workflows` (list) and `GET /api/cost/workflows/:id` (singular) for cost data. Both return `cost_summary` blocks with 30-day and 1-year cost totals, run counts, and a `daily_buckets` array for per-day breakdown (default last 30 days). Use `?days=N` or `?since=YYYY-MM-DD&until=YYYY-MM-DD` to control the bucket window. See `bruno/Cost/` for ready-to-use examples. The workflow CRUD endpoints (`/api/workflows[/:id]`) are lean — no cost data.

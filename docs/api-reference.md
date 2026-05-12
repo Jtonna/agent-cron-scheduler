@@ -6,6 +6,8 @@ Base URL: `http://127.0.0.1:8377` (default port; see [Configuration](configurati
 
 All request and response bodies use JSON (`Content-Type: application/json`) unless otherwise noted.
 
+> **Breaking change in v4.2.10:** Cost data has been moved out of `/api/workflows[/{id}]` and into dedicated `/api/cost/workflows[/{id}]` endpoints. The workflow list and detail endpoints revert to their pre-v4.2.8 lean shape — a plain `Workflow[]` array and a plain `Workflow` object respectively — with no `cost_summary`, no query parameters, and no response wrapping. All cost analytics (30-day totals, 1-year totals, daily buckets) are now available exclusively at `GET /api/cost/workflows` and `GET /api/cost/workflows/{id}`. See [Cost Analytics Endpoints](#cost-analytics-endpoints) below.
+
 ---
 
 ## Table of Contents
@@ -29,11 +31,16 @@ All request and response bodies use JSON (`Content-Type: application/json`) unle
   - [POST /api/shutdown](#post-apishutdown)
   - [POST /api/restart](#post-apirestart)
   - [GET /api/logs](#get-apilogs)
+- [Cost Analytics Endpoints](#cost-analytics-endpoints)
+  - [GET /api/cost/workflows](#get-apicostworkflows)
+  - [GET /api/cost/workflows/{id}](#get-apicostworkflowsid)
 - [Data Models](#data-models)
   - [Workflow](#workflow)
-  - [WorkflowListResponse](#workflowlistresponse)
   - [CostSummary](#costsummary)
   - [DailyBucket](#dailybucket)
+  - [WorkflowCostEntry](#workflowcostentry)
+  - [CostWorkflowsListResponse](#costworkflowslistresponse)
+  - [CostWorkflowResponse](#costworkflowresponse)
   - [NewWorkflow](#newworkflow)
   - [WorkflowUpdate](#workflowupdate)
   - [StepDef](#stepdef)
@@ -148,103 +155,54 @@ The platform service manager is the Windows Run key (`HKCU\Software\Microsoft\Wi
 
 List all workflows.
 
-> **Breaking change in v4.2.9:** This endpoint no longer returns a bare JSON array. The response is now a [WorkflowListResponse](#workflowlistresponse) object with a `workflows` array and a `system_cost_summary` field. Clients that previously parsed the response as `Workflow[]` must navigate into `response.workflows`.
+> **v4.2.10:** This endpoint reverts to returning a plain `Workflow[]` array (pre-v4.2.8 behaviour). Cost data (`cost_summary`, `daily_buckets`, `system_cost_summary`) has been removed. For cost analytics use [GET /api/cost/workflows](#get-apicostworkflows).
 
-**Request:** No body.
-
-**Query Parameters:**
-
-| Parameter | Type   | Required | Default | Description |
-|-----------|--------|----------|---------|-------------|
-| `days`    | integer | No      | `30`    | Return daily cost buckets for the last N days. Max `365`. Mutually exclusive with `since`/`until`. |
-| `since`   | string  | No      | —       | ISO date (`YYYY-MM-DD`). Start of absolute window. Must be paired with `until`. Mutually exclusive with `days`. |
-| `until`   | string  | No      | —       | ISO date (`YYYY-MM-DD`). End of absolute window (inclusive). Must be paired with `since`. |
+**Request:** No body, no query parameters.
 
 **Response:**
 
 | Status | Description |
 |--------|-------------|
-| 200 OK | Returns a [WorkflowListResponse](#workflowlistresponse) object |
-| 400 Bad Request | Invalid query parameter combination (see [Query param errors](#400-query-param-errors)) |
+| 200 OK | Returns an array of [Workflow](#workflow) objects |
 | 500 Internal Server Error | Storage failure |
 
 ```json
-{
-  "workflows": [
-    {
-      "id": "01941234-5678-7abc-def0-123456789abc",
-      "name": "nightly-analysis",
-      "version": 1,
-      "schedule": "0 2 * * *",
-      "timezone": "America/New_York",
-      "schedule_mode": "Cron",
-      "enabled": true,
-      "steps": [
-        {
-          "kind": "shell",
-          "id": "fetch",
-          "command": "git pull origin main",
-          "pass_stdin": false,
-          "on_failure": null,
-          "always_run": false,
-          "timeout_secs": 60,
-          "working_dir": null,
-          "env_vars": null,
-          "capture": { "stdout_max_bytes": 65536, "parser": null }
-        }
-      ],
-      "default_input": null,
-      "working_dir": "/workspace",
-      "env_vars": { "LANG": "en_US.UTF-8" },
-      "allow_concurrent": true,
-      "on_failure": "abort",
-      "last_run_at": "2025-01-16T02:00:00Z",
-      "last_run_status": "Completed",
-      "last_run_id": "01941234-aaaa-7abc-def0-123456789abc",
-      "next_run_at": "2025-01-17T02:00:00Z",
-      "created_at": "2025-01-15T10:30:00Z",
-      "updated_at": "2025-01-15T10:30:00Z",
-      "cost_summary": {
-        "last_30_days_total_usd": 5.67,
-        "last_30_days_runs": 20,
-        "last_year_total_usd": 42.10,
-        "last_year_runs": 142,
-        "computed_at": "2026-05-10T23:14:22Z",
-        "daily_buckets": [
-          {
-            "date": "2026-05-09",
-            "total_usd": 0.28,
-            "cost_from_completed": 0.28,
-            "cost_from_failed": 0.0,
-            "cost_from_killed": 0.0,
-            "runs_completed": 3,
-            "runs_failed": 0,
-            "runs_killed": 0
-          }
-        ]
-      }
-    }
-  ],
-  "system_cost_summary": {
-    "last_30_days_total_usd": 5.67,
-    "last_30_days_runs": 20,
-    "last_year_total_usd": 42.10,
-    "last_year_runs": 142,
-    "computed_at": "2026-05-10T23:14:22Z",
-    "daily_buckets": [
+[
+  {
+    "id": "01941234-5678-7abc-def0-123456789abc",
+    "name": "nightly-analysis",
+    "version": 1,
+    "schedule": "0 2 * * *",
+    "timezone": "America/New_York",
+    "schedule_mode": "Cron",
+    "enabled": true,
+    "steps": [
       {
-        "date": "2026-05-09",
-        "total_usd": 0.28,
-        "cost_from_completed": 0.28,
-        "cost_from_failed": 0.0,
-        "cost_from_killed": 0.0,
-        "runs_completed": 3,
-        "runs_failed": 0,
-        "runs_killed": 0
+        "kind": "shell",
+        "id": "fetch",
+        "command": "git pull origin main",
+        "pass_stdin": false,
+        "on_failure": null,
+        "always_run": false,
+        "timeout_secs": 60,
+        "working_dir": null,
+        "env_vars": null,
+        "capture": { "stdout_max_bytes": 65536, "parser": null }
       }
-    ]
+    ],
+    "default_input": null,
+    "working_dir": "/workspace",
+    "env_vars": { "LANG": "en_US.UTF-8" },
+    "allow_concurrent": true,
+    "on_failure": "abort",
+    "last_run_at": "2025-01-16T02:00:00Z",
+    "last_run_status": "Completed",
+    "last_run_id": "01941234-aaaa-7abc-def0-123456789abc",
+    "next_run_at": "2025-01-17T02:00:00Z",
+    "created_at": "2025-01-15T10:30:00Z",
+    "updated_at": "2025-01-15T10:30:00Z"
   }
-}
+]
 ```
 
 The `next_run_at` field is computed at runtime for enabled workflows and is `null` for disabled workflows. It is never persisted to disk; the serde annotation `skip_deserializing` ensures it is always re-derived on read.
@@ -297,26 +255,21 @@ Create a new workflow.
 
 Retrieve a single workflow by UUID or name.
 
+> **v4.2.10:** This endpoint returns a lean [Workflow](#workflow) object with no `cost_summary`. For cost analytics use [GET /api/cost/workflows/{id}](#get-apicostworkflowsid).
+
 **Path Parameters:**
 
 | Parameter | Type   | Description                                  |
 |-----------|--------|----------------------------------------------|
 | `id`      | string | Workflow UUID or name (see [Workflow Identifier Resolution](#workflow-identifier-resolution)). |
 
-**Query Parameters:**
-
-| Parameter | Type    | Required | Default | Description |
-|-----------|---------|----------|---------|-------------|
-| `days`    | integer | No       | `30`    | Return daily cost buckets for the last N days. Max `365`. Mutually exclusive with `since`/`until`. |
-| `since`   | string  | No       | —       | ISO date (`YYYY-MM-DD`). Start of absolute window. Must be paired with `until`. Mutually exclusive with `days`. |
-| `until`   | string  | No       | —       | ISO date (`YYYY-MM-DD`). End of absolute window (inclusive). Must be paired with `since`. |
+**Request:** No body, no query parameters.
 
 **Response:**
 
 | Status | Description |
 |--------|-------------|
-| 200 OK | Returns the full [Workflow](#workflow) object (with `cost_summary.daily_buckets` populated). |
-| 400 Bad Request | Invalid query parameter combination (see [Query param errors](#400-query-param-errors)). |
+| 200 OK | Returns the full [Workflow](#workflow) object (no `cost_summary`). |
 | 404 Not Found | No workflow matching the given UUID or name. |
 | 500 Internal Server Error | Storage failure. |
 
@@ -740,11 +693,163 @@ No daemon logs available yet.
 
 ---
 
+## Cost Analytics Endpoints
+
+All cost analytics are served from the `/api/cost/` namespace. These endpoints support the same query parameters for controlling the `daily_buckets` window.
+
+### Query Parameters (Cost Endpoints)
+
+| Parameter | Type    | Required | Default | Description |
+|-----------|---------|----------|---------|-------------|
+| `days`    | integer | No       | `30`    | Return daily cost buckets for the last N days. Max `365`. Mutually exclusive with `since`/`until`. |
+| `since`   | string  | No       | —       | ISO date (`YYYY-MM-DD`). Start of absolute window. Must be paired with `until`. Mutually exclusive with `days`. |
+| `until`   | string  | No       | —       | ISO date (`YYYY-MM-DD`). End of absolute window (inclusive). Must be paired with `since`. |
+
+### 400 Query Param Errors
+
+| `error` value         | Condition |
+|-----------------------|-----------|
+| `conflicting_params`  | Both `days` and `since`/`until` were supplied. |
+| `window_too_large`    | `days` exceeds `365`. |
+| `invalid_window`      | `since` > `until`, or only one of `since`/`until` was supplied. |
+
+---
+
+### GET /api/cost/workflows
+
+List cost analytics for all workflows.
+
+**Request:** No body.
+
+**Query Parameters:** See [Query Parameters (Cost Endpoints)](#query-parameters-cost-endpoints) above.
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns a [CostWorkflowsListResponse](#costworkflowslistresponse) object. |
+| 400 Bad Request | Invalid query parameter combination. |
+| 500 Internal Server Error | Storage failure. |
+
+```json
+{
+  "workflows": [
+    {
+      "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+      "workflow_name": "nightly-analysis",
+      "cost_summary": {
+        "last_30_days_total_usd": 5.67,
+        "last_30_days_runs": 20,
+        "last_year_total_usd": 42.10,
+        "last_year_runs": 142,
+        "computed_at": "2026-05-10T23:14:22Z",
+        "daily_buckets": [
+          {
+            "date": "2026-05-09",
+            "total_usd": 0.28,
+            "cost_from_completed": 0.28,
+            "cost_from_failed": 0.00,
+            "cost_from_killed": 0.00,
+            "runs_completed": 3,
+            "runs_failed": 0,
+            "runs_killed": 0
+          }
+        ]
+      }
+    }
+  ],
+  "system_cost_summary": {
+    "last_30_days_total_usd": 5.67,
+    "last_30_days_runs": 20,
+    "last_year_total_usd": 42.10,
+    "last_year_runs": 142,
+    "computed_at": "2026-05-10T23:14:22Z",
+    "daily_buckets": [
+      {
+        "date": "2026-05-09",
+        "total_usd": 0.28,
+        "cost_from_completed": 0.28,
+        "cost_from_failed": 0.00,
+        "cost_from_killed": 0.00,
+        "runs_completed": 3,
+        "runs_failed": 0,
+        "runs_killed": 0
+      }
+    ]
+  }
+}
+```
+
+**Example:**
+
+```sh
+curl "http://127.0.0.1:8377/api/cost/workflows?days=7"
+curl "http://127.0.0.1:8377/api/cost/workflows?since=2026-04-01&until=2026-05-01"
+```
+
+---
+
+### GET /api/cost/workflows/{id}
+
+Retrieve cost analytics for a single workflow.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description                                  |
+|-----------|--------|----------------------------------------------|
+| `id`      | string | Workflow UUID or name (see [Workflow Identifier Resolution](#workflow-identifier-resolution)). |
+
+**Query Parameters:** See [Query Parameters (Cost Endpoints)](#query-parameters-cost-endpoints) above.
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns a [CostWorkflowResponse](#costworkflowresponse) object. |
+| 400 Bad Request | Invalid query parameter combination. |
+| 404 Not Found | No workflow matching the given UUID or name. |
+| 500 Internal Server Error | Storage failure. |
+
+```json
+{
+  "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+  "workflow_name": "nightly-analysis",
+  "cost_summary": {
+    "last_30_days_total_usd": 5.67,
+    "last_30_days_runs": 20,
+    "last_year_total_usd": 42.10,
+    "last_year_runs": 142,
+    "computed_at": "2026-05-10T23:14:22Z",
+    "daily_buckets": [
+      {
+        "date": "2026-05-09",
+        "total_usd": 0.28,
+        "cost_from_completed": 0.28,
+        "cost_from_failed": 0.00,
+        "cost_from_killed": 0.00,
+        "runs_completed": 3,
+        "runs_failed": 0,
+        "runs_killed": 0
+      }
+    ]
+  }
+}
+```
+
+**Example:**
+
+```sh
+curl "http://127.0.0.1:8377/api/cost/workflows/nightly-analysis"
+curl "http://127.0.0.1:8377/api/cost/workflows/nightly-analysis?since=2026-04-01&until=2026-05-01"
+```
+
+---
+
 ## Data Models
 
 ### Workflow
 
-The full workflow object returned by GET, POST (201), and PATCH (200) endpoints.
+The lean workflow object returned by `GET /api/workflows`, `GET /api/workflows/{id}`, `POST /api/workflows` (201), and `PATCH /api/workflows/{id}` (200) endpoints. Does not include cost data — see [Cost Analytics Endpoints](#cost-analytics-endpoints).
 
 | Field             | Type                                  | Nullable | Description                                                                        |
 |-------------------|---------------------------------------|----------|------------------------------------------------------------------------------------|
@@ -767,24 +872,12 @@ The full workflow object returned by GET, POST (201), and PATCH (200) endpoints.
 | `next_run_at`     | string (ISO 8601)                     | Yes      | Computed next scheduled run time. `null` for disabled workflows. Never persisted; always computed at read time. |
 | `created_at`      | string (ISO 8601)                     | No       | When the workflow was created.                                                     |
 | `updated_at`      | string (ISO 8601)                     | No       | When the workflow was last modified.                                               |
-| `cost_summary`    | [CostSummary](#costsummary) (nullable) | No      | Embedded cost analytics: 30-day and 1-year totals + run counts. Populated on GET responses. Computed over calendar-day-bounded windows in the daemon's `display_timezone`. Cached in-memory; invalidated on each terminal run for the workflow. |
-
----
-
-### WorkflowListResponse
-
-The response shape for `GET /api/workflows` (introduced in v4.2.9, replacing the previous bare `Workflow[]` array).
-
-| Field                 | Type                            | Description |
-|-----------------------|---------------------------------|-------------|
-| `workflows`           | array of [Workflow](#workflow)  | All workflow definitions, each including their individual `cost_summary` (with `daily_buckets` for the requested window). |
-| `system_cost_summary` | [CostSummary](#costsummary)     | Aggregated cost summary across **all** workflows. `daily_buckets` is a system-wide aggregation for the requested window. |
 
 ---
 
 ### CostSummary
 
-Aggregated cost and run-count data over rolling windows. Returned embedded in `Workflow` responses and as `system_cost_summary` in `WorkflowListResponse`.
+Aggregated cost and run-count data over rolling windows. Returned in [CostWorkflowResponse](#costworkflowresponse) and [CostWorkflowsListResponse](#costworkflowslistresponse).
 
 | Field | Type | Description |
 |---|---|---|
@@ -813,6 +906,41 @@ A single day's cost breakdown within a `CostSummary.daily_buckets` array. Only d
 | `runs_completed` | integer | Count of `Completed` runs on this day. |
 | `runs_failed` | integer | Count of `Failed` runs on this day. |
 | `runs_killed` | integer | Count of `Killed` runs on this day. |
+
+---
+
+### WorkflowCostEntry
+
+A single workflow's cost data as returned in `CostWorkflowsListResponse.workflows`.
+
+| Field | Type | Description |
+|---|---|---|
+| `workflow_id` | string (UUID) | The workflow identifier. |
+| `workflow_name` | string | The workflow name (slug). |
+| `cost_summary` | [CostSummary](#costsummary) | Aggregated cost analytics for this workflow (30-day totals, 1-year totals, and `daily_buckets` for the requested window). |
+
+---
+
+### CostWorkflowsListResponse
+
+Response shape for `GET /api/cost/workflows`.
+
+| Field | Type | Description |
+|---|---|---|
+| `workflows` | array of [WorkflowCostEntry](#workflowcostentry) | Per-workflow cost entries (one per workflow in the system), each with a `cost_summary` including `daily_buckets` for the requested window. |
+| `system_cost_summary` | [CostSummary](#costsummary) | Aggregated cost summary across **all** workflows. `daily_buckets` is a system-wide aggregation for the requested window. |
+
+---
+
+### CostWorkflowResponse
+
+Response shape for `GET /api/cost/workflows/{id}`.
+
+| Field | Type | Description |
+|---|---|---|
+| `workflow_id` | string (UUID) | The workflow identifier. |
+| `workflow_name` | string | The workflow name (slug). |
+| `cost_summary` | [CostSummary](#costsummary) | Aggregated cost analytics for this workflow (30-day totals, 1-year totals, and `daily_buckets` for the requested window). |
 
 ---
 

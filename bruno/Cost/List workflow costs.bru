@@ -1,0 +1,95 @@
+meta {
+  name: List workflow costs
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/cost/workflows
+  body: none
+  auth: none
+}
+
+params:query {
+  ~days: 30
+  ~since: 2026-04-01
+  ~until: 2026-05-01
+}
+
+docs {
+  Returns cost analytics for all workflows as a `CostWorkflowsListResponse` object.
+
+  **Introduced in v4.2.10:** Cost data was moved from `/api/workflows` to this
+  dedicated endpoint. The workflow list endpoint (`GET /api/workflows`) now returns
+  a plain `Workflow[]` array with no cost data.
+
+  ## Query params (pick one style)
+
+  **Rolling window (default):**
+  `GET /api/cost/workflows?days=30`
+  - `days` — number of days for the `daily_buckets` window (default 30, max 365)
+
+  **Absolute window:**
+  `GET /api/cost/workflows?since=2026-04-01&until=2026-05-01`
+  - `since` / `until` — ISO dates (`YYYY-MM-DD`); both required if either is supplied
+  - Mutually exclusive with `days` — mixing them returns `400 conflicting_params`
+
+  ## Response shape
+
+  ```json
+  {
+    "workflows": [
+      {
+        "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+        "workflow_name": "nightly-analysis",
+        "cost_summary": {
+          "last_30_days_total_usd": 5.67,
+          "last_30_days_runs": 20,
+          "last_year_total_usd": 42.10,
+          "last_year_runs": 142,
+          "computed_at": "2026-05-10T23:14:22Z",
+          "daily_buckets": [
+            {
+              "date": "2026-05-09",
+              "total_usd": 0.28,
+              "cost_from_completed": 0.28,
+              "cost_from_failed": 0.00,
+              "cost_from_killed": 0.00,
+              "runs_completed": 3,
+              "runs_failed": 0,
+              "runs_killed": 0
+            }
+          ]
+        }
+      }
+    ],
+    "system_cost_summary": {
+      "last_30_days_total_usd": 5.67,
+      "last_30_days_runs": 20,
+      "last_year_total_usd": 42.10,
+      "last_year_runs": 142,
+      "computed_at": "2026-05-10T23:14:22Z",
+      "daily_buckets": [
+        {
+          "date": "2026-05-09",
+          "total_usd": 0.28,
+          "cost_from_completed": 0.28,
+          "cost_from_failed": 0.00,
+          "cost_from_killed": 0.00,
+          "runs_completed": 3,
+          "runs_failed": 0,
+          "runs_killed": 0
+        }
+      ]
+    }
+  }
+  ```
+
+  Each entry in `workflows` contains `workflow_id`, `workflow_name`, and a
+  `cost_summary` block with aggregated cost analytics and a `daily_buckets`
+  array for the requested window. Zero-days are omitted from `daily_buckets`;
+  the array is sorted ascending by date.
+
+  The `system_cost_summary` aggregates costs across ALL workflows. Its
+  `daily_buckets` array is the union of all per-workflow buckets, summed by day.
+}
