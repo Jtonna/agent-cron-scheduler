@@ -162,6 +162,7 @@ async fn test_create_workflow_with_shell_step() {
 }
 
 /// 2. GET /api/workflows lists includes the created workflow
+/// (v4.2.9: response is wrapped as {workflows, system_cost_summary})
 #[tokio::test]
 async fn test_list_workflows_includes_created() {
     let (wf_store, run_store, tmp) = make_stores().await;
@@ -185,7 +186,8 @@ async fn test_list_workflows_includes_created() {
         .expect("GET /api/workflows");
     assert_eq!(resp.status(), 200);
     let json: serde_json::Value = resp.json().await.unwrap();
-    let arr = json.as_array().unwrap();
+    // v4.2.9: response is now wrapped — navigate into the `workflows` field.
+    let arr = json["workflows"].as_array().unwrap();
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["name"], "list-test");
 }
@@ -1170,6 +1172,7 @@ async fn insert_running_run(
 // ---------------------------------------------------------------------------
 
 /// CS-1. cost_summary is present on every workflow in GET /api/workflows.
+/// (v4.2.9: response is wrapped as {workflows, system_cost_summary})
 #[tokio::test]
 async fn test_cost_summary_present_on_get_workflows_list() {
     let (wf_store, run_store, tmp) = make_stores().await;
@@ -1201,7 +1204,10 @@ async fn test_cost_summary_present_on_get_workflows_list() {
         .expect("GET /api/workflows");
     assert_eq!(resp.status(), 200);
     let json: serde_json::Value = resp.json().await.unwrap();
-    let arr = json.as_array().expect("response is array");
+    // v4.2.9: response is wrapped — navigate into the `workflows` field.
+    let arr = json["workflows"]
+        .as_array()
+        .expect("workflows field is array");
     assert_eq!(arr.len(), 2);
 
     for wf in arr {
@@ -2354,6 +2360,7 @@ async fn test_create_workflow_422_when_default_dir_unwriteable() {
     );
 
     // Verify the workflow was NOT persisted.
+    // v4.2.9: response is wrapped — navigate into the `workflows` field.
     let list_resp = client
         .get(format!("{}/api/workflows", base_url))
         .send()
@@ -2363,7 +2370,7 @@ async fn test_create_workflow_422_when_default_dir_unwriteable() {
         .await
         .unwrap();
     assert!(
-        list_resp.as_array().unwrap().is_empty(),
+        list_resp["workflows"].as_array().unwrap().is_empty(),
         "workflow must not be persisted when default_dir creation fails"
     );
 }
@@ -2824,6 +2831,1105 @@ async fn test_timed_out_step_records_log_byte_offset_start() {
         !body.contains("PREFIX-MARKER"),
         "step slice must not include the prior step's output. body={:?}",
         body
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Daily cost buckets — v4.2.9
+// ---------------------------------------------------------------------------
+
+/// Helper: insert a terminal run with an explicit `finished_at` date string
+/// (YYYY-MM-DD interpreted as UTC midnight) and a per-status cost.
+async fn insert_dated_run(
+    run_store: &Arc<dyn WorkflowRunStore>,
+    workflow_id: uuid::Uuid,
+    wf: &agent_cron_scheduler::models::workflow::Workflow,
+    status: RunStatus,
+    date_utc: &str,
+    total_cost_usd: Option<f64>,
+) -> uuid::Uuid {
+    let finished_at = chrono::DateTime::parse_from_rfc3339(&format!("{}T12:00:00Z", date_utc))
+        .expect("parse date")
+        .with_timezone(&Utc);
+    insert_terminal_run(
+        run_store,
+        workflow_id,
+        wf,
+        status,
+        finished_at,
+        total_cost_usd,
+    )
+    .await
+}
+
+/// DB-1. GET /api/workflows returns a wrapped object (not a bare array).
+/// Verifies {workflows, system_cost_summary} shape and that daily_buckets exists.
+#[tokio::test]
+async fn test_list_response_is_wrapped() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    for name in ["db1-wf-a", "db1-wf-b"] {
+        client
+            .post(format!("{}/api/workflows", base_url))
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&make_new_workflow(name)).unwrap())
+            .send()
+            .await
+            .expect("POST workflow")
+            .error_for_status()
+            .expect("201 created");
+    }
+
+    let resp = client
+        .get(format!("{}/api/workflows", base_url))
+        .send()
+        .await
+        .expect("GET /api/workflows");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+
+    // Root must be an object, not an array.
+    assert!(json.is_object(), "response must be an object, not an array");
+
+    // `workflows` field must contain the 2 created workflows.
+    let workflows = json["workflows"].as_array().expect("workflows is array");
+    assert_eq!(workflows.len(), 2, "expected 2 workflows");
+    let names: Vec<&str> = workflows
+        .iter()
+        .map(|w| w["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"db1-wf-a"), "db1-wf-a should be present");
+    assert!(names.contains(&"db1-wf-b"), "db1-wf-b should be present");
+
+    // `system_cost_summary` must be present with all 5 baseline fields.
+    let scs = &json["system_cost_summary"];
+    assert!(!scs.is_null(), "system_cost_summary must be present");
+    assert!(scs["last_30_days_total_usd"].is_number());
+    assert!(scs["last_30_days_runs"].is_number());
+    assert!(scs["last_year_total_usd"].is_number());
+    assert!(scs["last_year_runs"].is_number());
+    assert!(scs["computed_at"].is_string());
+
+    // `daily_buckets` must be an array on the system summary.
+    assert!(
+        scs["daily_buckets"].is_array(),
+        "system_cost_summary.daily_buckets must be an array"
+    );
+}
+
+/// DB-2. GET /api/workflows/{id} returns a plain Workflow (not wrapped).
+/// `cost_summary.daily_buckets` exists as an array.
+#[tokio::test]
+async fn test_singular_workflow_unwrapped() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db2-singular")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    let json: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}", base_url, id))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+
+    // Must be a Workflow object — `id` field present at root, NOT a `workflows` wrapper.
+    assert!(
+        json["id"].is_string(),
+        "singular response should have top-level id"
+    );
+    assert!(
+        json["workflows"].is_null() || !json.as_object().unwrap().contains_key("workflows"),
+        "singular response must not be wrapped"
+    );
+
+    // `cost_summary.daily_buckets` must exist as an array.
+    let cs = &json["cost_summary"];
+    assert!(!cs.is_null(), "cost_summary must be present");
+    assert!(
+        cs["daily_buckets"].is_array(),
+        "cost_summary.daily_buckets must be an array on singular GET"
+    );
+}
+
+/// DB-3. Daily buckets aggregate Completed runs on the same day.
+#[tokio::test]
+async fn test_daily_buckets_aggregate_completed() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db3-completed")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // 3 Completed runs yesterday ($0.10 each).
+    // Use yesterday (UTC-1d) so the run falls safely inside the 30-day window
+    // regardless of the UTC-to-display-timezone offset at test runtime.
+    let today = (Utc::now() - Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    for _ in 0..3 {
+        insert_dated_run(
+            &run_store,
+            wf_id,
+            &wf,
+            RunStatus::Completed,
+            &today,
+            Some(0.10),
+        )
+        .await;
+    }
+
+    let json: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+
+    let buckets = json["cost_summary"]["daily_buckets"]
+        .as_array()
+        .expect("daily_buckets is array");
+    assert_eq!(
+        buckets.len(),
+        1,
+        "exactly 1 bucket for runs all on the same day"
+    );
+
+    let b = &buckets[0];
+    let total = b["total_usd"].as_f64().expect("total_usd");
+    assert!(
+        (total - 0.30).abs() < 1e-9,
+        "total_usd should be ~0.30, got {}",
+        total
+    );
+    let cost_completed = b["cost_from_completed"]
+        .as_f64()
+        .expect("cost_from_completed");
+    assert!(
+        (cost_completed - 0.30).abs() < 1e-9,
+        "cost_from_completed should be ~0.30, got {}",
+        cost_completed
+    );
+    assert_eq!(b["runs_completed"], 3, "runs_completed should be 3");
+    assert_eq!(
+        b["cost_from_failed"].as_f64().unwrap_or(0.0),
+        0.0,
+        "cost_from_failed should be 0"
+    );
+    assert_eq!(
+        b["cost_from_killed"].as_f64().unwrap_or(0.0),
+        0.0,
+        "cost_from_killed should be 0"
+    );
+    assert_eq!(
+        b["runs_failed"].as_u64().unwrap_or(0),
+        0,
+        "runs_failed should be 0"
+    );
+    assert_eq!(
+        b["runs_killed"].as_u64().unwrap_or(0),
+        0,
+        "runs_killed should be 0"
+    );
+}
+
+/// DB-4. Status breakdown: Completed/Failed/Killed attributed to right fields.
+#[tokio::test]
+async fn test_daily_buckets_status_breakdown() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db4-breakdown")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Use yesterday (UTC-1d) so the run falls safely inside the 30-day window
+    // regardless of the UTC-to-display-timezone offset at test runtime.
+    let today = (Utc::now() - Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    // 2 Completed ($0.10 each), 1 Failed ($0.20), 1 Killed (null cost).
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &today,
+        Some(0.10),
+    )
+    .await;
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &today,
+        Some(0.10),
+    )
+    .await;
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Failed,
+        &today,
+        Some(0.20),
+    )
+    .await;
+    insert_dated_run(&run_store, wf_id, &wf, RunStatus::Killed, &today, None).await;
+
+    let json: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+
+    let buckets = json["cost_summary"]["daily_buckets"]
+        .as_array()
+        .expect("daily_buckets");
+    assert_eq!(buckets.len(), 1, "all runs on same day → 1 bucket");
+
+    let b = &buckets[0];
+    assert_eq!(b["runs_completed"], 2);
+    assert_eq!(b["runs_failed"], 1);
+    assert_eq!(b["runs_killed"], 1);
+    let cost_c = b["cost_from_completed"]
+        .as_f64()
+        .expect("cost_from_completed");
+    assert!(
+        (cost_c - 0.20).abs() < 1e-9,
+        "cost_from_completed ~0.20, got {}",
+        cost_c
+    );
+    let cost_f = b["cost_from_failed"].as_f64().expect("cost_from_failed");
+    assert!(
+        (cost_f - 0.20).abs() < 1e-9,
+        "cost_from_failed ~0.20, got {}",
+        cost_f
+    );
+    let cost_k = b["cost_from_killed"].as_f64().expect("cost_from_killed");
+    assert!(
+        cost_k.abs() < 1e-9,
+        "cost_from_killed ~0.0 (null cost), got {}",
+        cost_k
+    );
+}
+
+/// DB-5. Zero-cost days are omitted — buckets only emitted for active days.
+#[tokio::test]
+async fn test_daily_buckets_omits_zero_days() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db5-sparse")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Runs on day-1, day-4, and day-7 within the last 30 days.
+    let day1 = (Utc::now() - Duration::days(7))
+        .format("%Y-%m-%d")
+        .to_string();
+    let day4 = (Utc::now() - Duration::days(4))
+        .format("%Y-%m-%d")
+        .to_string();
+    let day7 = (Utc::now() - Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &day1,
+        Some(0.10),
+    )
+    .await;
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &day4,
+        Some(0.10),
+    )
+    .await;
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &day7,
+        Some(0.10),
+    )
+    .await;
+
+    let json: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+
+    let buckets = json["cost_summary"]["daily_buckets"]
+        .as_array()
+        .expect("daily_buckets");
+    assert_eq!(
+        buckets.len(),
+        3,
+        "exactly 3 active days should produce 3 buckets (no zero-padding)"
+    );
+}
+
+/// DB-6. Buckets are returned in ascending date order.
+#[tokio::test]
+async fn test_daily_buckets_ascending_order() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db6-order")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Insert in non-chronological order.
+    let day_newest = (Utc::now() - Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    let day_oldest = (Utc::now() - Duration::days(10))
+        .format("%Y-%m-%d")
+        .to_string();
+    let day_mid = (Utc::now() - Duration::days(5))
+        .format("%Y-%m-%d")
+        .to_string();
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &day_newest,
+        Some(0.10),
+    )
+    .await;
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &day_oldest,
+        Some(0.10),
+    )
+    .await;
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &day_mid,
+        Some(0.10),
+    )
+    .await;
+
+    let json: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+
+    let buckets = json["cost_summary"]["daily_buckets"]
+        .as_array()
+        .expect("daily_buckets");
+    assert_eq!(buckets.len(), 3, "3 distinct days → 3 buckets");
+
+    // Dates must be strictly ascending.
+    let dates: Vec<&str> = buckets
+        .iter()
+        .map(|b| b["date"].as_str().unwrap())
+        .collect();
+    assert!(
+        dates[0] < dates[1] && dates[1] < dates[2],
+        "buckets must be sorted ascending by date; got {:?}",
+        dates
+    );
+    assert_eq!(dates[0], day_oldest, "first bucket = oldest date");
+    assert_eq!(dates[2], day_newest, "last bucket = newest date");
+}
+
+/// DB-7. system_cost_summary.daily_buckets aggregates across all workflows.
+#[tokio::test]
+async fn test_system_aggregate_sums_across_workflows() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Create 2 workflows with runs on the same day.
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let mut per_wf_30d_totals: Vec<f64> = vec![];
+
+    for name in ["db7-wf-a", "db7-wf-b"] {
+        let created: serde_json::Value = client
+            .post(format!("{}/api/workflows", base_url))
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&make_new_workflow(name)).unwrap())
+            .send()
+            .await
+            .expect("POST")
+            .json()
+            .await
+            .unwrap();
+        let wf_id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+        let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+        insert_dated_run(
+            &run_store,
+            wf_id,
+            &wf,
+            RunStatus::Completed,
+            &today,
+            Some(0.15),
+        )
+        .await;
+        per_wf_30d_totals.push(0.15);
+    }
+
+    let list_json: serde_json::Value = client
+        .get(format!("{}/api/workflows", base_url))
+        .send()
+        .await
+        .expect("GET list")
+        .json()
+        .await
+        .unwrap();
+
+    // System summary daily_buckets should aggregate across both workflows.
+    let scs = &list_json["system_cost_summary"];
+    assert!(
+        scs["daily_buckets"].is_array(),
+        "system daily_buckets must be array"
+    );
+    let sys_buckets = scs["daily_buckets"].as_array().unwrap();
+    // At minimum, today's bucket should exist with both workflows' costs.
+    let today_bucket = sys_buckets
+        .iter()
+        .find(|b| b["date"].as_str() == Some(today.as_str()));
+    if let Some(tb) = today_bucket {
+        let sys_total = tb["total_usd"].as_f64().unwrap_or(0.0);
+        assert!(
+            sys_total >= 0.29,
+            "system today bucket total_usd should be ~0.30 (sum of 2 workflows), got {}",
+            sys_total
+        );
+    }
+
+    // system_cost_summary.last_30_days_total_usd should equal sum of per-workflow totals.
+    let per_wf_sum: f64 = per_wf_30d_totals.iter().sum();
+    let sys_30d = scs["last_30_days_total_usd"].as_f64().unwrap_or(0.0);
+    assert!(
+        (sys_30d - per_wf_sum).abs() < 1e-9,
+        "system last_30_days_total_usd ({}) should equal sum of per-workflow totals ({})",
+        sys_30d,
+        per_wf_sum
+    );
+}
+
+/// DB-8. ?days=30 (default) — run from 35 days ago NOT in buckets.
+#[tokio::test]
+async fn test_query_days_30_default() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db8-default-window")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Run 35 days ago — outside the 30-day window.
+    let old_day = (Utc::now() - Duration::days(35))
+        .format("%Y-%m-%d")
+        .to_string();
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &old_day,
+        Some(0.50),
+    )
+    .await;
+    // Run 5 days ago — inside the window.
+    let recent_day = (Utc::now() - Duration::days(5))
+        .format("%Y-%m-%d")
+        .to_string();
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &recent_day,
+        Some(0.10),
+    )
+    .await;
+
+    let json: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET (no params → default days=30)")
+        .json()
+        .await
+        .unwrap();
+
+    let buckets = json["cost_summary"]["daily_buckets"]
+        .as_array()
+        .expect("daily_buckets");
+
+    // Only the recent run should appear; the 35-day-old run must not be in any bucket.
+    let has_old = buckets
+        .iter()
+        .any(|b| b["date"].as_str() == Some(old_day.as_str()));
+    assert!(
+        !has_old,
+        "run from 35 days ago must not appear in the default 30-day bucket window"
+    );
+    let has_recent = buckets
+        .iter()
+        .any(|b| b["date"].as_str() == Some(recent_day.as_str()));
+    assert!(
+        has_recent,
+        "run from 5 days ago must appear in the 30-day bucket window"
+    );
+}
+
+/// DB-9. ?days=7 — runs from 8+ days ago excluded.
+#[tokio::test]
+async fn test_query_days_7() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db9-days7")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Run 8 days ago — outside the 7-day window.
+    let old_day = (Utc::now() - Duration::days(8))
+        .format("%Y-%m-%d")
+        .to_string();
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &old_day,
+        Some(0.50),
+    )
+    .await;
+    // Run 3 days ago — inside the 7-day window.
+    let recent_day = (Utc::now() - Duration::days(3))
+        .format("%Y-%m-%d")
+        .to_string();
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &recent_day,
+        Some(0.10),
+    )
+    .await;
+
+    let json: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}?days=7", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET ?days=7")
+        .json()
+        .await
+        .unwrap();
+
+    let buckets = json["cost_summary"]["daily_buckets"]
+        .as_array()
+        .expect("daily_buckets");
+    let has_old = buckets
+        .iter()
+        .any(|b| b["date"].as_str() == Some(old_day.as_str()));
+    assert!(
+        !has_old,
+        "run from 8 days ago must not appear in ?days=7 window"
+    );
+    let has_recent = buckets
+        .iter()
+        .any(|b| b["date"].as_str() == Some(recent_day.as_str()));
+    assert!(
+        has_recent,
+        "run from 3 days ago must appear in ?days=7 window"
+    );
+}
+
+/// DB-10. ?since=...&until=... absolute window includes only runs in range.
+#[tokio::test]
+async fn test_query_since_until_absolute() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db10-abs-window")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Runs before, inside, and after the window 2026-04-01..2026-05-01.
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        "2026-03-15",
+        Some(0.50),
+    )
+    .await;
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        "2026-04-15",
+        Some(0.10),
+    )
+    .await;
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        "2026-05-15",
+        Some(0.25),
+    )
+    .await;
+
+    let json: serde_json::Value = client
+        .get(format!(
+            "{}/api/workflows/{}?since=2026-04-01&until=2026-05-01",
+            base_url, wf_id_str
+        ))
+        .send()
+        .await
+        .expect("GET ?since=...&until=...")
+        .json()
+        .await
+        .unwrap();
+
+    let buckets = json["cost_summary"]["daily_buckets"]
+        .as_array()
+        .expect("daily_buckets");
+
+    // Only the April 15 run should appear.
+    assert_eq!(
+        buckets.len(),
+        1,
+        "exactly 1 bucket expected for the run inside the window; got {:?}",
+        buckets
+            .iter()
+            .map(|b| b["date"].as_str())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(buckets[0]["date"].as_str().unwrap(), "2026-04-15");
+}
+
+/// DB-11. ?days=30&since=... returns 400 conflicting_params.
+#[tokio::test]
+async fn test_query_both_days_and_since_returns_400() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db11-conflict-params")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let resp = client
+        .get(format!(
+            "{}/api/workflows/{}?days=30&since=2026-01-01",
+            base_url, wf_id
+        ))
+        .send()
+        .await
+        .expect("GET with conflicting params");
+    assert_eq!(resp.status(), 400, "conflicting params should return 400");
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        json["error"].as_str().unwrap_or(""),
+        "conflicting_params",
+        "error code should be conflicting_params"
+    );
+}
+
+/// DB-12. ?days=400 returns 400 window_too_large.
+#[tokio::test]
+async fn test_query_days_over_365_returns_400() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db12-days-too-large")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let resp = client
+        .get(format!("{}/api/workflows/{}?days=400", base_url, wf_id))
+        .send()
+        .await
+        .expect("GET with days=400");
+    assert_eq!(resp.status(), 400, "days > 365 should return 400");
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        json["error"].as_str().unwrap_or(""),
+        "window_too_large",
+        "error code should be window_too_large"
+    );
+}
+
+/// DB-13. ?since= after ?until= returns 400 invalid_window.
+#[tokio::test]
+async fn test_query_since_after_until_returns_400() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db13-invalid-range")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let resp = client
+        .get(format!(
+            "{}/api/workflows/{}?since=2026-05-01&until=2026-04-01",
+            base_url, wf_id
+        ))
+        .send()
+        .await
+        .expect("GET since > until");
+    assert_eq!(resp.status(), 400, "since > until should return 400");
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        json["error"].as_str().unwrap_or(""),
+        "invalid_window",
+        "error code should be invalid_window"
+    );
+}
+
+/// DB-14. ?since= without ?until= returns 400 invalid_window.
+#[tokio::test]
+async fn test_query_only_since_no_until_returns_400() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db14-since-no-until")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let resp = client
+        .get(format!(
+            "{}/api/workflows/{}?since=2026-04-01",
+            base_url, wf_id
+        ))
+        .send()
+        .await
+        .expect("GET since without until");
+    assert_eq!(resp.status(), 400, "since without until should return 400");
+    let json: serde_json::Value = resp.json().await.unwrap();
+    let code = json["error"].as_str().unwrap_or("");
+    assert_eq!(
+        code, "invalid_window",
+        "error code should be invalid_window, got {:?}",
+        code
+    );
+}
+
+/// DB-15. Eager invalidation: after a new run completes, GET shows updated buckets.
+#[tokio::test]
+async fn test_daily_buckets_refresh_on_run_completion() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("db15-invalidation")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Seed 1 Completed run (yesterday — use UTC-1d so it falls safely inside
+    // the 30-day window regardless of UTC-to-display-tz offset at runtime).
+    let today = (Utc::now() - Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &today,
+        Some(0.10),
+    )
+    .await;
+
+    // Prime the cache with a GET — should show 1 bucket.
+    let resp1: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET 1")
+        .json()
+        .await
+        .unwrap();
+    let buckets1 = resp1["cost_summary"]["daily_buckets"]
+        .as_array()
+        .expect("daily_buckets");
+    let initial_runs = buckets1
+        .iter()
+        .find(|b| b["date"].as_str() == Some(today.as_str()))
+        .map(|b| b["runs_completed"].as_u64().unwrap_or(0))
+        .unwrap_or(0);
+    assert_eq!(initial_runs, 1, "initial bucket should show 1 run");
+
+    // Insert a second run then invalidate the cache entry (simulates event-bus path).
+    insert_dated_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        &today,
+        Some(0.10),
+    )
+    .await;
+    state.cost_cache.forget(wf_id).await;
+
+    // Poll until the second GET reflects the updated bucket count.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
+    let updated_runs: u64 = loop {
+        let resp: serde_json::Value = client
+            .get(format!("{}/api/workflows/{}?days=30", base_url, wf_id_str))
+            .send()
+            .await
+            .expect("GET 2")
+            .json()
+            .await
+            .unwrap();
+        let buckets = resp["cost_summary"]["daily_buckets"]
+            .as_array()
+            .expect("daily_buckets");
+        let runs = buckets
+            .iter()
+            .find(|b| b["date"].as_str() == Some(today.as_str()))
+            .map(|b| b["runs_completed"].as_u64().unwrap_or(0))
+            .unwrap_or(0);
+        if runs >= 2 {
+            break runs;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break runs;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_eq!(
+        updated_runs, 2,
+        "after cache invalidation, bucket should reflect 2 completed runs"
     );
 }
 

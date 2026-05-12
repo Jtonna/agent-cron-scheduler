@@ -18,7 +18,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use chrono::Utc;
+use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -26,7 +27,8 @@ use super::AppState;
 use crate::daemon::events::{WorkflowChangeKind, WorkflowEvent};
 use crate::errors::AcsError;
 use crate::models::workflow::{
-    NewWorkflow, RunStatus, TriggerParams, Workflow, WorkflowRun, WorkflowUpdate,
+    CostSummary, NewWorkflow, RunStatus, TriggerParams, Workflow, WorkflowListResponse,
+    WorkflowRun, WorkflowUpdate,
 };
 use crate::workflow::{EventEmittingLogSink, FileLogSink};
 
@@ -218,23 +220,251 @@ async fn resolve_workflow(
 }
 
 // ---------------------------------------------------------------------------
+// Cost window query params + validation
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+pub struct CostWindowParams {
+    pub days: Option<u32>,
+    pub since: Option<String>,
+    pub until: Option<String>,
+}
+
+/// Parse an ISO-8601 date string ("YYYY-MM-DD") into a `NaiveDate`.
+fn parse_iso_date(s: &str) -> Result<NaiveDate, (StatusCode, Json<ErrorResponse>)> {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_window".to_string(),
+                message: format!("Cannot parse date '{}'; expected YYYY-MM-DD", s),
+            }),
+        )
+    })
+}
+
+/// Resolve the cost window from the query params.
+///
+/// Returns `(since_utc, until_utc)` — both are midnight boundaries in
+/// `display_tz`, converted to UTC.
+///
+/// Validation rules:
+/// - `days` AND (`since` OR `until`) together → 400 `conflicting_params`
+/// - `days > 365` → 400 `window_too_large`
+/// - Only one of `since`/`until` provided → 400 `invalid_window`
+/// - `since >= until` → 400 `invalid_window`
+/// - span > 365 days → 400 `window_too_large`
+/// - Default (no params) → last 30 days
+#[allow(clippy::type_complexity)]
+fn resolve_window(
+    p: &CostWindowParams,
+    display_tz: Tz,
+) -> Result<(DateTime<Utc>, DateTime<Utc>), (StatusCode, Json<ErrorResponse>)> {
+    let bad = |code: &str, msg: &str| -> (StatusCode, Json<ErrorResponse>) {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: code.to_string(),
+                message: msg.to_string(),
+            }),
+        )
+    };
+
+    // Mutex: days + (since | until) is invalid.
+    if p.days.is_some() && (p.since.is_some() || p.until.is_some()) {
+        return Err(bad(
+            "conflicting_params",
+            "use either `days` OR `since`+`until`, not both",
+        ));
+    }
+
+    let now_utc = Utc::now();
+    let now_local = now_utc.with_timezone(&display_tz);
+    let today_naive = now_local.date_naive();
+
+    // `until` = start of tomorrow in display_tz (exclusive upper bound = end of today).
+    let tomorrow_naive = today_naive
+        .succ_opt()
+        .expect("date arithmetic should not overflow");
+    let until_midnight = display_tz
+        .from_local_datetime(
+            &tomorrow_naive
+                .and_hms_opt(0, 0, 0)
+                .expect("00:00:00 is always valid"),
+        )
+        .earliest()
+        .unwrap_or_else(|| {
+            display_tz
+                .from_local_datetime(
+                    &tomorrow_naive
+                        .and_hms_opt(0, 0, 0)
+                        .expect("00:00:00 is always valid"),
+                )
+                .latest()
+                .expect("at least one mapping must exist")
+        })
+        .with_timezone(&Utc);
+
+    let (since, until) = if let Some(d) = p.days {
+        if d == 0 {
+            return Err(bad("invalid_window", "days must be >= 1"));
+        }
+        if d > 365 {
+            return Err(bad("window_too_large", "max window is 365 days"));
+        }
+        let until = until_midnight;
+        let since = until - Duration::days(d as i64);
+        (since, until)
+    } else if p.since.is_some() && p.until.is_some() {
+        let since_date = parse_iso_date(p.since.as_deref().unwrap())?;
+        let until_date = parse_iso_date(p.until.as_deref().unwrap())?;
+        if since_date >= until_date {
+            return Err(bad("invalid_window", "`since` must be before `until`"));
+        }
+        let span_days = (until_date - since_date).num_days();
+        if span_days > 365 {
+            return Err(bad("window_too_large", "max window is 365 days"));
+        }
+        let to_utc = |d: NaiveDate| {
+            display_tz
+                .from_local_datetime(&d.and_hms_opt(0, 0, 0).expect("00:00:00 is always valid"))
+                .earliest()
+                .unwrap_or_else(|| {
+                    display_tz
+                        .from_local_datetime(
+                            &d.and_hms_opt(0, 0, 0).expect("00:00:00 is always valid"),
+                        )
+                        .latest()
+                        .expect("at least one mapping must exist")
+                })
+                .with_timezone(&Utc)
+        };
+        (to_utc(since_date), to_utc(until_date))
+    } else if p.since.is_some() || p.until.is_some() {
+        return Err(bad(
+            "invalid_window",
+            "both `since` and `until` are required when not using `days`",
+        ));
+    } else {
+        // Default: last 30 days.
+        let until = until_midnight;
+        let since = until - Duration::days(30);
+        (since, until)
+    };
+
+    Ok((since, until))
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/workflows
 // ---------------------------------------------------------------------------
 
-pub async fn list_workflows(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn list_workflows(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CostWindowParams>,
+) -> impl IntoResponse {
+    // Parse display_tz from config.
+    let display_tz: Tz = match state.config.display_timezone.parse() {
+        Ok(tz) => tz,
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!(
+                    "Invalid display_timezone in daemon config: {}",
+                    state.config.display_timezone
+                ),
+            )
+            .into_response();
+        }
+    };
+
+    // Validate and resolve cost window.
+    let (since, until) = match resolve_window(&params, display_tz) {
+        Ok(w) => w,
+        Err((status, body)) => return (status, body).into_response(),
+    };
+
     match state.workflow_store.list_workflows().await {
         Ok(mut workflows) => {
+            // Attach per-workflow cost summary + daily buckets.
             for wf in &mut workflows {
                 match state.cost_cache.get(wf.id).await {
-                    Ok(summary) => wf.cost_summary = Some(summary),
+                    Ok(mut summary) => {
+                        match state
+                            .cost_cache
+                            .get_daily_buckets_for(wf.id, since, until)
+                            .await
+                        {
+                            Ok(buckets) => summary.daily_buckets = buckets,
+                            Err(e) => {
+                                tracing::warn!(
+                                    workflow_id = %wf.id,
+                                    "cost_cache.get_daily_buckets_for failed: {}",
+                                    e
+                                );
+                            }
+                        }
+                        wf.cost_summary = Some(summary);
+                    }
                     Err(e) => {
                         tracing::warn!(workflow_id = %wf.id, "cost_cache.get failed: {}", e);
                     }
                 }
             }
+
+            // Build system_cost_summary by aggregating per-workflow scalars
+            // and fetching system-wide daily buckets.
+            let system_last_30_days_total_usd: f64 = workflows
+                .iter()
+                .filter_map(|wf| wf.cost_summary.as_ref())
+                .map(|s| s.last_30_days_total_usd)
+                .sum();
+            let system_last_30_days_runs: u64 = workflows
+                .iter()
+                .filter_map(|wf| wf.cost_summary.as_ref())
+                .map(|s| s.last_30_days_runs)
+                .sum();
+            let system_last_year_total_usd: f64 = workflows
+                .iter()
+                .filter_map(|wf| wf.cost_summary.as_ref())
+                .map(|s| s.last_year_total_usd)
+                .sum();
+            let system_last_year_runs: u64 = workflows
+                .iter()
+                .filter_map(|wf| wf.cost_summary.as_ref())
+                .map(|s| s.last_year_runs)
+                .sum();
+
+            let system_daily_buckets = match state
+                .cost_cache
+                .get_system_daily_buckets(since, until)
+                .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!("cost_cache.get_system_daily_buckets failed: {}", e);
+                    vec![]
+                }
+            };
+
+            let system_cost_summary = CostSummary {
+                last_30_days_total_usd: system_last_30_days_total_usd,
+                last_30_days_runs: system_last_30_days_runs,
+                last_year_total_usd: system_last_year_total_usd,
+                last_year_runs: system_last_year_runs,
+                computed_at: Utc::now(),
+                daily_buckets: system_daily_buckets,
+            };
+
+            let response = WorkflowListResponse {
+                workflows,
+                system_cost_summary,
+            };
+
             (
                 StatusCode::OK,
-                Json(serde_json::to_value(workflows).unwrap()),
+                Json(serde_json::to_value(response).unwrap()),
             )
                 .into_response()
         }
@@ -419,11 +649,50 @@ pub async fn create_workflow(
 pub async fn get_workflow(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<CostWindowParams>,
 ) -> impl IntoResponse {
+    // Parse display_tz from config.
+    let display_tz: Tz = match state.config.display_timezone.parse() {
+        Ok(tz) => tz,
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!(
+                    "Invalid display_timezone in daemon config: {}",
+                    state.config.display_timezone
+                ),
+            )
+            .into_response();
+        }
+    };
+
+    // Validate and resolve cost window.
+    let (since, until) = match resolve_window(&params, display_tz) {
+        Ok(w) => w,
+        Err((status, body)) => return (status, body).into_response(),
+    };
+
     match resolve_workflow(&state, &id).await {
         Ok(mut wf) => {
             match state.cost_cache.get(wf.id).await {
-                Ok(summary) => wf.cost_summary = Some(summary),
+                Ok(mut summary) => {
+                    match state
+                        .cost_cache
+                        .get_daily_buckets_for(wf.id, since, until)
+                        .await
+                    {
+                        Ok(buckets) => summary.daily_buckets = buckets,
+                        Err(e) => {
+                            tracing::warn!(
+                                workflow_id = %wf.id,
+                                "cost_cache.get_daily_buckets_for failed: {}",
+                                e
+                            );
+                        }
+                    }
+                    wf.cost_summary = Some(summary);
+                }
                 Err(e) => {
                     tracing::warn!(workflow_id = %wf.id, "cost_cache.get failed: {}", e);
                 }
@@ -1438,7 +1707,17 @@ mod tests {
                 last_year_total_usd: 0.0,
                 last_year_runs: 0,
                 computed_at: chrono::Utc::now(),
+                daily_buckets: Vec::new(),
             })
+        }
+        async fn daily_buckets_for(
+            &self,
+            _workflow_id: Option<Uuid>,
+            _since: chrono::DateTime<chrono::Utc>,
+            _until: chrono::DateTime<chrono::Utc>,
+            _display_tz: &chrono_tz::Tz,
+        ) -> Result<Vec<crate::models::workflow::DailyBucket>, AcsError> {
+            Ok(Vec::new())
         }
     }
 
@@ -1541,7 +1820,8 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let json = body_json(resp.into_body()).await;
-        assert!(json.as_array().unwrap().is_empty());
+        // v4.2.9: response is wrapped as {workflows, system_cost_summary}
+        assert!(json["workflows"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

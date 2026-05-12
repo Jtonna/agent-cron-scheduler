@@ -222,7 +222,7 @@ pub async fn cmd_list(
     }
 
     let empty_vec = vec![];
-    let workflows = body.as_array().unwrap_or(&empty_vec);
+    let workflows = body["workflows"].as_array().unwrap_or(&empty_vec);
 
     if workflows.is_empty() {
         println!("No workflows found.");
