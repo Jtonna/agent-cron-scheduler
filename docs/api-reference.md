@@ -742,6 +742,10 @@ List cost analytics for all workflows.
         "last_30_days_runs": 20,
         "last_year_total_usd": 42.10,
         "last_year_runs": 142,
+        "last_30_days_input_tokens": 12450,
+        "last_30_days_output_tokens": 8320,
+        "last_year_input_tokens": 98740,
+        "last_year_output_tokens": 64210,
         "computed_at": "2026-05-10T23:14:22Z",
         "daily_buckets": [
           {
@@ -752,7 +756,15 @@ List cost analytics for all workflows.
             "cost_from_killed": 0.00,
             "runs_completed": 3,
             "runs_failed": 0,
-            "runs_killed": 0
+            "runs_killed": 0,
+            "tokens_in_from_completed": 1860,
+            "tokens_in_from_failed": 0,
+            "tokens_in_from_killed": 0,
+            "tokens_out_from_completed": 1240,
+            "tokens_out_from_failed": 0,
+            "tokens_out_from_killed": 0,
+            "total_input_tokens": 1860,
+            "total_output_tokens": 1240
           }
         ]
       }
@@ -763,6 +775,10 @@ List cost analytics for all workflows.
     "last_30_days_runs": 20,
     "last_year_total_usd": 42.10,
     "last_year_runs": 142,
+    "last_30_days_input_tokens": 12450,
+    "last_30_days_output_tokens": 8320,
+    "last_year_input_tokens": 98740,
+    "last_year_output_tokens": 64210,
     "computed_at": "2026-05-10T23:14:22Z",
     "daily_buckets": [
       {
@@ -773,7 +789,15 @@ List cost analytics for all workflows.
         "cost_from_killed": 0.00,
         "runs_completed": 3,
         "runs_failed": 0,
-        "runs_killed": 0
+        "runs_killed": 0,
+        "tokens_in_from_completed": 1860,
+        "tokens_in_from_failed": 0,
+        "tokens_in_from_killed": 0,
+        "tokens_out_from_completed": 1240,
+        "tokens_out_from_failed": 0,
+        "tokens_out_from_killed": 0,
+        "total_input_tokens": 1860,
+        "total_output_tokens": 1240
       }
     ]
   }
@@ -819,6 +843,10 @@ Retrieve cost analytics for a single workflow.
     "last_30_days_runs": 20,
     "last_year_total_usd": 42.10,
     "last_year_runs": 142,
+    "last_30_days_input_tokens": 12450,
+    "last_30_days_output_tokens": 8320,
+    "last_year_input_tokens": 98740,
+    "last_year_output_tokens": 64210,
     "computed_at": "2026-05-10T23:14:22Z",
     "daily_buckets": [
       {
@@ -829,7 +857,15 @@ Retrieve cost analytics for a single workflow.
         "cost_from_killed": 0.00,
         "runs_completed": 3,
         "runs_failed": 0,
-        "runs_killed": 0
+        "runs_killed": 0,
+        "tokens_in_from_completed": 1860,
+        "tokens_in_from_failed": 0,
+        "tokens_in_from_killed": 0,
+        "tokens_out_from_completed": 1240,
+        "tokens_out_from_failed": 0,
+        "tokens_out_from_killed": 0,
+        "total_input_tokens": 1860,
+        "total_output_tokens": 1240
       }
     ]
   }
@@ -885,6 +921,10 @@ Aggregated cost and run-count data over rolling windows. Returned in [CostWorkfl
 | `last_30_days_runs` | integer | Count of all terminal runs in the 30-day window, regardless of whether they had non-null cost. |
 | `last_year_total_usd` | float | Same as 30-day, but over the last 365 days. |
 | `last_year_runs` | integer | Same. |
+| `last_30_days_input_tokens` | integer (u64) | Sum of `total_input_tokens` across all terminal runs in the 30-day window. Non-agent runs contribute 0. Added in v4.2.11. |
+| `last_30_days_output_tokens` | integer (u64) | Sum of `total_output_tokens` across all terminal runs in the 30-day window. Non-agent runs contribute 0. Added in v4.2.11. |
+| `last_year_input_tokens` | integer (u64) | Same as 30-day input, but over the last 365 days. Added in v4.2.11. |
+| `last_year_output_tokens` | integer (u64) | Same as 30-day output, but over the last 365 days. Added in v4.2.11. |
 | `computed_at` | string (ISO 8601) | When the summary was computed. Reflects cache freshness: each entry is recomputed on the next terminal run for the workflow, or at midnight in `display_timezone` (whichever comes first). |
 | `daily_buckets` | array of [DailyBucket](#dailybucket) | Per-day cost breakdown for the requested window (controlled by `?days=N` or `?since=...&until=...`). Zero-days are omitted; the array is sorted ascending by date. |
 
@@ -906,6 +946,14 @@ A single day's cost breakdown within a `CostSummary.daily_buckets` array. Only d
 | `runs_completed` | integer | Count of `Completed` runs on this day. |
 | `runs_failed` | integer | Count of `Failed` runs on this day. |
 | `runs_killed` | integer | Count of `Killed` runs on this day. |
+| `tokens_in_from_completed` | integer (u64) | Sum of `total_input_tokens` for `Completed` runs on this day. Added in v4.2.11. |
+| `tokens_in_from_failed` | integer (u64) | Sum of `total_input_tokens` for `Failed` runs on this day. Added in v4.2.11. |
+| `tokens_in_from_killed` | integer (u64) | Sum of `total_input_tokens` for `Killed` runs on this day. Added in v4.2.11. |
+| `tokens_out_from_completed` | integer (u64) | Sum of `total_output_tokens` for `Completed` runs on this day. Added in v4.2.11. |
+| `tokens_out_from_failed` | integer (u64) | Sum of `total_output_tokens` for `Failed` runs on this day. Added in v4.2.11. |
+| `tokens_out_from_killed` | integer (u64) | Sum of `total_output_tokens` for `Killed` runs on this day. Added in v4.2.11. |
+| `total_input_tokens` | integer (u64) | Cross-status sum: `tokens_in_from_completed + tokens_in_from_failed + tokens_in_from_killed`. Added in v4.2.11. |
+| `total_output_tokens` | integer (u64) | Cross-status sum: `tokens_out_from_completed + tokens_out_from_failed + tokens_out_from_killed`. Added in v4.2.11. |
 
 ---
 
@@ -1212,6 +1260,8 @@ Represents a single execution of a workflow.
 | `steps`             | array of [StepRun](#steprun)   | No       | Step execution records in runtime order (flattened; branch steps appear inline).        |
 | `total_cost_usd`    | number (f64)                   | Yes      | Summed cost across all `AgentStep` runs in USD. `null` if no agent steps ran.            |
 | `total_duration_ms` | integer (u64)                  | Yes      | Total wall-clock duration in milliseconds. `null` while running.                         |
+| `total_input_tokens` | integer (u64)                 | No       | Summed input tokens across all `AgentStep` runs (from `usage.iterations[]` in the Claude CLI stream-json). `0` for runs with no agent steps or pre-v4.2.11 historical runs. Added in v4.2.11. |
+| `total_output_tokens` | integer (u64)                | No       | Summed output tokens across all `AgentStep` runs. `0` for runs with no agent steps or pre-v4.2.11 historical runs. Added in v4.2.11. |
 
 ---
 

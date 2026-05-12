@@ -47,6 +47,10 @@ docs {
           "last_30_days_runs": 20,
           "last_year_total_usd": 42.10,
           "last_year_runs": 142,
+          "last_30_days_input_tokens": 12450,
+          "last_30_days_output_tokens": 8320,
+          "last_year_input_tokens": 98740,
+          "last_year_output_tokens": 64210,
           "computed_at": "2026-05-10T23:14:22Z",
           "daily_buckets": [
             {
@@ -57,7 +61,15 @@ docs {
               "cost_from_killed": 0.00,
               "runs_completed": 3,
               "runs_failed": 0,
-              "runs_killed": 0
+              "runs_killed": 0,
+              "tokens_in_from_completed": 1860,
+              "tokens_in_from_failed": 0,
+              "tokens_in_from_killed": 0,
+              "tokens_out_from_completed": 1240,
+              "tokens_out_from_failed": 0,
+              "tokens_out_from_killed": 0,
+              "total_input_tokens": 1860,
+              "total_output_tokens": 1240
             }
           ]
         }
@@ -68,6 +80,10 @@ docs {
       "last_30_days_runs": 20,
       "last_year_total_usd": 42.10,
       "last_year_runs": 142,
+      "last_30_days_input_tokens": 12450,
+      "last_30_days_output_tokens": 8320,
+      "last_year_input_tokens": 98740,
+      "last_year_output_tokens": 64210,
       "computed_at": "2026-05-10T23:14:22Z",
       "daily_buckets": [
         {
@@ -78,7 +94,15 @@ docs {
           "cost_from_killed": 0.00,
           "runs_completed": 3,
           "runs_failed": 0,
-          "runs_killed": 0
+          "runs_killed": 0,
+          "tokens_in_from_completed": 1860,
+          "tokens_in_from_failed": 0,
+          "tokens_in_from_killed": 0,
+          "tokens_out_from_completed": 1240,
+          "tokens_out_from_failed": 0,
+          "tokens_out_from_killed": 0,
+          "total_input_tokens": 1860,
+          "total_output_tokens": 1240
         }
       ]
     }
@@ -92,4 +116,12 @@ docs {
 
   The `system_cost_summary` aggregates costs across ALL workflows. Its
   `daily_buckets` array is the union of all per-workflow buckets, summed by day.
+
+  **v4.2.11:** `CostSummary` exposes rolling-window token totals
+  (`last_30_days_input_tokens` / `_output_tokens`, `last_year_input_tokens` /
+  `_output_tokens`) and each `DailyBucket` carries per-status splits
+  (`tokens_in_from_{completed,failed,killed}`, `tokens_out_from_*`) plus
+  cross-status sums (`total_input_tokens`, `total_output_tokens`). Tokens are
+  sourced from the Claude CLI `usage.iterations[]` stream-json; non-agent runs
+  contribute 0.
 }

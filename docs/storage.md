@@ -123,6 +123,8 @@ CREATE TABLE workflow_runs (
     steps_json          TEXT NOT NULL,
     total_cost_usd      REAL,
     total_duration_ms   INTEGER,
+    total_input_tokens  INTEGER NOT NULL DEFAULT 0,  -- added by m007 (v4.2.11)
+    total_output_tokens INTEGER NOT NULL DEFAULT 0,  -- added by m007 (v4.2.11)
     FOREIGN KEY (workflow_id) REFERENCES workflows(id)
 );
 
@@ -325,7 +327,7 @@ The `workflow_runs` table has three secondary indexes:
 
 The cost-analytics aggregation query — `SUM(CASE WHEN finished_at >= ? THEN total_cost_usd END)` plus `COUNT(...)` over two windows — runs once per workflow per `GET /api/cost/workflows[/{id}]` cache miss. The `idx_workflow_runs_workflow_id_finished_at` composite index established in m002 covers this access pattern: the WHERE clause filters by `workflow_id`, `status IN (...)`, and `finished_at >= ?`, with the conditional SUMs evaluated over the filtered rows.
 
-The daily-bucket query fetches `(finished_at, status, total_cost_usd)` over the window for the requested workflow (or all workflows for the system aggregate). Per-day grouping happens in Rust using `chrono_tz` to convert each UTC `finished_at` to the daemon's `display_timezone` local date — this avoids fighting SQLite's `localtime` / `strftime` for cross-platform consistency. The same `idx_workflow_runs_workflow_id_finished_at` composite index covers both per-workflow and system-wide queries. Both query paths are invoked exclusively by the cost endpoint handlers at `GET /api/cost/workflows[/{id}]`.
+The daily-bucket query fetches `(finished_at, status, total_cost_usd, total_input_tokens, total_output_tokens)` over the window for the requested workflow (or all workflows for the system aggregate). Per-day grouping happens in Rust using `chrono_tz` to convert each UTC `finished_at` to the daemon's `display_timezone` local date — this avoids fighting SQLite's `localtime` / `strftime` for cross-platform consistency. The same `idx_workflow_runs_workflow_id_finished_at` composite index covers both per-workflow and system-wide queries. Both query paths are invoked exclusively by the cost endpoint handlers at `GET /api/cost/workflows[/{id}]`. The `total_input_tokens` / `total_output_tokens` columns were added in v4.2.11 (migration m007).
 
 ---
 
@@ -455,6 +457,7 @@ On every `write_chunk(data)`:
 `acs/src/migration/m004_drop_input_schema.rs`,
 `acs/src/migration/m005_shell_claude_to_agent.rs`,
 `acs/src/migration/m006_agent_step_normalize.rs`,
+`acs/src/migration/m007_add_token_columns.rs`,
 `acs/src/migration/legacy_types.rs`
 
 ### Design
@@ -487,7 +490,8 @@ Applied migration names are tracked in `{data_dir}/migrations.json`:
     "m003_drop_step_output_summary",
     "m004_drop_input_schema",
     "m005_shell_claude_to_agent",
-    "m006_agent_step_normalize"
+    "m006_agent_step_normalize",
+    "m007_add_token_columns"
   ]
 }
 ```
@@ -700,6 +704,20 @@ unchanged with a `tracing::warn!`. Operators can rewrite those by hand.
 
 Rollback on parse/UPDATE error. Idempotent: after rewriting, no `command_template` keys
 remain, so a second run sees no candidates and returns `Ok(false)`.
+
+### m007_add_token_columns
+
+`m007_add_token_columns` adds the `total_input_tokens` and `total_output_tokens`
+columns to the `workflow_runs` table introduced in v4.2.11. Both columns are
+`INTEGER NOT NULL DEFAULT 0`, so historical rows transparently backfill to `0`
+("tokens not tracked"). Fresh installs receive the columns directly via
+`schema.rs` and this migration short-circuits.
+
+| Condition | Action |
+|---|---|
+| `acs.db` does not exist | No-op (return `Ok(false)`) — fresh install |
+| `total_input_tokens` column already present on `workflow_runs` | No-op (return `Ok(false)`) — idempotent |
+| Otherwise | BEGIN transaction → `ALTER TABLE workflow_runs ADD COLUMN total_input_tokens INTEGER NOT NULL DEFAULT 0;` and `ALTER TABLE workflow_runs ADD COLUMN total_output_tokens INTEGER NOT NULL DEFAULT 0;` → COMMIT |
 
 ---
 

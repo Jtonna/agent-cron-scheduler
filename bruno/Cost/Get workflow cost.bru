@@ -55,6 +55,10 @@ docs {
       "last_30_days_runs": 20,
       "last_year_total_usd": 42.10,
       "last_year_runs": 142,
+      "last_30_days_input_tokens": 12450,
+      "last_30_days_output_tokens": 8320,
+      "last_year_input_tokens": 98740,
+      "last_year_output_tokens": 64210,
       "computed_at": "2026-05-10T23:14:22Z",
       "daily_buckets": [
         {
@@ -65,7 +69,15 @@ docs {
           "cost_from_killed": 0.00,
           "runs_completed": 1,
           "runs_failed": 0,
-          "runs_killed": 0
+          "runs_killed": 0,
+          "tokens_in_from_completed": 620,
+          "tokens_in_from_failed": 0,
+          "tokens_in_from_killed": 0,
+          "tokens_out_from_completed": 410,
+          "tokens_out_from_failed": 0,
+          "tokens_out_from_killed": 0,
+          "total_input_tokens": 620,
+          "total_output_tokens": 410
         },
         {
           "date": "2026-05-09",
@@ -75,7 +87,15 @@ docs {
           "cost_from_killed": 0.00,
           "runs_completed": 1,
           "runs_failed": 0,
-          "runs_killed": 0
+          "runs_killed": 0,
+          "tokens_in_from_completed": 780,
+          "tokens_in_from_failed": 0,
+          "tokens_in_from_killed": 0,
+          "tokens_out_from_completed": 520,
+          "tokens_out_from_failed": 0,
+          "tokens_out_from_killed": 0,
+          "total_input_tokens": 780,
+          "total_output_tokens": 520
         }
       ]
     }
@@ -84,4 +104,12 @@ docs {
 
   The `daily_buckets` array is sorted ascending by date. Zero-days (days with
   no terminal runs) are omitted — the array is sparse, not padded.
+
+  **v4.2.11:** `CostSummary` now exposes rolling-window token totals
+  (`last_30_days_input_tokens` / `_output_tokens` and `last_year_input_tokens` /
+  `_output_tokens`). Each `DailyBucket` also carries per-status splits
+  (`tokens_in_from_{completed,failed,killed}` and `tokens_out_from_*`) plus
+  cross-status sums (`total_input_tokens`, `total_output_tokens`). Tokens come
+  from the Claude CLI `usage.iterations[]` stream-json; non-agent runs
+  contribute 0.
 }

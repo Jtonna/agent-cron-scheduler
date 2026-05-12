@@ -469,6 +469,8 @@ StepDef (tag = "kind")
 | `steps` | `Vec<StepRun>` in execution order (not definition order; `MatchStep` branches are flattened) |
 | `total_cost_usd` | Sum of `AgentStep` costs; `None` if no agent steps ran |
 | `total_duration_ms` | Wall-clock duration of the run |
+| `total_input_tokens` | Sum of input tokens across `AgentStep` runs (from `usage.iterations[]` in the Claude CLI stream-json); `0` for non-agent runs. v4.2.11+. |
+| `total_output_tokens` | Sum of output tokens across `AgentStep` runs; `0` for non-agent runs. v4.2.11+. |
 
 `StepRun` per step:
 
@@ -700,6 +702,8 @@ Storage (`WorkflowStore`, `WorkflowRunStore`), process spawning (`PtySpawner`, `
 ### 11.4 Streaming Cost Extraction
 
 Agent cost data is extracted inline during the step's output streaming via `AgentOutputParser::parse_chunk()`, not post-hoc from logs. `ClaudeStreamParser` (`acs/src/workflow/agents/claude_code_cli.rs`) buffers partial NDJSON lines, processes `type=system` and `type=result` records, and accumulates totals. A `ShellStep` that happens to call `claude -p` directly does not get cost tracking — cost tracking is opt-in via `AgentStep`.
+
+Alongside `total_cost_usd`, the same parser also sums input/output token counts across the Claude CLI `usage.iterations[]` array. Per-step totals are aggregated into `WorkflowRun.total_input_tokens` / `total_output_tokens` at run completion (non-agent steps contribute 0) and surfaced by the cost API on `CostSummary` (rolling 30-day and 1-year windows) and on each `DailyBucket` (per-status splits plus cross-status totals). Added in v4.2.11.
 
 ### 11.5 EventEmittingLogSink Decorator
 
