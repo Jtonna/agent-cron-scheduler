@@ -704,7 +704,7 @@ The full workflow object returned by GET, POST (201), and PATCH (200) endpoints.
 | `next_run_at`     | string (ISO 8601)                     | Yes      | Computed next scheduled run time. `null` for disabled workflows. Never persisted; always computed at read time. |
 | `created_at`      | string (ISO 8601)                     | No       | When the workflow was created.                                                     |
 | `updated_at`      | string (ISO 8601)                     | No       | When the workflow was last modified.                                               |
-| `cost_summary`    | [CostSummary](#costsummary) (nullable) | Yes     | Embedded cost analytics: 30-day and 1-year totals + run counts. Populated on GET responses. Computed over calendar-day-bounded windows in the daemon's `display_timezone`. Cached in-memory; invalidated on each terminal run for the workflow. |
+| `cost_summary`    | [CostSummary](#costsummary) (nullable) | No      | Embedded cost analytics: 30-day and 1-year totals + run counts. Populated on GET responses. Computed over calendar-day-bounded windows in the daemon's `display_timezone`. Cached in-memory; invalidated on each terminal run for the workflow. |
 
 ---
 
@@ -718,7 +718,7 @@ Aggregated cost and run-count data over rolling windows. Returned embedded in `W
 | `last_30_days_runs` | integer | Count of all terminal runs in the 30-day window, regardless of whether they had non-null cost. |
 | `last_year_total_usd` | float | Same as 30-day, but over the last 365 days. |
 | `last_year_runs` | integer | Same. |
-| `computed_at` | timestamp | When the summary was computed. Reflects cache freshness: each entry is recomputed on the next terminal run for the workflow, or at midnight in `display_timezone` (whichever comes first). |
+| `computed_at` | string (ISO 8601) | When the summary was computed. Reflects cache freshness: each entry is recomputed on the next terminal run for the workflow, or at midnight in `display_timezone` (whichever comes first). |
 
 Per-day/week/month bucketing is computed client-side by the UI using the per-run `total_cost_usd` exposed by `GET /api/workflows/{id}/runs`. The server does not pre-bucket beyond the 30-day and 1-year totals.
 
