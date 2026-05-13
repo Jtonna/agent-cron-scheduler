@@ -24,6 +24,7 @@ All request and response bodies use JSON (`Content-Type: application/json`) unle
   - [DELETE /api/workflows/{id}](#delete-apiworkflowsid)
   - [POST /api/workflows/{id}/trigger](#post-apiworkflowsidtrigger)
   - [GET /api/workflows/{id}/runs](#get-apiworkflowsidruns)
+  - [GET /api/runs/recent](#get-apirunsrecent)
   - [GET /api/runs/{run_id}](#get-apirunsrun_id)
   - [POST /api/runs/{run_id}/kill](#post-apirunsrun_idkill)
   - [GET /api/runs/{run_id}/log](#get-apirunsrun_idlog)
@@ -477,6 +478,51 @@ List execution runs for a specific workflow, with pagination. Returns latest-fir
 |---------|---------|----------------------------------------------------------|
 | `runs`  | array   | Array of [WorkflowRun](#workflowrun) objects.           |
 | `total` | integer | Total number of runs for this workflow (before pagination). |
+
+---
+
+### GET /api/runs/recent
+
+List recent execution runs across **all** workflows in a single chronologically-merged feed, latest-first. Each entry carries the same fields as a per-workflow run — including the embedded `workflow_snapshot` (which contains the workflow's `name`) — so consumers can render a mixed activity feed without additional lookups.
+
+**Query Parameters:**
+
+| Parameter | Type    | Required | Default | Description                                          |
+|-----------|---------|----------|---------|------------------------------------------------------|
+| `limit`   | integer | No       | `20`    | Maximum number of runs to return. Capped at `100`.   |
+| `offset`  | integer | No       | `0`     | Number of runs to skip (for pagination).             |
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns a paginated, chronologically-merged list of runs. |
+| 500 Internal Server Error | Storage failure. |
+
+```json
+{
+  "runs": [
+    {
+      "run_id": "01941234-bbbb-7abc-def0-123456789abc",
+      "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+      "workflow_version": 1,
+      "workflow_snapshot": { "name": "nightly-backup", "...": "full Workflow object" },
+      "started_at": "2025-01-16T02:00:00Z",
+      "finished_at": "2025-01-16T02:05:30Z",
+      "status": "Completed",
+      "steps": []
+    }
+  ],
+  "total": 1342
+}
+```
+
+| Field   | Type    | Description                                              |
+|---------|---------|----------------------------------------------------------|
+| `runs`  | array   | Array of [WorkflowRun](#workflowrun) objects, ordered latest-first across all workflows. |
+| `total` | integer | Total number of runs across all workflows (before pagination). |
+
+Ordering is by `run_id` descending. Since `run_id` is a UUIDv7, lexicographic descending order matches insertion-time ordering.
 
 ---
 

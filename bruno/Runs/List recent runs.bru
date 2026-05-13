@@ -1,0 +1,42 @@
+meta {
+  name: List recent runs
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/runs/recent?limit=20&offset=0
+  body: none
+  auth: none
+}
+
+params:query {
+  limit: 20
+  offset: 0
+}
+
+docs {
+  List recent runs across **all** workflows in a single chronologically-merged
+  feed, newest first. Useful for a global activity feed / dashboard.
+
+  Each run carries the same fields as a per-workflow run, including the embedded
+  `workflow_snapshot` (with the workflow's `name`), so the client can render a
+  mixed feed without additional lookups.
+
+  Query params:
+  - `limit` — default 20, server caps at 100
+  - `offset` — for pagination
+
+  Response shape:
+  ```json
+  {
+    "runs": [ /* WorkflowRun objects, latest-first across all workflows */ ],
+    "total": 1342
+  }
+  ```
+
+  `total` is the unfiltered count of runs across all workflows.
+
+  Ordering is by `run_id` descending. Since `run_id` is a UUIDv7, lexicographic
+  descending order matches insertion-time ordering.
+}
