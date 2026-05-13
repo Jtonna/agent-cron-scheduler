@@ -2,18 +2,18 @@
 
 import { DollarSign } from "lucide-react";
 import { StatWidget } from "@/components/widgets/StatWidget";
-import type { JobCostSummaryResponse } from "@/apis/types";
+import type { WorkflowCostEntry } from "@/apis/types";
 
 /**
  * JobCostWidget
  *
- * Per-job cost tile showing total cost, average cost per run, and total
- * runs over the summary's timeframe (typically 30 days). Renders a
- * skeleton row state while loading or when `summary` is null.
+ * Per-workflow cost tile showing total cost, average cost per run, and
+ * total runs over the last 30 days. Renders a skeleton row state while
+ * loading or when `summary` is null.
  */
 
 interface JobCostWidgetProps {
-  summary: JobCostSummaryResponse | null;
+  summary: WorkflowCostEntry | null;
   loading: boolean;
 }
 
@@ -44,6 +44,11 @@ function SkeletonRow() {
 }
 
 export function JobCostWidget({ summary, loading }: JobCostWidgetProps) {
+  const cs = summary?.cost_summary;
+  const totalRuns = cs?.last_30_days_runs ?? 0;
+  const totalUsd = cs?.last_30_days_total_usd ?? 0;
+  const avgPerRun = totalRuns > 0 ? totalUsd / totalRuns : 0;
+
   return (
     <StatWidget title="Cost" icon={<DollarSign size={14} />}>
       {loading || !summary ? (
@@ -54,9 +59,9 @@ export function JobCostWidget({ summary, loading }: JobCostWidgetProps) {
         </div>
       ) : (
         <div className="flex flex-col gap-0.5">
-          <Row label="Total" value={formatUsd(summary.summary.total_cost_usd)} />
-          <Row label="Avg / run" value={formatUsdPrecise(summary.summary.avg_cost_per_run)} />
-          <Row label="Runs" value={String(summary.summary.total_runs)} />
+          <Row label="Total" value={formatUsd(totalUsd)} />
+          <Row label="Avg / run" value={formatUsdPrecise(avgPerRun)} />
+          <Row label="Runs" value={String(totalRuns)} />
         </div>
       )}
     </StatWidget>

@@ -17,22 +17,21 @@ function makeJob(overrides: Partial<Job>): Job {
     id: "j1",
     name: "backup-db",
     schedule: "0 0 * * *",
-    execution: { type: "ShellCommand", value: "echo backup" },
+    schedule_mode: "Cron",
     enabled: true,
-    timezone: null,
-    working_dir: null,
-    env_vars: null,
-    timeout_secs: 3600,
-    log_environment: false,
     allow_concurrent: false,
-    pre_hook: null,
-    post_hook: null,
-    pre_hook_script_type: null,
-    post_hook_script_type: null,
+    on_failure: "abort",
+    steps: [],
+    timezone: "UTC",
+    working_dir: ".",
+    env_vars: null,
+    default_input: null,
     created_at: ts,
     updated_at: ts,
+    version: 1,
     last_run_at: new Date(Date.now() - 600_000).toISOString(),
-    last_exit_code: 0,
+    last_run_id: null,
+    last_run_status: "Completed",
     next_run_at: new Date(Date.now() + 3_600_000).toISOString(),
     ...overrides,
   };
@@ -70,7 +69,7 @@ export const Default: Story = {
 
 export const Disabled: Story = {
   args: {
-    job: makeJob({ enabled: false, last_exit_code: null, next_run_at: null }),
+    job: makeJob({ enabled: false, last_run_status: null, next_run_at: null }),
   },
   decorators: [
     (Story) => (
@@ -86,7 +85,7 @@ export const NeverRun: Story = {
     job: makeJob({
       name: "fresh-job",
       last_run_at: null,
-      last_exit_code: null,
+      last_run_status: null,
     }),
   },
   decorators: [
@@ -100,7 +99,7 @@ export const NeverRun: Story = {
 
 export const Failed: Story = {
   args: {
-    job: makeJob({ name: "broken-task", last_exit_code: 1 }),
+    job: makeJob({ name: "broken-task", last_run_status: "Failed" }),
   },
   decorators: [
     (Story) => (

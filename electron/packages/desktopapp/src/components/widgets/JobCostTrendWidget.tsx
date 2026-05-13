@@ -1,29 +1,34 @@
 "use client";
 
+import { useMemo } from "react";
 import { AreaChart, Area, Tooltip, ResponsiveContainer, XAxis, YAxis } from "recharts";
 import { TrendingUp } from "lucide-react";
 import { StatWidget } from "@/components/widgets/StatWidget";
-import type { JobDailyCostDataPoint } from "@/apis/types";
+import type { DailyCostBucket } from "@/apis/types";
+import { fillCostWindow, type CostChartPoint } from "@/apis/format";
 
 /**
  * JobCostTrendWidget
  *
- * Per-job daily cost area chart over the last 30 days. Wraps its own
+ * Per-workflow daily cost area chart over the last 30 days. Wraps its own
  * StatWidget shell with title and icon so the page just drops it in
  * alongside the other widgets without manual wrapping.
  *
  * Hovering a point on the chart shows a small tooltip with that day's
- * date and cost. Renders a gentle empty state when `data` is empty.
+ * date and cost. The endpoint only returns days that had runs, so we
+ * zero-fill the rest of the 30-day window for visual continuity.
  */
 
 interface JobCostTrendWidgetProps {
-  data: JobDailyCostDataPoint[];
+  data: DailyCostBucket[];
   /** Internal chart height in pixels. Defaults to 96. */
   height?: number;
+  /** Window size in days. Defaults to 30. */
+  windowDays?: number;
 }
 
 interface TooltipPayloadEntry {
-  payload?: JobDailyCostDataPoint;
+  payload?: CostChartPoint;
 }
 
 function SparklineTooltip({
@@ -39,22 +44,25 @@ function SparklineTooltip({
   return (
     <div className="bg-surface border border-border rounded-input shadow-menu px-2.5 py-1.5 text-xs">
       <div className="text-fg-muted">{entry.date}</div>
-      <div className="font-mono text-fg">${entry.cost.toFixed(2)}</div>
+      <div className="font-mono text-fg">${entry.total_usd.toFixed(2)}</div>
     </div>
   );
 }
 
-export function JobCostTrendWidget({ data, height = 96 }: JobCostTrendWidgetProps) {
+export function JobCostTrendWidget({ data, height = 96, windowDays = 30 }: JobCostTrendWidgetProps) {
+  const series = useMemo(() => fillCostWindow(data, windowDays), [data, windowDays]);
+  const hasAnyCost = series.some((p) => p.total_usd > 0);
+
   return (
     <StatWidget title="30-day cost trend" icon={<TrendingUp size={14} />}>
-      {data.length === 0 ? (
+      {!hasAnyCost ? (
         <div className="flex items-center justify-center text-fg-subtle text-xs" style={{ height }}>
           No cost data yet
         </div>
       ) : (
         <div style={{ width: "100%", height }}>
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
+            <AreaChart data={series} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
               <defs>
                 <linearGradient id="job-cost-trend-gradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="var(--color-brand)" stopOpacity={0.5} />
@@ -72,7 +80,7 @@ export function JobCostTrendWidget({ data, height = 96 }: JobCostTrendWidgetProp
               />
               <Area
                 type="monotone"
-                dataKey="cost"
+                dataKey="total_usd"
                 stroke="var(--color-brand)"
                 strokeWidth={2}
                 fill="url(#job-cost-trend-gradient)"

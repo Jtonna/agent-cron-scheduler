@@ -26,7 +26,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
     let reconnectTimer: ReturnType<typeof setTimeout>;
 
     function connect() {
-      const url = `${getBaseUrl()}/api/events`;
+      const url = `${getBaseUrl()}/api/events/workflows`;
       const es = new EventSource(url);
       eventSourceRef.current = es;
 
@@ -48,8 +48,17 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
         });
       };
 
-      // Listen for specific event types
-      const eventTypes = ["job_changed", "started", "completed", "failed", "killed", "output"];
+      // Listen for specific event types emitted by the v4 workflow SSE stream.
+      // See acs/src/server/sse.rs for the authoritative list.
+      const eventTypes = [
+        "workflow_changed",
+        "run_started",
+        "step_started",
+        "step_output",
+        "step_completed",
+        "run_completed",
+        "run_failed",
+      ];
       eventTypes.forEach((eventType) => {
         es.addEventListener(eventType, (event) => {
           const sseEvent: SSEEvent = {

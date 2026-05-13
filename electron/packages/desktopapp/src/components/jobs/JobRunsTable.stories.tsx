@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
 import { JobRunsTable } from "./JobRunsTable";
-import type { JobRun } from "@/apis/types";
+import type { JobRun, WorkflowRunStep } from "@/apis/types";
 
 /**
  * JobRunsTable stories
@@ -35,6 +35,27 @@ function uuid(prefix: string): string {
   return `${head}-${filler.slice(9)}`;
 }
 
+function makeStep(
+  status: WorkflowRunStep["status"],
+  startedAt: string,
+  finishedAt: string | null,
+  exitCode: number | null,
+): WorkflowRunStep {
+  return {
+    step_index: 0,
+    step_id: "step-1",
+    kind: "shell",
+    status,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    exit_code: exitCode,
+    log_byte_offset_start: 0,
+    log_byte_offset_end: 0,
+    cost_usd: null,
+    error: null,
+  };
+}
+
 function makeRun(
   prefix: string,
   status: JobRun["status"],
@@ -48,15 +69,24 @@ function makeRun(
     status === "Running" || durationMs == null
       ? null
       : new Date(Date.now() - startedOffsetMs + durationMs).toISOString();
+  // Map the run status to a step status (CompletedWithWarnings → Completed
+  // for the per-step status union).
+  const stepStatus: WorkflowRunStep["status"] =
+    status === "CompletedWithWarnings" ? "Completed" : status;
   return {
     run_id: uuid(prefix),
-    job_id: JOB_ID,
+    workflow_id: JOB_ID,
+    workflow_version: 1,
+    workflow_snapshot: { id: JOB_ID, name: "demo", version: 1 },
     started_at: startedAt,
     finished_at: finishedAt,
     status,
-    exit_code: exitCode,
+    trigger_input: null,
+    steps: [makeStep(stepStatus, startedAt, finishedAt, exitCode)],
     total_cost_usd: cost,
-    duration_ms: durationMs,
+    total_duration_ms: durationMs ?? 0,
+    total_input_tokens: 0,
+    total_output_tokens: 0,
   };
 }
 

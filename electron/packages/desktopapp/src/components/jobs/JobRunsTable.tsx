@@ -67,14 +67,20 @@ function compareRuns(a: JobRun, b: JobRun, key: SortKey): number {
     case "oldest":
       return new Date(a.started_at).getTime() - new Date(b.started_at).getTime();
     case "longest":
-      return safeNum(b.duration_ms) - safeNum(a.duration_ms);
+      return safeNum(b.total_duration_ms) - safeNum(a.total_duration_ms);
     case "shortest":
-      return safeNum(a.duration_ms) - safeNum(b.duration_ms);
+      return safeNum(a.total_duration_ms) - safeNum(b.total_duration_ms);
     case "cost-high":
       return safeNum(b.total_cost_usd) - safeNum(a.total_cost_usd);
     case "cost-low":
       return safeNum(a.total_cost_usd) - safeNum(b.total_cost_usd);
   }
+}
+
+/** Last step's exit code reflects the run's final state. */
+function runExitCode(run: JobRun): number | null {
+  if (run.steps.length === 0) return null;
+  return run.steps[run.steps.length - 1].exit_code;
 }
 
 // Parse a YYYY-MM-DD string from `<input type="date">` as the start of that
@@ -115,7 +121,7 @@ function matchesFilters(run: JobRun, f: FilterOptions): boolean {
   if (costMax !== null && cost > costMax) return false;
 
   // FilterPanel labels duration as seconds.
-  const durationSec = (run.duration_ms ?? 0) / 1000;
+  const durationSec = (run.total_duration_ms ?? 0) / 1000;
   const durationMin = parseFloatOpt(f.durationMin);
   if (durationMin !== null && durationSec < durationMin) return false;
 
@@ -188,8 +194,8 @@ export function JobRunsTable({ jobId, runs, loading }: JobRunsTableProps) {
                   {formatTimeAgo(run.started_at)}
                 </span>
                 <span className="text-xs text-fg-muted truncate">
-                  {run.duration_ms != null ? (
-                    formatDuration(run.duration_ms)
+                  {run.total_duration_ms > 0 ? (
+                    formatDuration(run.total_duration_ms)
                   ) : (
                     <span className="text-fg-faint">—</span>
                   )}
@@ -201,7 +207,7 @@ export function JobRunsTable({ jobId, runs, loading }: JobRunsTableProps) {
                     <span className="text-fg-faint">—</span>
                   )}
                 </span>
-                <ExitCode code={run.exit_code} />
+                <ExitCode code={runExitCode(run)} />
               </Link>
             );
           })}

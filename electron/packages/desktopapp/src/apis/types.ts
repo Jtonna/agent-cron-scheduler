@@ -1,24 +1,71 @@
+/* ── Workflow / Job (v4) ──
+ *
+ * The v4 backend replaced the "job" concept with "workflow + steps".
+ * The desktopapp keeps the name `Job` for the workflow record to
+ * minimize downstream churn — the wire shape now matches the
+ * `GET /api/workflows` response.
+ */
+
+export interface CaptureConfig {
+  stdout_max_bytes?: number | null;
+  parser?: string | null;
+  [key: string]: unknown;
+}
+
+interface WorkflowStepBase {
+  id: string;
+  always_run: boolean;
+  on_failure: string;
+  timeout_secs: number | null;
+  working_dir: string | null;
+  env_vars: Record<string, string> | null;
+  capture: CaptureConfig;
+}
+
+export interface HttpWorkflowStep extends WorkflowStepBase {
+  kind: "http";
+  method: string;
+  url: string;
+  headers: Record<string, string> | null;
+  body: string | null;
+  expect_status: number[] | null;
+}
+
+export interface ShellWorkflowStep extends WorkflowStepBase {
+  kind: "shell";
+  command: string;
+  pass_stdin: boolean;
+}
+
+export interface AgentWorkflowStep extends WorkflowStepBase {
+  kind: "agent";
+  agent_type: string;
+  prompt: string;
+  model: string | null;
+  extra_args: string[] | null;
+}
+
+export type WorkflowStep = HttpWorkflowStep | ShellWorkflowStep | AgentWorkflowStep;
+
 export interface Job {
   id: string;
   name: string;
   schedule: string;
-  execution: { type: "ShellCommand" | "ScriptFile"; value: string };
+  schedule_mode: "Cron" | string;
   enabled: boolean;
-  timezone: string | null;
-  working_dir: string | null;
-  env_vars: Record<string, string> | null;
-  timeout_secs: number;
-  log_environment: boolean;
   allow_concurrent: boolean;
-  schedule_mode?: "Cron" | "WaitForCompletion";
-  pre_hook: string | null;
-  post_hook: string | null;
-  pre_hook_script_type: string | null;
-  post_hook_script_type: string | null;
+  on_failure: "abort" | string;
+  steps: WorkflowStep[];
+  timezone: string;
+  working_dir: string;
+  env_vars: Record<string, string> | null;
+  default_input: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
+  version: number;
   last_run_at: string | null;
-  last_exit_code: number | null;
+  last_run_id: string | null;
+  last_run_status: "Running" | "Completed" | "CompletedWithWarnings" | "Failed" | "Killed" | null;
   next_run_at: string | null;
 }
 
@@ -117,48 +164,14 @@ export interface CostWorkflowsResponse {
   workflows: WorkflowCostEntry[];
 }
 
-export interface JobRun {
-  run_id: string;
-  job_id: string;
-  started_at: string;
-  finished_at: string | null;
-  status: "Running" | "Completed" | "CompletedWithWarnings" | "Failed" | "Killed";
-  exit_code: number | null;
-  total_cost_usd?: number | null;
-  duration_ms?: number | null;
-}
+/**
+ * A run record. Per-workflow runs (`/api/workflows/{id}/runs`) and the
+ * global recent-runs feed (`/api/runs/recent`) now return the exact same
+ * shape, so `JobRun` is an alias of `RecentRunEntry`.
+ */
+export type JobRun = RecentRunEntry;
 
 export interface RunsResponse {
   runs: JobRun[];
   total: number;
-  limit: number;
-  offset: number;
-}
-
-/* ── Per-job cost summary (GET /api/jobs/{id}/cost-summary) ── */
-
-export interface JobDailyCostDataPoint {
-  date: string;
-  runs: number;
-  cost: number;
-  input_tokens: number;
-  output_tokens: number;
-}
-
-export interface JobCostSummary {
-  total_runs: number;
-  total_cost_usd: number;
-  avg_cost_per_run: number;
-  total_duration_ms: number;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  total_cache_read_tokens: number;
-  runs_by_status: Record<string, number>;
-}
-
-export interface JobCostSummaryResponse {
-  job_id: string;
-  timeframe: string;
-  summary: JobCostSummary;
-  data: JobDailyCostDataPoint[];
 }

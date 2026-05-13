@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
 import { JobCostTrendWidget } from "./JobCostTrendWidget";
-import type { JobDailyCostDataPoint } from "@/apis/types";
+import type { DailyCostBucket } from "@/apis/types";
 
 const meta: Meta<typeof JobCostTrendWidget> = {
   title: "Components/Widgets/JobCostTrendWidget",
@@ -10,18 +10,33 @@ export default meta;
 
 type Story = StoryObj<typeof JobCostTrendWidget>;
 
-function makeSeries(values: number[]): JobDailyCostDataPoint[] {
+function makeBucket(date: string, total_usd: number): DailyCostBucket {
+  return {
+    date,
+    runs_completed: Math.max(1, Math.round(total_usd * 10)),
+    runs_failed: 0,
+    runs_killed: 0,
+    cost_from_completed: total_usd,
+    cost_from_failed: 0,
+    cost_from_killed: 0,
+    total_usd,
+    tokens_in_from_completed: Math.round(total_usd * 50_000),
+    tokens_in_from_failed: 0,
+    tokens_in_from_killed: 0,
+    tokens_out_from_completed: Math.round(total_usd * 12_000),
+    tokens_out_from_failed: 0,
+    tokens_out_from_killed: 0,
+    total_input_tokens: Math.round(total_usd * 50_000),
+    total_output_tokens: Math.round(total_usd * 12_000),
+  };
+}
+
+function makeSeries(values: number[]): DailyCostBucket[] {
   const today = new Date();
   return values.map((cost, i) => {
     const d = new Date(today);
     d.setDate(today.getDate() - (values.length - 1 - i));
-    return {
-      date: d.toISOString().slice(0, 10),
-      runs: Math.max(1, Math.round(cost * 10)),
-      cost,
-      input_tokens: Math.round(cost * 50_000),
-      output_tokens: Math.round(cost * 12_000),
-    };
+    return makeBucket(d.toISOString().slice(0, 10), cost);
   });
 }
 

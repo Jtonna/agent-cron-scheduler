@@ -2,6 +2,36 @@
  * Shared formatting helpers used by multiple components.
  */
 
+import type { DailyCostBucket } from "./types";
+
+export interface CostChartPoint {
+  date: string;
+  total_usd: number;
+}
+
+/**
+ * The cost endpoint only returns days that had runs. Zero-fill the rest
+ * of the window so the chart stays continuous. Window defaults to 30
+ * days (matching the daemon's `last_30_days_*` buckets).
+ */
+export function fillCostWindow(
+  buckets: DailyCostBucket[] | undefined,
+  windowDays: number = 30,
+): CostChartPoint[] {
+  const byDate = new Map<string, number>();
+  for (const b of buckets ?? []) byDate.set(b.date, b.total_usd);
+
+  const points: CostChartPoint[] = [];
+  const today = new Date();
+  for (let i = windowDays - 1; i >= 0; i -= 1) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    points.push({ date: key, total_usd: byDate.get(key) ?? 0 });
+  }
+  return points;
+}
+
 export function formatDuration(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);

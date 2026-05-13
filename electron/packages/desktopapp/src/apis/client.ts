@@ -76,9 +76,9 @@ import type {
   CostWorkflowsResponse,
   HealthResponse,
   Job,
-  JobCostSummaryResponse,
   RecentRunsResponse,
   RunsResponse,
+  WorkflowCostEntry,
 } from "./types";
 
 export const api = {
@@ -92,17 +92,15 @@ export const api = {
   },
 
   listJobs(): Promise<Job[]> {
-    return request<Job[]>("/api/jobs");
+    return request<Job[]>("/api/workflows");
   },
 
   getJob(id: string): Promise<Job> {
-    return request<Job>(`/api/jobs/${id}`);
+    return request<Job>(`/api/workflows/${id}`);
   },
 
-  getJobCostSummary(jobId: string, timeframe: string = "30d"): Promise<JobCostSummaryResponse> {
-    return request<JobCostSummaryResponse>(
-      `/api/jobs/${jobId}/cost-summary?timeframe=${encodeURIComponent(timeframe)}`,
-    );
+  getWorkflowCost(workflowId: string): Promise<WorkflowCostEntry> {
+    return request<WorkflowCostEntry>(`/api/cost/workflows/${workflowId}`);
   },
 
   listRecentRuns(limit: number = 20, offset: number = 0): Promise<RecentRunsResponse> {
@@ -114,6 +112,6 @@ export const api = {
   },
 
   listJobRuns(jobId: string, limit: number = 20, offset: number = 0): Promise<RunsResponse> {
-    return request<RunsResponse>(`/api/jobs/${jobId}/runs?limit=${limit}&offset=${offset}`);
+    return request<RunsResponse>(`/api/workflows/${jobId}/runs?limit=${limit}&offset=${offset}`);
   },
 };

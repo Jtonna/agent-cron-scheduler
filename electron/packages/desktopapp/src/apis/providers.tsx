@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { RouterProvider } from "react-aria-components";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -28,6 +28,18 @@ export function Providers({ children }: { children: ReactNode }) {
         },
       }),
   );
+
+  // bfcache restores DOM + React state but not in-flight fetches; invalidate so
+  // stuck spinners resolve when the user navigates back to a cached page.
+  useEffect(() => {
+    const handler = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        queryClient.invalidateQueries();
+      }
+    };
+    window.addEventListener("pageshow", handler);
+    return () => window.removeEventListener("pageshow", handler);
+  }, [queryClient]);
 
   return (
     <RouterProvider navigate={router.push}>

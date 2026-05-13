@@ -5,6 +5,7 @@ import { AreaChart, Area, Tooltip, ResponsiveContainer, XAxis, YAxis } from "rec
 import { TrendingUp } from "lucide-react";
 import { StatWidget } from "@/components/widgets/StatWidget";
 import type { DailyCostBucket } from "@/apis/types";
+import { fillCostWindow, type CostChartPoint } from "@/apis/format";
 
 interface CostTrendWidgetProps {
   data: DailyCostBucket[];
@@ -14,30 +15,8 @@ interface CostTrendWidgetProps {
   windowDays?: number;
 }
 
-interface ChartPoint {
-  date: string;
-  total_usd: number;
-}
-
 interface TooltipPayloadEntry {
-  payload?: ChartPoint;
-}
-
-// The endpoint only returns days that had runs. Zero-fill the rest of the
-// window so the chart stays continuous.
-function fillWindow(buckets: DailyCostBucket[], windowDays: number): ChartPoint[] {
-  const byDate = new Map<string, number>();
-  for (const b of buckets) byDate.set(b.date, b.total_usd);
-
-  const points: ChartPoint[] = [];
-  const today = new Date();
-  for (let i = windowDays - 1; i >= 0; i -= 1) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
-    const key = d.toISOString().slice(0, 10);
-    points.push({ date: key, total_usd: byDate.get(key) ?? 0 });
-  }
-  return points;
+  payload?: CostChartPoint;
 }
 
 function SparklineTooltip({
@@ -59,7 +38,7 @@ function SparklineTooltip({
 }
 
 export function CostTrendWidget({ data, height = 96, windowDays = 30 }: CostTrendWidgetProps) {
-  const series = useMemo(() => fillWindow(data, windowDays), [data, windowDays]);
+  const series = useMemo(() => fillCostWindow(data, windowDays), [data, windowDays]);
   const hasAnyCost = series.some((p) => p.total_usd > 0);
 
   return (

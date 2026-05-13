@@ -20,7 +20,7 @@ function capLogBuffer(buffer: string): string {
 
 /**
  * Fetches the daemon's system logs and appends new lines streamed via SSE
- * `output` events directly into the query cache. Buffer is capped at
+ * `step_output` events directly into the query cache. Buffer is capped at
  * ~1MB to prevent unbounded growth.
  */
 export function useSystemLogs(tail: number = 500) {
@@ -33,7 +33,7 @@ export function useSystemLogs(tail: number = 500) {
   });
 
   useSSEEvents((event) => {
-    if (event.type !== "output") return;
+    if (event.type !== "step_output") return;
     let chunk = "";
     try {
       const parsed = JSON.parse(event.data);

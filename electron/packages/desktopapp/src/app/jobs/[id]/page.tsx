@@ -28,7 +28,7 @@ export default function JobDetailPage({
   const { id } = use(params);
 
   const { job, loading: jobLoading, error: jobError } = useJob(id);
-  const { summary, loading: summaryLoading } = useJobCostSummary(id, "30d");
+  const { summary, loading: summaryLoading } = useJobCostSummary(id);
   const { runs, loading: runsLoading } = useJobRuns(id, 100);
 
   const runningCount = runs.filter((r) => r.status === "Running").length;
@@ -82,7 +82,7 @@ export default function JobDetailPage({
               {/* 3-up widget row */}
               <div className="grid grid-cols-3 gap-4">
                 <HealthWidget runs={runs} />
-                <JobCostTrendWidget data={summary?.data ?? []} />
+                <JobCostTrendWidget data={summary?.cost_summary?.daily_buckets ?? []} />
                 <JobCostWidget summary={summary} loading={summaryLoading} />
               </div>
 

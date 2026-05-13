@@ -19,22 +19,26 @@ describe("isRunning", () => {
 });
 
 describe("groupRunsByWorkflow", () => {
-  type GroupableRun = JobRun & { workflow_id: string };
-
-  function makeRun(id: string, workflowId: string): GroupableRun {
+  function makeRun(id: string, workflowId: string): JobRun {
     return {
       run_id: id,
-      job_id: workflowId,
       workflow_id: workflowId,
+      workflow_version: 1,
+      workflow_snapshot: { id: workflowId, name: "test", version: 1 },
       started_at: "2026-01-15T12:00:00Z",
       finished_at: null,
       status: "Completed",
-      exit_code: 0,
+      trigger_input: null,
+      steps: [],
+      total_cost_usd: null,
+      total_duration_ms: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
     };
   }
 
   it("returns an empty map for no runs", () => {
-    const grouped = groupRunsByWorkflow<GroupableRun>([]);
+    const grouped = groupRunsByWorkflow<JobRun>([]);
     expect(grouped.size).toBe(0);
   });
 
