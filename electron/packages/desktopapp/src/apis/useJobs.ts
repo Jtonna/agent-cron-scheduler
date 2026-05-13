@@ -15,7 +15,7 @@ export function useJobs() {
 
   return {
     jobs: query.data ?? [],
-    loading: query.isLoading,
+    loading: query.isPending,
     error: query.error instanceof Error ? query.error.message : null,
     refresh: query.refetch,
   };

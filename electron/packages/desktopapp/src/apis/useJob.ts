@@ -14,9 +14,13 @@ export function useJob(jobId: string) {
     enabled: !!jobId,
   });
 
+  // `isLoading` is `isPending && isFetching`; on a freshly-mounted query the
+  // fetch hasn't started yet, so `isLoading` is briefly false while `data` is
+  // still undefined. Use `isPending` so the caller never sees that gap and
+  // mistakes it for "not found".
   return {
     job: query.data ?? null,
-    loading: query.isLoading,
+    loading: query.isPending,
     error: query.error instanceof Error ? query.error.message : null,
     refresh: query.refetch,
   };

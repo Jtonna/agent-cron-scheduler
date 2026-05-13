@@ -21,7 +21,7 @@ export function useJobCostSummary(jobId: string) {
 
   return {
     summary: (query.data ?? null) as WorkflowCostEntry | null,
-    loading: query.isLoading,
+    loading: query.isPending,
     error: query.error instanceof Error ? query.error.message : null,
     refresh: query.refetch,
   };

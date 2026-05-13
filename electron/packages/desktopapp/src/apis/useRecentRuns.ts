@@ -17,8 +17,8 @@ export function useRecentRuns(initialLimit: number = PAGE_SIZE) {
 
   const runs = query.data?.runs ?? [];
   const hasMore = runs.length >= limit;
-  const loading = query.isLoading;
-  const loadingMore = query.isFetching && !query.isLoading;
+  const loading = query.isPending;
+  const loadingMore = query.isFetching && !query.isPending;
 
   const loadMore = useCallback(() => {
     if (loadingMore || !hasMore) return;

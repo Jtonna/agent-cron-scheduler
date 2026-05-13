@@ -16,7 +16,7 @@ export function useJobRuns(jobId: string, limit: number = 20, offset: number = 0
 
   return {
     runs: query.data?.runs ?? [],
-    loading: query.isLoading,
+    loading: query.isPending,
     error: query.error instanceof Error ? query.error.message : null,
     refresh: query.refetch,
   };

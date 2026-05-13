@@ -61,7 +61,7 @@ export function useSystemLogs(tail: number = 500) {
 
   return {
     logs: query.data ?? "",
-    loading: query.isLoading,
+    loading: query.isPending,
     error: query.error instanceof Error ? query.error.message : null,
     refresh: query.refetch,
     setLogs,

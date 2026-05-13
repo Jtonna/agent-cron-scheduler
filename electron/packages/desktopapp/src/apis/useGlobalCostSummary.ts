@@ -11,7 +11,7 @@ export function useGlobalCostSummary() {
 
   return {
     summary: query.data ?? null,
-    loading: query.isLoading,
+    loading: query.isPending,
     error: query.error instanceof Error ? query.error.message : null,
     refresh: query.refetch,
   };

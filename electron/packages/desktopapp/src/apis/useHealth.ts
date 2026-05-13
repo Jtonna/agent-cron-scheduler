@@ -11,7 +11,7 @@ export function useHealth() {
 
   return {
     health: query.data ?? null,
-    loading: query.isLoading,
+    loading: query.isPending,
     error: query.error instanceof Error ? query.error.message : null,
     refresh: query.refetch,
   };
