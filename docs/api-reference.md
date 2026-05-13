@@ -792,6 +792,8 @@ List cost analytics for all workflows.
         "last_30_days_output_tokens": 8320,
         "last_year_input_tokens": 98740,
         "last_year_output_tokens": 64210,
+        "last_30_days_avg_cost_per_run_usd": 0.2835,
+        "last_year_avg_cost_per_run_usd": 0.2964,
         "computed_at": "2026-05-10T23:14:22Z",
         "daily_buckets": [
           {
@@ -825,6 +827,8 @@ List cost analytics for all workflows.
     "last_30_days_output_tokens": 8320,
     "last_year_input_tokens": 98740,
     "last_year_output_tokens": 64210,
+    "last_30_days_avg_cost_per_run_usd": 0.2835,
+    "last_year_avg_cost_per_run_usd": 0.2964,
     "computed_at": "2026-05-10T23:14:22Z",
     "daily_buckets": [
       {
@@ -893,6 +897,8 @@ Retrieve cost analytics for a single workflow.
     "last_30_days_output_tokens": 8320,
     "last_year_input_tokens": 98740,
     "last_year_output_tokens": 64210,
+    "last_30_days_avg_cost_per_run_usd": 0.2835,
+    "last_year_avg_cost_per_run_usd": 0.2964,
     "computed_at": "2026-05-10T23:14:22Z",
     "daily_buckets": [
       {
@@ -971,6 +977,8 @@ Aggregated cost and run-count data over rolling windows. Returned in [CostWorkfl
 | `last_30_days_output_tokens` | integer (u64) | Sum of `total_output_tokens` across all terminal runs in the 30-day window. Non-agent runs contribute 0. Added in v4.2.11. |
 | `last_year_input_tokens` | integer (u64) | Same as 30-day input, but over the last 365 days. Added in v4.2.11. |
 | `last_year_output_tokens` | integer (u64) | Same as 30-day output, but over the last 365 days. Added in v4.2.11. |
+| `last_30_days_avg_cost_per_run_usd` | float | Average cost per run over the 30-day window, computed as `last_30_days_total_usd / last_30_days_runs` over the same set of terminal runs. Returns `0.0` (never `null`, never `NaN`) when `last_30_days_runs == 0`. Added in v4.2.13. |
+| `last_year_avg_cost_per_run_usd` | float | Same as 30-day, but over the last 365 days. Returns `0.0` when `last_year_runs == 0`. Added in v4.2.13. |
 | `computed_at` | string (ISO 8601) | When the summary was computed. Reflects cache freshness: each entry is recomputed on the next terminal run for the workflow, or at midnight in `display_timezone` (whichever comes first). |
 | `daily_buckets` | array of [DailyBucket](#dailybucket) | Per-day cost breakdown for the requested window (controlled by `?days=N` or `?since=...&until=...`). Zero-days are omitted; the array is sorted ascending by date. |
 
