@@ -384,17 +384,27 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                     )
                     .map_err(|e| AcsError::Storage(format!("cost_summary query failed: {}", e)))?;
 
+                let last_30d_runs_u64 = last_30d_runs as u64;
+                let last_year_runs_u64 = last_year_runs as u64;
                 Ok(CostSummary {
                     last_30_days_total_usd: last_30d_total,
-                    last_30_days_runs: last_30d_runs as u64,
+                    last_30_days_runs: last_30d_runs_u64,
                     last_year_total_usd: last_year_total,
-                    last_year_runs: last_year_runs as u64,
+                    last_year_runs: last_year_runs_u64,
                     computed_at: chrono::Utc::now(),
                     daily_buckets: Vec::new(),
                     last_30_days_input_tokens: last_30d_input_tokens as u64,
                     last_30_days_output_tokens: last_30d_output_tokens as u64,
                     last_year_input_tokens: last_year_input_tokens as u64,
                     last_year_output_tokens: last_year_output_tokens as u64,
+                    last_30_days_avg_cost_per_run_usd: crate::models::workflow::avg_cost_per_run(
+                        last_30d_total,
+                        last_30d_runs_u64,
+                    ),
+                    last_year_avg_cost_per_run_usd: crate::models::workflow::avg_cost_per_run(
+                        last_year_total,
+                        last_year_runs_u64,
+                    ),
                 })
             })
             .await

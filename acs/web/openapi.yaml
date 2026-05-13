@@ -7,7 +7,7 @@ info:
     ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
     Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "4.2.12"
+  version: "4.2.13"
   license:
     name: MIT
 
@@ -49,7 +49,7 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "4.2.12"
+                version: "4.2.13"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
                 service:
                   registered: true
@@ -1606,6 +1606,8 @@ components:
         - last_30_days_output_tokens
         - last_year_input_tokens
         - last_year_output_tokens
+        - last_30_days_avg_cost_per_run_usd
+        - last_year_avg_cost_per_run_usd
       properties:
         last_30_days_total_usd:
           type: number
@@ -1648,6 +1650,23 @@ components:
           format: int64
           minimum: 0
           description: Total output tokens across all agent steps from completed runs in the last 365 days.
+        last_30_days_avg_cost_per_run_usd:
+          type: number
+          format: double
+          description: |
+            Average cost per run over the last 30 calendar days, computed as
+            `last_30_days_total_usd / last_30_days_runs` across the same set of
+            terminal runs (Completed, Failed, Killed). Returns `0.0` when
+            `last_30_days_runs == 0`; never `null` and never `NaN`.
+          example: 0.2835
+        last_year_avg_cost_per_run_usd:
+          type: number
+          format: double
+          description: |
+            Average cost per run over the last 365 days, computed as
+            `last_year_total_usd / last_year_runs`. Returns `0.0` when
+            `last_year_runs == 0`.
+          example: 0.2964
         computed_at:
           type: string
           format: date-time

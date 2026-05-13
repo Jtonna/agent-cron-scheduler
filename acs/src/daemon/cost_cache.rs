@@ -426,6 +426,8 @@ mod tests {
             last_30_days_output_tokens: 0,
             last_year_input_tokens: 0,
             last_year_output_tokens: 0,
+            last_30_days_avg_cost_per_run_usd: 1.23 / 5.0,
+            last_year_avg_cost_per_run_usd: 10.0 / 42.0,
         }
     }
 

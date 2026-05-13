@@ -661,6 +661,14 @@ pub async fn list_workflow_costs(
         last_30_days_output_tokens: system_30d_output_tokens,
         last_year_input_tokens: system_year_input_tokens,
         last_year_output_tokens: system_year_output_tokens,
+        last_30_days_avg_cost_per_run_usd: crate::models::workflow::avg_cost_per_run(
+            system_30d_total,
+            system_30d_runs,
+        ),
+        last_year_avg_cost_per_run_usd: crate::models::workflow::avg_cost_per_run(
+            system_year_total,
+            system_year_runs,
+        ),
     };
 
     (
@@ -1834,6 +1842,8 @@ mod tests {
                 last_30_days_output_tokens: 0,
                 last_year_input_tokens: 0,
                 last_year_output_tokens: 0,
+                last_30_days_avg_cost_per_run_usd: 0.0,
+                last_year_avg_cost_per_run_usd: 0.0,
             })
         }
         async fn daily_buckets_for(

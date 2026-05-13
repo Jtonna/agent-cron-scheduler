@@ -64,6 +64,24 @@ pub struct CostSummary {
     pub last_year_input_tokens: u64,
     #[serde(default)]
     pub last_year_output_tokens: u64,
+    /// Average cost per run over the last 30 days (`total_usd / runs`).
+    /// Defaults to 0.0 when there are no runs in the window — never NaN.
+    #[serde(default)]
+    pub last_30_days_avg_cost_per_run_usd: f64,
+    /// Average cost per run over the last 365 days (`total_usd / runs`).
+    /// Defaults to 0.0 when there are no runs in the window — never NaN.
+    #[serde(default)]
+    pub last_year_avg_cost_per_run_usd: f64,
+}
+
+/// Compute `total_usd / runs` for the cost-per-run averages on `CostSummary`.
+/// Returns 0.0 when `runs == 0` so consumers never see NaN or null.
+pub fn avg_cost_per_run(total_usd: f64, runs: u64) -> f64 {
+    if runs == 0 {
+        0.0
+    } else {
+        total_usd / runs as f64
+    }
 }
 
 // ─── Cost endpoint response types ────────────────────────────────────────────

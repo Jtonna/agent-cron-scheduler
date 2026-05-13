@@ -4731,3 +4731,162 @@ async fn test_system_cost_summary_includes_token_fields() {
         expected_out
     );
 }
+
+/// AVG-1. Empty workflow: avg-cost-per-run fields return 0.0 (not null, not NaN)
+///        when there are no runs in the window.
+#[tokio::test]
+async fn test_cost_summary_avg_zero_when_no_runs() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("avg-empty-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let json: serde_json::Value = client
+        .get(format!("{}/api/cost/workflows/{}", base_url, wf_id))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+
+    let cs = &json["cost_summary"];
+    // Both fields exist as numbers (not null) and equal 0.0 when runs == 0.
+    assert_eq!(
+        cs["last_30_days_avg_cost_per_run_usd"].as_f64().unwrap(),
+        0.0
+    );
+    assert_eq!(cs["last_year_avg_cost_per_run_usd"].as_f64().unwrap(), 0.0);
+}
+
+/// AVG-2. With seeded terminal runs, avg-cost-per-run equals total / runs at
+///        both the 30-day and 365-day windows, and on the system aggregate.
+#[tokio::test]
+async fn test_cost_summary_avg_equals_total_over_runs() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("avg-totals-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    let yesterday = Utc::now() - Duration::days(1);
+
+    // 3 terminal runs across statuses with explicit costs:
+    // Completed 0.10, Completed 0.30, Failed 0.20 → total = 0.60, runs = 3, avg = 0.20
+    insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        yesterday,
+        Some(0.10),
+    )
+    .await;
+    insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        yesterday,
+        Some(0.30),
+    )
+    .await;
+    insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Failed,
+        yesterday,
+        Some(0.20),
+    )
+    .await;
+
+    // Singular endpoint: per-workflow cost_summary.
+    let json: serde_json::Value = client
+        .get(format!("{}/api/cost/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET singular")
+        .json()
+        .await
+        .unwrap();
+    let cs = &json["cost_summary"];
+
+    let total_30 = cs["last_30_days_total_usd"].as_f64().unwrap();
+    let runs_30 = cs["last_30_days_runs"].as_u64().unwrap();
+    let avg_30 = cs["last_30_days_avg_cost_per_run_usd"].as_f64().unwrap();
+    assert!(runs_30 >= 3, "expected at least the 3 seeded runs in 30d");
+    assert!(
+        (avg_30 - total_30 / runs_30 as f64).abs() < 1e-9,
+        "30d avg {} should equal total {} / runs {}",
+        avg_30,
+        total_30,
+        runs_30
+    );
+
+    let total_y = cs["last_year_total_usd"].as_f64().unwrap();
+    let runs_y = cs["last_year_runs"].as_u64().unwrap();
+    let avg_y = cs["last_year_avg_cost_per_run_usd"].as_f64().unwrap();
+    assert!(
+        (avg_y - total_y / runs_y as f64).abs() < 1e-9,
+        "year avg {} should equal total {} / runs {}",
+        avg_y,
+        total_y,
+        runs_y
+    );
+
+    // System aggregate: same identity on system_cost_summary.
+    let list_json: serde_json::Value = client
+        .get(format!("{}/api/cost/workflows", base_url))
+        .send()
+        .await
+        .expect("GET list")
+        .json()
+        .await
+        .unwrap();
+    let scs = &list_json["system_cost_summary"];
+    let stotal_30 = scs["last_30_days_total_usd"].as_f64().unwrap();
+    let sruns_30 = scs["last_30_days_runs"].as_u64().unwrap();
+    let savg_30 = scs["last_30_days_avg_cost_per_run_usd"].as_f64().unwrap();
+    assert!(sruns_30 >= 3);
+    assert!(
+        (savg_30 - stotal_30 / sruns_30 as f64).abs() < 1e-9,
+        "system 30d avg {} should equal total {} / runs {}",
+        savg_30,
+        stotal_30,
+        sruns_30
+    );
+}

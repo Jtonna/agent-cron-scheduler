@@ -1,6 +1,6 @@
 {
   "name": "@acs/app",
-  "version": "4.2.12",
+  "version": "4.2.13",
   "private": true,
   "description": "Agent Cron Scheduler desktop application",
   "author": "Jtonna",
