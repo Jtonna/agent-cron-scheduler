@@ -1508,6 +1508,50 @@ pub async fn list_workflow_runs(
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/runs/recent
+// ---------------------------------------------------------------------------
+
+pub async fn list_recent_runs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListRunsQuery>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(20).min(100);
+    let offset = params.offset.unwrap_or(0);
+
+    let runs = match state
+        .workflow_run_store
+        .list_recent_runs(limit, offset)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Failed to list recent runs: {}", e);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to list recent runs: {}", e),
+            )
+            .into_response();
+        }
+    };
+
+    let total = match state.workflow_run_store.count_all_runs().await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!("Failed to count recent runs: {}", e);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to count recent runs: {}", e),
+            )
+            .into_response();
+        }
+    };
+
+    (StatusCode::OK, Json(ListRunsResponse { runs, total })).into_response()
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -1751,6 +1795,24 @@ mod tests {
                 .values()
                 .filter(|r| r.workflow_id == workflow_id)
                 .count())
+        }
+        async fn list_recent_runs(
+            &self,
+            limit: usize,
+            offset: usize,
+        ) -> Result<Vec<WorkflowRun>, AcsError> {
+            let map = self.runs.lock().await;
+            let mut runs: Vec<WorkflowRun> = map.values().cloned().collect();
+            runs.sort_by(|a, b| b.run_id.cmp(&a.run_id));
+            let result = if limit == 0 {
+                runs.into_iter().skip(offset).collect()
+            } else {
+                runs.into_iter().skip(offset).take(limit).collect()
+            };
+            Ok(result)
+        }
+        async fn count_all_runs(&self) -> Result<usize, AcsError> {
+            Ok(self.runs.lock().await.len())
         }
         async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError> {
             self.runs.lock().await.remove(&run_id);

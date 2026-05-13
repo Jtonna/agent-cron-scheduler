@@ -31,6 +31,17 @@ pub trait WorkflowRunStore: Send + Sync {
     /// Total count of runs for a workflow.
     async fn count_runs(&self, workflow_id: Uuid) -> Result<usize, AcsError>;
 
+    /// List runs across all workflows, latest-first. Pagination via limit + offset.
+    /// limit=0 means "no limit" (return all).
+    async fn list_recent_runs(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<WorkflowRun>, AcsError>;
+
+    /// Total count of runs across all workflows.
+    async fn count_all_runs(&self) -> Result<usize, AcsError>;
+
     /// Delete a run record. Best-effort.
     async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError>;
 

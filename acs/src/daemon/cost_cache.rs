@@ -381,6 +381,16 @@ mod tests {
         async fn count_runs(&self, _workflow_id: Uuid) -> Result<usize, AcsError> {
             unimplemented!()
         }
+        async fn list_recent_runs(
+            &self,
+            _limit: usize,
+            _offset: usize,
+        ) -> Result<Vec<WorkflowRun>, AcsError> {
+            unimplemented!()
+        }
+        async fn count_all_runs(&self) -> Result<usize, AcsError> {
+            unimplemented!()
+        }
         async fn delete_run(&self, _run_id: Uuid) -> Result<(), AcsError> {
             unimplemented!()
         }

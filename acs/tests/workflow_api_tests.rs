@@ -1107,6 +1107,134 @@ async fn test_list_runs_resolves_workflow_by_name() {
     assert_eq!(resp["runs"].as_array().unwrap().len(), 2);
 }
 
+/// 20. GET /api/runs/recent returns a chronologically-merged feed across
+///     workflows, latest-first, with `total` reflecting the global count.
+#[tokio::test]
+async fn test_list_recent_runs_merges_across_workflows() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Two workflows, two runs each (4 total).
+    for name in ["recent-wf-a", "recent-wf-b"] {
+        let created: serde_json::Value = client
+            .post(format!("{}/api/workflows", base_url))
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&make_new_workflow(name)).unwrap())
+            .send()
+            .await
+            .expect("POST workflow")
+            .json()
+            .await
+            .unwrap();
+        let wf_id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+        let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+        insert_runs(&run_store, wf_id, &wf, 2).await;
+    }
+
+    let resp = client
+        .get(format!("{}/api/runs/recent", base_url))
+        .send()
+        .await
+        .expect("GET /api/runs/recent");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+
+    assert_eq!(json["total"], 4);
+    let runs = json["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 4);
+
+    // Latest-first: run_ids are Uuid v7, so descending lexicographic order.
+    let ids: Vec<&str> = runs.iter().map(|r| r["run_id"].as_str().unwrap()).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_by(|a, b| b.cmp(a));
+    assert_eq!(ids, sorted, "runs must be ordered latest-first");
+
+    // Mixed workflows: more than one distinct workflow_id should appear.
+    let mut wf_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for r in runs {
+        wf_ids.insert(r["workflow_id"].as_str().unwrap());
+    }
+    assert_eq!(
+        wf_ids.len(),
+        2,
+        "feed should include runs from both workflows"
+    );
+
+    // Each run carries the embedded workflow_snapshot with the workflow name.
+    for r in runs {
+        assert!(r["workflow_snapshot"]["name"].is_string());
+    }
+}
+
+/// 21. GET /api/runs/recent?limit=2&offset=1 returns exactly 2 runs;
+///     `total` still reflects the full global count.
+#[tokio::test]
+async fn test_list_recent_runs_pagination() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("recent-paging")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+    insert_runs(&run_store, wf_id, &wf, 5).await;
+
+    let resp = client
+        .get(format!("{}/api/runs/recent?limit=2&offset=1", base_url))
+        .send()
+        .await
+        .expect("GET recent paginated");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(json["total"], 5);
+    assert_eq!(json["runs"].as_array().unwrap().len(), 2);
+}
+
+/// 22. GET /api/runs/recent on an empty store returns total=0 and an empty
+///     runs array, and is matched as a static route (not interpreted as a
+///     run_id by the /api/runs/{run_id} handler).
+#[tokio::test]
+async fn test_list_recent_runs_empty_store() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/runs/recent", base_url))
+        .send()
+        .await
+        .expect("GET /api/runs/recent empty");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(json["total"], 0);
+    assert_eq!(json["runs"].as_array().unwrap().len(), 0);
+}
+
 // ---------------------------------------------------------------------------
 // Cost summary helpers
 // ---------------------------------------------------------------------------

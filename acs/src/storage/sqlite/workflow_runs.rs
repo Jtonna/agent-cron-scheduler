@@ -255,6 +255,47 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
             .await
     }
 
+    async fn list_recent_runs(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<WorkflowRun>, AcsError> {
+        self.db
+            .with_conn(move |c| {
+                // run_id is Uuid v7 (time-ordered), so lexicographic DESC
+                // matches insertion-time ordering.
+                let sql_limit: i64 = if limit == 0 { -1 } else { limit as i64 };
+                let sql_offset: i64 = offset as i64;
+                let mut stmt = c
+                    .prepare(
+                        "SELECT * FROM workflow_runs \
+                         ORDER BY run_id DESC \
+                         LIMIT ? OFFSET ?",
+                    )
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![sql_limit, sql_offset], row_to_run)
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r.map_err(|e| AcsError::Storage(e.to_string()))?);
+                }
+                Ok(out)
+            })
+            .await
+    }
+
+    async fn count_all_runs(&self) -> Result<usize, AcsError> {
+        self.db
+            .with_conn(move |c| {
+                let n: i64 = c
+                    .query_row("SELECT COUNT(*) FROM workflow_runs", [], |r| r.get(0))
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+                Ok(n as usize)
+            })
+            .await
+    }
+
     async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError> {
         // Best-effort: deleting a row that isn't present is not an error.
         let id_s = run_id.to_string();
