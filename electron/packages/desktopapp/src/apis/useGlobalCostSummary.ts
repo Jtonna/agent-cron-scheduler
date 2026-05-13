@@ -3,14 +3,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/apis/client";
 
-/**
- * Fetches the global cost summary. Cache invalidation on run-completion
- * SSE events is handled centrally by SSEQueryBridge.
- */
-export function useGlobalCostSummary(timeframe: string = "30d") {
+export function useGlobalCostSummary() {
   const query = useQuery({
-    queryKey: ["costs/summary", timeframe],
-    queryFn: () => api.getGlobalCostSummary(timeframe),
+    queryKey: ["cost/workflows"],
+    queryFn: () => api.getCostWorkflows(),
   });
 
   return {

@@ -42,14 +42,18 @@ function makeRun(status: RecentRunEntry["status"], offsetMs: number = 0): Recent
   const started = new Date(Date.now() - offsetMs).toISOString();
   return {
     run_id: Math.random().toString(36).slice(2),
-    job_id: "j1",
-    job_name: "backup-db",
+    workflow_id: "j1",
+    workflow_version: 1,
+    workflow_snapshot: { id: "j1", name: "backup-db", version: 1 },
     started_at: started,
     finished_at: status === "Running" ? null : started,
     status,
-    exit_code: status === "Completed" ? 0 : 1,
-    log_size_bytes: 0,
-    error: null,
+    trigger_input: null,
+    steps: [],
+    total_cost_usd: null,
+    total_duration_ms: 0,
+    total_input_tokens: 0,
+    total_output_tokens: 0,
   };
 }
 

@@ -1,14 +1,14 @@
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
-import { CostWidget } from "./CostWidget";
+import { TokensWidget } from "./TokensWidget";
 import type { WorkflowCostSummary } from "@/apis/types";
 
-const meta: Meta<typeof CostWidget> = {
-  title: "Components/Widgets/CostWidget",
-  component: CostWidget,
+const meta: Meta<typeof TokensWidget> = {
+  title: "Components/Widgets/TokensWidget",
+  component: TokensWidget,
 };
 export default meta;
 
-type Story = StoryObj<typeof CostWidget>;
+type Story = StoryObj<typeof TokensWidget>;
 
 const todayKey = new Date().toISOString().slice(0, 10);
 const yesterdayKey = (() => {
@@ -21,12 +21,12 @@ const MOCK_SUMMARY: WorkflowCostSummary = {
   computed_at: new Date().toISOString(),
   last_30_days_runs: 42,
   last_30_days_total_usd: 12.04,
+  last_30_days_input_tokens: 1200,
+  last_30_days_output_tokens: 31000,
   last_year_runs: 312,
   last_year_total_usd: 86.41,
-  last_30_days_input_tokens: 0,
-  last_30_days_output_tokens: 0,
-  last_year_input_tokens: 0,
-  last_year_output_tokens: 0,
+  last_year_input_tokens: 15400,
+  last_year_output_tokens: 412000,
   daily_buckets: [
     {
       date: yesterdayKey,
@@ -37,14 +37,14 @@ const MOCK_SUMMARY: WorkflowCostSummary = {
       cost_from_failed: 0,
       cost_from_killed: 0,
       total_usd: 2.76,
-      tokens_in_from_completed: 0,
+      tokens_in_from_completed: 320,
       tokens_in_from_failed: 0,
       tokens_in_from_killed: 0,
-      tokens_out_from_completed: 0,
+      tokens_out_from_completed: 8400,
       tokens_out_from_failed: 0,
       tokens_out_from_killed: 0,
-      total_input_tokens: 0,
-      total_output_tokens: 0,
+      total_input_tokens: 320,
+      total_output_tokens: 8400,
     },
     {
       date: todayKey,
@@ -55,14 +55,14 @@ const MOCK_SUMMARY: WorkflowCostSummary = {
       cost_from_failed: 0,
       cost_from_killed: 0,
       total_usd: 0.42,
-      tokens_in_from_completed: 0,
+      tokens_in_from_completed: 8,
       tokens_in_from_failed: 0,
       tokens_in_from_killed: 0,
-      tokens_out_from_completed: 0,
+      tokens_out_from_completed: 224,
       tokens_out_from_failed: 0,
       tokens_out_from_killed: 0,
-      total_input_tokens: 0,
-      total_output_tokens: 0,
+      total_input_tokens: 8,
+      total_output_tokens: 224,
     },
   ],
 };

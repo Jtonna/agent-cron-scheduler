@@ -73,7 +73,7 @@ async function requestText(path: string, options: RequestInit = {}): Promise<str
 }
 
 import type {
-  GlobalCostSummaryResponse,
+  CostWorkflowsResponse,
   HealthResponse,
   Job,
   JobCostSummaryResponse,
@@ -105,14 +105,12 @@ export const api = {
     );
   },
 
-  listRecentRuns(limit: number = 20): Promise<RecentRunsResponse> {
-    return request<RecentRunsResponse>(`/api/runs/recent?limit=${limit}`);
+  listRecentRuns(limit: number = 20, offset: number = 0): Promise<RecentRunsResponse> {
+    return request<RecentRunsResponse>(`/api/runs/recent?limit=${limit}&offset=${offset}`);
   },
 
-  getGlobalCostSummary(timeframe: string = "30d"): Promise<GlobalCostSummaryResponse> {
-    return request<GlobalCostSummaryResponse>(
-      `/api/costs/summary?timeframe=${encodeURIComponent(timeframe)}`,
-    );
+  getCostWorkflows(): Promise<CostWorkflowsResponse> {
+    return request<CostWorkflowsResponse>("/api/cost/workflows");
   },
 
   listJobRuns(jobId: string, limit: number = 20, offset: number = 0): Promise<RunsResponse> {

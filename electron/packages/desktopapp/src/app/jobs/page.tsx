@@ -4,6 +4,7 @@ import { Navbar } from "@/components/navbar/Navbar";
 import { JobsSidebar } from "@/components/sidebar/JobsSidebar";
 import { JobsList } from "@/components/jobs/JobsList";
 import { CostWidget } from "@/components/widgets/CostWidget";
+import { TokensWidget } from "@/components/widgets/TokensWidget";
 import { HealthWidget } from "@/components/widgets/HealthWidget";
 import { TopSpendersWidget } from "@/components/widgets/TopSpendersWidget";
 import { CostTrendWidget } from "@/components/widgets/CostTrendWidget";
@@ -13,7 +14,7 @@ import { useRecentRuns } from "@/apis/useRecentRuns";
 
 export default function JobsPage() {
   const { jobs, loading: jobsLoading } = useJobs();
-  const { summary, loading: summaryLoading } = useGlobalCostSummary("30d");
+  const { summary, loading: summaryLoading } = useGlobalCostSummary();
   const { runs } = useRecentRuns(200);
 
   return (
@@ -34,14 +35,15 @@ export default function JobsPage() {
           </div>
 
           {/* Widgets row */}
-          <div className="grid grid-cols-3 gap-4">
-            <CostWidget summary={summary} loading={summaryLoading} />
+          <div className="grid grid-cols-4 gap-4">
+            <CostWidget summary={summary?.system_cost_summary ?? null} loading={summaryLoading} />
+            <TokensWidget summary={summary?.system_cost_summary ?? null} loading={summaryLoading} />
             <HealthWidget runs={runs} />
-            <TopSpendersWidget jobs={summary?.top_jobs ?? []} />
+            <TopSpendersWidget workflows={summary?.workflows ?? []} />
           </div>
 
           {/* Cost trend */}
-          <CostTrendWidget data={summary?.daily_trend ?? []} />
+          <CostTrendWidget data={summary?.system_cost_summary?.daily_buckets ?? []} />
 
           {/* Jobs list */}
           <JobsList jobs={jobs} loading={jobsLoading} />

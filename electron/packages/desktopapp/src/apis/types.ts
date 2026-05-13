@@ -22,26 +22,45 @@ export interface Job {
   next_run_at: string | null;
 }
 
+export interface WorkflowSnapshot {
+  id: string;
+  name: string;
+  version: number;
+}
+
+export interface WorkflowRunStep {
+  step_index: number;
+  step_id: string;
+  kind: string;
+  status: "Running" | "Completed" | "Failed" | "Killed";
+  started_at: string;
+  finished_at: string | null;
+  exit_code: number | null;
+  log_byte_offset_start: number;
+  log_byte_offset_end: number;
+  cost_usd: number | null;
+  error: string | null;
+}
+
 export interface RecentRunEntry {
   run_id: string;
-  job_id: string;
-  job_name: string;
+  workflow_id: string;
+  workflow_version: number;
+  workflow_snapshot: WorkflowSnapshot;
   started_at: string;
   finished_at: string | null;
   status: "Running" | "Completed" | "CompletedWithWarnings" | "Failed" | "Killed";
-  exit_code: number | null;
-  log_size_bytes: number;
-  error: string | null;
-  total_cost_usd?: number | null;
-  duration_ms?: number | null;
-  num_turns?: number | null;
-  model?: string | null;
-  usage?: Record<string, unknown> | null;
+  trigger_input: Record<string, unknown> | null;
+  steps: WorkflowRunStep[];
+  total_cost_usd: number | null;
+  total_duration_ms: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
 }
 
 export interface RecentRunsResponse {
   runs: RecentRunEntry[];
-  limit: number;
+  total: number;
 }
 
 export interface HealthResponse {
@@ -53,33 +72,49 @@ export interface HealthResponse {
   data_dir: string;
 }
 
-export interface GlobalCostTokens {
-  input: number;
-  output: number;
-}
+/* ── Dashboard cost data (GET /api/cost/workflows) ── */
 
-export interface GlobalTopJob {
-  job_id: string;
-  job_name: string;
-  total_cost: number;
-  total_runs: number;
-}
-
-export interface GlobalDailyTrend {
+export interface DailyCostBucket {
   date: string;
-  cost_usd: number;
-  input_tokens: number;
-  output_tokens: number;
+  runs_completed: number;
+  runs_failed: number;
+  runs_killed: number;
+  cost_from_completed: number;
+  cost_from_failed: number;
+  cost_from_killed: number;
+  total_usd: number;
+  tokens_in_from_completed: number;
+  tokens_in_from_failed: number;
+  tokens_in_from_killed: number;
+  tokens_out_from_completed: number;
+  tokens_out_from_failed: number;
+  tokens_out_from_killed: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
 }
 
-export interface GlobalCostSummaryResponse {
-  timeframe: string;
-  today_usd: number;
-  week_usd: number;
-  month_usd: number;
-  today_tokens: GlobalCostTokens;
-  top_jobs: GlobalTopJob[];
-  daily_trend: GlobalDailyTrend[];
+export interface WorkflowCostSummary {
+  computed_at: string;
+  last_30_days_runs: number;
+  last_30_days_total_usd: number;
+  last_year_runs: number;
+  last_year_total_usd: number;
+  last_30_days_input_tokens: number;
+  last_30_days_output_tokens: number;
+  last_year_input_tokens: number;
+  last_year_output_tokens: number;
+  daily_buckets: DailyCostBucket[];
+}
+
+export interface WorkflowCostEntry {
+  workflow_id: string;
+  workflow_name: string;
+  cost_summary: WorkflowCostSummary;
+}
+
+export interface CostWorkflowsResponse {
+  system_cost_summary: WorkflowCostSummary;
+  workflows: WorkflowCostEntry[];
 }
 
 export interface JobRun {

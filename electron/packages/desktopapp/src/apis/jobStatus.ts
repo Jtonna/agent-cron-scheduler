@@ -12,13 +12,15 @@ export function isRunning(runs: { status: JobRun["status"] }[]): boolean {
   return runs.some((r) => r.status === "Running");
 }
 
-/** Group recent runs by job_id, preserving original order (newest first). */
-export function groupRunsByJob<T extends { job_id: string }>(runs: T[]): Map<string, T[]> {
+/** Group recent runs by workflow_id, preserving original order (newest first). */
+export function groupRunsByWorkflow<T extends { workflow_id: string }>(
+  runs: T[],
+): Map<string, T[]> {
   const map = new Map<string, T[]>();
   for (const run of runs) {
-    const arr = map.get(run.job_id) ?? [];
+    const arr = map.get(run.workflow_id) ?? [];
     arr.push(run);
-    map.set(run.job_id, arr);
+    map.set(run.workflow_id, arr);
   }
   return map;
 }

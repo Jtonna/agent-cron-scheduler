@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
 import { CostTrendWidget } from "./CostTrendWidget";
-import type { GlobalDailyTrend } from "@/apis/types";
+import type { DailyCostBucket } from "@/apis/types";
 
 const meta: Meta<typeof CostTrendWidget> = {
   title: "Components/Widgets/CostTrendWidget",
@@ -10,16 +10,28 @@ export default meta;
 
 type Story = StoryObj<typeof CostTrendWidget>;
 
-function makeSeries(values: number[]): GlobalDailyTrend[] {
+function makeSeries(values: number[]): DailyCostBucket[] {
   const today = new Date();
   return values.map((cost, i) => {
     const d = new Date(today);
     d.setDate(today.getDate() - (values.length - 1 - i));
     return {
       date: d.toISOString().slice(0, 10),
-      cost_usd: cost,
-      input_tokens: cost * 50_000,
-      output_tokens: cost * 12_000,
+      runs_completed: cost > 0 ? 1 : 0,
+      runs_failed: 0,
+      runs_killed: 0,
+      cost_from_completed: cost,
+      cost_from_failed: 0,
+      cost_from_killed: 0,
+      total_usd: cost,
+      tokens_in_from_completed: 0,
+      tokens_in_from_failed: 0,
+      tokens_in_from_killed: 0,
+      tokens_out_from_completed: 0,
+      tokens_out_from_failed: 0,
+      tokens_out_from_killed: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
     };
   });
 }

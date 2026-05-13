@@ -39,16 +39,10 @@ const STATUS_FILTER_MAP: Record<string, string | undefined> = {
 /* ------------------------------------------------------------------ */
 
 function toJobRun(entry: RecentRunEntry): JobRun {
-  const durationMs =
-    entry.duration_ms ??
-    (entry.finished_at
-      ? new Date(entry.finished_at).getTime() - new Date(entry.started_at).getTime()
-      : Date.now() - new Date(entry.started_at).getTime());
-
   return {
-    name: entry.job_name,
+    name: entry.workflow_snapshot.name,
     status: apiStatusToJobState(entry.status),
-    duration: formatDuration(durationMs),
+    duration: formatDuration(entry.total_duration_ms),
     timeAgo: formatTimeAgo(entry.started_at),
     cost:
       entry.total_cost_usd != null && entry.total_cost_usd > 0

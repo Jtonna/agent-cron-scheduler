@@ -1,16 +1,28 @@
 "use client";
 
-import { DollarSign } from "lucide-react";
+import { Type } from "lucide-react";
 import { StatWidget } from "@/components/widgets/StatWidget";
 import type { WorkflowCostSummary } from "@/apis/types";
 
-interface CostWidgetProps {
+interface TokensWidgetProps {
   summary: WorkflowCostSummary | null;
   loading: boolean;
 }
 
-function formatUsd(n: number): string {
-  return `$${n.toFixed(2)}`;
+function formatTokens(n: number): string {
+  if (n < 1000) {
+    return String(Math.trunc(n));
+  }
+  if (n < 1_000_000) {
+    const s = (n / 1000).toFixed(1);
+    return (s.endsWith(".0") ? s.slice(0, -2) : s) + "k";
+  }
+  const s = (n / 1_000_000).toFixed(1);
+  return (s.endsWith(".0") ? s.slice(0, -2) : s) + "M";
+}
+
+function formatPair(input: number, output: number): string {
+  return `${formatTokens(input)} / ${formatTokens(output)}`;
 }
 
 function todayKey(): string {
@@ -29,24 +41,38 @@ function lastNDateKeys(n: number): Set<string> {
 }
 
 function computeTotals(summary: WorkflowCostSummary): {
-  today: number;
-  week: number;
-  month: number;
+  todayInput: number;
+  todayOutput: number;
+  weekInput: number;
+  weekOutput: number;
+  monthInput: number;
+  monthOutput: number;
 } {
   const today = todayKey();
   const weekKeys = lastNDateKeys(7);
 
-  let todayTotal = 0;
-  let weekTotal = 0;
+  let todayInput = 0;
+  let todayOutput = 0;
+  let weekInput = 0;
+  let weekOutput = 0;
   for (const bucket of summary.daily_buckets) {
-    if (bucket.date === today) todayTotal += bucket.total_usd;
-    if (weekKeys.has(bucket.date)) weekTotal += bucket.total_usd;
+    if (bucket.date === today) {
+      todayInput += bucket.total_input_tokens;
+      todayOutput += bucket.total_output_tokens;
+    }
+    if (weekKeys.has(bucket.date)) {
+      weekInput += bucket.total_input_tokens;
+      weekOutput += bucket.total_output_tokens;
+    }
   }
 
   return {
-    today: todayTotal,
-    week: weekTotal,
-    month: summary.last_30_days_total_usd,
+    todayInput,
+    todayOutput,
+    weekInput,
+    weekOutput,
+    monthInput: summary.last_30_days_input_tokens,
+    monthOutput: summary.last_30_days_output_tokens,
   };
 }
 
@@ -68,9 +94,9 @@ function SkeletonRow() {
   );
 }
 
-export function CostWidget({ summary, loading }: CostWidgetProps) {
+export function TokensWidget({ summary, loading }: TokensWidgetProps) {
   return (
-    <StatWidget title="Cost" icon={<DollarSign size={14} />}>
+    <StatWidget title="Tokens" icon={<Type size={14} />}>
       {loading || !summary ? (
         <div className="flex flex-col gap-1.5 animate-pulse">
           <SkeletonRow />
@@ -82,9 +108,9 @@ export function CostWidget({ summary, loading }: CostWidgetProps) {
           const totals = computeTotals(summary);
           return (
             <div className="flex flex-col gap-0.5">
-              <Row label="Today" value={formatUsd(totals.today)} />
-              <Row label="This week" value={formatUsd(totals.week)} />
-              <Row label="This month" value={formatUsd(totals.month)} />
+              <Row label="Today" value={formatPair(totals.todayInput, totals.todayOutput)} />
+              <Row label="This week" value={formatPair(totals.weekInput, totals.weekOutput)} />
+              <Row label="This month" value={formatPair(totals.monthInput, totals.monthOutput)} />
             </div>
           );
         })()

@@ -11,7 +11,6 @@ import { JobRunsTable } from "@/components/jobs/JobRunsTable";
 import { useJob } from "@/apis/useJob";
 import { useJobCostSummary } from "@/apis/useJobCostSummary";
 import { useJobRuns } from "@/apis/useJobRuns";
-import type { RecentRunEntry } from "@/apis/types";
 
 /**
  * Job detail page (`/jobs/[id]`).
@@ -33,15 +32,6 @@ export default function JobDetailPage({
   const { runs, loading: runsLoading } = useJobRuns(id, 100);
 
   const runningCount = runs.filter((r) => r.status === "Running").length;
-
-  // The HealthWidget consumes `RecentRunEntry[]` (which adds job_name on top
-  // of JobRun). We synthesize that shape here from this job's runs.
-  const recentEntries: RecentRunEntry[] = runs.map((r) => ({
-    ...r,
-    job_name: job?.name ?? "",
-    log_size_bytes: 0,
-    error: null,
-  }));
 
   return (
     <div className="min-h-screen bg-surface text-fg">
@@ -91,7 +81,7 @@ export default function JobDetailPage({
 
               {/* 3-up widget row */}
               <div className="grid grid-cols-3 gap-4">
-                <HealthWidget runs={recentEntries} />
+                <HealthWidget runs={runs} />
                 <JobCostTrendWidget data={summary?.data ?? []} />
                 <JobCostWidget summary={summary} loading={summaryLoading} />
               </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupRunsByJob, isRunning } from "./jobStatus";
+import { groupRunsByWorkflow, isRunning } from "./jobStatus";
 import type { JobRun } from "./types";
 
 describe("isRunning", () => {
@@ -18,11 +18,14 @@ describe("isRunning", () => {
   });
 });
 
-describe("groupRunsByJob", () => {
-  function makeRun(id: string, jobId: string): JobRun {
+describe("groupRunsByWorkflow", () => {
+  type GroupableRun = JobRun & { workflow_id: string };
+
+  function makeRun(id: string, workflowId: string): GroupableRun {
     return {
       run_id: id,
-      job_id: jobId,
+      job_id: workflowId,
+      workflow_id: workflowId,
       started_at: "2026-01-15T12:00:00Z",
       finished_at: null,
       status: "Completed",
@@ -31,23 +34,23 @@ describe("groupRunsByJob", () => {
   }
 
   it("returns an empty map for no runs", () => {
-    const grouped = groupRunsByJob([]);
+    const grouped = groupRunsByWorkflow<GroupableRun>([]);
     expect(grouped.size).toBe(0);
   });
 
-  it("groups a single run under its job", () => {
+  it("groups a single run under its workflow", () => {
     const runs = [makeRun("r1", "job-1")];
-    const grouped = groupRunsByJob(runs);
+    const grouped = groupRunsByWorkflow(runs);
     expect(grouped.size).toBe(1);
     expect(grouped.get("job-1")).toEqual(runs);
   });
 
-  it("groups multiple runs across jobs preserving original order", () => {
+  it("groups multiple runs across workflows preserving original order", () => {
     const r1 = makeRun("r1", "job-1");
     const r2 = makeRun("r2", "job-2");
     const r3 = makeRun("r3", "job-1");
     const r4 = makeRun("r4", "job-2");
-    const grouped = groupRunsByJob([r1, r2, r3, r4]);
+    const grouped = groupRunsByWorkflow([r1, r2, r3, r4]);
 
     expect(grouped.size).toBe(2);
     expect(grouped.get("job-1")).toEqual([r1, r3]);

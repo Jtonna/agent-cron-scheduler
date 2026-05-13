@@ -7,7 +7,7 @@ import { TabBar } from "@/components/ui/TabBar";
 import type { Job, RecentRunEntry } from "@/apis/types";
 import { useRecentRuns } from "@/apis/useRecentRuns";
 import { useJobRuns } from "@/apis/useJobRuns";
-import { groupRunsByJob, isRunning } from "@/apis/jobStatus";
+import { groupRunsByWorkflow, isRunning } from "@/apis/jobStatus";
 
 /**
  * JobsList
@@ -70,7 +70,7 @@ export function JobsList({ jobs, loading }: JobsListProps) {
   // Pull a wide window of recent activity so we can show last-7 dots per row
   // and detect currently-running jobs for "Recent" sort.
   const { runs: recentRuns } = useRecentRuns(200);
-  const runsByJob = groupRunsByJob(recentRuns);
+  const runsByJob = groupRunsByWorkflow(recentRuns);
 
   const needle = search.trim().toLowerCase();
   const list = needle ? jobs.filter((j) => j.name.toLowerCase().includes(needle)) : jobs;

@@ -30,7 +30,7 @@ export function SSEQueryBridge() {
       case "killed":
         // Recent runs feed and global cost summary both depend on run state.
         queryClient.invalidateQueries({ queryKey: ["runs/recent"] });
-        queryClient.invalidateQueries({ queryKey: ["costs/summary"] });
+        queryClient.invalidateQueries({ queryKey: ["cost/workflows"] });
         // Per-job run lists — if the event has a job_id, only invalidate that
         // job's runs; otherwise be conservative and invalidate all of them.
         try {

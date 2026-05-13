@@ -14,8 +14,20 @@ import type { RecentRunEntry } from "@/apis/types";
  * activity.
  */
 
+/**
+ * Status union accepted by this widget. Matches `RecentRunEntry["status"]`
+ * — both `JobRun` and `RecentRunEntry` shapes satisfy this constraint.
+ */
+export type RunStatus = RecentRunEntry["status"];
+
+/** Minimal structural shape this widget reads from each run. */
+interface HealthRun {
+  started_at: string;
+  status: RunStatus;
+}
+
 interface HealthWidgetProps {
-  runs: RecentRunEntry[];
+  runs: HealthRun[];
 }
 
 interface Slice {
@@ -27,7 +39,7 @@ interface Slice {
 
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
 
-function computeSlices(runs: RecentRunEntry[]): Slice[] {
+function computeSlices(runs: HealthRun[]): Slice[] {
   const cutoff = Date.now() - FOURTEEN_DAYS_MS;
   const recent = runs.filter((r) => new Date(r.started_at).getTime() >= cutoff);
 
