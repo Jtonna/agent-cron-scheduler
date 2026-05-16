@@ -20,11 +20,15 @@ docs {
   Event types (each delivered as `data: <json>` over SSE):
   - `RunStarted` — { run_id, workflow_id, workflow_version, started_at }
   - `StepStarted` — { run_id, workflow_id, step_index, step_id, kind, started_at }
-  - `StepOutput` — { run_id, workflow_id, step_index, step_id, data, finished_at } (chunk of stdout/stderr)
-  - `StepCompleted` — { run_id, workflow_id, step_index, step_id, status, exit_code, cost_usd, finished_at }
-  - `RunCompleted` — { run_id, workflow_id, status, total_duration_ms, total_cost_usd, finished_at }
+  - `StepOutput` — { run_id, workflow_id, step_index, step_id, data, timestamp } (chunk of stdout/stderr)
+  - `StepCompleted` — { run_id, workflow_id, step_index, step_id, exit_code, cost_usd, finished_at }
+  - `RunCompleted` — { run_id, workflow_id, status, total_cost_usd, finished_at }
   - `RunFailed` — { run_id, workflow_id, error, finished_at }
-  - `WorkflowChanged` — { workflow_id, kind } (Created / Updated / Deleted / Enabled / Disabled)
+  - `WorkflowChanged` — { workflow_id, version, change_kind } (`created` / `updated` / `deleted` / `enabled` / `disabled`)
+
+  Each event is dispatched with a named SSE `event:` line in addition to the JSON `data:` payload. The names are snake_case: `run_started`, `step_started`, `step_output`, `step_completed`, `run_completed`, `run_failed`, `workflow_changed`.
+
+  The server emits a 15-second SSE keep-alive comment (`:keepalive`). When the broadcast channel lags, it emits `: lagged: some workflow events were missed`. There is no server-side reconnect; clients use standard EventSource auto-reconnect.
 
   Bruno's HTTP runner displays incoming SSE events live. Open this request,
   hit Send, then trigger a workflow in another tab — you'll see the run

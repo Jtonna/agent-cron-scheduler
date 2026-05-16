@@ -2,6 +2,8 @@
 
 Frontend for the Agent Cron Scheduler (ACS) Electron desktop application.
 
+> **Note:** the active desktop UI is being migrated to `packages/desktopapp/` (Next.js App Router + TanStack Query + workflows API). This package is the legacy React Router UI and still ships in `npm run dist:*` builds via `copy-frontend`.
+
 ## Stack
 
 - **Next.js 16** - build tool only (static export)

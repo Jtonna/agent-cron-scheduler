@@ -114,4 +114,6 @@ docs {
   cross-status sums (`total_input_tokens`, `total_output_tokens`). Tokens come
   from the Claude CLI `usage.iterations[]` stream-json; non-agent runs
   contribute 0.
+
+  **v4.2.13:** `CostSummary` adds `last_30_days_avg_cost_per_run_usd` and `last_year_avg_cost_per_run_usd` (computed as `total_usd / runs`; defaults to 0.0 when the window has no runs — never NaN).
 }

@@ -29,8 +29,16 @@ docs {
       Use `GET /api/runs/:run_id/log?step_index=N` to fetch the bytes themselves.
     - `error` (only on failure)
   - `total_cost_usd` (sum across Agent steps)
+  - `total_input_tokens` / `total_output_tokens` (u64, default 0) — sum of input/output tokens across agent steps in the run. Non-agent runs contribute 0.
   - `total_duration_ms`
   - `workflow_snapshot` — frozen `Workflow` state at run time
+
+  Example `WorkflowRun` fields include:
+  ```
+  "total_cost_usd": 0.28,
+  "total_input_tokens": 1234,
+  "total_output_tokens": 567
+  ```
 
   Per-step captured stdout lives on disk in the run log file rather than on
   the StepRun record — see the `Get run log` request in this folder.

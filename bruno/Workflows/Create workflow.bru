@@ -41,6 +41,7 @@ docs {
   Response: 201 Created with the full canonical `Workflow` JSON (including
   server-assigned UUID, version=1, created_at, updated_at).
 
-  409 if a workflow with that `name` already exists. 400 on validation failure
-  (bad cron, empty steps, duplicate step id, etc.).
+  When `timezone` is omitted, it defaults to `config.display_timezone`. When `working_dir` is omitted, it defaults to `<documents>/agent-cron-scheduler/<sanitized-name>` (or to `display_workflow_dir_root` if configured). A 422 with `error: "working_dir_create_failed"` is returned if that directory can't be created.
+
+  409 if a workflow with that `name` already exists. **422 Unprocessable Entity** on validation failure (bad cron, empty steps, duplicate step ids, etc.). `400 Bad Request` is reserved for malformed JSON bodies or use of the removed `command_template` field.
 }

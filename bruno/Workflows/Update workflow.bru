@@ -33,6 +33,5 @@ docs {
   - Change schedule: `{"schedule": "0 9 * * 1-5", "timezone": "America/New_York"}`
   - Replace all steps: `{"steps": [...]}` (full step array)
 
-  Response: 200 with the updated `Workflow`. Increments `version` if `steps`
-  changed, otherwise leaves it.
+  Response: 200 with the updated `Workflow`. Increments `version` whenever any definitional field changes — `name`, `schedule`, `timezone`, `schedule_mode`, `steps`, `default_input`, `working_dir`, `env_vars`, `allow_concurrent`, `on_failure`. Pure `enabled` toggles do NOT bump version. `updated_at` is bumped on every successful PATCH regardless of version change.
 }
