@@ -22,5 +22,5 @@ docs {
   Remaining steps in the workflow are skipped unless `always_run: true`.
   The run's terminal status is `Killed`.
 
-  Response: **202 Accepted** with body `{ "message": "Kill signal sent" }`. The signal is best-effort; the actual run may take additional time to terminate. If the run is already terminal (Completed/Failed/Killed), the handler still returns 202 with the same body (idempotent no-op). 404 if run_id is unknown.
+  Response: **202 Accepted** with body `{ "message": "Kill signal sent" }`. The signal is best-effort; the actual run may take additional time to terminate. If the run is already terminal (Completed/Failed/Killed), the handler still returns 202 with the same body (idempotent no-op). Returns **400 Bad Request** with `error: "bad_request"` if `run_id` is not a valid UUID. Returns **404 Not Found** if the UUID is well-formed but no run exists.
 }

@@ -20,4 +20,6 @@ docs {
   Past run records under `runs/<workflow_id>/` and log files under
   `logs/<workflow_id>/` are NOT automatically deleted with the workflow —
   they remain for historical inspection until manually removed.
+
+  **Side effects:** the workflow's cost-cache entry is evicted from the in-memory `CostCache`, and a `WorkflowChanged` SSE event with `change_kind: "deleted"` is broadcast to subscribers of `/api/events/workflows`.
 }

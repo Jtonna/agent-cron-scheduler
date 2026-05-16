@@ -17,6 +17,8 @@ docs {
 
   Response: 200 with `{"message": "Shutdown initiated"}`.
 
+  **Known issue (ACS-24):** the 200 response is sent before the daemon process actually exits. The handler fires the shutdown signal and returns immediately; drain + cleanup + exit happen asynchronously. Callers should poll `GET /health` (expect connection refused) or watch for PID-file removal to confirm shutdown completed. Observed in foreground mode (`start --foreground`); may also affect background/service mode.
+
   Same caveat as restart — the connection drops shortly after. To bring the
   daemon back up afterward, run `agentcronsystem start -f` from a terminal.
 }

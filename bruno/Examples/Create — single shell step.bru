@@ -29,6 +29,6 @@ body:json {
 docs {
   Smallest possible workflow: one shell step that prints a line.
 
-  - Disabled (manual-trigger only) on a sentinel "Jan 1, midnight" cron.
+  - Disabled — the cron scheduler will skip this workflow. Manual triggers via `POST /api/workflows/{id}/trigger` still work regardless of the `enabled` flag. Uses a sentinel "Jan 1, midnight" cron.
   - Default `allow_concurrent: true` (multiple manual triggers can overlap).
 }
