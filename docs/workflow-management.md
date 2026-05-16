@@ -123,7 +123,7 @@ Executes an inline shell command string.
 | Platform | Interpreter | Arguments |
 |---|---|---|
 | Unix/macOS | `sh` (resolved via PATH) | `-c <command>` |
-| Windows | `cmd.exe` | `/C <command>` |
+| Windows | `cmd` (resolved via PATH) | `/C <command>` |
 
 **Example:**
 
@@ -162,8 +162,8 @@ Executes a script file via an explicit or inferred interpreter.
 
 | `script_type` | Unix interpreter | Windows interpreter |
 |---|---|---|
-| `null` or `"shell"` | `sh <path> [args]` (resolved via PATH) | `cmd /C <path> [args]` |
-| `"batch"` | Error (Windows only) | `cmd /C <path> [args]` |
+| `null` or `"shell"` | `sh <path> [args]` (resolved via PATH) | `cmd /C <path> [args]` (resolved via PATH) |
+| `"batch"` | Error (Windows only) | `cmd /C <path> [args]` (resolved via PATH) |
 | `"python"` | `python3 <path> [args]` | `python <path> [args]` |
 | `"powershell"` | `pwsh -File <path> [args]` | `pwsh -File <path> [args]` if `pwsh` is on PATH; otherwise `powershell.exe -File <path> [args]` |
 

@@ -253,7 +253,7 @@ Errors and warnings (e.g. spawn failures, template warnings, persistence errors)
 
 **Symptom:** The `logs/` directory contains subdirectories for workflows that no longer exist.
 
-**Cause:** `DELETE /api/runs/<id>` (or `delete_run`) removes the matching log file at `logs/{workflow_id}/{run_id}.log`. Orphaned log directories arise when an entire workflow is deleted but its run log files remain — the per-run files are gone but the workflow-ID subdirectory under `logs/` may persist.
+**Cause:** There is currently no HTTP endpoint for deleting a run record. The `delete_run` storage trait method exists internally but is not exposed via the API. Manual cleanup via direct SQLite access (`DELETE FROM workflow_runs WHERE run_id = ?` plus `rm logs/{workflow_id}/{run_id}.log`) is the only option, with the daemon stopped. Orphaned log directories arise when an entire workflow is deleted but its run log files remain — the per-run files may persist along with the workflow-ID subdirectory under `logs/`.
 
 **Solution:**
 - Orphaned log directories must be cleaned up manually. There is no automatic cleanup code in `start_daemon`; restarting the daemon does not trigger any such cleanup.

@@ -219,7 +219,7 @@ pub trait WorkflowStore: Send + Sync {
         run_id: Uuid,
         status: RunStatus,
         finished_at: DateTime<Utc>,
-    ) -> Result<(), AcsError>;
+    ) -> Result<()>;
 }
 ```
 
@@ -231,7 +231,7 @@ pub trait WorkflowStore: Send + Sync {
 | `create_workflow` | Validates, assigns a UUIDv7 ID, sets `version: 1`, INSERTs, and returns the new workflow. |
 | `update_workflow` | Partial update; bumps `version` when any definition-affecting field changes. Returns `NotFound` or `Conflict` as appropriate. |
 | `delete_workflow` | DELETEs a workflow by UUID; returns `NotFound` if it does not exist. |
-| `record_run_outcome` | Records a terminal run outcome on the parent workflow (updates `last_run_id`, `last_run_status`, `last_run_at`; bumps `updated_at`; does NOT bump `version`). |
+| `record_run_outcome` | Records a terminal run outcome on the parent workflow (updates `last_run_id`, `last_run_status`, `last_run_at`; bumps `updated_at`; does NOT bump `version`). Returns `Result<()>` (anyhow); note this differs from the `WorkflowRunStore` trait which uses `Result<_, AcsError>`. |
 
 ### SqliteWorkflowStore
 

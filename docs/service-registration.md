@@ -37,7 +37,7 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run
 
 The value data quotes only the executable path (to handle paths with spaces) and appends the `start` sub-command. Writing the value when one already exists silently overwrites it, so the operation is idempotent.
 
-**Note:** On every background `start` invocation, the binary is automatically added to the user's PATH if not already present (Windows: User Environment Variable; Unix: shell profile). This PATH registration happens independently of service registration — it occurs regardless of whether `install_service()` succeeds or whether the service was already registered. This allows `agentcronsystem` to be invoked from any directory without specifying the full path.
+**Note:** On every background `start` invocation, the binary is automatically added to the user's PATH if not already present (Windows: User Environment Variable; Unix: shell profile). On macOS, appends to `~/.zshrc` and `~/.bash_profile` if those files already exist. On Linux, appends to `~/.bashrc`, `~/.zshrc`, and `~/.profile` (each only if present). This PATH registration happens independently of service registration — it occurs regardless of whether `install_service()` succeeds or whether the service was already registered. This allows `agentcronsystem` to be invoked from any directory without specifying the full path.
 
 ### Detect Registration
 

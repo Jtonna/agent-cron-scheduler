@@ -437,7 +437,7 @@ agentcronsystem workflows create --json '{"name":"heartbeat","schedule":"* * * *
 
 ### `agentcronsystem workflows update`
 
-Update an existing workflow from a JSON file, inline JSON, or the convenience `--enable` / `--disable` flags. At least one of `--file`, `--json`, `--enable`, or `--disable` must be provided. If multiple are passed, precedence is: `--file` > `--json` > `--enable`/`--disable` (a code-level constraint at runtime, not enforced by clap).
+Update an existing workflow from a JSON file, inline JSON, or the convenience `--enable` / `--disable` flags. At least one of `--file`, `--json`, `--enable`, or `--disable` must be provided. Precedence at runtime: `--file` > `--json` > `--enable`/`--disable`. Clap enforces `--file`/`--json` mutual exclusion and `--enable`/`--disable` mutual exclusion, but does NOT prevent combining file/json with enable/disable — the runtime precedence resolves that case.
 
 ```
 agentcronsystem workflows update [OPTIONS] <ID_OR_NAME>

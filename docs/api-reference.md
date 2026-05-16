@@ -77,6 +77,8 @@ All error responses share a consistent JSON structure:
 
 ### Error Codes
 
+Additional endpoint-specific error codes are documented in each endpoint's response section below.
+
 | `error` value       | Typical HTTP Status | Description                                        |
 |----------------------|---------------------|----------------------------------------------------|
 | `not_found`          | 404                 | The requested resource does not exist              |
@@ -245,7 +247,7 @@ Create a new workflow.
 | 201 Created | Workflow created. Returns the full [Workflow](#workflow) object. |
 | 400 Bad Request | `error: "command_template_removed"` — the payload contains an `AgentStep` with the removed `command_template` field. Migrate to `model` / `extra_args`. |
 | 409 Conflict | A workflow with the same `name` already exists. |
-| 422 Unprocessable Entity | Validation failed (empty name, UUID name, invalid cron, invalid timezone, no steps, duplicate step ids, invalid capture parser). |
+| 422 Unprocessable Entity | Validation failed. Codes: `validation_error` (empty name, UUID name, invalid cron, invalid timezone, no steps, duplicate step ids, invalid capture parser), `deserialization_error` (request body did not deserialize into `NewWorkflow`), `working_dir_create_failed` (daemon could not create the default working dir). |
 | 500 Internal Server Error | Storage failure. |
 
 **Side effects:** Broadcasts a `WorkflowChanged` SSE event with `change_kind: "created"` and notifies the scheduler.
@@ -304,7 +306,7 @@ Partially update an existing workflow. Only the fields you include in the reques
 | 400 Bad Request | `error: "command_template_removed"` — the payload contains an `AgentStep` with the removed `command_template` field. Migrate to `model` / `extra_args`. |
 | 404 Not Found | Workflow not found. |
 | 409 Conflict | Another workflow already has the requested `name`. |
-| 422 Unprocessable Entity | Validation failed on one or more fields. |
+| 422 Unprocessable Entity | Validation failed on one or more fields. Codes: `validation_error`, `deserialization_error` (request body did not deserialize into the patch type). |
 | 500 Internal Server Error | Storage failure. |
 
 **Side effects:** Broadcasts a `WorkflowChanged` SSE event with `change_kind: "updated"` and notifies the scheduler.
@@ -632,7 +634,7 @@ Both filter parameters must be valid UUIDs if provided. Invalid UUIDs are silent
 
 **Important:** `WorkflowChanged` events carry a `workflow_id` but no `run_id`. When a `run_id` filter is active, `WorkflowChanged` events are **filtered out** because they do not carry a `run_id`. To receive both run-level events and workflow lifecycle events together, use only the `workflow_id` filter.
 
-**Response:** An SSE stream (`text/event-stream`). The connection is kept alive with a keepalive comment every 15 seconds (text: `"keepalive"`).
+**Response:** An SSE stream (`text/event-stream`). The connection is kept alive with a keepalive comment every 15 seconds (text: `"keepalive"`). The 15-second keep-alive is emitted as an SSE comment line (`:keepalive`), not as a named event. Standard EventSource clients ignore it automatically.
 
 Each SSE message has:
 - `event:` -- the event type name (snake_case, see [SSE Event Types](#sse-event-types))
@@ -871,7 +873,9 @@ Retrieve cost analytics for a single workflow.
 
 | Parameter | Type   | Description                                  |
 |-----------|--------|----------------------------------------------|
-| `id`      | string | Workflow UUID or name (see [Workflow Identifier Resolution](#workflow-identifier-resolution)). |
+| `id`      | string (UUID) | Workflow UUID only. |
+
+**Note:** Unlike `/api/workflows/{id}` and `/api/workflows/{id}/runs`, this endpoint accepts UUIDs only — name-based lookup is not supported. To look up by name, first resolve via `GET /api/workflows/{name}` to get the UUID.
 
 **Query Parameters:** See [Query Parameters (Cost Endpoints)](#query-parameters-cost-endpoints) above.
 
@@ -880,8 +884,8 @@ Retrieve cost analytics for a single workflow.
 | Status | Description |
 |--------|-------------|
 | 200 OK | Returns a [CostWorkflowResponse](#costworkflowresponse) object. |
-| 400 Bad Request | Invalid query parameter combination. |
-| 404 Not Found | No workflow matching the given UUID or name. |
+| 400 Bad Request | Invalid path (non-UUID `{id}` rejected by Axum extraction) or invalid query parameter combination. |
+| 404 Not Found | UUID is well-formed but no workflow exists with that ID. |
 | 500 Internal Server Error | Storage failure. |
 
 ```json
@@ -1310,7 +1314,7 @@ Represents a single execution of a workflow.
 | `started_at`        | string (ISO 8601)              | No       | When the run started.                                                                    |
 | `finished_at`       | string (ISO 8601)              | Yes      | When the run finished, or `null` if still running.                                       |
 | `status`            | [RunStatus](#runstatus)        | No       | Current run status.                                                                      |
-| `trigger_input`     | any JSON value                 | Yes      | The trigger payload used for this run. `null` only when both `trigger.input` and `workflow.default_input` are absent (effective input is `Value::Null`); an explicit `{}` is stored as `{}`. |
+| `trigger_input`     | any JSON value                 | Yes      | The trigger payload used for this run. `null` when the trigger body's `input` is null or omitted. The effective input used for template substitution still falls back to `workflow.default_input` at execution time, but the persisted `trigger_input` reflects only what was sent in the trigger body. |
 | `steps`             | array of [StepRun](#steprun)   | No       | Step execution records in runtime order (flattened; branch steps appear inline).        |
 | `total_cost_usd`    | number (f64)                   | Yes      | Summed cost across all `AgentStep` runs in USD. `null` if no agent steps ran.            |
 | `total_duration_ms` | integer (u64)                  | Yes      | Total wall-clock duration in milliseconds. `null` while running.                         |
@@ -1556,8 +1560,8 @@ SSE event name: `workflow_changed`
 | `created`  | `POST /api/workflows`               |
 | `updated`  | `PATCH /api/workflows/{id}`         |
 | `deleted`  | `DELETE /api/workflows/{id}`        |
-| `enabled`  | (scheduler/daemon internal)         |
-| `disabled` | (scheduler/daemon internal)         |
+| `enabled`  | (reserved — not currently emitted by any handler or scheduler path) |
+| `disabled` | (reserved — not currently emitted by any handler or scheduler path) |
 
 ---
 

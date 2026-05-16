@@ -56,7 +56,6 @@ acs/src/
     mod.rs                         # Cli struct, Commands enum, dispatch()
     daemon.rs                      # start/stop/status/restart/uninstall handlers
     workflows.rs                   # workflow CRUD + trigger + runs subcommands
-    logs.rs                        # logs command handler
   daemon/
     mod.rs                         # PidFile, PortFile, load_config(), start_daemon(),
                                    #   graceful_shutdown(), SizeManagedWriter,
@@ -144,7 +143,7 @@ acs/src/
 #### `cli` -- Command-Line Interface
 
 - **`cli::Cli`**: Top-level clap `Parser` struct with global options.
-- **`cli::Commands`**: Enum of all subcommands (`daemon`, `workflows`, `logs`, etc.).
+- **`cli::Commands`**: Enum of all subcommands (`Start`, `Stop`, `Restart`, `Status`, `Uninstall`, `Update`, `Workflows`).
 - **`cli::dispatch()`**: Routes parsed CLI commands to handler functions. Most commands communicate over HTTP to the daemon's REST API; `Start` either runs the daemon directly or spawns it.
 - **`cli::workflows`**: Subcommands for workflow CRUD, trigger, and run listing. Communicates with the daemon over the REST API.
 
