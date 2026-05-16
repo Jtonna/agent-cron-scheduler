@@ -293,7 +293,7 @@ pub trait WorkflowRunStore: Send + Sync {
     async fn list_recent_runs(&self, limit: usize, offset: usize) -> Result<Vec<WorkflowRun>, AcsError>;
     async fn count_all_runs(&self) -> Result<usize, AcsError>;
     async fn cost_summary_for(&self, workflow_id: Uuid, display_tz: &Tz) -> Result<CostSummary, AcsError>;
-    async fn daily_buckets_for(&self, workflow_id: Option<Uuid>, since: NaiveDate, until: NaiveDate, display_tz: &Tz) -> Result<Vec<DailyBucket>, AcsError>;
+    async fn daily_buckets_for(&self, workflow_id: Option<Uuid>, since: DateTime<Utc>, until: DateTime<Utc>, display_tz: &Tz) -> Result<Vec<DailyBucket>, AcsError>;
 }
 ```
 
@@ -308,7 +308,7 @@ pub trait WorkflowRunStore: Send + Sync {
 | `list_recent_runs` | Cross-workflow recent-runs feed: `SELECT … ORDER BY run_id DESC LIMIT ? OFFSET ?` (no `workflow_id` filter). Backs `GET /api/runs/recent`. |
 | `count_all_runs` | `SELECT COUNT(*) FROM workflow_runs` across all workflows. Pairs with `list_recent_runs` for paginated totals. |
 | `cost_summary_for` | Computes the per-workflow `CostSummary` (30-day + 1-year totals) windowed against `display_tz` calendar-day boundaries. Entry point used by `CostCache`. |
-| `daily_buckets_for` | Per-day cost buckets between `since` and `until` (inclusive) for a single workflow when `workflow_id` is `Some`, or system-wide aggregate when `None`. Days are bucketed in `display_tz`. |
+| `daily_buckets_for` | Per-day cost buckets over the `[since, until)` window for a single workflow when `workflow_id` is `Some`, or system-wide aggregate when `None`. Results are in ascending date order; days with no terminal runs are omitted. Date grouping uses `display_tz` for calendar-day boundaries. |
 
 ### SqliteWorkflowRunStore
 
