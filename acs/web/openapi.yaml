@@ -116,11 +116,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Workflow"
+        "400":
+          description: |
+            Request body contained a removed/legacy field. Returns
+            `error: "command_template_removed"` when the pre-deserialize
+            guard detects an old `command_template` field.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: command_template_removed
+                message: "The `command_template` field has been removed; use `steps` instead."
         "422":
           description: |
-            Validation failed. Covers: empty name, UUID-like name, invalid cron
-            expression, invalid timezone, no steps, duplicate step ids, invalid
-            capture parser. Returns `error: "validation_error"`.
+            Request rejected. `error` is one of:
+            - `validation_error` — empty name, UUID-like name, invalid cron
+              expression, invalid timezone, no steps, duplicate step ids,
+              invalid capture parser, etc.
+            - `deserialization_error` — JSON body does not match the
+              `NewWorkflow` schema.
+            - `working_dir_create_failed` — the default working directory
+              could not be created on disk.
           content:
             application/json:
               schema:
@@ -205,8 +222,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Workflow"
+        "400":
+          description: |
+            Request body contained a removed/legacy field. Returns
+            `error: "command_template_removed"` when the pre-deserialize
+            guard detects an old `command_template` field.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: command_template_removed
+                message: "The `command_template` field has been removed; use `steps` instead."
         "422":
-          description: Unprocessable Entity (validation error — invalid cron expression, name, etc.)
+          description: |
+            Request rejected. `error` is one of:
+            - `validation_error` — invalid cron expression, invalid name,
+              invalid timezone, etc.
+            - `deserialization_error` — JSON body does not match the
+              `WorkflowUpdate` schema.
+            - `working_dir_create_failed` — the new default working directory
+              could not be created on disk.
           content:
             application/json:
               schema:
@@ -263,16 +299,17 @@ paths:
         Dispatches an immediate execution of the workflow regardless of its cron
         schedule. Accepts per-invocation parameters (input JSON, env overrides,
         target step). Returns 202 Accepted with a pre-generated `run_id`.
-        Send `{}` or omit the body to fall back to `workflow.default_input`.
+        Send `{}` to fall back to `workflow.default_input`. An entirely
+        missing body is rejected by the JSON extractor.
       tags: [Workflows]
       parameters:
         - $ref: "#/components/parameters/WorkflowId"
       requestBody:
-        required: false
+        required: true
         description: |
-          Trigger parameters. The body is optional; send `{}` to use all
-          defaults. The `input` field defaults to `null` when omitted, falling
-          back to `workflow.default_input`.
+          Trigger parameters. A body is required by the JSON extractor; send
+          `{}` to use all defaults. The `input` field defaults to `null` when
+          omitted, falling back to `workflow.default_input`.
         content:
           application/json:
             schema:
@@ -340,7 +377,7 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Maximum number of runs to return (default 20, max 100). 0 is treated as no limit but is still capped at 100.
+          description: Defaults to 20. Capped at 100. Setting `limit=0` returns all runs with no cap (use with care).
           schema:
             type: integer
             default: 20
@@ -404,7 +441,7 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Maximum number of runs to return (default 20, max 100). 0 is treated as no limit but is still capped at 100.
+          description: Defaults to 20. Capped at 100. Setting `limit=0` returns all runs with no cap (use with care).
           schema:
             type: integer
             default: 20
@@ -467,6 +504,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowRun"
+        "400":
+          description: run_id is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: bad_request
+                message: "Invalid run id"
         "404":
           description: Run not found
           content:
@@ -576,6 +622,15 @@ paths:
                 $ref: "#/components/schemas/MessageResponse"
               example:
                 message: "Kill signal sent"
+        "400":
+          description: run_id is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: bad_request
+                message: "Invalid run id"
         "404":
           description: Run not found
           content:
@@ -838,12 +893,6 @@ paths:
           schema:
             type: integer
             minimum: 1
-        - name: format
-          in: query
-          required: false
-          description: Reserved for future use.
-          schema:
-            type: string
       responses:
         "200":
           description: Daemon log content as plain text
@@ -852,8 +901,8 @@ paths:
               schema:
                 type: string
               example: |
-                2024-01-15T02:00:00Z INFO  acs::daemon - Daemon started
-                2024-01-15T02:00:01Z INFO  acs::server - Listening on 0.0.0.0:3000
+                2026-05-08T02:00:00Z INFO  acs::daemon - Daemon started
+                2026-05-08T02:00:01Z INFO  acs::server - Listening on 0.0.0.0:3000
         "500":
           description: Failed to read log file
           content:
@@ -1386,7 +1435,7 @@ components:
           format: date-time
           nullable: true
           description: Timestamp of the last completed run, or null if never run.
-          example: "2024-01-16T03:00:00Z"
+          example: "2026-05-12T03:00:00Z"
         last_run_status:
           $ref: "#/components/schemas/RunStatus"
           nullable: true
@@ -1402,19 +1451,20 @@ components:
           format: date-time
           nullable: true
           description: |
-            Computed next scheduled run time. Present when the workflow is
-            enabled; null when disabled. Not persisted — calculated on read.
-          example: "2024-01-17T03:00:00Z"
+            Always `null` in current API responses — reserved for a future
+            enhancement that will compute the next scheduled run time
+            client-readable on the workflow itself.
+          example: null
         created_at:
           type: string
           format: date-time
           description: ISO 8601 timestamp when the workflow was created.
-          example: "2024-01-15T00:00:00Z"
+          example: "2026-05-01T00:00:00Z"
         updated_at:
           type: string
           format: date-time
           description: ISO 8601 timestamp when the workflow was last modified.
-          example: "2024-01-15T12:00:00Z"
+          example: "2026-05-08T12:00:00Z"
 
     # -----------------------------------------------------------------------
     # DailyBucket
@@ -1634,22 +1684,22 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Total input tokens across all agent steps from completed runs in the last 30 days (calendar days in display_timezone).
+          description: Total input tokens across all agent steps from terminal runs (Completed, Failed, Killed) in the last 30 days (calendar days in display_timezone).
         last_30_days_output_tokens:
           type: integer
           format: int64
           minimum: 0
-          description: Total output tokens across all agent steps from completed runs in the last 30 days.
+          description: Total output tokens across all agent steps from terminal runs (Completed, Failed, Killed) in the last 30 days.
         last_year_input_tokens:
           type: integer
           format: int64
           minimum: 0
-          description: Total input tokens across all agent steps from completed runs in the last 365 days.
+          description: Total input tokens across all agent steps from terminal runs (Completed, Failed, Killed) in the last 365 days.
         last_year_output_tokens:
           type: integer
           format: int64
           minimum: 0
-          description: Total output tokens across all agent steps from completed runs in the last 365 days.
+          description: Total output tokens across all agent steps from terminal runs (Completed, Failed, Killed) in the last 365 days.
         last_30_days_avg_cost_per_run_usd:
           type: number
           format: double
@@ -1679,8 +1729,10 @@ components:
           default: []
           description: |
             Per-day cost buckets for the requested window, ascending by date.
-            Days with no terminal runs are omitted. Populated on GET /api/workflows
-            and GET /api/workflows/{id}; empty array on other responses.
+            Days with no terminal runs are omitted. Populated on GET /api/cost/workflows
+            and GET /api/cost/workflows/{id} (window controlled by `days` or
+            `since`/`until`). Empty on cost summaries returned outside of those
+            endpoints.
 
     NewWorkflow:
       type: object
@@ -1748,6 +1800,10 @@ components:
       description: |
         Partial update for a workflow. All fields are optional; only provided
         fields are modified.
+
+        There is currently no way to clear optional fields via PATCH; a field
+        can only be updated to a non-null value or left unchanged by omitting
+        it.
       properties:
         name:
           type: string
@@ -1760,7 +1816,7 @@ components:
         timezone:
           type: string
           nullable: true
-          description: New IANA timezone (validated). Null clears the timezone (uses UTC).
+          description: New IANA timezone (validated).
           example: Europe/London
         schedule_mode:
           type: string
@@ -1780,7 +1836,7 @@ components:
           description: Replace the full step list (must be non-empty if provided).
         default_input:
           nullable: true
-          description: Replace the default input (null clears it).
+          description: Replace the default input.
         working_dir:
           type: string
           nullable: true
@@ -1791,7 +1847,7 @@ components:
           nullable: true
           additionalProperties:
             type: string
-          description: Replace environment variables (null clears them).
+          description: Replace environment variables.
         allow_concurrent:
           type: boolean
           nullable: true
@@ -1805,10 +1861,11 @@ components:
     TriggerParams:
       type: object
       description: |
-        Per-invocation parameters for triggering a workflow. The body is
-        optional. Sending `{}` or omitting `input` both fall back to
-        `workflow.default_input`. An explicit `{}` for `input` is stored as
-        an empty object (not the default).
+        Per-invocation parameters for triggering a workflow. A body is
+        required (Axum's JSON extractor rejects an entirely missing body).
+        Send `{}` to fall back to `workflow.default_input`; omitting `input`
+        within the body also falls back. An explicit `{}` for `input` is
+        stored as an empty object (not the default).
       properties:
         input:
           nullable: true
@@ -1897,13 +1954,13 @@ components:
           type: string
           format: date-time
           description: Timestamp when this step started executing.
-          example: "2024-01-16T03:00:00Z"
+          example: "2026-05-12T03:00:00Z"
         finished_at:
           type: string
           format: date-time
           nullable: true
           description: Timestamp when this step finished, or null if still running.
-          example: "2024-01-16T03:00:05Z"
+          example: "2026-05-12T03:00:05Z"
         exit_code:
           type: integer
           format: int32
@@ -1971,13 +2028,13 @@ components:
           type: string
           format: date-time
           description: Timestamp when the run started.
-          example: "2024-01-16T03:00:00Z"
+          example: "2026-05-12T03:00:00Z"
         finished_at:
           type: string
           format: date-time
           nullable: true
           description: Timestamp when the run finished, or null if still running.
-          example: "2024-01-16T03:00:30Z"
+          example: "2026-05-12T03:00:30Z"
         status:
           $ref: "#/components/schemas/RunStatus"
         trigger_input:
