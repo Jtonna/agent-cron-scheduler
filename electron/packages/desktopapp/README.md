@@ -51,16 +51,16 @@ Backend defaults to `http://127.0.0.1:8377`. Override with `NEXT_PUBLIC_API_URL`
 src/
 ├── apis/                          # data layer — survives across page navigation
 │   ├── client.ts                  # fetch wrapper + ApiError + the api.* object
-│   ├── types.ts                   # TypeScript types matching the backend (Job, JobRun, RecentRunEntry, etc.)
+│   ├── types.ts                   # TypeScript types matching the backend (Workflow, WorkflowRun, RecentRunEntry, etc.)
 │   ├── format.ts                  # date / duration / cost formatting helpers
 │   ├── jobStatus.ts               # isRunning, groupRunsByJob, AnyRun helper type
 │   ├── providers.tsx              # <Providers> = RouterProvider + QueryClient + SSE + SSEQueryBridge
 │   ├── sse.tsx                    # SSEProvider, useSSEEvents, useSSEConnected
 │   ├── sseInvalidator.tsx         # SSEQueryBridge — single SSE→query invalidation point
 │   ├── useHealth.ts               # GET /health
-│   ├── useJobs.ts                 # GET /api/jobs
-│   ├── useGlobalCostSummary.ts    # GET /api/costs/summary
-│   ├── useJobRuns.ts              # GET /api/jobs/{id}/runs
+│   ├── useJobs.ts                 # GET /api/workflows
+│   ├── useGlobalCostSummary.ts    # GET /api/cost/workflows
+│   ├── useJobRuns.ts              # GET /api/workflows/{id}/runs
 │   ├── useRecentRuns.ts           # GET /api/runs/recent (with grow-limit pagination)
 │   └── useSystemLogs.ts           # GET /api/logs (with SSE-driven append + 1MB cap)
 │

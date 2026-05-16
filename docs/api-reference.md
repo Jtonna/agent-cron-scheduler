@@ -120,7 +120,7 @@ Returns daemon health status, including uptime, workflow counts, version, and pl
   "uptime_seconds": 3600,
   "active_jobs": 5,
   "total_jobs": 8,
-  "version": "4.2.5",
+  "version": "4.2.13",
   "data_dir": "/home/user/.local/share/agent-cron-scheduler",
   "service": {
     "registered": true,

@@ -949,7 +949,7 @@ components:
         version:
           type: string
           description: Daemon version string.
-          example: "4.2.9"
+          example: "4.2.13"
         data_dir:
           type: string
           description: Filesystem path to the data directory.

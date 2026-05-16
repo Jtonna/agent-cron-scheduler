@@ -2,7 +2,7 @@
 
 A cross-platform multi-step workflow scheduler daemon with a CLI, REST API, and built-in web UI. Workflows run on standard cron schedules and chain together shell commands, scripts, HTTP calls, branching logic, and AI-agent invocations -- with live output streaming over Server-Sent Events.
 
-Supports Windows, macOS, and Linux. Current version: **4.2.8**.
+Supports Windows, macOS, and Linux.
 
 ## Features
 
