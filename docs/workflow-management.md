@@ -116,13 +116,13 @@ Executes an inline shell command string.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `command` | `String` | required | Shell command template. |
-| `pass_stdin` | `bool` | `false` | If `true`, pipes the immediately-prior step's stdout to this process's stdin. The prior step is defined as the last step inserted into the execution context before this one — i.e., the step that ran immediately before this step in execution order. |
+| `pass_stdin` | `bool` | `false` | If `true`, pipes the immediately-prior step's stdout to this process's stdin. The prior step is defined as the last step inserted into the execution context before this one — i.e., the step that ran immediately before this step in execution order. If the immediately-prior step produced no stdout (e.g. `set_var`, or a `match` with no consumed branch), nothing is piped — the search does not skip past it to find a non-empty earlier step. |
 
 **Platform behavior:**
 
 | Platform | Interpreter | Arguments |
 |---|---|---|
-| Unix/macOS | `/bin/sh` | `-c <command>` |
+| Unix/macOS | `sh` (resolved via PATH) | `-c <command>` |
 | Windows | `cmd.exe` | `/C <command>` |
 
 **Example:**
@@ -156,13 +156,13 @@ Executes a script file via an explicit or inferred interpreter.
 | `path` | `String` | required | Path to the script file. Supports template substitution. |
 | `script_type` | `Option<String>` | `null` | Interpreter to use. One of `"shell"`, `"batch"`, `"python"`, `"powershell"`. When `null`, defaults to `"shell"` behavior. |
 | `args` | `Option<String>` | `null` | Whitespace-separated arguments passed to the script. Supports template substitution. |
-| `pass_stdin` | `bool` | `false` | Pipe the immediately-prior step's stdout to this process's stdin. The prior step is defined as the last step inserted into the execution context before this one — i.e., the step that ran immediately before this step in execution order. |
+| `pass_stdin` | `bool` | `false` | Pipe the immediately-prior step's stdout to this process's stdin. The prior step is defined as the last step inserted into the execution context before this one — i.e., the step that ran immediately before this step in execution order. If the immediately-prior step produced no stdout (e.g. `set_var`, or a `match` with no consumed branch), nothing is piped — the search does not skip past it to find a non-empty earlier step. |
 
 **Interpreter selection:**
 
 | `script_type` | Unix interpreter | Windows interpreter |
 |---|---|---|
-| `null` or `"shell"` | `sh <path> [args]` | `cmd /C <path> [args]` |
+| `null` or `"shell"` | `sh <path> [args]` (resolved via PATH) | `cmd /C <path> [args]` |
 | `"batch"` | Error (Windows only) | `cmd /C <path> [args]` |
 | `"python"` | `python3 <path> [args]` | `python <path> [args]` |
 | `"powershell"` | `pwsh -File <path> [args]` | `pwsh -File <path> [args]` if `pwsh` is on PATH; otherwise `powershell.exe -File <path> [args]` |
@@ -324,7 +324,7 @@ If `model` is set, `--model <value>` is inserted. If `extra_args` is non-empty, 
 
 **Cost tracking.** Agent steps stream Claude's NDJSON output through a `ClaudeStreamParser`. The parser extracts `total_cost_usd`, `duration_ms`, `num_turns`, `model`, and `usage` from `result` events and accumulates them across multiple invocations. Costs from agent steps are summed into `WorkflowRun.total_cost_usd`. Only `AgentStep` produces cost data; a `ShellStep` that happens to call `claude -p` directly does not, and the legacy stdin-fed pattern `echo "prompt" | claude --output-format stream-json` (note: no `-p` flag) still runs fine as a shell step but is **not** auto-rewritten into an `AgentStep` and does **not** get first-class cost tracking. Convert it to an `AgentStep` (or a `ShellStep` calling `claude -p "..."`) to participate in cost aggregation.
 
-**stdout.** The `result` field from the last Claude `result` event becomes `StepOutput.stdout` (as `Value::String`). If no structured result is present (no `result` event in the output), the raw captured output is used as a fallback.
+**stdout.** The `result` field from the last Claude `result` event becomes `StepOutput.stdout` (as `Value::String`). If no structured result is present (no `result` event in the output), the raw captured output is parsed per the step's `capture.parser` as a fallback (so the stdout `Value` can be non-string depending on the capture spec).
 
 **Example:**
 
@@ -427,7 +427,7 @@ ${input.options.format}         → nested field at options.format
 Accessors:
 - `stdout` — the step's stdout value. Strings are rendered raw; structured values are serialized as compact JSON.
 - `exit_code` — the step's exit code as a decimal string.
-- `exports.<name>` — a named export value from a `SetVarStep` or `AgentStep`.
+- `exports.<name>` — a named export value from a `SetVarStep`.
 
 ```
 ${steps.fetch.stdout}                     → full stdout of step "fetch"
@@ -613,6 +613,8 @@ Each execution creates a `WorkflowRun` row in the `workflow_runs` table of `<dat
 | `trigger_input` | `Option<serde_json::Value>` | The effective input used for this run (after `default_input` vs trigger replacement). `null` if the input was empty. |
 | `steps` | `Vec<StepRun>` | Execution-order list of step run records. |
 | `total_cost_usd` | `Option<f64>` | Sum of `cost_usd` across all `AgentStep` runs. `null` if no agent steps ran. |
+| `total_input_tokens` | `u64` (default `0`) | Sum of input tokens across agent steps in the run; non-agent runs contribute 0. |
+| `total_output_tokens` | `u64` (default `0`) | Sum of output tokens across agent steps in the run; non-agent runs contribute 0. |
 | `total_duration_ms` | `Option<u64>` | Wall-clock duration from `started_at` to `finished_at`. |
 
 ### `StepRun`
@@ -832,7 +834,7 @@ A workflow that preprocesses input, invokes Claude to analyze it, then posts the
         "Authorization": "Bearer ${input.api_token}",
         "Content-Type": "application/json"
       },
-      "body": "{\"repo\": \"${input.repo}\", \"summary\": \"${steps.analyze.stdout}\", \"cost_usd\": \"${steps.analyze.exports.cost_usd}\"}",
+      "body": "{\"repo\": \"${input.repo}\", \"summary\": \"${steps.analyze.stdout}\"}",
       "expect_status": [200, 201]
     }
   ]

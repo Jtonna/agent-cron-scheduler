@@ -556,7 +556,7 @@ agentcronsystem workflows trigger [OPTIONS] <ID_OR_NAME>
 
 **Template substitution.** Step fields that support templates use `${input.<path>}` to reference the trigger input and `${steps.<step_id>.<accessor>}` to reference prior step outputs. The `--input` value becomes the `input` namespace in those templates.
 
-**Concurrency rejection.** When the workflow has `allow_concurrent: false` and a run is already active, the daemon returns `409 Conflict` (`error: "concurrent_run_active"`) and the command fails with a `concurrent run active` error. The active run is left untouched. Wait for it to finish or call `agentcronsystem runs kill <active_run_id>` (or `POST /api/runs/{id}/kill`) before retrying.
+**Concurrency rejection.** When the workflow has `allow_concurrent: false` and a run is already active, the daemon returns `409 Conflict` (`error: "concurrent_run_active"`) and the command fails with a `concurrent run active` error. The active run is left untouched. Wait for it to finish before retrying. To kill an active run, POST to `/api/runs/{run_id}/kill` (no CLI equivalent currently exists).
 
 #### Output
 

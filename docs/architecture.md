@@ -65,6 +65,10 @@ acs/src/
                                    #   FakeClock, compute_next_run()
     events.rs                      # WorkflowEvent enum, WorkflowChangeKind enum
     service.rs                     # OS service registration (Windows/macOS/Linux)
+    cost_cache.rs                  # CostCache — per-workflow CostSummary + 365-day daily-bucket
+                                   #   cache; system aggregate; broadcast-driven eager
+                                   #   invalidation. Fronts the cost_summary_for /
+                                   #   daily_buckets_for store methods.
   server/
     mod.rs                         # AppState, create_router()
     workflow_routes.rs             # REST API route handlers for workflows and runs
@@ -73,7 +77,7 @@ acs/src/
     health.rs                      # GET /health handler
     assets.rs                      # Embedded static file serving (SPA fallback)
   storage/
-    mod.rs                         # Re-exports (sqlite, workflow_runs, workflows)
+    mod.rs                         # Module declarations: sqlite, workflow_runs, workflows
     workflows.rs                   # WorkflowStore trait
     workflow_runs.rs               # WorkflowRunStore trait
     sqlite/
@@ -90,7 +94,7 @@ acs/src/
                                    #   NewWorkflow, WorkflowUpdate, AgentType
     config.rs                      # DaemonConfig
   workflow/
-    mod.rs                         # Re-exports: run_workflow, FileLogSink,
+    mod.rs                         # Re-exports: run_workflow, finalize_run, FileLogSink,
                                    #   EventEmittingLogSink, Step, StepContext,
                                    #   StepOutput, StepError, CostFragment, LogSink
     step.rs                        # Step trait, StepContext, StepOutput, StepError,
@@ -99,6 +103,11 @@ acs/src/
     executor.rs                    # run_workflow() — the step loop entry point;
                                    #   MatchStep is handled inline in execute_steps()
                                    #   rather than as a separate Step impl
+    finalize.rs                    # finalize_run() — shared post-run plumbing called by
+                                   #   both the scheduler dispatch path and the
+                                   #   /api/workflows/{id}/trigger route to persist the
+                                   #   terminal WorkflowRun and stamp last_run_* on the
+                                   #   parent workflow
     template.rs                    # substitute() — ${input.*} and ${steps.*.*}
     log_sink.rs                    # FileLogSink (concrete LogSink for combined run log)
     event_log_sink.rs              # EventEmittingLogSink (LogSink wrapper for SSE chunks)
@@ -123,6 +132,7 @@ acs/src/
     m004_drop_input_schema.rs           # DropInputSchema migration
     m005_shell_claude_to_agent.rs       # ShellClaudeToAgent migration
     m006_agent_step_normalize.rs        # AgentStepNormalize migration
+    m007_add_token_columns.rs           # AddTokenColumns migration
   process_kill.rs                  # kill_process_tree(), force_kill_process_tree()
   pty/
     mod.rs                         # PtySpawner trait, PtyProcess trait,
@@ -164,14 +174,14 @@ See [CLI Reference](cli-reference.md) for the full command documentation.
 #### `server` -- HTTP Server
 
 - **`AppState`**: Central shared state holding `workflow_store`, `workflow_run_store`, `workflow_event_tx`, `scheduler_notify`, `config`, `start_time`, `kill_signals`, and `shutdown_tx`.
-- **`create_router()`**: Builds the Axum `Router` with all API routes, permissive CORS middleware, and a fallback to embedded static assets. Routes: workflow CRUD (`/api/workflows`, `/api/workflows/{id}`), trigger (`/api/workflows/{id}/trigger`), runs list (`/api/workflows/{id}/runs`), run detail (`/api/runs/{run_id}`), kill (`/api/runs/{run_id}/kill`), cost analytics (`/api/cost/workflows`, `/api/cost/workflows/{id}`), SSE (`/api/events/workflows`), health (`/health`), shutdown (`/api/shutdown`), restart (`/api/restart`), daemon logs (`/api/logs`).
+- **`create_router()`**: Builds the Axum `Router` with all API routes, permissive CORS middleware, and a fallback to embedded static assets. Routes: workflow CRUD (`/api/workflows`, `/api/workflows/{id}`), trigger (`/api/workflows/{id}/trigger`), runs list (`/api/workflows/{id}/runs`), recent runs feed (`GET /api/runs/recent` — cross-workflow, paginated), run detail (`/api/runs/{run_id}`), run log (`GET /api/runs/{id}/log` — byte-range log slicing with `step_index`, `from`, `to` query params), kill (`/api/runs/{run_id}/kill`), cost analytics (`/api/cost/workflows`, `/api/cost/workflows/{id}`), SSE (`/api/events/workflows`), health (`/health`), shutdown (`/api/shutdown`), restart (`/api/restart`), daemon logs (`/api/logs`).
 - See [API Reference](api-reference.md) for the full endpoint specification.
 
 #### `storage` -- Persistence Layer
 
-- **`WorkflowStore` trait**: Async trait with `list_workflows`, `get_workflow`, `find_by_name`, `create_workflow`, `update_workflow`, `delete_workflow`. (`acs/src/storage/workflows.rs`)
+- **`WorkflowStore` trait**: Async trait with `list_workflows`, `get_workflow`, `find_by_name`, `create_workflow`, `update_workflow`, `delete_workflow`, `record_run_outcome`. (`acs/src/storage/workflows.rs`)
 - **`SqliteWorkflowStore`**: Concrete `WorkflowStore` backed by the `workflows` table in `<data_dir>/acs.db`. Holds a shared `SqliteDb` (`Arc<Mutex<rusqlite::Connection>>`) and offloads every call to `tokio::task::spawn_blocking` so the runtime is never blocked by synchronous DB calls.
-- **`WorkflowRunStore` trait**: Async trait with `create_run`, `update_run`, `get_run`, `list_runs(workflow_id, limit, offset)`, `count_runs`, `delete_run`. (`acs/src/storage/workflow_runs.rs`)
+- **`WorkflowRunStore` trait**: Async trait with `create_run`, `update_run`, `get_run`, `list_runs(workflow_id, limit, offset)`, `count_runs`, `delete_run`, `list_recent_runs`, `count_all_runs`, `cost_summary_for` (the entry point used by `CostCache`), `daily_buckets_for`. (`acs/src/storage/workflow_runs.rs`)
 - **`SqliteWorkflowRunStore`**: Concrete `WorkflowRunStore` backed by the `workflow_runs` table in `<data_dir>/acs.db`. Shares the same `SqliteDb` handle as `SqliteWorkflowStore`. `list_runs` orders by `run_id DESC`, which is latest-first because `run_id` is a UUIDv7.
 
 **Cost analytics caching.** Workflow cost summaries (30-day + 1-year totals) are computed on demand by `acs::storage::sqlite::SqliteWorkflowRunStore::cost_summary_for(workflow_id, display_tz)` and cached in memory by `acs::daemon::cost_cache::CostCache`, held in the shared daemon state alongside the workflow/run stores. The cache subscribes to the internal `tokio::sync::broadcast::Sender<WorkflowEvent>` via a background task; when `RunCompleted` or `RunFailed` fires (covering Completed/Failed/Killed terminal statuses), the affected workflow's cache entry is eagerly recomputed. Each cached entry also carries a `valid_until` timestamp set to the next calendar-day midnight in `display_timezone`, after which the next read triggers a recompute. Workflow deletion evicts the entry via `CostCache::forget`. The cache is consulted exclusively by the dedicated cost handlers at `GET /api/cost/workflows` and `GET /api/cost/workflows/{id}` — the lean workflow endpoints (`GET /api/workflows[/{id}]`) do not read the cost cache.
@@ -251,7 +261,7 @@ See [Storage](storage.md) for implementation details.
 
 - **`Migration` trait** (`acs/src/migration/mod.rs`): `fn name() -> &'static str; async fn run(data_dir) -> Result<bool, AcsError>`. `Ok(true)` = work done; `Ok(false)` = nothing to do (idempotent).
 - **`run_pending()`**: Called at daemon startup. Reads `<data_dir>/migrations.json` for already-applied names. For each unapplied migration in the registry, calls `run()`. Writes state atomically after each `Ok(true)`. Stops on first error (partial progress is preserved).
-- **Registry** (ordered): `m001_jobs_to_workflows::JobsToWorkflows`, `m002_json_to_sqlite::JsonToSqlite`, `m003_drop_step_output_summary::DropStepOutputSummary`, `m004_drop_input_schema::DropInputSchema`, `m005_shell_claude_to_agent::ShellClaudeToAgent`, `m006_agent_step_normalize::AgentStepNormalize`.
+- **Registry** (ordered): `m001_jobs_to_workflows::JobsToWorkflows`, `m002_json_to_sqlite::JsonToSqlite`, `m003_drop_step_output_summary::DropStepOutputSummary`, `m004_drop_input_schema::DropInputSchema`, `m005_shell_claude_to_agent::ShellClaudeToAgent`, `m006_agent_step_normalize::AgentStepNormalize`, `m007_add_token_columns::AddTokenColumns`.
 - **`legacy_types`** (`acs/src/migration/legacy_types.rs`): Read-only legacy `Job` and `ExecutionType` structs used only by the migration code to deserialize old `jobs.json` files.
 
 ---
@@ -649,6 +659,7 @@ The migration system (`acs/src/migration/`) supports forward-only, numbered data
 | `m004_drop_input_schema` | `m004_drop_input_schema.rs` | Drops the `workflows.input_schema` column via `ALTER TABLE workflows DROP COLUMN input_schema`. `input_schema` is no longer carried on `Workflow` / `NewWorkflow` / `WorkflowUpdate`, so existing DBs need the column removed to keep INSERT/UPDATE statements valid. Skips when `acs.db` is missing or the column is already absent (PRAGMA `table_info` check). Idempotent. |
 | `m005_shell_claude_to_agent` | `m005_shell_claude_to_agent.rs` | Rewrites legacy `shell` steps wrapping `claude -p ... --output-format stream-json` into `agent` steps of type `claude_code_cli`, so the streaming NDJSON cost parser captures `cost_usd`. Detection requires `kind == "shell"`, the command starting with the `claude` token, and the `--output-format stream-json` marker. The prompt is extracted from the first `-p` flag (quoted, unquoted, or `-p=`); embedded escapes are preserved verbatim. Steps whose prompt is fed via stdin (no `-p` flag) are left as `shell` with a `tracing::warn!` so an operator can rewrite them by hand. Residual flags equal to `--output-format stream-json --verbose --dangerously-skip-permissions` leave `command_template = None`; any other residual flags produce a full `command_template`. Recurses into `MatchStep` `cases.<value>` and `default` branches. Rewritten workflows have `version` bumped and `updated_at` refreshed. Idempotent. |
 | `m006_agent_step_normalize` | `m006_agent_step_normalize.rs` | Normalizes legacy AgentStep records that still carry `command_template`. Parses the template, extracts `--model <val>` if present into the structured `model` field, strips the canonical baseline tokens (`claude`, `-p <value>`, `--output-format stream-json`, `--verbose`, `--dangerously-skip-permissions`), keeps any leftover tokens as `extra_args`, drops the `command_template` key. Recurses into MatchStep `cases.<value>` and `default` branches. Preserves any pre-existing `model` field when the template has no `--model`. Bumps `workflows.version` and refreshes `updated_at`. Leaves non-claude or unparseable templates untouched with a `tracing::warn!`. Idempotent. Single transaction with rollback on parse/UPDATE error. |
+| `m007_add_token_columns` | `m007_add_token_columns.rs` | `ALTER TABLE workflow_runs ADD total_input_tokens INTEGER NOT NULL DEFAULT 0, ADD total_output_tokens INTEGER NOT NULL DEFAULT 0`. Adds the per-run token-count columns surfaced on `WorkflowRun.total_input_tokens` / `total_output_tokens` and via the cost API. Idempotent (skips when both columns already exist; PRAGMA `table_info` check). |
 
 **Adding a new migration**: Create `src/migration/mNNN_<name>.rs`, implement `Migration`, append to `registry()` in `mod.rs`.
 
@@ -675,13 +686,7 @@ The migration system (`acs/src/migration/`) supports forward-only, numbered data
 
 ### Integration Tests (`cargo test --tests`)
 
-- **`tests/workflow_api_tests.rs`** (32 tests): Full HTTP round-trip tests via a real in-process daemon. Covers workflow CRUD, trigger, run retrieval, kill endpoint, SSE event ordering, run snapshot integrity, concurrent runs, WaitForCompletion mode.
-- **`tests/cli_tests.rs`** (9 tests): CLI subcommand integration tests (daemon start/stop, `acs workflows list`, `acs workflows runs`, etc.).
-
-### Test Counts
-
-- `cargo test --lib`: 520 pass
-- `cargo test --tests`: 45 pass (9 cli + 36 api)
+Integration tests in `acs/tests/workflow_api_tests.rs` (~70 cases) and `acs/tests/cli_tests.rs` (~9 cases). Run `cargo test` for the authoritative count.
 
 ---
 

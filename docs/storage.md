@@ -213,6 +213,13 @@ pub trait WorkflowStore: Send + Sync {
     async fn create_workflow(&self, new: NewWorkflow) -> Result<Workflow>;
     async fn update_workflow(&self, id: Uuid, update: WorkflowUpdate) -> Result<Workflow>;
     async fn delete_workflow(&self, id: Uuid) -> Result<()>;
+    async fn record_run_outcome(
+        &self,
+        workflow_id: Uuid,
+        run_id: Uuid,
+        status: RunStatus,
+        finished_at: DateTime<Utc>,
+    ) -> Result<(), AcsError>;
 }
 ```
 
@@ -224,6 +231,7 @@ pub trait WorkflowStore: Send + Sync {
 | `create_workflow` | Validates, assigns a UUIDv7 ID, sets `version: 1`, INSERTs, and returns the new workflow. |
 | `update_workflow` | Partial update; bumps `version` when any definition-affecting field changes. Returns `NotFound` or `Conflict` as appropriate. |
 | `delete_workflow` | DELETEs a workflow by UUID; returns `NotFound` if it does not exist. |
+| `record_run_outcome` | Records a terminal run outcome on the parent workflow (updates `last_run_id`, `last_run_status`, `last_run_at`; bumps `updated_at`; does NOT bump `version`). |
 
 ### SqliteWorkflowStore
 
@@ -282,6 +290,10 @@ pub trait WorkflowRunStore: Send + Sync {
     ) -> Result<Vec<WorkflowRun>, AcsError>;
     async fn count_runs(&self, workflow_id: Uuid) -> Result<usize, AcsError>;
     async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError>;
+    async fn list_recent_runs(&self, limit: usize, offset: usize) -> Result<Vec<WorkflowRun>, AcsError>;
+    async fn count_all_runs(&self) -> Result<usize, AcsError>;
+    async fn cost_summary_for(&self, workflow_id: Uuid, display_tz: &Tz) -> Result<CostSummary, AcsError>;
+    async fn daily_buckets_for(&self, workflow_id: Option<Uuid>, since: NaiveDate, until: NaiveDate, display_tz: &Tz) -> Result<Vec<DailyBucket>, AcsError>;
 }
 ```
 
@@ -292,7 +304,11 @@ pub trait WorkflowRunStore: Send + Sync {
 | `get_run` | Single-row SELECT by primary key; returns `None` if the row is absent. |
 | `list_runs` | `SELECT … WHERE workflow_id = ? ORDER BY run_id DESC LIMIT ? OFFSET ?`. `limit=0` is translated to `-1` (SQLite "no limit"). |
 | `count_runs` | `SELECT COUNT(*) … WHERE workflow_id = ?`. |
-| `delete_run` | `DELETE FROM workflow_runs WHERE run_id = ?` (best-effort; absent rows are not an error). Also attempts to delete the matching log file at `logs/{workflow_id}/{run_id}.log` (best-effort; logs a warning if the file is absent or cannot be removed). |
+| `delete_run` | `DELETE FROM workflow_runs WHERE run_id = ?` (best-effort; absent rows are not an error). Log files are not removed by `delete_run`. |
+| `list_recent_runs` | Cross-workflow recent-runs feed: `SELECT … ORDER BY run_id DESC LIMIT ? OFFSET ?` (no `workflow_id` filter). Backs `GET /api/runs/recent`. |
+| `count_all_runs` | `SELECT COUNT(*) FROM workflow_runs` across all workflows. Pairs with `list_recent_runs` for paginated totals. |
+| `cost_summary_for` | Computes the per-workflow `CostSummary` (30-day + 1-year totals) windowed against `display_tz` calendar-day boundaries. Entry point used by `CostCache`. |
+| `daily_buckets_for` | Per-day cost buckets between `since` and `until` (inclusive) for a single workflow when `workflow_id` is `Some`, or system-wide aggregate when `None`. Days are bucketed in `display_tz`. |
 
 ### SqliteWorkflowRunStore
 

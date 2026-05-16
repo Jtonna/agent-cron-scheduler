@@ -33,7 +33,7 @@ The platform config directory is resolved using the `dirs::config_dir()` functio
 ### Important Behavior
 
 - Priority 1 (`--config`): If you explicitly pass a config file path and it does not exist, the daemon returns an error and does not start. This is the only priority level that fails on a missing file.
-- Priorities 2â€“4: If the resolved path does not exist, the daemon silently moves to the next priority level.
+- Priorities 2—4: If the resolved path does not exist, the daemon silently moves to the next priority level.
 - Priority 5: Always succeeds. The daemon runs with all default values.
 
 ## Field Reference
@@ -51,6 +51,8 @@ The platform config directory is resolved using the `dirs::config_dir()` functio
 | `pty_cols` | integer (u16) | `80` | Number of columns for the pseudo-terminal allocated to step processes. **(No effect; the production spawner uses piped I/O, not a PTY.)** |
 | `default_allow_concurrent` | bool | `false` | Reserved default concurrency setting. New workflows default to `allow_concurrent: true` regardless of this config field. This config field is reserved for a future feature that would override that default at daemon scope; it is currently not consumed. |
 | `default_schedule_mode` | string (`Cron` \| `WaitForCompletion`) | `"Cron"` | Reserved default schedule mode. **(Reserved; not currently applied to new workflows at runtime.)** |
+| `display_timezone` | string | `"America/Los_Angeles"` | IANA timezone used for cost analytics calendar-day boundaries and as the default `timezone` for new workflows. |
+| `display_workflow_dir_root` | string or null | `null` | Root directory for auto-created per-workflow working dirs. When `null`, falls back to `dirs::document_dir()/agent-cron-scheduler/<sanitized-name>`. |
 
 ### Partial Configuration
 
@@ -126,7 +128,7 @@ On startup, the daemon ensures the data directory and its subdirectories (`logs/
 
 ## Examples
 
-### Minimal config â€” change only the port
+### Minimal config — change only the port
 
 ```json
 {
@@ -148,7 +150,9 @@ On startup, the daemon ensures the data directory and its subdirectories (`logs/
   "pty_rows": 24,
   "pty_cols": 80,
   "default_allow_concurrent": false,
-  "default_schedule_mode": "Cron"
+  "default_schedule_mode": "Cron",
+  "display_timezone": "America/Los_Angeles",
+  "display_workflow_dir_root": null
 }
 ```
 
