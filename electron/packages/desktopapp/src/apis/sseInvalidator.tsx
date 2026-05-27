@@ -37,25 +37,23 @@ export function SSEQueryBridge() {
         // Recent runs feed and global cost summary both depend on run state.
         queryClient.invalidateQueries({ queryKey: ["runs/recent"] });
         queryClient.invalidateQueries({ queryKey: ["cost/workflows"] });
-        // Per-job run lists — if the event has a workflow_id (v4) or job_id
-        // (legacy fallback), only invalidate that workflow's runs; otherwise
-        // be conservative and invalidate all of them.
+        // Per-workflow run lists — if the event carries a workflow_id, only
+        // invalidate that workflow's runs; otherwise be conservative and
+        // invalidate all of them.
         try {
           const parsed = JSON.parse(event.data);
-          const eventJobId =
-            parsed && typeof parsed === "object"
-              ? (parsed.workflow_id ?? parsed.workflowId ?? parsed.job_id ?? parsed.jobId)
-              : undefined;
-          if (eventJobId) {
+          const eventWorkflowId =
+            parsed && typeof parsed === "object" ? parsed.workflow_id : undefined;
+          if (eventWorkflowId) {
             queryClient.invalidateQueries({
-              queryKey: ["jobs", eventJobId, "runs"],
+              queryKey: ["jobs", eventWorkflowId, "runs"],
             });
           } else {
             queryClient.invalidateQueries({ queryKey: ["jobs"], exact: false });
           }
           // Per-run detail (useRun) — refetch the specific run record.
           const eventRunId =
-            parsed && typeof parsed === "object" ? (parsed.run_id ?? parsed.runId) : undefined;
+            parsed && typeof parsed === "object" ? parsed.run_id : undefined;
           if (eventRunId) {
             queryClient.invalidateQueries({ queryKey: ["runs", eventRunId] });
           }
@@ -72,7 +70,7 @@ export function SSEQueryBridge() {
         try {
           const parsed = JSON.parse(event.data);
           const eventRunId =
-            parsed && typeof parsed === "object" ? (parsed.run_id ?? parsed.runId) : undefined;
+            parsed && typeof parsed === "object" ? parsed.run_id : undefined;
           if (eventRunId) {
             queryClient.invalidateQueries({ queryKey: ["runs", eventRunId] });
           }
