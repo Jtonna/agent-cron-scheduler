@@ -127,7 +127,13 @@ export function JobStateIndicator({
   const shouldPulse = pulse ?? state === "running";
 
   if (variant === "label") {
-    return <span className={`font-semibold ${cfg.textClass} ${className}`}>{visibleLabel}</span>;
+    return (
+      <span
+        className={`font-semibold uppercase tracking-wider text-xs ${cfg.textClass} ${className}`}
+      >
+        {visibleLabel}
+      </span>
+    );
   }
 
   if (variant === "badge") {

@@ -4,13 +4,9 @@ import { useState, useCallback } from "react";
 import { Button } from "react-aria-components";
 import { RefreshCw, Wifi, WifiOff, ChevronDown } from "lucide-react";
 import { Navbar } from "@/components/navbar/Navbar";
+import { LogViewer } from "@/components/ui/LogViewer";
 import { useSystemLogs } from "@/apis/useSystemLogs";
 import { useSSEConnected } from "@/apis/sse";
-import dynamic from "next/dynamic";
-
-const LazyLog = dynamic(() => import("@melloware/react-logviewer").then((mod) => mod.LazyLog), {
-  ssr: false,
-});
 
 const TAIL_OPTIONS = [100, 250, 500, 1000, 5000];
 
@@ -26,10 +22,6 @@ export default function SystemLogsPage() {
     await refresh();
     setRefreshing(false);
   }, [refresh]);
-
-  // `logs` is a stable string from TanStack Query; useMemo over a primitive
-  // expression like `logs || " "` is a no-op since primitives compare by value.
-  const logText = logs || " ";
 
   return (
     <div className="min-h-screen h-screen bg-surface text-fg flex flex-col">
@@ -121,25 +113,7 @@ export default function SystemLogsPage() {
           </div>
         )}
 
-        <LazyLog
-          text={logText}
-          follow
-          enableSearch
-          enableHotKeys
-          selectableLines
-          enableLineNumbers
-          extraLines={1}
-          height="auto"
-          style={{
-            background: "var(--color-surface)",
-            color: "var(--color-fg)",
-            fontFamily: "var(--font-geist-mono), monospace",
-            fontSize: "13px",
-          }}
-          containerStyle={{
-            overflow: "auto",
-          }}
-        />
+        <LogViewer text={logs} />
       </div>
     </div>
   );

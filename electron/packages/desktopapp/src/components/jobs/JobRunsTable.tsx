@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { formatDuration, formatTimeAgo } from "@/apis/format";
 import type { JobRun } from "@/apis/types";
 import { JobStateIndicator, apiStatusToJobState } from "@/components/ui/JobStateIndicator";
 import { TabBar, type FilterOptions, type SortKey } from "@/components/ui/TabBar";
+import { KillRunButton } from "./KillRunButton";
 
 /**
  * JobRunsTable
@@ -35,9 +36,10 @@ const SORT_LABELS: Record<SortKey, string> = {
   "cost-low": "Cost (low to high)",
 };
 
-// Shared grid template for header + rows so columns can never drift.
+// Shared grid template for header + rows so columns can never drift. The
+// trailing 32px column holds the per-row kill button (empty when not Running).
 const GRID_COLS =
-  "grid grid-cols-[20px_minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-4 px-4";
+  "grid grid-cols-[20px_minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_32px] items-center gap-4 px-4";
 
 function formatCost(cost: number | null | undefined): string | null {
   if (cost == null || cost <= 0) return null;
@@ -132,6 +134,7 @@ function matchesFilters(run: JobRun, f: FilterOptions): boolean {
 }
 
 export function JobRunsTable({ jobId, runs, loading }: JobRunsTableProps) {
+  const router = useRouter();
   const [filters, setFilters] = useState<FilterOptions>({});
 
   const sortBy = filters.sortBy ?? "recent";
@@ -164,6 +167,7 @@ export function JobRunsTable({ jobId, runs, loading }: JobRunsTableProps) {
         <span>Duration</span>
         <span>Cost</span>
         <span>Exit</span>
+        <span aria-hidden />
       </div>
 
       {/* Body */}
@@ -180,11 +184,22 @@ export function JobRunsTable({ jobId, runs, loading }: JobRunsTableProps) {
           {sorted.map((run) => {
             const state = apiStatusToJobState(run.status);
             const cost = formatCost(run.total_cost_usd);
+            const href = `/jobs/${jobId}/runs/${run.run_id}`;
+            const navigate = () => router.push(href);
             return (
-              <Link
+              <div
                 key={run.run_id}
-                href={`/jobs/${jobId}/runs/${run.run_id}`}
-                className={`${GRID_COLS} py-3 rounded-input border border-border bg-surface hover:bg-surface-hover hover:border-border-strong transition-colors text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-ring`}
+                role="link"
+                tabIndex={0}
+                onClick={navigate}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    navigate();
+                  }
+                }}
+                className={`${GRID_COLS} py-3 rounded-input border border-border bg-surface hover:bg-surface-hover hover:border-border-strong transition-colors text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-ring cursor-pointer`}
               >
                 <JobStateIndicator state={state} variant="dot" size="sm" />
                 <span className="font-mono text-xs text-fg whitespace-nowrap" title={run.run_id}>
@@ -208,7 +223,18 @@ export function JobRunsTable({ jobId, runs, loading }: JobRunsTableProps) {
                   )}
                 </span>
                 <ExitCode code={runExitCode(run)} />
-              </Link>
+                {/* Kill button column. Stop propagation so clicking the
+                    button doesn't also fire the row's navigate handler. */}
+                <span
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  className="inline-flex items-center justify-center"
+                >
+                  {run.status === "Running" ? (
+                    <KillRunButton runId={run.run_id} size="sm" />
+                  ) : null}
+                </span>
+              </div>
             );
           })}
         </div>
