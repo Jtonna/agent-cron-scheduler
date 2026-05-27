@@ -53,19 +53,43 @@ export function SSEQueryBridge() {
           } else {
             queryClient.invalidateQueries({ queryKey: ["jobs"], exact: false });
           }
+          // Per-run detail (useRun) — refetch the specific run record.
+          const eventRunId =
+            parsed && typeof parsed === "object" ? (parsed.run_id ?? parsed.runId) : undefined;
+          if (eventRunId) {
+            queryClient.invalidateQueries({ queryKey: ["runs", eventRunId] });
+          }
         } catch {
           queryClient.invalidateQueries({ queryKey: ["jobs"], exact: false });
         }
         break;
       }
 
-      // `step_output` events stream into the systemlogs cache and are handled
-      // inline by useSystemLogs — they're high frequency, so we don't
-      // touch them here.
+      // `step_completed` only drives per-run detail views — refetch the
+      // specific run so step status / cost / timing update without touching
+      // any list-level caches.
+      case "step_completed": {
+        try {
+          const parsed = JSON.parse(event.data);
+          const eventRunId =
+            parsed && typeof parsed === "object" ? (parsed.run_id ?? parsed.runId) : undefined;
+          if (eventRunId) {
+            queryClient.invalidateQueries({ queryKey: ["runs", eventRunId] });
+          }
+        } catch {
+          // ignore unparseable payloads
+        }
+        break;
+      }
+
+      // `step_output` events stream into log caches and are handled inline by
+      // the consumers that care about them — currently useSystemLogs (daemon
+      // logs) and useRunLog (per-run live tail). They're high frequency, so
+      // we don't touch them here.
       //
-      // `step_started` / `step_completed` don't drive any list-level queries
-      // today; per-run detail views can subscribe directly via useSSEEvents
-      // if/when they need step-granularity updates.
+      // `step_started` doesn't drive any list-level queries today; per-run
+      // detail views can subscribe directly via useSSEEvents if/when they
+      // need step-granularity updates.
       default:
         break;
     }

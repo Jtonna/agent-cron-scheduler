@@ -76,6 +76,7 @@ import type {
   CostWorkflowsResponse,
   HealthResponse,
   Job,
+  JobRun,
   RecentRunsResponse,
   RunsResponse,
   WorkflowCostEntry,
@@ -113,5 +114,18 @@ export const api = {
 
   listJobRuns(jobId: string, limit: number = 20, offset: number = 0): Promise<RunsResponse> {
     return request<RunsResponse>(`/api/workflows/${jobId}/runs?limit=${limit}&offset=${offset}`);
+  },
+
+  getRun(runId: string): Promise<JobRun> {
+    return request<JobRun>(`/api/runs/${runId}`);
+  },
+
+  getRunLog(runId: string, stepIndex?: number): Promise<string> {
+    const params = stepIndex !== undefined ? `?step_index=${stepIndex}` : "";
+    return requestText(`/api/runs/${runId}/log${params}`);
+  },
+
+  killRun(runId: string): Promise<void> {
+    return request<void>(`/api/runs/${runId}/kill`, { method: "POST" }) as Promise<void>;
   },
 };
