@@ -2,11 +2,12 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Loader2 } from "lucide-react";
-import { JobsListRow } from "./JobsListRow";
+import { JobsListRow, JOBS_LIST_GRID } from "./JobsListRow";
 import { TabBar } from "@/components/ui/TabBar";
-import type { Job, RecentRunEntry } from "@/apis/types";
+import type { Job, RecentRunEntry, WorkflowCostSummary } from "@/apis/types";
 import { useRecentRuns } from "@/apis/useRecentRuns";
 import { useJobRuns } from "@/apis/useJobRuns";
+import { useGlobalCostSummary } from "@/apis/useGlobalCostSummary";
 import { groupRunsByWorkflow, isRunning } from "@/apis/jobStatus";
 
 /**
@@ -24,9 +25,15 @@ import { groupRunsByWorkflow, isRunning } from "@/apis/jobStatus";
  * useJobRuns is keyed by job.id, so TanStack Query dedupes/caches across
  * the sidebar and this list when the same job appears in both.
  */
-function JobsListRowWithRuns({ job }: { job: Job }) {
+function JobsListRowWithRuns({
+  job,
+  costSummary,
+}: {
+  job: Job;
+  costSummary: WorkflowCostSummary | null;
+}) {
   const { runs } = useJobRuns(job.id, 7);
-  return <JobsListRow job={job} runs={runs} />;
+  return <JobsListRow job={job} runs={runs} costSummary={costSummary} />;
 }
 
 interface JobsListProps {
@@ -75,6 +82,13 @@ export function JobsList({ jobs, loading }: JobsListProps) {
   const { runs: recentRuns } = useRecentRuns(200);
   const runsByJob = groupRunsByWorkflow(recentRuns);
 
+  // Single global cost fetch — feeds the new 30d cost / 30d runs columns
+  // for every row without one network request per row.
+  const { summary: globalCost } = useGlobalCostSummary();
+  const costByWorkflow = new Map<string, WorkflowCostSummary>(
+    (globalCost?.workflows ?? []).map((entry) => [entry.workflow_id, entry.cost_summary]),
+  );
+
   const needle = search.trim().toLowerCase();
   const list = needle ? jobs.filter((j) => j.name.toLowerCase().includes(needle)) : jobs;
   const filtered = [...list].sort((a, b) => compareJobs(a, b, sortKey, runsByJob));
@@ -116,11 +130,16 @@ export function JobsList({ jobs, loading }: JobsListProps) {
         }}
       />
 
-      {/* Header row */}
-      <div className="grid grid-cols-[20px_minmax(0,1.6fr)_120px_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 px-4 text-[11px] font-semibold text-fg-subtle uppercase tracking-wider">
+      {/* Header row — column template mirrors JobsListRow's JOBS_LIST_GRID. */}
+      <div
+        className={`${JOBS_LIST_GRID} px-4 text-[11px] font-semibold text-fg-subtle uppercase tracking-wider`}
+      >
+        <span aria-hidden />
         <span aria-hidden />
         <span>Name</span>
         <span>Recent runs</span>
+        <span className="hidden md:flex justify-end">30d cost</span>
+        <span className="hidden md:flex justify-end">30d runs</span>
         <span>Schedule</span>
         <span>Last run</span>
         <span>Next run</span>
@@ -138,7 +157,11 @@ export function JobsList({ jobs, loading }: JobsListProps) {
       ) : (
         <div className="flex flex-col gap-2">
           {visible.map((job) => (
-            <JobsListRowWithRuns key={job.id} job={job} />
+            <JobsListRowWithRuns
+              key={job.id}
+              job={job}
+              costSummary={costByWorkflow.get(job.id) ?? null}
+            />
           ))}
           {hasMore && (
             <div ref={sentinelRef} className="flex items-center justify-center py-4">

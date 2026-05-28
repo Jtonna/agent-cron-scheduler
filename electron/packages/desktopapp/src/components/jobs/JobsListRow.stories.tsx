@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
 import { JobsListRow } from "./JobsListRow";
-import type { Job, RecentRunEntry } from "@/apis/types";
+import type { Job, RecentRunEntry, WorkflowCostSummary } from "@/apis/types";
 
 const meta: Meta<typeof JobsListRow> = {
   title: "Components/Workflows/JobsListRow",
@@ -57,28 +57,46 @@ function makeRun(status: RecentRunEntry["status"], offsetMs: number = 0): Recent
   };
 }
 
-export const Default: Story = {
-  args: { job: makeJob({}) },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 720 }}>
+function makeCost(overrides: Partial<WorkflowCostSummary> = {}): WorkflowCostSummary {
+  return {
+    computed_at: new Date().toISOString(),
+    last_30_days_runs: 142,
+    last_30_days_total_usd: 12.47,
+    last_year_runs: 1820,
+    last_year_total_usd: 148.92,
+    last_30_days_input_tokens: 0,
+    last_30_days_output_tokens: 0,
+    last_year_input_tokens: 0,
+    last_year_output_tokens: 0,
+    daily_buckets: [],
+    ...overrides,
+  };
+}
+
+const WIDE = 1100;
+const NARROW = 520;
+
+function wrap(width: number) {
+  return [
+    (Story: () => React.ReactElement) => (
+      <div style={{ width }}>
         <Story />
       </div>
     ),
-  ],
+  ];
+}
+
+export const Default: Story = {
+  args: { job: makeJob({}), costSummary: makeCost() },
+  decorators: wrap(WIDE),
 };
 
 export const Disabled: Story = {
   args: {
     job: makeJob({ enabled: false, last_run_status: null, next_run_at: null }),
+    costSummary: null,
   },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 720 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: wrap(WIDE),
 };
 
 export const NeverRun: Story = {
@@ -88,27 +106,17 @@ export const NeverRun: Story = {
       last_run_at: null,
       last_run_status: null,
     }),
+    costSummary: null,
   },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 720 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: wrap(WIDE),
 };
 
 export const Failed: Story = {
   args: {
     job: makeJob({ name: "broken-task", last_run_status: "Failed" }),
+    costSummary: makeCost({ last_30_days_total_usd: 3, last_30_days_runs: 27 }),
   },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 720 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: wrap(WIDE),
 };
 
 export const Running: Story = {
@@ -121,25 +129,44 @@ export const Running: Story = {
       makeRun("Failed", 180_000),
       makeRun("Completed", 240_000),
     ],
+    costSummary: makeCost(),
   },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 720 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: wrap(WIDE),
 };
 
 export const Favorited: Story = {
-  args: { job: makeJob({ name: "important-job", is_favorited: true }) },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 720 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  args: {
+    job: makeJob({ name: "important-job", is_favorited: true }),
+    costSummary: makeCost({ last_30_days_total_usd: 84.5, last_30_days_runs: 312 }),
+  },
+  decorators: wrap(WIDE),
+};
+
+export const Unfavorited: Story = {
+  args: {
+    job: makeJob({ name: "casual-job", is_favorited: false }),
+    costSummary: makeCost({ last_30_days_total_usd: 0.42, last_30_days_runs: 4 }),
+  },
+  decorators: wrap(WIDE),
+};
+
+export const NoCostData: Story = {
+  args: {
+    job: makeJob({ name: "shell-only-job" }),
+    costSummary: null,
+  },
+  decorators: wrap(WIDE),
+};
+
+export const ZeroCostData: Story = {
+  args: {
+    job: makeJob({ name: "free-tier-job" }),
+    costSummary: makeCost({
+      last_30_days_total_usd: 0,
+      last_30_days_runs: 0,
+    }),
+  },
+  decorators: wrap(WIDE),
 };
 
 export const Warning: Story = {
@@ -152,12 +179,28 @@ export const Warning: Story = {
       makeRun("Completed", 180_000),
       makeRun("Completed", 240_000),
     ],
+    costSummary: makeCost(),
   },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 720 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: wrap(WIDE),
+};
+
+/**
+ * Below the `md` breakpoint the cost columns collapse out entirely so
+ * the row stays legible. This story renders the row inside a narrow
+ * container to verify that layout.
+ */
+export const NarrowViewport: Story = {
+  args: {
+    job: makeJob({ name: "narrow-mode-job", is_favorited: true }),
+    costSummary: makeCost(),
+  },
+  decorators: wrap(NARROW),
+};
+
+export const NarrowUnfavorited: Story = {
+  args: {
+    job: makeJob({ name: "narrow-no-fav-job" }),
+    costSummary: makeCost(),
+  },
+  decorators: wrap(NARROW),
 };

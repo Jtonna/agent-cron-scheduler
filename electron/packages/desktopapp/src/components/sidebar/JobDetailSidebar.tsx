@@ -3,6 +3,14 @@
 import { useState } from "react";
 import Link from "next/link";
 import {
+  Button as AriaButton,
+  Menu,
+  MenuItem,
+  MenuTrigger,
+  Popover,
+} from "react-aria-components";
+import {
+  ChevronDown,
   ChevronLeft,
   Loader2,
   Pencil,
@@ -29,8 +37,10 @@ import type { Job } from "@/apis/types";
  *   1. Back link (ghost square, top-aligned, sticky)
  *   2. Identity block (job name + cron) — bordered, no buttons
  *   3. Metadata strip (favorite + enable toggle) — compact icon-style row
- *   4. Primary actions — solid "Run Workflow" + secondary
- *      "Run with Customizations" — both square (rounded-input)
+ *   4. Primary action — a split button: a large "Run Workflow" on the
+ *      left, joined to a small chevron trigger on the right that opens a
+ *      menu containing "Run with customizations…". Inspired by shadcn's
+ *      button-group / split-button pattern (and IDE-style Run controls).
  *   5. Utility actions — Enable/Disable Cron, Edit (ghost square rows)
  *   6. Pinned footer — Delete job (destructive ghost square)
  *
@@ -146,31 +156,96 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
             </div>
           </div>
 
-          {/* Primary actions — Run is the headline button.
-              Customize is a quieter secondary; both share the same width. */}
-          <div className="px-3 mt-4 flex flex-col gap-2">
-            <Button
-              fullWidth
-              size="md"
-              shape="rounded"
-              icon={triggering ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-              onPress={handleRunWorkflow}
-              isDisabled={triggering}
+          {/* Primary action — split button. The left half is the headline
+              "Run Workflow" action; the right half is a chevron trigger
+              that opens a tiny menu offering the customizations modal.
+              Both halves share one outer border (rounded-input) and one
+              continuous hover/focus rhythm — a single cohesive control.
+
+              Keyboard: Tab moves between the two halves. On the chevron,
+              Enter/Space/Arrow-Down opens the menu; Arrow keys + Enter
+              select; Escape closes (handled by react-aria-components). */}
+          <div className="px-3 mt-4">
+            <div
+              role="group"
+              aria-label="Run workflow"
+              className={[
+                "flex w-full rounded-input overflow-hidden",
+                "ring-1 ring-brand/0", // reserve a slot for focus-within emphasis
+                triggering ? "opacity-90" : "",
+              ].join(" ")}
             >
-              {triggering ? "Running…" : "Run Workflow"}
-            </Button>
-            <Button
-              fullWidth
-              size="sm"
-              shape="rounded"
-              intent="secondary"
-              icon={<Sliders size={14} />}
-              onPress={() => setCustomizeOpen(true)}
-            >
-              Run with Customizations
-            </Button>
+              <AriaButton
+                type="button"
+                onPress={handleRunWorkflow}
+                isDisabled={triggering}
+                aria-label="Run workflow with default arguments"
+                className={[
+                  "flex-1 inline-flex items-center justify-center gap-2",
+                  "px-5 py-2.5 text-sm font-semibold",
+                  "bg-brand hover:bg-brand-hover text-surface",
+                  "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring focus-visible:ring-offset-2",
+                  "cursor-pointer transition-colors",
+                  "disabled:opacity-50 disabled:cursor-not-allowed",
+                  // square the right edge so it meets the chevron seamlessly
+                  "rounded-l-input rounded-r-none",
+                ].join(" ")}
+              >
+                {triggering ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Play size={14} />
+                )}
+                {triggering ? "Running…" : "Run Workflow"}
+              </AriaButton>
+
+              {/* 1px seam between the two halves — uses brand-hover so it
+                  blends with the primary fill without looking like a double
+                  border. */}
+              <div aria-hidden className="w-px bg-brand-hover/60" />
+
+              <MenuTrigger>
+                <AriaButton
+                  type="button"
+                  isDisabled={triggering}
+                  aria-label="More run options"
+                  className={[
+                    "inline-flex items-center justify-center",
+                    "w-9 px-0 py-2.5",
+                    "bg-brand hover:bg-brand-hover text-surface",
+                    "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring focus-visible:ring-offset-2",
+                    "cursor-pointer transition-colors",
+                    "disabled:opacity-50 disabled:cursor-not-allowed",
+                    "rounded-r-input rounded-l-none",
+                  ].join(" ")}
+                >
+                  <ChevronDown size={14} aria-hidden />
+                </AriaButton>
+                <Popover
+                  placement="bottom end"
+                  className="w-56 bg-surface border border-border rounded-menu shadow-menu py-1 z-50 outline-none entering:animate-in entering:fade-in entering:zoom-in-95 exiting:animate-out exiting:fade-out exiting:zoom-out-95"
+                >
+                  <Menu
+                    className="outline-none"
+                    onAction={(key) => {
+                      if (key === "customize") setCustomizeOpen(true);
+                    }}
+                  >
+                    <MenuItem
+                      id="customize"
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-secondary outline-none cursor-pointer rounded-input mx-1"
+                    >
+                      <Sliders size={14} className="text-fg-tertiary" />
+                      <span className="flex-1 text-left">
+                        Run with customizations…
+                      </span>
+                    </MenuItem>
+                  </Menu>
+                </Popover>
+              </MenuTrigger>
+            </div>
             {(toggleError || triggerError) && (
-              <p className="px-1 text-xs text-status-failed">
+              <p className="mt-2 px-1 text-xs text-status-failed">
                 {toggleError ?? triggerError}
               </p>
             )}

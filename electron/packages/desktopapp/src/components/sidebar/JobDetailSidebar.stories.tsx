@@ -54,15 +54,47 @@ function makeJob(name: string, daysAgo: number, overrides: Partial<Job> = {}): J
 const CURRENT = makeJob("backup-db", 0);
 
 /**
- * Default: enabled job, not favorited. Shows all action buttons in their
- * default state: primary "Run Workflow" (solid, square), secondary
- * "Run with Customizations" (bordered, square), Enable/Disable cron
- * ghost row, Edit ghost row, and the destructive Delete row in the
- * pinned footer. All controls share the same `rounded-input` shape —
- * intent is what changes, not shape.
+ * Default: enabled job, not favorited. The action area is a split button —
+ * "Run Workflow" on the left, a chevron trigger on the right that opens
+ * a menu offering "Run with customizations…". Both halves are joined
+ * into a single `rounded-input` shape (the shadcn button-group / IDE-Run
+ * pattern). All other controls share the same square shape — intent is
+ * what changes, not shape.
  */
 export const Default: Story = {
   args: { job: CURRENT },
+};
+
+/**
+ * SplitMenuOpen — programmatically opens the chevron menu so we can
+ * eyeball the popover styling and keyboard target sizing without having
+ * to click. The menu lives in a portal, so it floats over the rail.
+ */
+export const SplitMenuOpen: Story = {
+  args: { job: CURRENT },
+  play: async ({ canvasElement }) => {
+    const trigger = canvasElement.querySelector<HTMLButtonElement>(
+      'button[aria-label="More run options"]',
+    );
+    trigger?.click();
+  },
+};
+
+/**
+ * Triggering — primary half shows a spinner and the "Running…" label;
+ * the chevron half is disabled so a stray click can't open the menu
+ * while a run is being dispatched.
+ */
+export const Triggering: Story = {
+  args: { job: CURRENT },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Visual reference only — the actual triggering state is driven by useTriggerWorkflow and isn't exercised in Storybook.",
+      },
+    },
+  },
 };
 
 /**
