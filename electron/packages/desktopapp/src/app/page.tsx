@@ -7,6 +7,7 @@ import { FilterTabs } from "@/components/jobs/FilterTabs";
 import { ChatBar } from "@/components/ui/ChatBar";
 import { FavoritedJobs } from "@/components/jobs/FavoritedJobs";
 import { SystemBanner } from "@/components/widgets/SystemBanner";
+import { SystemHeroCarousel } from "@/components/widgets/SystemHeroCarousel";
 import { TabBar } from "@/components/ui/TabBar";
 import { JobRunCard } from "@/components/jobs/JobRunCard";
 import type { JobRun } from "@/components/jobs/JobRunCard";
@@ -95,16 +96,14 @@ export default function Home() {
             Agent Cron System
           </h1>
           <p className="text-fg-muted text-[15px] leading-relaxed max-w-md">
-            Schedule and run AI agent jobs on demand or on a cron. Build automations, manage tasks,
+            Schedule and run AI agent workflows on demand or on a cron. Build automations, manage tasks,
             and orchestrate your infrastructure from one place.
           </p>
           <FilterTabs />
           <ChatBar onSend={(msg) => router.push(`/chat?q=${encodeURIComponent(msg)}`)} />
           <FavoritedJobs jobs={favoritedJobs} />
         </div>
-        <div className="bg-gradient-to-br from-gradient-hero-from via-gradient-hero-via to-gradient-hero-to rounded-card min-h-[420px] flex items-center justify-center">
-          <span className="text-fg-subtle text-sm">Hero illustration</span>
-        </div>
+        <SystemHeroCarousel />
       </section>
 
       {/* System info */}
