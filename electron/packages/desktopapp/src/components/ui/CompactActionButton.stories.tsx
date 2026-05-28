@@ -79,3 +79,28 @@ export const Row: Story = {
     </div>
   ),
 };
+
+/**
+ * DeleteIconLeftEditRight — the JobDetailSidebar secondary action row.
+ * Delete is icon-only (w-9, left, destructive chrome), Edit fills the rest
+ * (secondary chrome). Both render visible chrome so they read as siblings
+ * of the Run split-button above them in the sidebar.
+ */
+export const DeleteIconLeftEditRight: Story = {
+  render: () => (
+    <div className="flex gap-2">
+      <CompactActionButton
+        intent="destructive"
+        className="w-9 px-0 shrink-0"
+        icon={<Trash2 size={12} />}
+        onPress={() => {}}
+        ariaLabel="Delete workflow"
+      >
+        {null}
+      </CompactActionButton>
+      <CompactActionButton intent="secondary" fullWidth icon={<Pencil size={12} />} onPress={() => {}}>
+        Edit
+      </CompactActionButton>
+    </div>
+  ),
+};

@@ -47,8 +47,17 @@ import type { Job, JobRun } from "@/apis/types";
  *   1. Back link             — SidebarBackLink ("Back to Workflows")
  *   2. Search trigger        — opens the global command palette
  *   3. Identity block        — workflow name + cron + tz + favorite star
- *   4. Primary action row    — Run Workflow split button (CompactActionButton)
- *   5. Secondary action row  — Edit + Delete (CompactActionButton ghost/destructive)
+ *   4. Primary action row    — Run split button (CompactActionButton)
+ *   5. Secondary action row  — Delete (icon-only, w-9, left) +
+ *                              Edit (flex-1, right). Both render with
+ *                              visible chrome so they read as siblings of
+ *                              the Run split-button above. The sidebar
+ *                              drops the "Workflow" suffix from these
+ *                              labels because the page context already
+ *                              tells you what's being acted on; the
+ *                              command palette still says
+ *                              "Run/Edit/Delete Workflow" since it's
+ *                              global.
  *   6. STATUS section        — eyebrow header + PropertyRows (enabled toggle + meta)
  *   7. RECENT RUNS section   — eyebrow header + SidebarListItem rows, capped at 6
  *
@@ -256,7 +265,7 @@ export function JobDetailSidebar({
                 ) : (
                   <Play size={12} />
                 )}
-                {triggering ? "Running…" : "Run Workflow"}
+                {triggering ? "Running…" : "Run"}
               </AriaButton>
 
               <div aria-hidden className="w-px bg-brand-hover/60" />
@@ -308,25 +317,25 @@ export function JobDetailSidebar({
             )}
           </div>
 
-          {/* 5. Secondary action row — Edit + Delete */}
+          {/* 5. Secondary action row — Delete (icon-only, left) + Edit (right) */}
           <div className="flex gap-2">
             <CompactActionButton
-              intent="ghost"
+              intent="destructive"
+              className="w-9 px-0 shrink-0"
+              icon={<Trash2 size={12} />}
+              onPress={() => setDeleteOpen(true)}
+              ariaLabel="Delete workflow"
+            >
+              {null}
+            </CompactActionButton>
+            <CompactActionButton
+              intent="secondary"
               fullWidth
               icon={<Pencil size={12} />}
               onPress={() => router.push(`/workflows/${job.id}/edit`)}
               ariaLabel="Edit workflow"
             >
-              Edit Workflow
-            </CompactActionButton>
-            <CompactActionButton
-              intent="destructive"
-              fullWidth
-              icon={<Trash2 size={12} />}
-              onPress={() => setDeleteOpen(true)}
-              ariaLabel="Delete workflow"
-            >
-              Delete
+              Edit
             </CompactActionButton>
           </div>
 

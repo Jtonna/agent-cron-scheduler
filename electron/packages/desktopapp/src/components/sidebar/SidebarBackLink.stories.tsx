@@ -20,6 +20,10 @@ export const Default: Story = {
   args: { href: "/workflows", children: "Back to Workflows" },
 };
 
+export const BackToDashboard: Story = {
+  args: { href: "/", children: "Back to Dashboard" },
+};
+
 export const LongDestination: Story = {
   args: {
     href: "/workflows/x",

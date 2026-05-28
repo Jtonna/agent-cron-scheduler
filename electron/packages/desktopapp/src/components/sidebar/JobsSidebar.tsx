@@ -2,6 +2,7 @@
 
 import { Plus } from "lucide-react";
 import { CompactActionButton } from "@/components/ui/CompactActionButton";
+import { SidebarBackLink } from "./SidebarBackLink";
 import { SidebarSearchTrigger } from "./SidebarSearchTrigger";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
 import { SidebarRecentJobs } from "./SidebarRecentJobs";
@@ -14,11 +15,16 @@ import type { Job } from "@/apis/types";
  * Left rail used on `/workflows`. Follows the unified sidebar anatomy
  * shared with `JobDetailSidebar` and `RunDetailSidebar`:
  *
- *   1. (no back link — top-level page)
+ *   1. Back link             — SidebarBackLink ("Back to Dashboard", href="/")
  *   2. Search trigger        — opens the global command palette
  *   3. Primary action row    — "New Workflow" (CompactActionButton)
  *   4. Favorited section     — eyebrow header + list (empty state inline)
  *   5. Recent section        — eyebrow header + list, capped at 6
+ *
+ * The back link always points at `/` (dashboard). We deliberately do not
+ * implement history-aware "back to wherever you came from" — Next.js
+ * static export makes referrer-style back unreliable, and the dashboard
+ * is the canonical parent route.
  *
  * Vertical rhythm is one `gap-4` token between sections; section
  * headers and their content sit inside the same flex column with a
@@ -37,6 +43,8 @@ export function JobsSidebar({ jobs }: JobsSidebarProps) {
   return (
     <aside className="h-full flex flex-col">
       <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-4">
+        <SidebarBackLink href="/">Back to Dashboard</SidebarBackLink>
+
         <SidebarSearchTrigger placeholder="Search · ⌘K" />
 
         <CompactActionButton

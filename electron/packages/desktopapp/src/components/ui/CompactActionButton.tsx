@@ -51,7 +51,8 @@ const INTENT_CLASSES: Record<CompactIntent, string> = {
   secondary:
     "bg-surface-secondary hover:bg-surface-tertiary text-fg border border-border",
   ghost: "text-fg-secondary hover:text-fg hover:bg-surface-hover",
-  destructive: "text-status-failed hover:bg-status-failed-bg",
+  destructive:
+    "bg-surface-secondary hover:bg-status-failed-bg text-status-failed border border-status-failed-border",
 };
 
 const BASE =
