@@ -79,7 +79,9 @@ import type {
   JobRun,
   RecentRunsResponse,
   RunsResponse,
+  TriggerParams,
   WorkflowCostEntry,
+  WorkflowTriggerResponse,
 } from "./types";
 
 export const api = {
@@ -128,4 +130,27 @@ export const api = {
   killRun(runId: string): Promise<void> {
     return request<void>(`/api/runs/${runId}/kill`, { method: "POST" }) as Promise<void>;
   },
+
+  updateWorkflow(id: string, update: WorkflowUpdate): Promise<Job> {
+    return request<Job>(`/api/workflows/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(update),
+    });
+  },
+
+  toggleWorkflowEnabled(id: string, newEnabled: boolean): Promise<Job> {
+    return request<Job>(`/api/workflows/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: newEnabled }),
+    });
+  },
+
+  triggerWorkflow(id: string, params: TriggerParams = {}): Promise<WorkflowTriggerResponse> {
+    return request<WorkflowTriggerResponse>(`/api/workflows/${id}/trigger`, {
+      method: "POST",
+      body: JSON.stringify(params),
+    });
+  },
 };
+
+export type WorkflowUpdate = Record<string, unknown>;
