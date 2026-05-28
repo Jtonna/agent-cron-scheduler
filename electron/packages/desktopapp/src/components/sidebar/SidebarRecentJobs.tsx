@@ -15,7 +15,7 @@ import type { Job } from "@/apis/types";
 
 interface SidebarRecentJobsProps {
   jobs: Job[];
-  /** Maximum number of jobs to show. Defaults to 7. */
+  /** Maximum number of jobs to show. Defaults to 6 (matches the cap shared with JobDetailSidebar's Recent Runs section). */
   max?: number;
 }
 
@@ -29,7 +29,7 @@ function SidebarItemWithRuns({ job }: { job: Job }) {
   return <JobSidebarItem job={job} runs={runs} />;
 }
 
-export function SidebarRecentJobs({ jobs, max = 7 }: SidebarRecentJobsProps) {
+export function SidebarRecentJobs({ jobs, max = 6 }: SidebarRecentJobsProps) {
   // Sort + slice over a small array (typically <50 jobs) — useMemo isn't worth it.
   const sorted = [...jobs].sort((a, b) => {
     const aT = a.last_run_at ? new Date(a.last_run_at).getTime() : new Date(a.created_at).getTime();

@@ -1,6 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
 import { RunDetailSidebar } from "./RunDetailSidebar";
+import { CommandPaletteContext } from "@/components/command-palette/CommandPaletteContext";
 import type { WorkflowRunStep } from "@/apis/types";
+
+const fakePaletteCtx = {
+  isOpen: false,
+  open: () => {},
+  close: () => {},
+  toggle: () => {},
+  registerCommands: () => "reg-0",
+  unregisterCommands: () => {},
+};
 
 /**
  * RunDetailSidebar stories
@@ -15,12 +25,14 @@ const meta: Meta<typeof RunDetailSidebar> = {
   parameters: { layout: "fullscreen" },
   decorators: [
     (Story) => (
-      <div
-        style={{ width: 280, height: 600 }}
-        className="border-r border-border-subtle bg-surface text-fg"
-      >
-        <Story />
-      </div>
+      <CommandPaletteContext.Provider value={fakePaletteCtx}>
+        <div
+          style={{ width: 280, height: 600 }}
+          className="border-r border-border-subtle bg-surface text-fg"
+        >
+          <Story />
+        </div>
+      </CommandPaletteContext.Provider>
     ),
   ],
 };

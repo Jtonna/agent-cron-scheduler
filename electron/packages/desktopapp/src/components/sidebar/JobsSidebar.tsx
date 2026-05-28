@@ -1,57 +1,73 @@
-import Link from "next/link";
-import { Sidebar } from "./Sidebar";
-import { SidebarSection } from "./SidebarSection";
+"use client";
+
+import { Plus } from "lucide-react";
+import { CompactActionButton } from "@/components/ui/CompactActionButton";
 import { SidebarSearchTrigger } from "./SidebarSearchTrigger";
+import { SidebarSectionHeader } from "./SidebarSectionHeader";
 import { SidebarRecentJobs } from "./SidebarRecentJobs";
 import { SidebarFavoritedJobs } from "./SidebarFavoritedJobs";
-import { Plus } from "lucide-react";
 import type { Job } from "@/apis/types";
 
 /**
  * JobsSidebar
  *
- * Left rail used on `/workflows`. Top of the rail mirrors the workflow-
- * detail sidebar: a SidebarSearchTrigger (opens the global command
- * palette) sits above a compact-density primary "New Workflow" button.
- * Below those are the Favorited and Recent sections. The favorites
- * section filters the supplied `jobs` by `is_favorited` from the
- * workflow store.
+ * Left rail used on `/workflows`. Follows the unified sidebar anatomy
+ * shared with `JobDetailSidebar` and `RunDetailSidebar`:
+ *
+ *   1. (no back link — top-level page)
+ *   2. Search trigger        — opens the global command palette
+ *   3. Primary action row    — "New Workflow" (CompactActionButton)
+ *   4. Favorited section     — eyebrow header + list (empty state inline)
+ *   5. Recent section        — eyebrow header + list, capped at 6
+ *
+ * Vertical rhythm is one `gap-4` token between sections; section
+ * headers and their content sit inside the same flex column with a
+ * tighter `gap-1.5`.
  */
 
 interface JobsSidebarProps {
   jobs: Job[];
 }
 
+const RECENT_LIMIT = 6;
+
 export function JobsSidebar({ jobs }: JobsSidebarProps) {
   const favorited = jobs.filter((j) => j.is_favorited);
+
   return (
-    <Sidebar>
-      <SidebarSearchTrigger placeholder="Search · ⌘K" />
-      <Link
-        href="/create"
-        aria-label="Create a new workflow"
-        className={[
-          "mt-1 flex w-full items-center justify-center gap-1.5",
-          "px-3 py-1.5 text-xs font-semibold",
-          "rounded-input",
-          "bg-brand hover:bg-brand-hover text-surface",
-          "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring focus-visible:ring-offset-2",
-          "cursor-pointer transition-colors",
-        ].join(" ")}
-      >
-        <Plus size={12} aria-hidden />
-        New Workflow
-      </Link>
-      {favorited.length === 0 ? (
-        <SidebarSection title="Favorited" emptyText="No favorites yet" />
-      ) : (
-        <SidebarSection title="Favorited">
-          <SidebarFavoritedJobs jobs={favorited} />
-        </SidebarSection>
-      )}
-      <SidebarSection title="Recent">
-        <SidebarRecentJobs jobs={jobs} />
-      </SidebarSection>
-    </Sidebar>
+    <aside className="h-full flex flex-col">
+      <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-4">
+        <SidebarSearchTrigger placeholder="Search · ⌘K" />
+
+        <CompactActionButton
+          intent="primary"
+          fullWidth
+          href="/create"
+          icon={<Plus size={12} aria-hidden />}
+          ariaLabel="Create a new workflow"
+        >
+          New Workflow
+        </CompactActionButton>
+
+        <section className="flex flex-col gap-1.5">
+          <SidebarSectionHeader
+            title="Favorited"
+            meta={favorited.length > 0 ? `(${favorited.length})` : undefined}
+          />
+          {favorited.length === 0 ? (
+            <div className="px-2 py-2 text-xs text-fg-subtle italic">
+              No favorites yet
+            </div>
+          ) : (
+            <SidebarFavoritedJobs jobs={favorited} />
+          )}
+        </section>
+
+        <section className="flex flex-col gap-1.5">
+          <SidebarSectionHeader title="Recent" />
+          <SidebarRecentJobs jobs={jobs} max={RECENT_LIMIT} />
+        </section>
+      </div>
+    </aside>
   );
 }

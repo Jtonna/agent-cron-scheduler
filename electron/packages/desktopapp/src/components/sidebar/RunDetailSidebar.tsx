@@ -1,31 +1,35 @@
 "use client";
 
-import { ChevronLeft } from "lucide-react";
 import { formatDuration } from "@/apis/format";
 import type { WorkflowRunStep } from "@/apis/types";
-import { Button } from "@/components/ui/Button";
-import {
-  JobStateIndicator,
-  apiStatusToJobState,
-} from "@/components/ui/JobStateIndicator";
+import { apiStatusToJobState } from "@/components/ui/JobStateIndicator";
+import { SidebarBackLink } from "./SidebarBackLink";
+import { SidebarIdentityBlock } from "./SidebarIdentityBlock";
+import { SidebarSearchTrigger } from "./SidebarSearchTrigger";
+import { SidebarSectionHeader } from "./SidebarSectionHeader";
+import { SidebarListItem } from "./SidebarListItem";
 
 /**
  * RunDetailSidebar
  *
- * Left rail used on `/workflows/[id]/runs/[runId]`. Mirrors the visual idiom of
- * `JobDetailSidebar`: sticky, full-height, scrollable body, design tokens
- * only. Header section shows a back link to the parent workflow, the
- * workflow name, and the cron schedule. Body lists the steps that actually
- * ran (from `run.steps`) — clicking a row selects that step and the parent
- * page scrolls the log viewer to the step's starting offset.
+ * Left rail used on `/workflows/[id]/runs/[runId]`. Implements the
+ * unified sidebar anatomy shared with `JobsSidebar` and
+ * `JobDetailSidebar`:
  *
- * The "{ranCount} of {totalCount} ran" suffix only appears when totalCount
- * is known and differs from ranCount.
+ *   1. Back link             — SidebarBackLink ("Back to {workflowName}")
+ *   2. Search trigger        — opens the global command palette (added
+ *                              here for consistency with the other two
+ *                              rails; the palette is global so the entry
+ *                              point should be too)
+ *   3. Identity block        — workflow name + cron line
+ *   4. STEPS section         — eyebrow header + SidebarListItem rows
  *
- * Button shape across the rail is uniform: the back link uses
- * `shape="rounded"` (square corners) to match the JobDetailSidebar
- * action buttons. Step rows are list-item pickers (not action buttons)
- * and use the same `rounded-input` token for visual rhythm.
+ * Vertical rhythm matches the other rails: `gap-4` between sections,
+ * `gap-1.5` between a section's header and its content.
+ *
+ * Step rows expose a leading status dot, the step id (mono, truncates),
+ * a duration trailer, and a cost trailer — driven through the unified
+ * `SidebarListItem` primitive.
  */
 
 export interface RunDetailSidebarProps {
@@ -69,79 +73,51 @@ export function RunDetailSidebar({
 
   return (
     <aside className="h-full flex flex-col">
-      {/* Header block */}
-      <div className="shrink-0 p-3 flex flex-col gap-1">
-        <Button
-          href={`/workflows/${jobId}`}
-          intent="ghost"
-          size="sm"
-          shape="rounded"
-          fullWidth
-          icon={<ChevronLeft size={14} />}
-          className="!justify-start"
-        >
+      <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-4">
+        {/* 1. Back link */}
+        <SidebarBackLink href={`/workflows/${jobId}`}>
           Back to {workflowName}
-        </Button>
+        </SidebarBackLink>
 
-        <div className="flex flex-col gap-1 px-2 py-3 border-b border-border-subtle">
-          <div className="text-base font-semibold text-fg truncate" title={workflowName}>
-            {workflowName}
-          </div>
-          <div className="font-mono text-xs text-fg-muted truncate" title={cron}>
-            {cron}
-          </div>
-        </div>
+        {/* 2. Search trigger */}
+        <SidebarSearchTrigger placeholder="Search · ⌘K" />
 
-        {/* Section header row */}
-        <div className="flex items-center justify-between px-2 pt-3">
-          <span className="text-[11px] font-semibold text-fg-subtle uppercase tracking-wider">
-            Steps
-          </span>
-          {showSuffix && (
-            <span className="text-[11px] text-fg-muted">
-              {ranCount} of {totalSteps} ran
-            </span>
+        {/* 3. Identity block */}
+        <SidebarIdentityBlock
+          title={workflowName}
+          meta={cron}
+          monoMeta
+        />
+
+        {/* 4. STEPS section */}
+        <section className="flex flex-col gap-1.5">
+          <SidebarSectionHeader
+            title="Steps"
+            meta={showSuffix ? `${ranCount} of ${totalSteps} ran` : undefined}
+          />
+          {runSteps.length === 0 ? (
+            <div className="px-2 py-2 text-xs text-fg-subtle italic">
+              No steps have started yet
+            </div>
+          ) : (
+            <div className="flex flex-col">
+              {runSteps.map((step, index) => {
+                const isActive = index === activeStepIndex;
+                return (
+                  <SidebarListItem
+                    key={`${step.step_index}-${step.step_id}`}
+                    state={apiStatusToJobState(step.status)}
+                    title={step.step_id}
+                    meta={stepDurationLabel(step)}
+                    metaSecondary={formatStepCost(step.cost_usd)}
+                    active={isActive}
+                    onPress={() => onSelectStep(index)}
+                  />
+                );
+              })}
+            </div>
           )}
-        </div>
-      </div>
-
-      {/* Scrollable step list */}
-      <div className="overflow-y-auto flex-1 px-3 pb-3 flex flex-col gap-1">
-        {runSteps.length === 0 ? (
-          <div className="text-center py-6 text-fg-subtle text-xs">
-            No steps have started yet
-          </div>
-        ) : (
-          runSteps.map((step, index) => {
-            const isActive = index === activeStepIndex;
-            const state = apiStatusToJobState(step.status);
-            const activeClasses = isActive
-              ? "border-l-2 border-brand bg-surface-secondary"
-              : "border-l-2 border-transparent hover:bg-surface-hover";
-            return (
-              <button
-                key={`${step.step_index}-${step.step_id}`}
-                type="button"
-                onClick={() => onSelectStep(index)}
-                className={`w-full flex items-center gap-2 px-2 py-2 rounded-input text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand-ring ${activeClasses}`}
-              >
-                <JobStateIndicator state={state} variant="dot" size="sm" />
-                <span
-                  className="font-mono text-xs text-fg truncate flex-1"
-                  title={step.step_id}
-                >
-                  {step.step_id}
-                </span>
-                <span className="text-[11px] text-fg-muted whitespace-nowrap">
-                  {stepDurationLabel(step)}
-                </span>
-                <span className="font-mono text-[11px] text-fg-muted whitespace-nowrap">
-                  {formatStepCost(step.cost_usd)}
-                </span>
-              </button>
-            );
-          })
-        )}
+        </section>
       </div>
     </aside>
   );
