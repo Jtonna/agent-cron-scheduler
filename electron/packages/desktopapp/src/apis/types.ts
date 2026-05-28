@@ -175,3 +175,26 @@ export interface RunsResponse {
   runs: JobRun[];
   total: number;
 }
+
+/* ── Workflow trigger (POST /api/workflows/{id}/trigger) ── */
+
+/**
+ * Per-invocation parameters for triggering a workflow. A body is required by
+ * the backend's JSON extractor; send `{}` to fall back to
+ * `workflow.default_input`. The three knobs are orthogonal:
+ *   - `input`        — replaces `workflow.default_input` for this run
+ *   - `env`          — overrides `workflow.env_vars` for this run (highest precedence)
+ *   - `target_step`  — routes `input` to the named step's stdin
+ */
+export interface TriggerParams {
+  input?: unknown;
+  env?: Record<string, string>;
+  target_step?: string;
+}
+
+export interface WorkflowTriggerResponse {
+  run_id: string;
+  workflow_id: string;
+  workflow_version: number;
+  run_url: string;
+}

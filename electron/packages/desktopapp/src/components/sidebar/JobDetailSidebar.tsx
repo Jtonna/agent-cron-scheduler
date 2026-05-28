@@ -3,6 +3,7 @@
 import { useState } from "react";
 import {
   ChevronLeft,
+  Loader2,
   Pencil,
   Play,
   Power,
@@ -15,20 +16,26 @@ import {
 import { SidebarSection } from "./SidebarSection";
 import { DeleteJobDialog } from "./DeleteJobDialog";
 import { Button } from "@/components/ui/Button";
+import { RunWithOverridesModal } from "@/components/jobs/RunWithOverridesModal";
+import { useToggleWorkflowEnabled } from "@/apis/useToggleWorkflowEnabled";
+import { useTriggerWorkflow } from "@/apis/useTriggerWorkflow";
 import type { Job } from "@/apis/types";
 
 /**
  * JobDetailSidebar
  *
  * Left rail used on `/jobs/[id]`. Top scroll region: back link, identity,
- * Actions section (Favorite / Edit / Disable / Run / Run with overrides),
- * and a conditional Run management section. The Delete job button is
- * pinned to the bottom of the sidebar via flex layout — always visible
- * regardless of scroll position.
+ * Actions section (Favorite / Edit / Enable-Disable Cron / Run Workflow /
+ * Run with Overrides), and a conditional Run management section. The Delete
+ * job button is pinned to the bottom of the sidebar via flex layout —
+ * always visible regardless of scroll position.
  *
- * All `on*` callbacks are optional — if a consumer hasn't wired a handler
- * the corresponding button is still rendered but is a no-op, so this
- * component stays usable in stories and partially-wired pages.
+ * The Enable/Disable Cron, Run Workflow, and Run with Overrides buttons
+ * are wired internally via the `useToggleWorkflowEnabled` and
+ * `useTriggerWorkflow` hooks; the modal for overrides is also owned here.
+ * Favorite, Stop, and Delete remain parent-controlled via `on*` callbacks
+ * so consumers can wire them as needed (e.g., stop requires per-run kill
+ * orchestration).
  *
  * Note: this component does not use the shared `Sidebar` shell because it
  * needs an internal scroll region + pinned footer; the page wrapper should
@@ -42,10 +49,7 @@ interface JobDetailSidebarProps {
   /** Whether the user has favorited this job. Defaults to false. */
   favorited?: boolean;
   onFavoriteToggle?: () => void;
-  onRun?: () => void;
-  onRunWithOverrides?: () => void;
   onStop?: () => void;
-  onToggleEnabled?: () => void;
   /** Called from inside DeleteJobDialog after the user confirms. */
   onDelete?: () => void;
 }
@@ -57,13 +61,28 @@ export function JobDetailSidebar({
   runningCount = 0,
   favorited = false,
   onFavoriteToggle,
-  onRun,
-  onRunWithOverrides,
   onStop,
-  onToggleEnabled,
   onDelete,
 }: JobDetailSidebarProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [overridesOpen, setOverridesOpen] = useState(false);
+
+  const { toggle, toggling, error: toggleError } = useToggleWorkflowEnabled();
+  const { trigger, triggering, error: triggerError } = useTriggerWorkflow();
+
+  function handleToggleEnabled() {
+    void toggle(job.id, job.enabled).catch(() => {
+      // Error surfaces via toggleError below.
+    });
+  }
+
+  function handleRunWorkflow() {
+    void trigger(job.id, {}).catch(() => {
+      // Error surfaces via triggerError below.
+    });
+  }
+
+  const toggleLabel = job.enabled ? "Disable Cron" : "Enable Cron";
 
   return (
     <>
@@ -113,23 +132,35 @@ export function JobDetailSidebar({
                 fullWidth
                 size="sm"
                 intent="ghost"
-                icon={<Power size={14} />}
-                onPress={onToggleEnabled ?? NOOP}
+                icon={toggling ? <Loader2 size={14} className="animate-spin" /> : <Power size={14} />}
+                onPress={handleToggleEnabled}
+                isDisabled={toggling}
               >
-                {job.enabled ? "Disable" : "Enable"}
+                {toggleLabel}
               </Button>
-              <Button fullWidth size="sm" icon={<Play size={14} />} onPress={onRun ?? NOOP}>
-                Run job
+              <Button
+                fullWidth
+                size="sm"
+                icon={triggering ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                onPress={handleRunWorkflow}
+                isDisabled={triggering}
+              >
+                {triggering ? "Running…" : "Run Workflow"}
               </Button>
               <Button
                 fullWidth
                 size="sm"
                 intent="secondary"
                 icon={<Settings size={14} />}
-                onPress={onRunWithOverrides ?? NOOP}
+                onPress={() => setOverridesOpen(true)}
               >
-                Run with overrides
+                Run with Overrides
               </Button>
+              {(toggleError || triggerError) && (
+                <p className="px-2 text-xs text-status-failed">
+                  {toggleError ?? triggerError}
+                </p>
+              )}
             </div>
           </SidebarSection>
 
@@ -172,6 +203,12 @@ export function JobDetailSidebar({
         onOpenChange={setDeleteOpen}
         jobName={job.name}
         onConfirm={onDelete ?? NOOP}
+      />
+
+      <RunWithOverridesModal
+        workflow={job}
+        isOpen={overridesOpen}
+        onOpenChange={setOverridesOpen}
       />
     </>
   );
