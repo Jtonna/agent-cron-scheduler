@@ -1,26 +1,27 @@
 "use client";
 
-import { Activity } from "lucide-react";
-import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
-import { StatWidget } from "@/components/widgets/StatWidget";
-import { JobStateIndicator, type JobState } from "@/components/ui/JobStateIndicator";
 import type { RecentRunEntry } from "@/apis/types";
 
 /**
  * HealthWidget
  *
- * Donut chart + legend summarizing run outcomes over the past 14 days.
- * Renders an empty ring with a "0" center when there is no recent
- * activity.
+ * The fleet health "weather widget" — modeled on acs-ui-refresh's
+ * `JobHealth` (the weather/health benchmark the user called out).
+ *
+ * Composition:
+ *  - Pastel `[data-mesh]` surface (mist) with the drifting four-blob
+ *    radial gradient + baked-in grain.
+ *  - Eyebrow header row with a healthy/degraded status pip.
+ *  - Massive ink display numeral for the success percentage.
+ *  - Three-segment success/warning/failed bar.
+ *  - A grid of count stats anchored at the bottom.
+ *
+ * Replaces the donut + legend. Reads `RecentRunEntry`-shaped runs and
+ * filters to the last 14 days client-side.
  */
 
-/**
- * Status union accepted by this widget. Matches `RecentRunEntry["status"]`
- * — both `JobRun` and `RecentRunEntry` shapes satisfy this constraint.
- */
 export type RunStatus = RecentRunEntry["status"];
 
-/** Minimal structural shape this widget reads from each run. */
 interface HealthRun {
   started_at: string;
   status: RunStatus;
@@ -30,26 +31,16 @@ interface HealthWidgetProps {
   runs: HealthRun[];
 }
 
-interface Slice {
-  key: Extract<JobState, "success" | "failed" | "running" | "killed" | "warning">;
-  label: string;
-  value: number;
-  color: string;
-}
-
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
 
-function computeSlices(runs: HealthRun[]): Slice[] {
+function fmt(n: number): string {
+  return n.toLocaleString();
+}
+
+function countStatuses(runs: HealthRun[]) {
   const cutoff = Date.now() - FOURTEEN_DAYS_MS;
   const recent = runs.filter((r) => new Date(r.started_at).getTime() >= cutoff);
-
-  const counts = {
-    success: 0,
-    failed: 0,
-    running: 0,
-    killed: 0,
-    warning: 0,
-  };
+  const counts = { success: 0, failed: 0, running: 0, killed: 0, warning: 0 };
   for (const r of recent) {
     switch (r.status) {
       case "Completed":
@@ -69,93 +60,112 @@ function computeSlices(runs: HealthRun[]): Slice[] {
         break;
     }
   }
-
-  return [
-    {
-      key: "success",
-      label: "Success",
-      value: counts.success,
-      color: "var(--color-status-success-dot)",
-    },
-    {
-      key: "failed",
-      label: "Failed",
-      value: counts.failed,
-      color: "var(--color-status-failed-dot)",
-    },
-    {
-      key: "running",
-      label: "Running",
-      value: counts.running,
-      color: "var(--color-status-running-dot)",
-    },
-    {
-      key: "killed",
-      label: "Killed",
-      value: counts.killed,
-      color: "var(--color-status-killed-dot)",
-    },
-    {
-      key: "warning",
-      label: "Warning",
-      value: counts.warning,
-      color: "var(--color-status-warning-dot)",
-    },
-  ];
+  return counts;
 }
 
 export function HealthWidget({ runs }: HealthWidgetProps) {
-  // Filter + small loop over <=200 runs is microseconds — no useMemo needed.
-  // Computing inline also fixes a stale-cutoff bug (with [runs] deps, the 14-day
-  // cutoff was frozen until runs changed; now it slides every render).
-  const slices = computeSlices(runs);
-  const total = slices.reduce((sum, s) => sum + s.value, 0);
-  const chartData = slices.filter((s) => s.value > 0);
+  const c = countStatuses(runs);
+  const total = c.success + c.failed + c.running + c.killed + c.warning;
+  const safeTotal = Math.max(total, 1);
+
+  const successW = (c.success / safeTotal) * 100;
+  const warningW = (c.warning / safeTotal) * 100;
+  const failedW = (c.failed / safeTotal) * 100;
+
+  const pct = total === 0 ? 0 : (c.success / safeTotal) * 100;
+  const pctLabel = pct.toFixed(pct === 100 || total === 0 ? 0 : 1);
+  const showWarning = c.warning > 0;
+  const degraded = c.failed >= Math.max(5, Math.ceil(safeTotal * 0.01));
 
   return (
-    <StatWidget title="Health (14d)" icon={<Activity size={14} />}>
-      <div className="flex items-center gap-4">
-        <div className="w-24 h-24 shrink-0 relative">
-          {total === 0 ? (
-            <div className="w-24 h-24 rounded-full border-4 border-border-subtle flex items-center justify-center">
-              <span className="text-fg-subtle text-xs">0</span>
-            </div>
-          ) : (
-            <>
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={chartData}
-                    dataKey="value"
-                    innerRadius="65%"
-                    outerRadius="100%"
-                    paddingAngle={2}
-                    stroke="none"
-                    isAnimationActive={false}
-                  >
-                    {chartData.map((entry) => (
-                      <Cell key={entry.key} fill={entry.color} />
-                    ))}
-                  </Pie>
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <span className="text-display text-xl num text-fg leading-none">{total}</span>
-                <span className="text-eyebrow !text-[10px] !text-fg-subtle mt-0.5">runs</span>
-              </div>
-            </>
-          )}
-        </div>
-        <div className="flex flex-col gap-1.5 flex-1 min-w-0">
-          {slices.map((s) => (
-            <div key={s.key} className="flex items-center gap-2 text-xs">
-              <JobStateIndicator state={s.key} variant="dot" size="sm" pulse={false} />
-              <span className="text-fg-muted flex-1 truncate">{s.label}</span>
-              <span className="font-mono text-fg">{s.value}</span>
-            </div>
-          ))}
-        </div>
+    <div
+      data-mesh="mist"
+      className="rounded-card p-6 min-h-[260px] flex flex-col text-[color:var(--color-ink-900)] border border-border-subtle"
+    >
+      <div className="flex items-center justify-between">
+        <div className="text-eyebrow !text-fg-tertiary">Job health &middot; 14d</div>
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-mono num text-[color:var(--color-ink-900)]">
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              total === 0
+                ? "bg-fg-subtle"
+                : degraded
+                  ? "bg-[color:var(--color-status-warning-dot)]"
+                  : "bg-[color:var(--color-status-success-dot)]"
+            }`}
+          />
+          {total === 0 ? "idle" : degraded ? "degraded" : "healthy"}
+        </span>
       </div>
-    </StatWidget>
+
+      <div className="mt-4 flex items-baseline gap-2">
+        <div className="text-display text-5xl md:text-6xl num text-[color:var(--color-ink-950)] leading-none">
+          {pctLabel}
+        </div>
+        <div className="text-display text-2xl text-fg-tertiary leading-none">%</div>
+      </div>
+      <div className="mt-1 text-eyebrow !text-fg-tertiary">healthy</div>
+
+      <div
+        className="mt-5 h-1.5 w-full rounded-full overflow-hidden bg-black/8 flex"
+        role="img"
+        aria-label={`${fmt(c.success)} successful, ${fmt(c.warning)} warning, ${fmt(c.failed)} failed of ${fmt(total)} runs`}
+      >
+        <span
+          className="h-full bg-[color:var(--color-status-success-dot)]"
+          style={{ width: `${successW}%` }}
+        />
+        {showWarning && (
+          <span
+            className="h-full bg-[color:var(--color-status-warning-dot)]"
+            style={{ width: `${warningW}%` }}
+          />
+        )}
+        <span
+          className="h-full bg-[color:var(--color-status-failed-dot)]"
+          style={{ width: `${failedW}%` }}
+        />
+      </div>
+
+      <div
+        className={`mt-auto pt-5 grid gap-3 ${showWarning ? "grid-cols-4" : "grid-cols-3"}`}
+      >
+        <Stat label="Runs" value={fmt(total)} />
+        <Stat label="Success" value={fmt(c.success)} />
+        {showWarning && (
+          <Stat
+            label="Warning"
+            value={fmt(c.warning)}
+            valueClass="text-[color:var(--color-status-warning)]"
+          />
+        )}
+        <Stat
+          label="Failed"
+          value={fmt(c.failed)}
+          valueClass="text-[color:var(--color-status-failed)]"
+        />
+      </div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  valueClass = "",
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+}) {
+  return (
+    <div>
+      <div className="text-eyebrow !text-[9px] !text-fg-tertiary">{label}</div>
+      <div
+        className={`mt-1 text-lg font-semibold num text-[color:var(--color-ink-900)] ${valueClass}`}
+      >
+        {value}
+      </div>
+    </div>
   );
 }

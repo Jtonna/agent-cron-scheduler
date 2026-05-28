@@ -1,8 +1,17 @@
 "use client";
 
 import { Type } from "lucide-react";
-import { StatWidget } from "@/components/widgets/StatWidget";
+import { NoirCallout } from "@/components/widgets/NoirCallout";
 import type { WorkflowCostSummary } from "@/apis/types";
+
+/**
+ * TokensWidget
+ *
+ * System-wide token usage tile. "Lemon" pastel mesh persona surface with
+ * a noir-card callout for the headline in/out pair and a stat row for
+ * the today + week totals. Matches CostWidget composition so the two
+ * read as a pair.
+ */
 
 interface TokensWidgetProps {
   summary: WorkflowCostSummary | null;
@@ -10,9 +19,7 @@ interface TokensWidgetProps {
 }
 
 function formatTokens(n: number): string {
-  if (n < 1000) {
-    return String(Math.trunc(n));
-  }
+  if (n < 1000) return String(Math.trunc(n));
   if (n < 1_000_000) {
     const s = (n / 1000).toFixed(1);
     return (s.endsWith(".0") ? s.slice(0, -2) : s) + "k";
@@ -50,7 +57,6 @@ function computeTotals(summary: WorkflowCostSummary): {
 } {
   const today = todayKey();
   const weekKeys = lastNDateKeys(7);
-
   let todayInput = 0;
   let todayOutput = 0;
   let weekInput = 0;
@@ -65,7 +71,6 @@ function computeTotals(summary: WorkflowCostSummary): {
       weekOutput += bucket.total_output_tokens;
     }
   }
-
   return {
     todayInput,
     todayOutput,
@@ -76,51 +81,56 @@ function computeTotals(summary: WorkflowCostSummary): {
   };
 }
 
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between py-1">
-      <span className="text-fg-muted text-sm">{label}</span>
-      <span className="font-mono text-sm text-fg">{value}</span>
-    </div>
-  );
-}
-
-function SkeletonRow() {
-  return (
-    <div className="flex items-center justify-between py-1">
-      <span className="h-3 w-12 rounded bg-surface-tertiary inline-block" />
-      <span className="h-3 w-14 rounded bg-surface-tertiary inline-block" />
-    </div>
-  );
-}
-
 export function TokensWidget({ summary, loading }: TokensWidgetProps) {
+  const isEmpty = loading || !summary;
+  const t = summary
+    ? computeTotals(summary)
+    : {
+        todayInput: 0,
+        todayOutput: 0,
+        weekInput: 0,
+        weekOutput: 0,
+        monthInput: 0,
+        monthOutput: 0,
+      };
+
   return (
-    <StatWidget title="Tokens" icon={<Type size={14} />}>
-      {loading || !summary ? (
-        <div className="flex flex-col gap-1.5 animate-pulse">
-          <SkeletonRow />
-          <SkeletonRow />
-          <SkeletonRow />
+    <div
+      data-mesh="lemon"
+      className="rounded-card p-6 min-h-[260px] flex flex-col text-[color:var(--color-ink-900)] border border-border-subtle"
+    >
+      <div className="text-eyebrow !text-fg-tertiary inline-flex items-center gap-2 mb-3">
+        <Type size={12} />
+        <span>Tokens &middot; this month</span>
+      </div>
+
+      <NoirCallout eyebrow="In / out">
+        <div className="text-display text-3xl md:text-4xl num leading-none">
+          {isEmpty ? "—" : formatPair(t.monthInput, t.monthOutput)}
         </div>
-      ) : (
-        (() => {
-          const totals = computeTotals(summary);
-          return (
-            <div className="flex flex-col">
-              <div className="text-display text-2xl num text-fg leading-none mb-1">
-                {formatPair(totals.monthInput, totals.monthOutput)}
-              </div>
-              <div className="text-eyebrow !text-fg-subtle mb-3">This month &middot; in / out</div>
-              <div className="h-px bg-border-subtle mb-2" />
-              <div className="flex flex-col gap-0.5">
-                <Row label="Today" value={formatPair(totals.todayInput, totals.todayOutput)} />
-                <Row label="This week" value={formatPair(totals.weekInput, totals.weekOutput)} />
-              </div>
-            </div>
-          );
-        })()
-      )}
-    </StatWidget>
+      </NoirCallout>
+
+      <div className="mt-auto pt-5 grid grid-cols-2 gap-3">
+        <Stat
+          label="Today"
+          value={isEmpty ? "—" : formatPair(t.todayInput, t.todayOutput)}
+        />
+        <Stat
+          label="This week"
+          value={isEmpty ? "—" : formatPair(t.weekInput, t.weekOutput)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-eyebrow !text-[9px] !text-fg-tertiary">{label}</div>
+      <div className="mt-1 text-sm font-semibold num text-[color:var(--color-ink-900)]">
+        {value}
+      </div>
+    </div>
   );
 }

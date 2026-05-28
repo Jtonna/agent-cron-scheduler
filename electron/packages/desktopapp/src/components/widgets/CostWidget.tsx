@@ -1,8 +1,17 @@
 "use client";
 
 import { DollarSign } from "lucide-react";
-import { StatWidget } from "@/components/widgets/StatWidget";
+import { NoirCallout } from "@/components/widgets/NoirCallout";
 import type { WorkflowCostSummary } from "@/apis/types";
+
+/**
+ * CostWidget
+ *
+ * System-wide spend tile. Pastel "peach" mesh persona surface with a
+ * black noir-card callout hosting the headline 30-day total, and a
+ * stat row underneath for today + this week. Adopted from
+ * acs-ui-refresh's weather/health composition language.
+ */
 
 interface CostWidgetProps {
   summary: WorkflowCostSummary | null;
@@ -35,14 +44,12 @@ function computeTotals(summary: WorkflowCostSummary): {
 } {
   const today = todayKey();
   const weekKeys = lastNDateKeys(7);
-
   let todayTotal = 0;
   let weekTotal = 0;
   for (const bucket of summary.daily_buckets) {
     if (bucket.date === today) todayTotal += bucket.total_usd;
     if (weekKeys.has(bucket.date)) weekTotal += bucket.total_usd;
   }
-
   return {
     today: todayTotal,
     week: weekTotal,
@@ -50,51 +57,41 @@ function computeTotals(summary: WorkflowCostSummary): {
   };
 }
 
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between py-1">
-      <span className="text-fg-muted text-sm">{label}</span>
-      <span className="font-mono text-sm text-fg">{value}</span>
-    </div>
-  );
-}
-
-function SkeletonRow() {
-  return (
-    <div className="flex items-center justify-between py-1">
-      <span className="h-3 w-12 rounded bg-surface-tertiary inline-block" />
-      <span className="h-3 w-14 rounded bg-surface-tertiary inline-block" />
-    </div>
-  );
-}
-
 export function CostWidget({ summary, loading }: CostWidgetProps) {
+  const totals = summary ? computeTotals(summary) : { today: 0, week: 0, month: 0 };
+  const isEmpty = loading || !summary;
+
   return (
-    <StatWidget title="Cost" icon={<DollarSign size={14} />}>
-      {loading || !summary ? (
-        <div className="flex flex-col gap-1.5 animate-pulse">
-          <SkeletonRow />
-          <SkeletonRow />
-          <SkeletonRow />
+    <div
+      data-mesh="peach"
+      className="rounded-card p-6 min-h-[260px] flex flex-col text-[color:var(--color-ink-900)] border border-border-subtle"
+    >
+      <div className="text-eyebrow !text-fg-tertiary inline-flex items-center gap-2 mb-3">
+        <DollarSign size={12} />
+        <span>Cost &middot; this month</span>
+      </div>
+
+      <NoirCallout eyebrow="Total spend">
+        <div className="text-display text-4xl md:text-5xl num leading-none">
+          {isEmpty ? "—" : formatUsd(totals.month)}
         </div>
-      ) : (
-        (() => {
-          const totals = computeTotals(summary);
-          return (
-            <div className="flex flex-col">
-              <div className="text-display text-3xl num text-fg leading-none mb-3">
-                {formatUsd(totals.month)}
-              </div>
-              <div className="text-eyebrow !text-fg-subtle mb-2">This month</div>
-              <div className="h-px bg-border-subtle mb-2" />
-              <div className="flex flex-col gap-0.5">
-                <Row label="Today" value={formatUsd(totals.today)} />
-                <Row label="This week" value={formatUsd(totals.week)} />
-              </div>
-            </div>
-          );
-        })()
-      )}
-    </StatWidget>
+      </NoirCallout>
+
+      <div className="mt-auto pt-5 grid grid-cols-2 gap-3">
+        <Stat label="Today" value={isEmpty ? "—" : formatUsd(totals.today)} />
+        <Stat label="This week" value={isEmpty ? "—" : formatUsd(totals.week)} />
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-eyebrow !text-[9px] !text-fg-tertiary">{label}</div>
+      <div className="mt-1 text-lg font-semibold num text-[color:var(--color-ink-900)]">
+        {value}
+      </div>
+    </div>
   );
 }

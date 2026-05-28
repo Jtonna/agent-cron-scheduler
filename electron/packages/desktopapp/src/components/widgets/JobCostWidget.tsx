@@ -1,15 +1,16 @@
 "use client";
 
 import { DollarSign } from "lucide-react";
-import { StatWidget } from "@/components/widgets/StatWidget";
+import { NoirCallout } from "@/components/widgets/NoirCallout";
 import type { WorkflowCostEntry } from "@/apis/types";
 
 /**
  * JobCostWidget
  *
- * Per-workflow cost tile showing total cost, average cost per run, and
- * total runs over the last 30 days. Renders a skeleton row state while
- * loading or when `summary` is null.
+ * Per-workflow spend tile shown on `/workflows/[id]`. "Ember" mesh
+ * persona with a noir-card hosting the 30-day total. Matches the
+ * dashboard CostWidget composition so the visual energy carries
+ * over to the workflow detail page.
  */
 
 interface JobCostWidgetProps {
@@ -25,51 +26,44 @@ function formatUsdPrecise(n: number): string {
   return `$${n.toFixed(3)}`;
 }
 
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between py-1">
-      <span className="text-fg-muted text-sm">{label}</span>
-      <span className="font-mono text-sm text-fg">{value}</span>
-    </div>
-  );
-}
-
-function SkeletonRow() {
-  return (
-    <div className="flex items-center justify-between py-1">
-      <span className="h-3 w-12 rounded bg-surface-tertiary inline-block" />
-      <span className="h-3 w-14 rounded bg-surface-tertiary inline-block" />
-    </div>
-  );
-}
-
 export function JobCostWidget({ summary, loading }: JobCostWidgetProps) {
   const cs = summary?.cost_summary;
   const totalRuns = cs?.last_30_days_runs ?? 0;
   const totalUsd = cs?.last_30_days_total_usd ?? 0;
   const avgPerRun = totalRuns > 0 ? totalUsd / totalRuns : 0;
+  const isEmpty = loading || !summary;
 
   return (
-    <StatWidget title="Cost" icon={<DollarSign size={14} />}>
-      {loading || !summary ? (
-        <div className="flex flex-col gap-1.5 animate-pulse">
-          <SkeletonRow />
-          <SkeletonRow />
-          <SkeletonRow />
+    <div
+      data-mesh="ember"
+      className="rounded-card p-6 min-h-[260px] flex flex-col text-[color:var(--color-ink-900)] border border-border-subtle"
+    >
+      <div className="text-eyebrow !text-fg-tertiary inline-flex items-center gap-2 mb-3">
+        <DollarSign size={12} />
+        <span>Cost &middot; last 30 days</span>
+      </div>
+
+      <NoirCallout eyebrow="Total spend">
+        <div className="text-display text-4xl md:text-5xl num leading-none">
+          {isEmpty ? "—" : formatUsd(totalUsd)}
         </div>
-      ) : (
-        <div className="flex flex-col">
-          <div className="text-display text-3xl num text-fg leading-none mb-1">
-            {formatUsd(totalUsd)}
-          </div>
-          <div className="text-eyebrow !text-fg-subtle mb-3">Last 30 days</div>
-          <div className="h-px bg-border-subtle mb-2" />
-          <div className="flex flex-col gap-0.5">
-            <Row label="Avg / run" value={formatUsdPrecise(avgPerRun)} />
-            <Row label="Runs" value={String(totalRuns)} />
-          </div>
-        </div>
-      )}
-    </StatWidget>
+      </NoirCallout>
+
+      <div className="mt-auto pt-5 grid grid-cols-2 gap-3">
+        <Stat label="Avg / run" value={isEmpty ? "—" : formatUsdPrecise(avgPerRun)} />
+        <Stat label="Runs" value={isEmpty ? "—" : String(totalRuns)} />
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-eyebrow !text-[9px] !text-fg-tertiary">{label}</div>
+      <div className="mt-1 text-lg font-semibold num text-[color:var(--color-ink-900)]">
+        {value}
+      </div>
+    </div>
   );
 }

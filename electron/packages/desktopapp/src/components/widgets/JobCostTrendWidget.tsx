@@ -3,25 +3,20 @@
 import { useMemo } from "react";
 import { AreaChart, Area, Tooltip, ResponsiveContainer, XAxis, YAxis } from "recharts";
 import { TrendingUp } from "lucide-react";
-import { StatWidget } from "@/components/widgets/StatWidget";
 import type { DailyCostBucket } from "@/apis/types";
 import { fillCostWindow, type CostChartPoint } from "@/apis/format";
 
 /**
  * JobCostTrendWidget
  *
- * Per-workflow daily cost area chart over the last 30 days. Wraps its own
- * StatWidget shell with title and icon so the page just drops it in
- * alongside the other widgets without manual wrapping.
- *
- * Hovering a point on the chart shows a small tooltip with that day's
- * date and cost. The endpoint only returns days that had runs, so we
- * zero-fill the rest of the 30-day window for visual continuity.
+ * Per-workflow 30-day daily cost area chart. "Mist" pastel mesh persona
+ * surface; chart palette is the ink scale (black/grey), not brand pink.
+ * Hover tooltip uses the noir-card treatment.
  */
 
 interface JobCostTrendWidgetProps {
   data: DailyCostBucket[];
-  /** Internal chart height in pixels. Defaults to 96. */
+  /** Internal chart height in pixels. Defaults to 140. */
   height?: number;
   /** Window size in days. Defaults to 30. */
   windowDays?: number;
@@ -31,7 +26,7 @@ interface TooltipPayloadEntry {
   payload?: CostChartPoint;
 }
 
-function SparklineTooltip({
+function NoirTooltip({
   active,
   payload,
 }: {
@@ -42,21 +37,42 @@ function SparklineTooltip({
   const entry = payload[0]?.payload;
   if (!entry) return null;
   return (
-    <div className="bg-surface border border-border rounded-input shadow-menu px-2.5 py-1.5 text-xs">
-      <div className="text-fg-muted">{entry.date}</div>
-      <div className="font-mono text-fg">${entry.total_usd.toFixed(2)}</div>
+    <div className="noir-card !p-2.5 !rounded-[12px] text-xs font-mono num">
+      <div className="opacity-60 text-[10px] uppercase tracking-wider">{entry.date}</div>
+      <div className="mt-0.5">${entry.total_usd.toFixed(2)}</div>
     </div>
   );
 }
 
-export function JobCostTrendWidget({ data, height = 96, windowDays = 30 }: JobCostTrendWidgetProps) {
+export function JobCostTrendWidget({
+  data,
+  height = 140,
+  windowDays = 30,
+}: JobCostTrendWidgetProps) {
   const series = useMemo(() => fillCostWindow(data, windowDays), [data, windowDays]);
   const hasAnyCost = series.some((p) => p.total_usd > 0);
+  const total = series.reduce((sum, p) => sum + p.total_usd, 0);
 
   return (
-    <StatWidget title="30-day cost trend" icon={<TrendingUp size={14} />}>
+    <div
+      data-mesh="mist"
+      className="rounded-card p-6 flex flex-col text-[color:var(--color-ink-900)] border border-border-subtle"
+    >
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <div className="text-eyebrow !text-fg-tertiary inline-flex items-center gap-2">
+          <TrendingUp size={12} />
+          <span>30-day cost trend</span>
+        </div>
+        <div className="text-display text-2xl num text-[color:var(--color-ink-950)] leading-none">
+          ${total.toFixed(2)}
+        </div>
+      </div>
+
       {!hasAnyCost ? (
-        <div className="flex items-center justify-center text-fg-subtle text-xs" style={{ height }}>
+        <div
+          className="flex items-center justify-center text-fg-tertiary text-xs"
+          style={{ height }}
+        >
           No cost data yet
         </div>
       ) : (
@@ -65,24 +81,21 @@ export function JobCostTrendWidget({ data, height = 96, windowDays = 30 }: JobCo
             <AreaChart data={series} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
               <defs>
                 <linearGradient id="job-cost-trend-gradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--color-brand)" stopOpacity={0.5} />
-                  <stop offset="100%" stopColor="var(--color-brand)" stopOpacity={0} />
+                  <stop offset="0%" stopColor="var(--color-ink-900)" stopOpacity={0.32} />
+                  <stop offset="100%" stopColor="var(--color-ink-900)" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <XAxis dataKey="date" hide />
               <YAxis hide />
               <Tooltip
-                content={<SparklineTooltip />}
-                cursor={{
-                  stroke: "var(--color-border)",
-                  strokeWidth: 1,
-                }}
+                content={<NoirTooltip />}
+                cursor={{ stroke: "var(--color-ink-900)", strokeOpacity: 0.25, strokeWidth: 1 }}
               />
               <Area
                 type="monotone"
                 dataKey="total_usd"
-                stroke="var(--color-brand)"
-                strokeWidth={2}
+                stroke="var(--color-ink-900)"
+                strokeWidth={1.75}
                 fill="url(#job-cost-trend-gradient)"
                 isAnimationActive={false}
               />
@@ -90,6 +103,6 @@ export function JobCostTrendWidget({ data, height = 96, windowDays = 30 }: JobCo
           </ResponsiveContainer>
         </div>
       )}
-    </StatWidget>
+    </div>
   );
 }

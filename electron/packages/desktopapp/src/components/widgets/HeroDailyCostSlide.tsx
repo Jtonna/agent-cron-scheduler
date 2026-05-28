@@ -76,8 +76,8 @@ export function HeroDailyCostSlide({ data, loading = false }: HeroDailyCostSlide
             <AreaChart data={series} margin={{ top: 8, right: 4, bottom: 4, left: 4 }}>
               <defs>
                 <linearGradient id="hero-cost-gradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--color-brand)" stopOpacity={0.55} />
-                  <stop offset="100%" stopColor="var(--color-brand)" stopOpacity={0} />
+                  <stop offset="0%" stopColor="var(--color-ink-900)" stopOpacity={0.32} />
+                  <stop offset="100%" stopColor="var(--color-ink-900)" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <XAxis dataKey="date" hide />
@@ -89,8 +89,8 @@ export function HeroDailyCostSlide({ data, loading = false }: HeroDailyCostSlide
               <Area
                 type="monotone"
                 dataKey="total_usd"
-                stroke="var(--color-brand)"
-                strokeWidth={2}
+                stroke="var(--color-ink-900)"
+                strokeWidth={1.75}
                 fill="url(#hero-cost-gradient)"
                 isAnimationActive={false}
               />
