@@ -2,6 +2,7 @@ import { Sidebar } from "./Sidebar";
 import { SidebarSection } from "./SidebarSection";
 import { Button } from "@/components/ui/Button";
 import { SidebarRecentJobs } from "./SidebarRecentJobs";
+import { SidebarFavoritedJobs } from "./SidebarFavoritedJobs";
 import { Plus } from "lucide-react";
 import type { Job } from "@/apis/types";
 
@@ -9,8 +10,8 @@ import type { Job } from "@/apis/types";
  * JobsSidebar
  *
  * Left rail used on `/jobs`. Composes the "Quick actions", "Favorited",
- * and "Recent" sections. Currently the favorites section is a stub
- * empty state until the favorites API lands.
+ * and "Recent" sections. The favorites section filters the supplied
+ * `jobs` by `is_favorited` from the workflow store.
  */
 
 interface JobsSidebarProps {
@@ -18,6 +19,7 @@ interface JobsSidebarProps {
 }
 
 export function JobsSidebar({ jobs }: JobsSidebarProps) {
+  const favorited = jobs.filter((j) => j.is_favorited);
   return (
     <Sidebar>
       <SidebarSection title="Quick actions">
@@ -25,7 +27,13 @@ export function JobsSidebar({ jobs }: JobsSidebarProps) {
           New job
         </Button>
       </SidebarSection>
-      <SidebarSection title="Favorited" emptyText="No favorites yet" />
+      {favorited.length === 0 ? (
+        <SidebarSection title="Favorited" emptyText="No favorites yet" />
+      ) : (
+        <SidebarSection title="Favorited">
+          <SidebarFavoritedJobs jobs={favorited} />
+        </SidebarSection>
+      )}
       <SidebarSection title="Recent">
         <SidebarRecentJobs jobs={jobs} />
       </SidebarSection>
