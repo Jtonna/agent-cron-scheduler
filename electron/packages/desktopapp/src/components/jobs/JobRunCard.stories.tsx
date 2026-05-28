@@ -3,7 +3,7 @@ import { JobRunCard, JobRun } from "./JobRunCard";
 import { TabBar } from "@/components/ui/TabBar";
 
 const meta: Meta<typeof JobRunCard> = {
-  title: "Components/Jobs/JobRunCard",
+  title: "Components/Workflows/JobRunCard",
   component: JobRunCard,
 };
 export default meta;

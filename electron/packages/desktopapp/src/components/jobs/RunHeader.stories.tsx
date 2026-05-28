@@ -9,7 +9,7 @@ import { RunHeader } from "./RunHeader";
  */
 
 const meta: Meta<typeof RunHeader> = {
-  title: "Components/Jobs/RunHeader",
+  title: "Components/Workflows/RunHeader",
   component: RunHeader,
   parameters: { layout: "padded" },
   decorators: [

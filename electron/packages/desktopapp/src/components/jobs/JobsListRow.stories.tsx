@@ -3,7 +3,7 @@ import { JobsListRow } from "./JobsListRow";
 import type { Job, RecentRunEntry } from "@/apis/types";
 
 const meta: Meta<typeof JobsListRow> = {
-  title: "Components/Jobs/JobsListRow",
+  title: "Components/Workflows/JobsListRow",
   component: JobsListRow,
   parameters: { layout: "padded" },
 };

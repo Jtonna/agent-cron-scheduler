@@ -11,7 +11,7 @@ import type { JobRun, WorkflowRunStep } from "@/apis/types";
  */
 
 const meta: Meta<typeof JobRunsTable> = {
-  title: "Components/Jobs/JobRunsTable",
+  title: "Components/Workflows/JobRunsTable",
   component: JobRunsTable,
   parameters: { layout: "padded" },
   decorators: [

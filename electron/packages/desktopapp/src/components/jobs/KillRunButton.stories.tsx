@@ -10,7 +10,7 @@ import { KillRunButton } from "./KillRunButton";
  */
 
 const meta: Meta<typeof KillRunButton> = {
-  title: "Components/Jobs/KillRunButton",
+  title: "Components/Workflows/KillRunButton",
   component: KillRunButton,
   parameters: { layout: "centered" },
 };

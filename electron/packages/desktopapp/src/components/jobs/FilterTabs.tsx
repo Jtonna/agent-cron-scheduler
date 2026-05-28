@@ -8,7 +8,7 @@ import { Pill } from "@/components/ui/Pill";
  * FilterTabs
  *
  * Top-level navigation pills shown on the home hero (Dashboard, All
- * Jobs, Backups, System Logs). Active state is derived from the current
+ * Workflows, Backups, System Logs). Active state is derived from the current
  * pathname. Pass a custom `tabs` array to override the default set.
  */
 
@@ -20,7 +20,7 @@ interface FilterTab {
 
 const DEFAULT_TABS: FilterTab[] = [
   { label: "Dashboard", icon: <LayoutDashboard size={14} strokeWidth={2.5} />, href: "/" },
-  { label: "All Jobs", icon: <List size={14} />, href: "/jobs" },
+  { label: "All Workflows", icon: <List size={14} />, href: "/workflows" },
   { label: "Backups", icon: <DatabaseBackup size={14} />, href: "/backups" },
   { label: "System Logs", icon: <ScrollText size={14} />, href: "/systemlogs" },
 ];

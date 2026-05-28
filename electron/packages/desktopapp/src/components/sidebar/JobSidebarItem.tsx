@@ -56,7 +56,7 @@ export function JobSidebarItem({ job, runs, maxRuns = 7 }: JobSidebarItemProps) 
     <>
       <div className="flex flex-col gap-0.5 py-1.5 px-2 rounded hover:bg-surface-hover transition-colors">
         <NextLink
-          href={`/jobs/${job.id}`}
+          href={`/workflows/${job.id}`}
           className="text-sm text-fg-secondary hover:text-fg truncate"
         >
           {job.name}
@@ -74,7 +74,7 @@ export function JobSidebarItem({ job, runs, maxRuns = 7 }: JobSidebarItemProps) 
                   return (
                     <AriaLink
                       key={run.run_id}
-                      href={`/jobs/${job.id}/runs/${run.run_id}`}
+                      href={`/workflows/${job.id}/runs/${run.run_id}`}
                       aria-label={`Run ${shortRunId(run.run_id)}`}
                       onHoverStart={() => handleEnter(run)}
                       onHoverEnd={handleLeave}

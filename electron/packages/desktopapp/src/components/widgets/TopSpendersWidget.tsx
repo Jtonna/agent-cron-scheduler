@@ -40,7 +40,7 @@ export function TopSpendersWidget({ workflows, limit = 5 }: TopSpendersWidgetPro
               <li key={entry.workflow_id} className="flex items-center gap-2 text-sm">
                 <span className="w-4 text-fg-subtle font-mono text-xs shrink-0">{idx + 1}</span>
                 <Link
-                  href={`/jobs/${entry.workflow_id}`}
+                  href={`/workflows/${entry.workflow_id}`}
                   className="text-fg hover:text-brand truncate flex-1 min-w-0"
                 >
                   {entry.workflow_name}

@@ -9,7 +9,7 @@ import type { Job } from "@/apis/types";
 /**
  * JobsSidebar
  *
- * Left rail used on `/jobs`. Composes the "Quick actions", "Favorited",
+ * Left rail used on `/workflows`. Composes the "Quick actions", "Favorited",
  * and "Recent" sections. The favorites section filters the supplied
  * `jobs` by `is_favorited` from the workflow store.
  */
@@ -24,7 +24,7 @@ export function JobsSidebar({ jobs }: JobsSidebarProps) {
     <Sidebar>
       <SidebarSection title="Quick actions">
         <Button href="/create" icon={<Plus size={14} />} fullWidth size="sm">
-          New job
+          New workflow
         </Button>
       </SidebarSection>
       {favorited.length === 0 ? (

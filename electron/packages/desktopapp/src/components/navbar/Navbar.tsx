@@ -10,7 +10,7 @@ import { InstanceDropdown } from "./InstanceDropdown";
  * Navbar
  *
  * Top-of-page sticky navigation bar. Composes the brand mark, primary
- * nav links, the API references dropdown, the "Build a Job" CTA, the
+ * nav links, the API references dropdown, the "Build a Workflow" CTA, the
  * chat/settings icon links, and the instance switcher dropdown.
  */
 export function Navbar() {
@@ -50,7 +50,7 @@ export function Navbar() {
 
       <div className="ml-auto flex items-center gap-5">
         <Button href="/create" icon={<Sparkles size={14} />}>
-          Build a Job
+          Build a Workflow
         </Button>
 
         <Link

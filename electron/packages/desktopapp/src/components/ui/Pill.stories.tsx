@@ -14,7 +14,7 @@ type Story = StoryObj<typeof Pill>;
 export const Default: Story = {
   args: {
     label: "backup-db",
-    href: "/jobs/backup-db",
+    href: "/workflows/backup-db",
     size: "sm",
   },
 };
@@ -42,9 +42,9 @@ export const Active: Story = {
 
 export const Bordered: Story = {
   args: {
-    label: "All Jobs",
+    label: "All Workflows",
     icon: <List size={14} />,
-    href: "/jobs",
+    href: "/workflows",
     size: "md",
     bordered: true,
   },
@@ -69,11 +69,11 @@ export const ToggleForm: StoryObj = {
 export const Group: StoryObj = {
   render: () => (
     <div className="flex items-center gap-1.5">
-      <Pill href="/jobs/backup-db" label="backup-db" />
-      <Pill href="/jobs/sync-users" label="sync-users" />
-      <Pill href="/jobs/health-check" label="health-check" />
-      <Pill href="/jobs/deploy-staging" label="deploy-staging" />
-      <Pill href="/jobs/cleanup-logs" label="cleanup-logs" />
+      <Pill href="/workflows/backup-db" label="backup-db" />
+      <Pill href="/workflows/sync-users" label="sync-users" />
+      <Pill href="/workflows/health-check" label="health-check" />
+      <Pill href="/workflows/deploy-staging" label="deploy-staging" />
+      <Pill href="/workflows/cleanup-logs" label="cleanup-logs" />
     </div>
   ),
 };
@@ -89,7 +89,7 @@ export const FilterTabsGroup: StoryObj = {
         bordered
         active
       />
-      <Pill href="/jobs" label="All Jobs" icon={<List size={14} />} size="md" bordered />
+      <Pill href="/workflows" label="All Workflows" icon={<List size={14} />} size="md" bordered />
       <Pill
         href="/backups"
         label="Backups"

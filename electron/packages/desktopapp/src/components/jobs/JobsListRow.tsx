@@ -16,7 +16,7 @@ import { FavoriteToggle } from "./FavoriteToggle";
 /**
  * JobsListRow
  *
- * One row of the jobs table on `/jobs`. Renders a leading state dot,
+ * One row of the jobs table on `/workflows`. Renders a leading state dot,
  * the job name (with a hover-reveal favorite star to its right), up to 7
  * recent run dots (with hover tooltips), the cron schedule, last-run
  * time, and next-run time. The row itself is a navigation link to the
@@ -82,7 +82,7 @@ export function JobsListRow({ job, runs }: JobsListRowProps) {
   return (
     <>
       <Link
-        href={`/jobs/${job.id}`}
+        href={`/workflows/${job.id}`}
         className="group grid grid-cols-[20px_minmax(0,1.6fr)_120px_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-4 px-4 py-3 rounded-input border border-border bg-surface hover:bg-surface-hover hover:border-border-strong transition-colors text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
       >
         <JobStateIndicator state={leading} variant="dot" size="sm" />

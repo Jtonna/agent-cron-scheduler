@@ -23,7 +23,7 @@ import type { Job } from "@/apis/types";
 /**
  * JobDetailSidebar
  *
- * Left rail used on `/jobs/[id]`. Visual hierarchy follows the
+ * Left rail used on `/workflows/[id]`. Visual hierarchy follows the
  * RunDetailSidebar idiom:
  *
  *   1. Back link (ghost square, top-aligned, sticky)
@@ -102,7 +102,7 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
           {/* Back */}
           <div className="px-3 pt-3">
             <Button
-              href="/jobs"
+              href="/workflows"
               intent="ghost"
               size="sm"
               shape="rounded"
@@ -110,7 +110,7 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
               icon={<ChevronLeft size={14} />}
               className="!justify-start"
             >
-              Back to Jobs
+              Back to Workflows
             </Button>
           </div>
 
@@ -131,7 +131,7 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
                 type="button"
                 onClick={handleFavorite}
                 disabled={favPending}
-                aria-label={favorited ? "Unfavorite job" : "Favorite job"}
+                aria-label={favorited ? "Unfavorite workflow" : "Favorite workflow"}
                 aria-pressed={favorited}
                 className={[
                   "shrink-0 p-1.5 -mr-1 rounded-input outline-none focus-visible:ring-2 focus-visible:ring-brand-ring transition-colors cursor-pointer",
@@ -194,7 +194,7 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
             <SidebarRow
               label="Edit workflow"
               icon={<Pencil size={14} />}
-              href={`/jobs/${job.id}/edit`}
+              href={`/workflows/${job.id}/edit`}
             />
           </nav>
         </div>
@@ -203,7 +203,7 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
             the primary buttons, to reduce mis-click risk. */}
         <div className="shrink-0 px-3 py-3 border-t border-border-subtle">
           <SidebarRow
-            label="Delete job"
+            label="Delete workflow"
             icon={<Trash2 size={14} />}
             onPress={() => setDeleteOpen(true)}
             destructive

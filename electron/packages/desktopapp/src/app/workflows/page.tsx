@@ -30,8 +30,8 @@ export default function JobsPage() {
         {/* Main content */}
         <main className="px-8 py-8 flex flex-col gap-6">
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight">Jobs</h1>
-            <p className="text-fg-muted text-sm mt-0.5">Manage and inspect every scheduled job.</p>
+            <h1 className="text-2xl font-extrabold tracking-tight">Workflows</h1>
+            <p className="text-fg-muted text-sm mt-0.5">Manage and inspect every scheduled workflow.</p>
           </div>
 
           {/* Widgets row */}

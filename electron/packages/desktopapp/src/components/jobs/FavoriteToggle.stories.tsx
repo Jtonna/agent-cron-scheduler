@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/nextjs-vite";
 import { FavoriteToggle } from "./FavoriteToggle";
 
 const meta: Meta<typeof FavoriteToggle> = {
-  title: "Components/Jobs/FavoriteToggle",
+  title: "Components/Workflows/FavoriteToggle",
   component: FavoriteToggle,
 };
 export default meta;

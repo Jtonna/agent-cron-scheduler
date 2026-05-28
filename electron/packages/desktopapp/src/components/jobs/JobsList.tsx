@@ -12,7 +12,7 @@ import { groupRunsByWorkflow, isRunning } from "@/apis/jobStatus";
 /**
  * JobsList
  *
- * The full jobs table on `/jobs` — toolbar (sort dropdown + search),
+ * The full jobs table on `/workflows` — toolbar (sort dropdown + search),
  * column header, and a virtualized-via-IntersectionObserver list of
  * JobsListRow rows. Pulls a wide window of recent runs so each row can
  * render its last-7 dot history.
@@ -112,7 +112,7 @@ export function JobsList({ jobs, loading }: JobsListProps) {
         search={{
           value: search,
           onChange: setSearch,
-          placeholder: "Search jobs...",
+          placeholder: "Search workflows...",
         }}
       />
 
@@ -133,7 +133,7 @@ export function JobsList({ jobs, loading }: JobsListProps) {
         </div>
       ) : filtered.length === 0 ? (
         <div className="text-center py-12 text-fg-subtle text-sm">
-          {jobs.length === 0 ? "No jobs yet" : "No jobs match your search"}
+          {jobs.length === 0 ? "No workflows yet" : "No workflows match your search"}
         </div>
       ) : (
         <div className="flex flex-col gap-2">

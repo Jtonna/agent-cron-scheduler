@@ -7,7 +7,7 @@ import {
 /**
  * RunHeader
  *
- * Identity block atop the run-detail page (`/jobs/[id]/runs/[runId]`).
+ * Identity block atop the run-detail page (`/workflows/[id]/runs/[runId]`).
  * Workflow name dominates as an h1; a secondary meta line beneath it
  * leads with the status label and then the run id. The back link lives
  * in the sidebar, the kill button lives in the log viewer's top bar,

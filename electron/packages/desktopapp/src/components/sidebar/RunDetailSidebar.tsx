@@ -12,7 +12,7 @@ import {
 /**
  * RunDetailSidebar
  *
- * Left rail used on `/jobs/[id]/runs/[runId]`. Mirrors the visual idiom of
+ * Left rail used on `/workflows/[id]/runs/[runId]`. Mirrors the visual idiom of
  * `JobDetailSidebar`: sticky, full-height, scrollable body, design tokens
  * only. Header section shows a back link to the parent workflow, the
  * workflow name, and the cron schedule. Body lists the steps that actually
@@ -72,7 +72,7 @@ export function RunDetailSidebar({
       {/* Header block */}
       <div className="shrink-0 p-3 flex flex-col gap-1">
         <Button
-          href={`/jobs/${jobId}`}
+          href={`/workflows/${jobId}`}
           intent="ghost"
           size="sm"
           shape="rounded"

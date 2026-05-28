@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/nextjs-vite";
 import { FilterTabs } from "./FilterTabs";
 
 const meta: Meta<typeof FilterTabs> = {
-  title: "Components/Jobs/FilterTabs",
+  title: "Components/Workflows/FilterTabs",
   component: FilterTabs,
 };
 export default meta;

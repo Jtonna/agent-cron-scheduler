@@ -51,7 +51,7 @@ export const NoFilter: Story = {
 };
 
 /**
- * `/jobs`-style toolbar: an interactive sort menu on the left and a
+ * `/workflows`-style toolbar: an interactive sort menu on the left and a
  * search input pinned right.
  */
 export const WithSortMenuAndSearch: Story = {
@@ -68,7 +68,7 @@ export const WithSortMenuAndSearch: Story = {
         search={{
           value: search,
           onChange: setSearch,
-          placeholder: "Search jobs...",
+          placeholder: "Search workflows...",
         }}
       />
     );
@@ -76,7 +76,7 @@ export const WithSortMenuAndSearch: Story = {
 };
 
 /**
- * `/jobs/[id]`-style toolbar: sort menu on the left, advanced
+ * `/workflows/[id]`-style toolbar: sort menu on the left, advanced
  * slide-down filter panel on the right. The panel hides its own
  * Sort-by row because sort already lives on the left.
  */

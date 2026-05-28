@@ -24,7 +24,7 @@ export function FavoritedJobs({ jobs = [] }: FavoritedJobsProps) {
     return (
       <div className="flex items-center gap-2 text-sm text-fg-subtle">
         <Star size={14} />
-        <span>No favorited jobs</span>
+        <span>No favorited workflows</span>
       </div>
     );
   }
@@ -34,7 +34,7 @@ export function FavoritedJobs({ jobs = [] }: FavoritedJobsProps) {
       <Star size={14} className="text-fg-subtle shrink-0 mt-1.5" />
       <div className="flex flex-wrap items-center gap-1.5">
         {jobs.map((job) => (
-          <Pill key={job.id} href={`/jobs/${job.id}`} label={job.name} size="sm" />
+          <Pill key={job.id} href={`/workflows/${job.id}`} label={job.name} size="sm" />
         ))}
       </div>
     </div>

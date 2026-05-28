@@ -69,7 +69,7 @@ export function DeleteJobDialog({
       <Modal className="bg-surface border border-status-failed-border rounded-card shadow-menu max-w-md w-full p-6 outline-none entering:animate-in entering:zoom-in-95 exiting:animate-out exiting:zoom-out-95">
         <Dialog className="outline-none flex flex-col gap-4">
           <Heading slot="title" className="text-fg text-lg font-semibold">
-            Delete job?
+            Delete workflow?
           </Heading>
 
           <p className="text-fg-muted text-sm">
@@ -84,7 +84,7 @@ export function DeleteJobDialog({
             autoFocus
           >
             <Label className="text-xs font-medium text-fg-secondary">
-              Type the job name to confirm
+              Type the workflow name to confirm
             </Label>
             <Input
               className="w-full px-3 py-2 text-sm bg-surface-secondary border border-border rounded-input outline-none focus:border-status-failed-border focus:ring-2 focus:ring-status-failed-border placeholder-fg-subtle"
@@ -106,7 +106,7 @@ export function DeleteJobDialog({
               className="!bg-status-failed hover:!bg-status-failed/90"
               onPress={handleConfirm}
             >
-              Delete job
+              Delete workflow
             </Button>
           </div>
         </Dialog>

@@ -8,7 +8,7 @@ import type {
 } from "@/apis/types";
 
 const meta: Meta<typeof RunWithCustomizationsModal> = {
-  title: "Components/Jobs/RunWithCustomizationsModal",
+  title: "Components/Workflows/RunWithCustomizationsModal",
   component: RunWithCustomizationsModal,
   parameters: { layout: "fullscreen" },
   argTypes: {

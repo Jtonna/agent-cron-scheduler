@@ -13,9 +13,9 @@ import { useJobCostSummary } from "@/apis/useJobCostSummary";
 import { useJobRuns } from "@/apis/useJobRuns";
 
 /**
- * Job detail page (`/jobs/[id]`).
+ * Job detail page (`/workflows/[id]`).
  *
- * Layout mirrors `/jobs`: sticky JobDetailSidebar + main grid. Main shows
+ * Layout mirrors `/workflows`: sticky JobDetailSidebar + main grid. Main shows
  * three widgets (Cost, Health, Cost trend) side-by-side, then a denser
  * runs table beneath. All action callbacks are non-functional placeholders
  * for now — the buttons render but don't talk to the backend yet.
@@ -45,7 +45,7 @@ export default function JobDetailPage({
               {jobLoading ? (
                 <Loader2 size={20} className="animate-spin" />
               ) : (
-                "Job not found"
+                "Workflow not found"
               )}
             </div>
           )}
@@ -55,7 +55,7 @@ export default function JobDetailPage({
         <main className="px-8 py-8 flex flex-col gap-6">
           {jobError ? (
             <div className="rounded-card border border-status-failed-border bg-status-failed-bg p-4 text-status-failed text-sm">
-              Failed to load job: {jobError}
+              Failed to load workflow: {jobError}
             </div>
           ) : !job && jobLoading ? (
             <div className="flex items-center justify-center py-24">
@@ -63,7 +63,7 @@ export default function JobDetailPage({
             </div>
           ) : !job ? (
             <div className="text-fg-muted text-sm">
-              Job <span className="font-mono">{id}</span> doesn&apos;t exist or has been deleted.
+              Workflow <span className="font-mono">{id}</span> doesn&apos;t exist or has been deleted.
             </div>
           ) : (
             <>

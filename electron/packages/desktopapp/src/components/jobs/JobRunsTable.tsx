@@ -184,7 +184,7 @@ export function JobRunsTable({ jobId, runs, loading }: JobRunsTableProps) {
           {sorted.map((run) => {
             const state = apiStatusToJobState(run.status);
             const cost = formatCost(run.total_cost_usd);
-            const href = `/jobs/${jobId}/runs/${run.run_id}`;
+            const href = `/workflows/${jobId}/runs/${run.run_id}`;
             const navigate = () => router.push(href);
             return (
               <div

@@ -39,7 +39,7 @@ export function SidebarRecentJobs({ jobs, max = 7 }: SidebarRecentJobsProps) {
   const recent = sorted.slice(0, max);
 
   if (recent.length === 0) {
-    return <div className="px-2 py-2 text-xs text-fg-subtle italic">No jobs yet</div>;
+    return <div className="px-2 py-2 text-xs text-fg-subtle italic">No workflows yet</div>;
   }
 
   return (

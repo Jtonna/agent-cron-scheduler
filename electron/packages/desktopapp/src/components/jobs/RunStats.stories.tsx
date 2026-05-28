@@ -10,7 +10,7 @@ import type { JobRun, WorkflowRunStep } from "@/apis/types";
  */
 
 const meta: Meta<typeof RunStats> = {
-  title: "Components/Jobs/RunStats",
+  title: "Components/Workflows/RunStats",
   component: RunStats,
   parameters: { layout: "padded" },
   decorators: [

@@ -49,7 +49,7 @@ export function FavoriteToggle({
       onClick={(e) => {
         e.stopPropagation();
       }}
-      aria-label={favorited ? "Unfavorite job" : "Favorite job"}
+      aria-label={favorited ? "Unfavorite workflow" : "Favorite workflow"}
       aria-pressed={favorited}
       isDisabled={isPending}
       className={[

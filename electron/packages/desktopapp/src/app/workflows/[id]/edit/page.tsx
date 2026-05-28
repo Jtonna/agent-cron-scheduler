@@ -9,7 +9,7 @@ import { useJob } from "@/apis/useJob";
 import { useUpdateWorkflow } from "@/apis/useUpdateWorkflow";
 
 /**
- * Edit workflow page (`/jobs/[id]/edit`).
+ * Edit workflow page (`/workflows/[id]/edit`).
  *
  * Renders the workflow JSON in a tall, full-width textarea so power users
  * can directly edit the definition. Validates JSON client-side on Save;
@@ -42,7 +42,7 @@ export default function EditWorkflowPage({
     }
   }, [job, initialized]);
 
-  const goBack = () => router.push(`/jobs/${id}`);
+  const goBack = () => router.push(`/workflows/${id}`);
 
   const handleSave = async () => {
     setParseError(null);
@@ -59,7 +59,7 @@ export default function EditWorkflowPage({
     }
     try {
       await update(parsed as Record<string, unknown>);
-      router.push(`/jobs/${id}`);
+      router.push(`/workflows/${id}`);
     } catch {
       // serverError from the hook will surface the message below.
     }

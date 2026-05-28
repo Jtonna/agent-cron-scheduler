@@ -3,7 +3,7 @@ import { JobsList } from "./JobsList";
 import type { Job } from "@/apis/types";
 
 const meta: Meta<typeof JobsList> = {
-  title: "Components/Jobs/JobsList",
+  title: "Components/Workflows/JobsList",
   component: JobsList,
   parameters: { layout: "fullscreen" },
 };

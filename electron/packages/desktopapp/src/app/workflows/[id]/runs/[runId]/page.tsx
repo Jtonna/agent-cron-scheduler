@@ -13,7 +13,7 @@ import { useRunLog } from "@/apis/useRunLog";
 import { useJob } from "@/apis/useJob";
 
 /**
- * Run detail page (`/jobs/[id]/runs/[runId]`).
+ * Run detail page (`/workflows/[id]/runs/[runId]`).
  *
  * Composes the run-detail experience: a sticky sidebar (back link, workflow
  * identity, step list), a thin header strip, a row of stat tiles, and a
