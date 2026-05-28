@@ -6,6 +6,7 @@ import { RouterProvider } from "react-aria-components";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SSEProvider } from "./sse";
 import { SSEQueryBridge } from "./sseInvalidator";
+import { CommandPaletteProvider } from "@/components/command-palette/CommandPaletteProvider";
 
 declare module "react-aria-components" {
   interface RouterConfig {
@@ -46,7 +47,7 @@ export function Providers({ children }: { children: ReactNode }) {
       <QueryClientProvider client={queryClient}>
         <SSEProvider>
           <SSEQueryBridge />
-          {children}
+          <CommandPaletteProvider>{children}</CommandPaletteProvider>
         </SSEProvider>
       </QueryClientProvider>
     </RouterProvider>
