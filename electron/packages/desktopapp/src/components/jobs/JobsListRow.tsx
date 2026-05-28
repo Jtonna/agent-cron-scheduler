@@ -151,8 +151,19 @@ export function JobsListRow({ job, runs, costSummary }: JobsListRowProps) {
           // The Link is the row's navigation target; intercept any stray
           // clicks here as a defense-in-depth so the toggle never
           // navigates even if a future change to FavoriteToggle drops
-          // its own stopPropagation.
-          onClick={(e) => e.stopPropagation()}
+          // its own preventDefault/stopPropagation. We MUST call
+          // preventDefault as well as stopPropagation: stopPropagation
+          // only prevents bubbling, but the browser still fires the
+          // ancestor <a>'s default navigation for any click that
+          // originates inside it. preventDefault cancels that.
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
         >
           <FavoriteToggle jobId={job.id} favorited={job.is_favorited} size={14} />
         </span>

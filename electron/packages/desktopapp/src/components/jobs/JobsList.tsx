@@ -91,7 +91,40 @@ export function JobsList({ jobs, loading }: JobsListProps) {
 
   const needle = search.trim().toLowerCase();
   const list = needle ? jobs.filter((j) => j.name.toLowerCase().includes(needle)) : jobs;
-  const filtered = [...list].sort((a, b) => compareJobs(a, b, sortKey, runsByJob));
+
+  // --- Stable row order ---
+  // Sort the visible list once and freeze that order into an id → index
+  // snapshot. Subsequent renders (e.g., React Query refetches triggered by
+  // a favorite-toggle mutation) reuse the snapshot so the row the user
+  // just clicked does NOT jump to the top under their cursor. Jobs that
+  // appear after the snapshot was taken (newly-created workflows arriving
+  // via SSE) are appended in their natural sort position relative to one
+  // another at the bottom of the list. Jobs that disappear are simply
+  // skipped.
+  //
+  // The snapshot intentionally resets whenever the user changes the sort
+  // key or the search query — those are explicit re-sort requests, so
+  // honouring them is the correct UX.
+  const orderRef = useRef<Map<string, number> | null>(null);
+  const orderKeyRef = useRef<string>("");
+  const currentKey = `${sortKey}|${needle}`;
+  if (orderRef.current === null || orderKeyRef.current !== currentKey) {
+    const sortedOnce = [...list].sort((a, b) => compareJobs(a, b, sortKey, runsByJob));
+    orderRef.current = new Map(sortedOnce.map((j, i) => [j.id, i]));
+    orderKeyRef.current = currentKey;
+  }
+  const snapshot = orderRef.current;
+  const known: Job[] = [];
+  const fresh: Job[] = [];
+  for (const j of list) {
+    if (snapshot.has(j.id)) known.push(j);
+    else fresh.push(j);
+  }
+  known.sort((a, b) => (snapshot.get(a.id) ?? 0) - (snapshot.get(b.id) ?? 0));
+  // New arrivals get their natural sort applied amongst themselves, then
+  // are appended to the end so they don't disrupt the established order.
+  fresh.sort((a, b) => compareJobs(a, b, sortKey, runsByJob));
+  const filtered = [...known, ...fresh];
 
   // Clamp naturally: if the user just searched and visibleCount > filtered.length,
   // slice() already returns at most filtered.length items. No reset effect needed.

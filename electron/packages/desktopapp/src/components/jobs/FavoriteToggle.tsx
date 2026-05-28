@@ -46,7 +46,18 @@ export function FavoriteToggle({
       onPress={toggle}
       // React Aria's Button surfaces a native press; intercept the underlying
       // click so we don't navigate when this lives inside a Link row.
+      // stopPropagation alone is NOT enough: when this button is a descendant
+      // of an <a> (Next.js <Link>), the browser fires the link's default
+      // navigation action on any click event that originates inside the <a>,
+      // regardless of whether the event continues to bubble. We must also
+      // call preventDefault() to cancel that default navigation, and do it
+      // on mousedown too because some browsers initiate navigation there.
       onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      onMouseDown={(e) => {
+        e.preventDefault();
         e.stopPropagation();
       }}
       aria-label={favorited ? "Unfavorite workflow" : "Favorite workflow"}
