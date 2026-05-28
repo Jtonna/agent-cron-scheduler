@@ -131,6 +131,17 @@ export const Running: Story = {
   ],
 };
 
+export const Favorited: Story = {
+  args: { job: makeJob({ name: "important-job", is_favorited: true }) },
+  decorators: [
+    (Story) => (
+      <div style={{ width: 720 }}>
+        <Story />
+      </div>
+    ),
+  ],
+};
+
 export const Warning: Story = {
   args: {
     job: makeJob({ name: "flaky-job" }),

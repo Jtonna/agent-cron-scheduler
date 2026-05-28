@@ -8,7 +8,6 @@ import { JobCostWidget } from "@/components/widgets/JobCostWidget";
 import { HealthWidget } from "@/components/widgets/HealthWidget";
 import { JobCostTrendWidget } from "@/components/widgets/JobCostTrendWidget";
 import { JobRunsTable } from "@/components/jobs/JobRunsTable";
-import { FavoriteToggle } from "@/components/jobs/FavoriteToggle";
 import { useJob } from "@/apis/useJob";
 import { useJobCostSummary } from "@/apis/useJobCostSummary";
 import { useJobRuns } from "@/apis/useJobRuns";
@@ -32,8 +31,6 @@ export default function JobDetailPage({
   const { summary, loading: summaryLoading } = useJobCostSummary(id);
   const { runs, loading: runsLoading } = useJobRuns(id, 100);
 
-  const runningCount = runs.filter((r) => r.status === "Running").length;
-
   return (
     <div className="min-h-screen bg-surface text-fg">
       <Navbar />
@@ -42,11 +39,7 @@ export default function JobDetailPage({
         {/* Sidebar (manages its own internal scroll + pinned footer) */}
         <div className="sticky top-[var(--height-navbar)] h-[calc(100vh-var(--height-navbar))] border-r border-border-subtle">
           {job ? (
-            <JobDetailSidebar
-              job={job}
-              runningCount={runningCount}
-              favorited={job.is_favorited}
-            />
+            <JobDetailSidebar job={job} />
           ) : (
             <div className="p-6 flex items-center justify-center text-fg-subtle text-sm">
               {jobLoading ? (
@@ -74,12 +67,9 @@ export default function JobDetailPage({
             </div>
           ) : (
             <>
-              {/* Header */}
+              {/* Header — favorite control lives in the sidebar, not here. */}
               <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="text-2xl font-extrabold tracking-tight">{job.name}</h1>
-                  <FavoriteToggle jobId={job.id} favorited={job.is_favorited} size={20} />
-                </div>
+                <h1 className="text-2xl font-extrabold tracking-tight">{job.name}</h1>
                 <p className="text-fg-muted text-sm mt-0.5 font-mono">{job.schedule}</p>
               </div>
 

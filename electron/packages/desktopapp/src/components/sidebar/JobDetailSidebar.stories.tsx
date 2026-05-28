@@ -9,7 +9,11 @@ const meta: Meta<typeof JobDetailSidebar> = {
   decorators: [
     (Story) => (
       <div
-        style={{ width: 280, borderRight: "1px solid var(--color-border-subtle)", height: "100vh" }}
+        style={{
+          width: 280,
+          borderRight: "1px solid var(--color-border-subtle)",
+          height: "100vh",
+        }}
       >
         <Story />
       </div>
@@ -50,25 +54,22 @@ function makeJob(name: string, daysAgo: number, overrides: Partial<Job> = {}): J
 const CURRENT = makeJob("backup-db", 0);
 
 export const Default: Story = {
-  args: { job: CURRENT, runningCount: 0, favorited: false },
-};
-
-export const Running: Story = {
-  args: { job: CURRENT, runningCount: 1, favorited: false },
-};
-
-export const MultipleRunning: Story = {
-  args: { job: CURRENT, runningCount: 3, favorited: false },
-};
-
-export const Disabled: Story = {
-  args: {
-    job: makeJob("backup-db", 0, { enabled: false }),
-    runningCount: 0,
-    favorited: false,
-  },
+  args: { job: CURRENT },
 };
 
 export const Favorited: Story = {
-  args: { job: CURRENT, runningCount: 0, favorited: true },
+  args: { job: makeJob("backup-db", 0, { is_favorited: true }) },
+};
+
+export const Disabled: Story = {
+  args: { job: makeJob("backup-db", 0, { enabled: false }) },
+};
+
+export const LongName: Story = {
+  args: {
+    job: makeJob(
+      "a-rather-extraordinarily-long-workflow-name-that-must-truncate",
+      0,
+    ),
+  },
 };
