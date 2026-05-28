@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Button as AriaButton,
@@ -13,6 +14,7 @@ import {
   ChevronDown,
   ChevronLeft,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Play,
   Power,
@@ -21,59 +23,67 @@ import {
   Trash2,
 } from "lucide-react";
 import { DeleteJobDialog } from "./DeleteJobDialog";
-import { Button } from "@/components/ui/Button";
+import { SidebarSearchTrigger } from "./SidebarSearchTrigger";
 import { RunWithCustomizationsModal } from "@/components/jobs/RunWithCustomizationsModal";
+import { PropertyRow } from "@/components/ui/PropertyRow";
+import { Toggle } from "@/components/ui/Toggle";
+import {
+  JobStateIndicator,
+  apiStatusToJobState,
+} from "@/components/ui/JobStateIndicator";
+import { useCommandPalette } from "@/components/command-palette/useCommandPalette";
 import { useToggleWorkflowEnabled } from "@/apis/useToggleWorkflowEnabled";
 import { useTriggerWorkflow } from "@/apis/useTriggerWorkflow";
 import { useFavorite } from "@/apis/useFavorite";
-import type { Job } from "@/apis/types";
+import { useJobRuns } from "@/apis/useJobRuns";
+import { formatTimeAgo, formatTimeUntil } from "@/apis/format";
+import type { Job, JobRun } from "@/apis/types";
 
 /**
  * JobDetailSidebar
  *
- * Left rail used on `/workflows/[id]`. Visual hierarchy follows the
- * RunDetailSidebar idiom:
+ * Left rail used on `/workflows/[id]`. Sectioned layout (Pattern C hybrid)
+ * approved in the ACS-20 design discussion:
  *
- *   1. Back link (ghost square, top-aligned, sticky)
- *   2. Identity block (job name + cron) — bordered, no buttons
- *   3. Metadata strip (favorite + enable toggle) — compact icon-style row
- *   4. Primary action — a split button: a large "Run Workflow" on the
- *      left, joined to a small chevron trigger on the right that opens a
- *      menu containing "Run with customizations…". Inspired by shadcn's
- *      button-group / split-button pattern (and IDE-style Run controls).
- *   5. Utility actions — Enable/Disable Cron, Edit (ghost square rows)
- *   6. Pinned footer — Delete job (destructive ghost square)
+ *   1. Back link
+ *   2. Search trigger — a button styled as a search input. Clicking it
+ *      opens the global command palette (Cmd/Ctrl+K from anywhere).
+ *   3. Identity block — workflow name + cron + timezone, with an inline
+ *      Favorite star + an overflow `…` menu (Edit · Delete).
+ *   4. Compact split-button — Run Workflow + chevron → Run with
+ *      Customizations.
+ *   5. STATUS section — inline Enable Cron toggle plus read-only
+ *      Schedule / Timezone / Next run / Last run rows.
+ *   6. RECENT RUNS — the 6 latest runs, each a link to the run detail.
  *
- * Shape is uniform across the entire rail: every interactive control uses
- * `rounded-input` (square corners). Intent (color/background) is what
- * distinguishes primary vs. secondary vs. ghost vs. destructive — never
- * shape. This matches the visual rhythm set by the "Run with
- * Customizations" CTA and the unified spec in
- * `src/components/sidebar/RunDetailSidebar.tsx`.
- *
- * The favorite control is self-wired via `useFavorite()` (no `onFavorite`
- * prop required) so consumers can't accidentally leave the toggle dead.
- * Enable/Disable Cron, Run Workflow, and the customizations modal are
- * also self-wired via their respective hooks.
- *
- * The previous "Run management" section that surfaced live-run stop
- * controls has been removed — the runs table on the page is the canonical
- * place to manage in-flight runs (each row has its own kill button).
- *
- * Note: this component does not use the shared `Sidebar` shell because it
- * needs an internal scroll region + pinned footer; the page wrapper should
- * NOT add `overflow-y-auto` (the sidebar manages that internally).
+ * The sidebar also registers a set of workflow-scoped commands into the
+ * palette while mounted. The commands re-register whenever any label-
+ * affecting bit changes (enabled, favorited) so the palette label stays
+ * in sync with the current state. We unregister on unmount.
  */
 
 interface JobDetailSidebarProps {
   job: Job;
   /** Called from inside DeleteJobDialog after the user confirms. */
   onDelete?: () => void;
+  /**
+   * Inject runs for stories/tests. When omitted, the sidebar fetches the
+   * 6 most-recent runs itself via `useJobRuns`.
+   */
+  runsOverride?: JobRun[];
 }
 
 const NOOP = () => {};
+const RECENT_RUNS_LIMIT = 6;
 
-export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
+export function JobDetailSidebar({
+  job,
+  onDelete,
+  runsOverride,
+}: JobDetailSidebarProps) {
+  const router = useRouter();
+  const palette = useCommandPalette();
+
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [customizeOpen, setCustomizeOpen] = useState(false);
 
@@ -81,9 +91,22 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
   const { trigger, triggering, error: triggerError } = useTriggerWorkflow();
   const { favorite, unfavorite, isPending: favPending } = useFavorite();
 
+  // Recent runs (fetched here so the sidebar is self-contained). Stories
+  // can override by passing `runsOverride`.
+  const { runs: fetchedRuns } = useJobRuns(
+    runsOverride ? "" : job.id,
+    RECENT_RUNS_LIMIT,
+  );
+  const runs = runsOverride ?? fetchedRuns;
+
   const favorited = job.is_favorited;
 
-  function handleToggleEnabled() {
+  function handleToggleEnabled(next: boolean) {
+    // `toggle` flips the current value internally; we ignore `next`
+    // because the mutation already knows what to do given the current
+    // state. We still expose it via the Switch so React Aria gives us
+    // the proper toggle UX.
+    void next;
     void toggle(job.id, job.enabled).catch(() => {
       // Error surfaces via toggleError below.
     });
@@ -102,7 +125,78 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
     });
   }
 
-  const toggleLabel = job.enabled ? "Disable cron" : "Enable cron";
+  // ── Palette registration ──────────────────────────────────────────
+  // Re-register whenever a label-affecting state bit flips. The
+  // provider stores command lists by registration id; replacing the
+  // list with a new register call yields the new labels.
+  useEffect(() => {
+    const id = palette.registerCommands([
+      {
+        id: "workflow:run",
+        group: "Workflow Actions",
+        label: "Run Workflow",
+        icon: <Play size={14} />,
+        action: () => {
+          void trigger(job.id, {}).catch(() => {});
+        },
+      },
+      {
+        id: "workflow:run-custom",
+        group: "Workflow Actions",
+        label: "Run with Customizations…",
+        icon: <Sliders size={14} />,
+        action: () => setCustomizeOpen(true),
+      },
+      {
+        id: "workflow:toggle-cron",
+        group: "Workflow Actions",
+        label: job.enabled ? "Disable Cron" : "Enable Cron",
+        icon: <Power size={14} />,
+        action: () => {
+          void toggle(job.id, job.enabled).catch(() => {});
+        },
+      },
+      {
+        id: "workflow:edit",
+        group: "Workflow Actions",
+        label: "Edit Workflow",
+        icon: <Pencil size={14} />,
+        action: () => router.push(`/workflows/${job.id}/edit`),
+      },
+      {
+        id: "workflow:favorite",
+        group: "Workflow Actions",
+        label: favorited ? "Unfavorite" : "Favorite this workflow",
+        icon: <Star size={14} />,
+        action: () => {
+          void (favorited ? unfavorite(job.id) : favorite(job.id)).catch(
+            () => {},
+          );
+        },
+      },
+      {
+        id: "workflow:delete",
+        group: "Workflow Actions",
+        label: "Delete Workflow…",
+        icon: <Trash2 size={14} />,
+        action: () => setDeleteOpen(true),
+      },
+    ]);
+    return () => palette.unregisterCommands(id);
+  }, [
+    palette,
+    router,
+    trigger,
+    toggle,
+    favorite,
+    unfavorite,
+    job.id,
+    job.enabled,
+    favorited,
+  ]);
+
+  const nextRunLabel = job.next_run_at ? formatTimeUntil(job.next_run_at) : "—";
+  const lastRunLabel = job.last_run_at ? formatTimeAgo(job.last_run_at) : "—";
 
   return (
     <>
@@ -111,67 +205,113 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
         <div className="flex-1 overflow-y-auto flex flex-col">
           {/* Back */}
           <div className="px-3 pt-3">
-            <Button
+            <Link
               href="/workflows"
-              intent="ghost"
-              size="sm"
-              shape="rounded"
-              fullWidth
-              icon={<ChevronLeft size={14} />}
-              className="!justify-start"
+              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-input text-xs text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
             >
+              <ChevronLeft size={14} />
               Back to Workflows
-            </Button>
+            </Link>
           </div>
 
-          {/* Identity — name, schedule. Mirrors RunDetailSidebar header. */}
-          <div className="mx-3 mt-2 px-2 py-3 border-b border-border-subtle">
-            <div className="flex items-start gap-2">
+          {/* Search trigger — opens the palette. */}
+          <div className="px-3 mt-3">
+            <SidebarSearchTrigger placeholder="Search · ⌘K" />
+          </div>
+
+          {/* Identity block — name, cron, timezone + favorite + overflow. */}
+          <div className="mx-3 mt-3 px-2 py-3 border-b border-border-subtle">
+            <div className="flex items-start gap-1">
               <div className="flex-1 min-w-0">
-                <div className="text-base font-semibold text-fg truncate" title={job.name}>
+                <div
+                  className="text-base font-semibold text-fg truncate"
+                  title={job.name}
+                >
                   {job.name}
                 </div>
-                <div className="font-mono text-xs text-fg-muted truncate mt-0.5" title={job.schedule}>
-                  {job.schedule}
+                <div
+                  className="font-mono text-xs text-fg-muted truncate mt-0.5"
+                  title={`${job.schedule} · ${job.timezone}`}
+                >
+                  {job.schedule} · {job.timezone}
                 </div>
               </div>
-              {/* Favorite — icon-only, top-right of identity block.
-                  Self-wired via useFavorite so it works without a prop. */}
+
+              {/* Favorite — inline star. */}
               <button
                 type="button"
                 onClick={handleFavorite}
                 disabled={favPending}
-                aria-label={favorited ? "Unfavorite workflow" : "Favorite workflow"}
+                aria-label={
+                  favorited ? "Unfavorite workflow" : "Favorite workflow"
+                }
                 aria-pressed={favorited}
                 className={[
-                  "shrink-0 p-1.5 -mr-1 rounded-input outline-none focus-visible:ring-2 focus-visible:ring-brand-ring transition-colors cursor-pointer",
-                  favPending ? "opacity-50 cursor-not-allowed" : "hover:bg-surface-hover",
+                  "shrink-0 p-1.5 rounded-input outline-none focus-visible:ring-2 focus-visible:ring-brand-ring transition-colors cursor-pointer",
+                  favPending
+                    ? "opacity-50 cursor-not-allowed"
+                    : "hover:bg-surface-hover",
                 ].join(" ")}
               >
                 <Star
                   size={16}
-                  className={favorited ? "fill-brand text-brand" : "text-fg-subtle"}
+                  className={
+                    favorited ? "fill-brand text-brand" : "text-fg-subtle"
+                  }
                 />
               </button>
+
+              {/* Overflow — Edit + Delete. */}
+              <MenuTrigger>
+                <AriaButton
+                  type="button"
+                  aria-label="More workflow actions"
+                  className="shrink-0 p-1.5 -mr-1 rounded-input outline-none focus-visible:ring-2 focus-visible:ring-brand-ring hover:bg-surface-hover transition-colors cursor-pointer text-fg-subtle"
+                >
+                  <MoreHorizontal size={16} />
+                </AriaButton>
+                <Popover
+                  placement="bottom end"
+                  className="w-48 bg-surface border border-border rounded-menu shadow-menu py-1 z-50 outline-none entering:animate-in entering:fade-in entering:zoom-in-95 exiting:animate-out exiting:fade-out exiting:zoom-out-95"
+                >
+                  <Menu
+                    className="outline-none"
+                    onAction={(key) => {
+                      if (key === "edit") {
+                        router.push(`/workflows/${job.id}/edit`);
+                      } else if (key === "delete") {
+                        setDeleteOpen(true);
+                      }
+                    }}
+                  >
+                    <MenuItem
+                      id="edit"
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-secondary outline-none cursor-pointer rounded-input mx-1"
+                    >
+                      <Pencil size={14} className="text-fg-tertiary" />
+                      <span className="flex-1 text-left">Edit Workflow</span>
+                    </MenuItem>
+                    <div className="my-1 mx-2 border-t border-border-subtle" />
+                    <MenuItem
+                      id="delete"
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-status-failed hover:bg-status-failed-bg outline-none cursor-pointer rounded-input mx-1"
+                    >
+                      <Trash2 size={14} />
+                      <span className="flex-1 text-left">Delete Workflow…</span>
+                    </MenuItem>
+                  </Menu>
+                </Popover>
+              </MenuTrigger>
             </div>
           </div>
 
-          {/* Primary action — split button. The left half is the headline
-              "Run Workflow" action; the right half is a chevron trigger
-              that opens a tiny menu offering the customizations modal.
-              Both halves share one outer border (rounded-input) and one
-              continuous hover/focus rhythm — a single cohesive control.
-
-              Keyboard: Tab moves between the two halves. On the chevron,
-              Enter/Space/Arrow-Down opens the menu; Arrow keys + Enter
-              select; Escape closes (handled by react-aria-components). */}
-          <div className="px-3 mt-4">
+          {/* Compact split-button — Run Workflow + chevron. */}
+          <div className="px-3 mt-3">
             <div
               role="group"
               aria-label="Run workflow"
               className={[
                 "flex w-full rounded-input overflow-hidden",
-                "ring-1 ring-brand/0", // reserve a slot for focus-within emphasis
                 triggering ? "opacity-90" : "",
               ].join(" ")}
             >
@@ -181,27 +321,23 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
                 isDisabled={triggering}
                 aria-label="Run workflow with default arguments"
                 className={[
-                  "flex-1 inline-flex items-center justify-center gap-2",
-                  "px-5 py-2.5 text-sm font-semibold",
+                  "flex-1 inline-flex items-center justify-center gap-1.5",
+                  "px-3 py-1.5 text-xs font-semibold",
                   "bg-brand hover:bg-brand-hover text-surface",
                   "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring focus-visible:ring-offset-2",
                   "cursor-pointer transition-colors",
                   "disabled:opacity-50 disabled:cursor-not-allowed",
-                  // square the right edge so it meets the chevron seamlessly
                   "rounded-l-input rounded-r-none",
                 ].join(" ")}
               >
                 {triggering ? (
-                  <Loader2 size={14} className="animate-spin" />
+                  <Loader2 size={12} className="animate-spin" />
                 ) : (
-                  <Play size={14} />
+                  <Play size={12} />
                 )}
                 {triggering ? "Running…" : "Run Workflow"}
               </AriaButton>
 
-              {/* 1px seam between the two halves — uses brand-hover so it
-                  blends with the primary fill without looking like a double
-                  border. */}
               <div aria-hidden className="w-px bg-brand-hover/60" />
 
               <MenuTrigger>
@@ -211,7 +347,7 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
                   aria-label="More run options"
                   className={[
                     "inline-flex items-center justify-center",
-                    "w-9 px-0 py-2.5",
+                    "w-8 px-0 py-1.5",
                     "bg-brand hover:bg-brand-hover text-surface",
                     "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring focus-visible:ring-offset-2",
                     "cursor-pointer transition-colors",
@@ -219,7 +355,7 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
                     "rounded-r-input rounded-l-none",
                   ].join(" ")}
                 >
-                  <ChevronDown size={14} aria-hidden />
+                  <ChevronDown size={12} aria-hidden />
                 </AriaButton>
                 <Popover
                   placement="bottom end"
@@ -251,38 +387,52 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
             )}
           </div>
 
-          {/* Utility actions — quieter ghost rows.
-              These don't compete with the primary CTA above. */}
-          <nav className="px-3 mt-5 flex flex-col">
-            <SidebarRow
-              label={toggleLabel}
-              icon={
-                toggling ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Power size={14} />
-                )
-              }
-              onPress={handleToggleEnabled}
-              disabled={toggling}
-            />
-            <SidebarRow
-              label="Edit workflow"
-              icon={<Pencil size={14} />}
-              href={`/workflows/${job.id}/edit`}
-            />
-          </nav>
-        </div>
+          {/* STATUS section */}
+          <section className="px-3 mt-5">
+            <div className="px-2 mb-1 text-[11px] font-semibold text-fg-subtle uppercase tracking-wider">
+              Status
+            </div>
+            <div className="flex flex-col">
+              <PropertyRow
+                label="Enabled"
+                value={
+                  <Toggle
+                    checked={job.enabled}
+                    onChange={handleToggleEnabled}
+                    disabled={toggling}
+                    ariaLabel={job.enabled ? "Disable cron" : "Enable cron"}
+                  />
+                }
+              />
+              <PropertyRow label="Schedule" value={job.schedule} mono />
+              <PropertyRow label="Timezone" value={job.timezone} />
+              <PropertyRow label="Next run" value={nextRunLabel} />
+              <PropertyRow label="Last run" value={lastRunLabel} />
+            </div>
+          </section>
 
-        {/* Pinned footer — destructive action lives alone, away from
-            the primary buttons, to reduce mis-click risk. */}
-        <div className="shrink-0 px-3 py-3 border-t border-border-subtle">
-          <SidebarRow
-            label="Delete workflow"
-            icon={<Trash2 size={14} />}
-            onPress={() => setDeleteOpen(true)}
-            destructive
-          />
+          {/* RECENT RUNS section */}
+          <section className="px-3 mt-5 mb-3">
+            <div className="px-2 mb-1 flex items-center justify-between">
+              <span className="text-[11px] font-semibold text-fg-subtle uppercase tracking-wider">
+                Recent Runs
+              </span>
+              {runs.length > 0 && (
+                <span className="text-[11px] text-fg-muted">
+                  ({runs.length})
+                </span>
+              )}
+            </div>
+            {runs.length === 0 ? (
+              <div className="px-2 py-3 text-xs text-fg-subtle">No runs yet</div>
+            ) : (
+              <div className="flex flex-col">
+                {runs.slice(0, RECENT_RUNS_LIMIT).map((run) => (
+                  <RecentRunRow key={run.run_id} jobId={job.id} run={run} />
+                ))}
+              </div>
+            )}
+          </section>
         </div>
       </aside>
 
@@ -303,51 +453,28 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
 }
 
 /**
- * Internal utility-row used for low-prominence actions (Edit, Enable/Disable
- * cron, Delete). Renders as a left-aligned, squared, ghost row that hovers
- * to a subtle surface — visually closer to a nav item than a button, which
- * is the point: secondary actions shouldn't compete with the primary CTA.
+ * A single row in the Recent Runs section. Links to the run detail page,
+ * shows the run's state dot, a short run id, and a relative timestamp.
  */
-interface SidebarRowProps {
-  label: string;
-  icon: React.ReactNode;
-  href?: string;
-  onPress?: () => void;
-  disabled?: boolean;
-  destructive?: boolean;
+interface RecentRunRowProps {
+  jobId: string;
+  run: JobRun;
 }
 
-function SidebarRow({
-  label,
-  icon,
-  href,
-  onPress,
-  disabled,
-  destructive,
-}: SidebarRowProps) {
-  const base =
-    "w-full flex items-center gap-2 px-2 py-2 rounded-input text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-brand-ring transition-colors cursor-pointer";
-  const colorClasses = destructive
-    ? "text-status-failed hover:bg-status-failed-bg"
-    : "text-fg-secondary hover:text-fg hover:bg-surface-hover";
-  const disabledClasses = disabled ? "opacity-50 cursor-not-allowed" : "";
-  const cls = [base, colorClasses, disabledClasses].filter(Boolean).join(" ");
-
-  if (href) {
-    return (
-      <Link href={href} className={cls}>
-        <span className="text-fg-tertiary">{icon}</span>
-        <span>{label}</span>
-      </Link>
-    );
-  }
-
+function RecentRunRow({ jobId, run }: RecentRunRowProps) {
+  const state = apiStatusToJobState(run.status);
+  const shortId = run.run_id.slice(0, 8);
+  const when = formatTimeAgo(run.started_at);
   return (
-    <button type="button" onClick={onPress} disabled={disabled} className={cls}>
-      <span className={destructive ? "text-status-failed" : "text-fg-tertiary"}>
-        {icon}
+    <Link
+      href={`/workflows/${jobId}/runs/${run.run_id}`}
+      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-input text-xs hover:bg-surface-hover transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
+    >
+      <JobStateIndicator state={state} variant="dot" size="sm" />
+      <span className="font-mono text-fg truncate flex-1" title={run.run_id}>
+        #{shortId}
       </span>
-      <span>{label}</span>
-    </button>
+      <span className="text-fg-muted whitespace-nowrap">{when}</span>
+    </Link>
   );
 }

@@ -20,7 +20,7 @@ export function buildNavigateCommands(navigate: (href: string) => void): Palette
       label: "Go to workflow…",
       hint: "Open workflows list",
       keywords: ["workflow", "jobs", "list"],
-      action: () => navigate("/jobs"),
+      action: () => navigate("/workflows"),
     },
     {
       id: "navigate:runs",
