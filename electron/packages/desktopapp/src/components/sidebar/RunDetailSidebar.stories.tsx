@@ -106,3 +106,44 @@ export const AllRan: Story = {
     },
   },
 };
+
+/**
+ * Empty — covers the "no steps have started yet" state at the top of a
+ * brand-new run before the first step emits its started_at timestamp.
+ * The back link still uses the unified square (rounded-input) shape so
+ * the rail's button rhythm is visible even with no list rows below.
+ */
+export const Empty: Story = {
+  args: {
+    jobId: JOB_ID,
+    workflowName: "fresh-run",
+    cron: "0 * * * *",
+    runSteps: [],
+    totalSteps: 4,
+    activeStepIndex: null,
+    onSelectStep: () => {
+      // no-op for stories
+    },
+  },
+};
+
+/**
+ * Long workflow name — verifies the back-link button truncates cleanly
+ * (the workflow name is part of the button label) and the identity
+ * block underneath also handles overflow without disrupting the step
+ * list.
+ */
+export const LongWorkflowName: Story = {
+  args: {
+    jobId: JOB_ID,
+    workflowName:
+      "a-rather-extraordinarily-long-workflow-name-that-must-truncate",
+    cron: "0 2 * * *",
+    runSteps: THREE_OF_THREE,
+    totalSteps: 3,
+    activeStepIndex: 0,
+    onSelectStep: () => {
+      // no-op for stories
+    },
+  },
+};

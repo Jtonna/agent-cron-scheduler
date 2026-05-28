@@ -21,6 +21,11 @@ import {
  *
  * The "{ranCount} of {totalCount} ran" suffix only appears when totalCount
  * is known and differs from ranCount.
+ *
+ * Button shape across the rail is uniform: the back link uses
+ * `shape="rounded"` (square corners) to match the JobDetailSidebar
+ * action buttons. Step rows are list-item pickers (not action buttons)
+ * and use the same `rounded-input` token for visual rhythm.
  */
 
 export interface RunDetailSidebarProps {
@@ -70,6 +75,7 @@ export function RunDetailSidebar({
           href={`/jobs/${jobId}`}
           intent="ghost"
           size="sm"
+          shape="rounded"
           fullWidth
           icon={<ChevronLeft size={14} />}
           className="!justify-start"

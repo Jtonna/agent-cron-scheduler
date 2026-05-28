@@ -26,13 +26,20 @@ import type { Job } from "@/apis/types";
  * Left rail used on `/jobs/[id]`. Visual hierarchy follows the
  * RunDetailSidebar idiom:
  *
- *   1. Back link (ghost, top-aligned, sticky)
+ *   1. Back link (ghost square, top-aligned, sticky)
  *   2. Identity block (job name + cron) — bordered, no buttons
  *   3. Metadata strip (favorite + enable toggle) — compact icon-style row
- *   4. Primary actions — solid "Run Workflow" pill, secondary
- *      "Customize and Run" rounded square
- *   5. Utility actions — Edit (ghost row)
- *   6. Pinned footer — Delete job (destructive ghost)
+ *   4. Primary actions — solid "Run Workflow" + secondary
+ *      "Run with Customizations" — both square (rounded-input)
+ *   5. Utility actions — Enable/Disable Cron, Edit (ghost square rows)
+ *   6. Pinned footer — Delete job (destructive ghost square)
+ *
+ * Shape is uniform across the entire rail: every interactive control uses
+ * `rounded-input` (square corners). Intent (color/background) is what
+ * distinguishes primary vs. secondary vs. ghost vs. destructive — never
+ * shape. This matches the visual rhythm set by the "Run with
+ * Customizations" CTA and the unified spec in
+ * `src/components/sidebar/RunDetailSidebar.tsx`.
  *
  * The favorite control is self-wired via `useFavorite()` (no `onFavorite`
  * prop required) so consumers can't accidentally leave the toggle dead.
@@ -98,6 +105,7 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
               href="/jobs"
               intent="ghost"
               size="sm"
+              shape="rounded"
               fullWidth
               icon={<ChevronLeft size={14} />}
               className="!justify-start"
@@ -144,7 +152,7 @@ export function JobDetailSidebar({ job, onDelete }: JobDetailSidebarProps) {
             <Button
               fullWidth
               size="md"
-              shape="pill"
+              shape="rounded"
               icon={triggering ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
               onPress={handleRunWorkflow}
               isDisabled={triggering}
