@@ -1,16 +1,16 @@
 "use client";
 
 import { DollarSign } from "lucide-react";
-import { NoirCallout } from "@/components/widgets/NoirCallout";
 import type { WorkflowCostSummary } from "@/apis/types";
 
 /**
  * CostWidget
  *
- * System-wide spend tile. Pastel "peach" mesh persona surface with a
- * black noir-card callout hosting the headline 30-day total, and a
- * stat row underneath for today + this week. Adopted from
- * acs-ui-refresh's weather/health composition language.
+ * System-wide spend tile. Pastel "peach" mesh persona surface hosting
+ * the headline 30-day total directly on the surface (no noir callout —
+ * per user feedback the dramatic black contrast was excessive for the
+ * top-level stat tiles), with a stat row underneath for today + this
+ * week.
  */
 
 interface CostWidgetProps {
@@ -71,11 +71,12 @@ export function CostWidget({ summary, loading }: CostWidgetProps) {
         <span>Cost &middot; this month</span>
       </div>
 
-      <NoirCallout eyebrow="Total spend">
-        <div className="text-display text-4xl md:text-5xl num leading-none">
+      <div>
+        <div className="text-eyebrow !text-fg-tertiary mb-2">Total spend</div>
+        <div className="text-display text-4xl md:text-5xl num leading-none text-[color:var(--color-ink-900)]">
           {isEmpty ? "—" : formatUsd(totals.month)}
         </div>
-      </NoirCallout>
+      </div>
 
       <div className="mt-auto pt-5 grid grid-cols-2 gap-3">
         <Stat label="Today" value={isEmpty ? "—" : formatUsd(totals.today)} />

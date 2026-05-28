@@ -1,16 +1,16 @@
 "use client";
 
 import { Type } from "lucide-react";
-import { NoirCallout } from "@/components/widgets/NoirCallout";
 import type { WorkflowCostSummary } from "@/apis/types";
 
 /**
  * TokensWidget
  *
- * System-wide token usage tile. "Lemon" pastel mesh persona surface with
- * a noir-card callout for the headline in/out pair and a stat row for
- * the today + week totals. Matches CostWidget composition so the two
- * read as a pair.
+ * System-wide token usage tile. "Lemon" pastel mesh persona surface
+ * hosting the headline in/out pair directly on the surface (no noir
+ * callout — see CostWidget for the rationale), with a stat row for the
+ * today + week totals. Matches CostWidget composition so the two read
+ * as a pair.
  */
 
 interface TokensWidgetProps {
@@ -104,11 +104,12 @@ export function TokensWidget({ summary, loading }: TokensWidgetProps) {
         <span>Tokens &middot; this month</span>
       </div>
 
-      <NoirCallout eyebrow="In / out">
-        <div className="text-display text-3xl md:text-4xl num leading-none">
+      <div>
+        <div className="text-eyebrow !text-fg-tertiary mb-2">In / out</div>
+        <div className="text-display text-3xl md:text-4xl num leading-none text-[color:var(--color-ink-900)]">
           {isEmpty ? "—" : formatPair(t.monthInput, t.monthOutput)}
         </div>
-      </NoirCallout>
+      </div>
 
       <div className="mt-auto pt-5 grid grid-cols-2 gap-3">
         <Stat
