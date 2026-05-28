@@ -58,10 +58,16 @@ export function JobCostWidget({ summary, loading }: JobCostWidgetProps) {
           <SkeletonRow />
         </div>
       ) : (
-        <div className="flex flex-col gap-0.5">
-          <Row label="Total" value={formatUsd(totalUsd)} />
-          <Row label="Avg / run" value={formatUsdPrecise(avgPerRun)} />
-          <Row label="Runs" value={String(totalRuns)} />
+        <div className="flex flex-col">
+          <div className="text-display text-3xl num text-fg leading-none mb-1">
+            {formatUsd(totalUsd)}
+          </div>
+          <div className="text-eyebrow !text-fg-subtle mb-3">Last 30 days</div>
+          <div className="h-px bg-border-subtle mb-2" />
+          <div className="flex flex-col gap-0.5">
+            <Row label="Avg / run" value={formatUsdPrecise(avgPerRun)} />
+            <Row label="Runs" value={String(totalRuns)} />
+          </div>
         </div>
       )}
     </StatWidget>

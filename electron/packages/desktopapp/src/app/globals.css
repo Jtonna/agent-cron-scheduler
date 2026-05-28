@@ -65,6 +65,53 @@
   --color-gradient-hero-via: #faf5ff;
   --color-gradient-hero-to: #e0f2fe;
 
+  /* ── Pastel personas (adopted from acs-ui-refresh) ──
+     Soft, slightly-grainy four-stop gradients used for hero/widget
+     surfaces that need atmosphere. Each persona is a calm palette
+     selected to sit on the white app canvas without shouting. */
+
+  /* mist — pale sky → pale mint */
+  --color-mist-1: #cfe6ff;
+  --color-mist-2: #d5f0e0;
+  --color-mist-3: #e8f5d1;
+  --color-mist-4: #f4f7da;
+
+  /* lemon — lemon → mint → sky */
+  --color-lemon-1: #f4f0a8;
+  --color-lemon-2: #daf0c2;
+  --color-lemon-3: #c8e2e8;
+  --color-lemon-4: #bcd6ea;
+
+  /* peach — peach → cream → mint */
+  --color-peach-1: #ffd9c2;
+  --color-peach-2: #fff0d6;
+  --color-peach-3: #e8f5d5;
+  --color-peach-4: #d5ecdb;
+
+  /* fog — cool grey-blue → near-white */
+  --color-fog-1: #dde6ef;
+  --color-fog-2: #eaf0f4;
+  --color-fog-3: #f4f6f8;
+  --color-fog-4: #fafbfc;
+
+  /* ember — warm pastel apricot → rose-cream */
+  --color-ember-1: #ffd1b3;
+  --color-ember-2: #ffe4cf;
+  --color-ember-3: #fde8df;
+  --color-ember-4: #f6dadf;
+
+  /* pulse — pale sky → periwinkle → lavender (cool/electric) */
+  --color-pulse-1: #cfe7fb;
+  --color-pulse-2: #d4def8;
+  --color-pulse-3: #dcd5f5;
+  --color-pulse-4: #e0d4ee;
+
+  /* Ink scale — used for high-contrast type on pastel surfaces */
+  --color-ink-950: #06070a;
+  --color-ink-900: #0a0d12;
+  --color-ink-800: #11141b;
+  --color-ink-700: #181c25;
+
   /* ── Radius ── */
   --radius-pill: 9999px;
   --radius-card: 0.75rem;
@@ -90,4 +137,72 @@
   --size-icon-sm: 0.75rem;
   --size-icon-md: 0.875rem;
   --size-icon-lg: 1.25rem;
+}
+
+/* =========================================================
+   GRAIN + PASTEL PERSONA SURFACES (from acs-ui-refresh)
+   Pastel four-stop gradients with a subtle SVG-fractal grain
+   overlay. Used by hero slides and any widget that wants
+   atmosphere — never on chrome.
+   ========================================================= */
+:root {
+  --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.6 0'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.55'/></svg>");
+}
+
+.gradient-mist-linear   { background-image: linear-gradient(135deg, var(--color-mist-1)   0%, var(--color-mist-2)   38%, var(--color-mist-3)   72%, var(--color-mist-4)   100%); }
+.gradient-lemon-linear  { background-image: linear-gradient(135deg, var(--color-lemon-1)  0%, var(--color-lemon-2)  38%, var(--color-lemon-3)  72%, var(--color-lemon-4)  100%); }
+.gradient-peach-linear  { background-image: linear-gradient(135deg, var(--color-peach-1)  0%, var(--color-peach-2)  38%, var(--color-peach-3)  72%, var(--color-peach-4)  100%); }
+.gradient-fog-linear    { background-image: linear-gradient(135deg, var(--color-fog-1)    0%, var(--color-fog-2)    38%, var(--color-fog-3)    72%, var(--color-fog-4)    100%); }
+.gradient-ember-linear  { background-image: linear-gradient(135deg, var(--color-ember-1)  0%, var(--color-ember-2)  38%, var(--color-ember-3)  72%, var(--color-ember-4)  100%); }
+.gradient-pulse-linear  { background-image: linear-gradient(135deg, var(--color-pulse-1)  0%, var(--color-pulse-2)  38%, var(--color-pulse-3)  72%, var(--color-pulse-4)  100%); }
+
+[class*="gradient-"][class*="-linear"] {
+  position: relative;
+  isolation: isolate;
+}
+[class*="gradient-"][class*="-linear"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: var(--grain);
+  background-size: 220px 220px;
+  mix-blend-mode: overlay;
+  opacity: 0.55;
+  border-radius: inherit;
+  z-index: 0;
+}
+[class*="gradient-"][class*="-linear"] > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* =========================================================
+   TYPE UTILITIES (from acs-ui-refresh)
+   - .text-eyebrow: mono uppercase micro-label
+   - .text-display: tight-tracked display headline
+   - .num: tabular-nums for figure alignment
+   ========================================================= */
+.text-eyebrow {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-fg-subtle);
+}
+.text-display {
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 0.98;
+  font-feature-settings: "tnum", "ss01";
+  font-variant-numeric: tabular-nums;
+}
+.num {
+  font-feature-settings: "tnum", "ss01";
+  font-variant-numeric: tabular-nums;
+}
+.hairline {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--color-border-strong), transparent);
 }

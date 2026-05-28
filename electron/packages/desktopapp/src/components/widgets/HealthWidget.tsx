@@ -140,8 +140,8 @@ export function HealthWidget({ runs }: HealthWidgetProps) {
                 </PieChart>
               </ResponsiveContainer>
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <span className="text-lg font-semibold text-fg leading-none">{total}</span>
-                <span className="text-[10px] text-fg-subtle uppercase tracking-wider">runs</span>
+                <span className="text-display text-xl num text-fg leading-none">{total}</span>
+                <span className="text-eyebrow !text-[10px] !text-fg-subtle mt-0.5">runs</span>
               </div>
             </>
           )}

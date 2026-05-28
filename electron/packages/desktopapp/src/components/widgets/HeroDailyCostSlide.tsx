@@ -6,6 +6,10 @@
  * Hero-sized slide rendering the system's daily cost trend as a large
  * area chart over the last 30 days. Uses `fillCostWindow` so days with
  * no runs still anchor the chart timeline.
+ *
+ * Visual language: pastel "mist" persona — pale sky → mint gradient
+ * with grain overlay, an ink-black running total numeral, and a
+ * brand-pink area sparkline that pops against the cool background.
  */
 
 import { useMemo } from "react";
@@ -47,22 +51,24 @@ export function HeroDailyCostSlide({ data, loading = false }: HeroDailyCostSlide
   const hasAnyCost = total > 0;
 
   return (
-    <div className="w-full h-full bg-gradient-to-br from-gradient-hero-from via-gradient-hero-via to-gradient-hero-to rounded-card flex flex-col px-8 py-7">
-      <div className="flex items-center gap-2 text-fg-muted text-xs uppercase tracking-wider mb-2">
-        <TrendingUp size={14} />
-        <span>Daily cost trend · last 30 days</span>
+    <div className="gradient-mist-linear w-full h-full rounded-card flex flex-col px-8 py-7 text-[color:var(--color-ink-900)]">
+      <div className="text-eyebrow !text-[color:var(--color-fg-tertiary)] inline-flex items-center gap-2 mb-3">
+        <TrendingUp size={12} />
+        <span>Daily cost trend &middot; last 30 days</span>
       </div>
-      <div className="flex items-baseline gap-2 mb-1">
-        <span className="text-[32px] font-extrabold text-fg leading-none tracking-tight">
+      <div className="flex items-baseline gap-3 mb-2">
+        <span className="text-display text-[44px] md:text-[56px] num text-[color:var(--color-ink-950)]">
           ${total.toFixed(2)}
         </span>
-        <span className="text-fg-muted text-xs">total</span>
+        <span className="text-eyebrow !text-[color:var(--color-fg-tertiary)]">
+          total
+        </span>
       </div>
       <div className="flex-1 min-h-0">
         {loading ? (
-          <div className="w-full h-full rounded bg-surface-tertiary/40 animate-pulse" />
+          <div className="w-full h-full rounded bg-black/5 animate-pulse" />
         ) : !hasAnyCost ? (
-          <div className="w-full h-full flex items-center justify-center text-fg-subtle text-sm">
+          <div className="w-full h-full flex items-center justify-center text-[color:var(--color-fg-tertiary)] text-sm">
             No cost data yet
           </div>
         ) : (
@@ -78,7 +84,7 @@ export function HeroDailyCostSlide({ data, loading = false }: HeroDailyCostSlide
               <YAxis hide />
               <Tooltip
                 content={<HeroTooltip />}
-                cursor={{ stroke: "var(--color-border)", strokeWidth: 1 }}
+                cursor={{ stroke: "var(--color-border-strong)", strokeWidth: 1 }}
               />
               <Area
                 type="monotone"

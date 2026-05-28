@@ -81,10 +81,16 @@ export function CostWidget({ summary, loading }: CostWidgetProps) {
         (() => {
           const totals = computeTotals(summary);
           return (
-            <div className="flex flex-col gap-0.5">
-              <Row label="Today" value={formatUsd(totals.today)} />
-              <Row label="This week" value={formatUsd(totals.week)} />
-              <Row label="This month" value={formatUsd(totals.month)} />
+            <div className="flex flex-col">
+              <div className="text-display text-3xl num text-fg leading-none mb-3">
+                {formatUsd(totals.month)}
+              </div>
+              <div className="text-eyebrow !text-fg-subtle mb-2">This month</div>
+              <div className="h-px bg-border-subtle mb-2" />
+              <div className="flex flex-col gap-0.5">
+                <Row label="Today" value={formatUsd(totals.today)} />
+                <Row label="This week" value={formatUsd(totals.week)} />
+              </div>
             </div>
           );
         })()

@@ -5,10 +5,12 @@
  *
  * Hero-sized slide showing the system-wide total cost for the last 30
  * days plus the total run count over the same window. Used by
- * `SystemHeroCarousel` on the dashboard `/` route. Renders a large
- * money headline against the same hero gradient as the original
- * illustration placeholder so swapping between slides keeps the visual
- * weight of the page constant.
+ * `SystemHeroCarousel` on the dashboard `/` route.
+ *
+ * Visual language: pastel "peach" persona — grainy four-stop gradient
+ * surface, big ink-black display numeral, mono uppercase eyebrow. The
+ * persona sits in the same lightness band as its siblings so the
+ * carousel doesn't lurch when slides change.
  */
 
 import { DollarSign } from "lucide-react";
@@ -30,24 +32,27 @@ export function HeroTotalCostSlide({ summary, loading }: HeroTotalCostSlideProps
   const runs = hasData ? summary.last_30_days_runs : 0;
 
   return (
-    <div className="w-full h-full bg-gradient-to-br from-gradient-hero-from via-gradient-hero-via to-gradient-hero-to rounded-card flex flex-col items-center justify-center px-8 text-center">
-      <div className="flex items-center gap-2 text-fg-muted text-xs uppercase tracking-wider mb-3">
-        <DollarSign size={14} />
-        <span>Total spend · last 30 days</span>
+    <div className="gradient-peach-linear w-full h-full rounded-card flex flex-col items-center justify-center px-8 text-center text-[color:var(--color-ink-900)]">
+      <div className="text-eyebrow !text-[color:var(--color-fg-tertiary)] inline-flex items-center gap-2 mb-4">
+        <DollarSign size={12} />
+        <span>Total spend &middot; last 30 days</span>
       </div>
       {loading ? (
-        <div className="h-20 w-56 rounded bg-surface-tertiary/50 animate-pulse" />
+        <div className="h-20 w-56 rounded bg-black/5 animate-pulse" />
       ) : (
-        <div className="text-[68px] font-extrabold text-fg leading-none tracking-tight">
+        <div className="text-display text-[88px] md:text-[104px] num text-[color:var(--color-ink-950)]">
           {formatUsd(cost)}
         </div>
       )}
-      <div className="mt-4 text-fg-muted text-sm">
+      <div className="mt-5 text-sm text-[color:var(--color-fg-tertiary)]">
         {loading ? (
-          <span className="inline-block h-3 w-32 rounded bg-surface-tertiary/50 animate-pulse" />
+          <span className="inline-block h-3 w-32 rounded bg-black/5 animate-pulse" />
         ) : (
           <>
-            <span className="font-mono text-fg">{runs.toLocaleString()}</span> runs completed
+            <span className="num font-semibold text-[color:var(--color-ink-900)]">
+              {runs.toLocaleString()}
+            </span>{" "}
+            runs completed
           </>
         )}
       </div>

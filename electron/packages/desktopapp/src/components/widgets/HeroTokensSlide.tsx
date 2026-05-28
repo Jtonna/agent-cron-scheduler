@@ -4,8 +4,10 @@
  * HeroTokensSlide
  *
  * Hero-sized slide showing the system-wide input → output token flow
- * for the last 30 days. Uses the `→` arrow notation from `RunStats` so
- * the dashboard speaks the same dialect as the run detail view.
+ * for the last 30 days. Uses the cool "pulse" pastel persona because
+ * tokens are an "energetic" data axis. Ink-black display numerals with
+ * the brand-pink arrow keep the dashboard's accent visible across
+ * carousel slides.
  */
 
 import { Type } from "lucide-react";
@@ -32,23 +34,22 @@ export function HeroTokensSlide({ summary, loading }: HeroTokensSlideProps) {
   const output = hasData ? summary.last_30_days_output_tokens : 0;
 
   return (
-    <div className="w-full h-full bg-gradient-to-br from-gradient-hero-from via-gradient-hero-via to-gradient-hero-to rounded-card flex flex-col items-center justify-center px-8 text-center">
-      <div className="flex items-center gap-2 text-fg-muted text-xs uppercase tracking-wider mb-4">
-        <Type size={14} />
-        <span>Token flow · last 30 days</span>
+    <div className="gradient-pulse-linear w-full h-full rounded-card flex flex-col items-center justify-center px-8 text-center text-[color:var(--color-ink-900)]">
+      <div className="text-eyebrow !text-[color:var(--color-fg-tertiary)] inline-flex items-center gap-2 mb-5">
+        <Type size={12} />
+        <span>Token flow &middot; last 30 days</span>
       </div>
       {loading ? (
-        <div className="h-16 w-80 rounded bg-surface-tertiary/50 animate-pulse" />
+        <div className="h-16 w-80 rounded bg-black/5 animate-pulse" />
       ) : (
-        <div className="flex items-baseline gap-4 font-extrabold text-fg tracking-tight">
-          <span className="text-[52px] leading-none">{formatTokens(input)}</span>
-          <span className="text-[36px] text-brand leading-none">→</span>
-          <span className="text-[52px] leading-none">{formatTokens(output)}</span>
+        <div className="text-display flex items-baseline gap-5 num text-[color:var(--color-ink-950)]">
+          <span className="text-[64px] md:text-[80px]">{formatTokens(input)}</span>
+          <span className="text-[44px] md:text-[56px] text-brand">&rarr;</span>
+          <span className="text-[64px] md:text-[80px]">{formatTokens(output)}</span>
         </div>
       )}
-      <div className="mt-4 flex items-center gap-6 text-xs text-fg-muted uppercase tracking-wider">
+      <div className="mt-5 flex items-center gap-10 text-eyebrow !text-[color:var(--color-fg-tertiary)]">
         <span>Input</span>
-        <span className="opacity-0">·</span>
         <span>Output</span>
       </div>
     </div>

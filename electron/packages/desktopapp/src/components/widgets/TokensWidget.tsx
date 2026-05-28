@@ -107,10 +107,16 @@ export function TokensWidget({ summary, loading }: TokensWidgetProps) {
         (() => {
           const totals = computeTotals(summary);
           return (
-            <div className="flex flex-col gap-0.5">
-              <Row label="Today" value={formatPair(totals.todayInput, totals.todayOutput)} />
-              <Row label="This week" value={formatPair(totals.weekInput, totals.weekOutput)} />
-              <Row label="This month" value={formatPair(totals.monthInput, totals.monthOutput)} />
+            <div className="flex flex-col">
+              <div className="text-display text-2xl num text-fg leading-none mb-1">
+                {formatPair(totals.monthInput, totals.monthOutput)}
+              </div>
+              <div className="text-eyebrow !text-fg-subtle mb-3">This month &middot; in / out</div>
+              <div className="h-px bg-border-subtle mb-2" />
+              <div className="flex flex-col gap-0.5">
+                <Row label="Today" value={formatPair(totals.todayInput, totals.todayOutput)} />
+                <Row label="This week" value={formatPair(totals.weekInput, totals.weekOutput)} />
+              </div>
             </div>
           );
         })()

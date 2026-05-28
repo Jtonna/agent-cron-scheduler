@@ -5,7 +5,8 @@
  *
  * Hero-sized slide showing the system-wide total cost for the last
  * year plus the total run count. Sibling of `HeroTotalCostSlide` —
- * same visual weight, different window.
+ * same visual weight, different window. Uses the "ember" pastel
+ * persona to feel warmer / more "annual report" than the 30-day view.
  */
 
 import { CalendarRange } from "lucide-react";
@@ -27,24 +28,27 @@ export function HeroYearCostSlide({ summary, loading }: HeroYearCostSlideProps) 
   const runs = hasData ? summary.last_year_runs : 0;
 
   return (
-    <div className="w-full h-full bg-gradient-to-br from-gradient-hero-from via-gradient-hero-via to-gradient-hero-to rounded-card flex flex-col items-center justify-center px-8 text-center">
-      <div className="flex items-center gap-2 text-fg-muted text-xs uppercase tracking-wider mb-3">
-        <CalendarRange size={14} />
-        <span>Total spend · last year</span>
+    <div className="gradient-ember-linear w-full h-full rounded-card flex flex-col items-center justify-center px-8 text-center text-[color:var(--color-ink-900)]">
+      <div className="text-eyebrow !text-[color:var(--color-fg-tertiary)] inline-flex items-center gap-2 mb-4">
+        <CalendarRange size={12} />
+        <span>Total spend &middot; last year</span>
       </div>
       {loading ? (
-        <div className="h-20 w-56 rounded bg-surface-tertiary/50 animate-pulse" />
+        <div className="h-20 w-56 rounded bg-black/5 animate-pulse" />
       ) : (
-        <div className="text-[68px] font-extrabold text-fg leading-none tracking-tight">
+        <div className="text-display text-[88px] md:text-[104px] num text-[color:var(--color-ink-950)]">
           {formatUsd(cost)}
         </div>
       )}
-      <div className="mt-4 text-fg-muted text-sm">
+      <div className="mt-5 text-sm text-[color:var(--color-fg-tertiary)]">
         {loading ? (
-          <span className="inline-block h-3 w-32 rounded bg-surface-tertiary/50 animate-pulse" />
+          <span className="inline-block h-3 w-32 rounded bg-black/5 animate-pulse" />
         ) : (
           <>
-            <span className="font-mono text-fg">{runs.toLocaleString()}</span> runs completed
+            <span className="num font-semibold text-[color:var(--color-ink-900)]">
+              {runs.toLocaleString()}
+            </span>{" "}
+            runs completed
           </>
         )}
       </div>
