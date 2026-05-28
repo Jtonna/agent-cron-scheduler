@@ -1,11 +1,28 @@
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
 import { JobsSidebar } from "./JobsSidebar";
+import { CommandPaletteContext } from "@/components/command-palette/CommandPaletteContext";
 import type { Job } from "@/apis/types";
+
+const fakePaletteCtx = {
+  isOpen: false,
+  open: () => {},
+  close: () => {},
+  toggle: () => {},
+  registerCommands: () => "reg-0",
+  unregisterCommands: () => {},
+};
 
 const meta: Meta<typeof JobsSidebar> = {
   title: "Components/Sidebar/JobsSidebar",
   component: JobsSidebar,
   parameters: { layout: "fullscreen" },
+  decorators: [
+    (Story) => (
+      <CommandPaletteContext.Provider value={fakePaletteCtx}>
+        <Story />
+      </CommandPaletteContext.Provider>
+    ),
+  ],
 };
 export default meta;
 

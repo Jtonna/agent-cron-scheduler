@@ -14,7 +14,6 @@ import {
   ChevronDown,
   ChevronLeft,
   Loader2,
-  MoreHorizontal,
   Pencil,
   Play,
   Power,
@@ -49,12 +48,13 @@ import type { Job, JobRun } from "@/apis/types";
  *   2. Search trigger — a button styled as a search input. Clicking it
  *      opens the global command palette (Cmd/Ctrl+K from anywhere).
  *   3. Identity block — workflow name + cron + timezone, with an inline
- *      Favorite star + an overflow `…` menu (Edit · Delete).
+ *      Favorite star.
  *   4. Compact split-button — Run Workflow + chevron → Run with
  *      Customizations.
- *   5. STATUS section — inline Enable Cron toggle plus read-only
+ *   5. Edit + Delete row — compact siblings of the Run cluster.
+ *   6. STATUS section — inline Enable Cron toggle plus read-only
  *      Schedule / Timezone / Next run / Last run rows.
- *   6. RECENT RUNS — the 6 latest runs, each a link to the run detail.
+ *   7. RECENT RUNS — the 6 latest runs, each a link to the run detail.
  *
  * The sidebar also registers a set of workflow-scoped commands into the
  * palette while mounted. The commands re-register whenever any label-
@@ -261,47 +261,6 @@ export function JobDetailSidebar({
                 />
               </button>
 
-              {/* Overflow — Edit + Delete. */}
-              <MenuTrigger>
-                <AriaButton
-                  type="button"
-                  aria-label="More workflow actions"
-                  className="shrink-0 p-1.5 -mr-1 rounded-input outline-none focus-visible:ring-2 focus-visible:ring-brand-ring hover:bg-surface-hover transition-colors cursor-pointer text-fg-subtle"
-                >
-                  <MoreHorizontal size={16} />
-                </AriaButton>
-                <Popover
-                  placement="bottom end"
-                  className="w-48 bg-surface border border-border rounded-menu shadow-menu py-1 z-50 outline-none entering:animate-in entering:fade-in entering:zoom-in-95 exiting:animate-out exiting:fade-out exiting:zoom-out-95"
-                >
-                  <Menu
-                    className="outline-none"
-                    onAction={(key) => {
-                      if (key === "edit") {
-                        router.push(`/workflows/${job.id}/edit`);
-                      } else if (key === "delete") {
-                        setDeleteOpen(true);
-                      }
-                    }}
-                  >
-                    <MenuItem
-                      id="edit"
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-secondary outline-none cursor-pointer rounded-input mx-1"
-                    >
-                      <Pencil size={14} className="text-fg-tertiary" />
-                      <span className="flex-1 text-left">Edit Workflow</span>
-                    </MenuItem>
-                    <div className="my-1 mx-2 border-t border-border-subtle" />
-                    <MenuItem
-                      id="delete"
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-status-failed hover:bg-status-failed-bg outline-none cursor-pointer rounded-input mx-1"
-                    >
-                      <Trash2 size={14} />
-                      <span className="flex-1 text-left">Delete Workflow…</span>
-                    </MenuItem>
-                  </Menu>
-                </Popover>
-              </MenuTrigger>
             </div>
           </div>
 
@@ -385,6 +344,42 @@ export function JobDetailSidebar({
                 {toggleError ?? triggerError}
               </p>
             )}
+          </div>
+
+          {/* Edit + Delete — compact siblings of the Run cluster. */}
+          <div className="px-3 mt-2 flex gap-2">
+            <AriaButton
+              type="button"
+              onPress={() => router.push(`/workflows/${job.id}/edit`)}
+              aria-label="Edit workflow"
+              className={[
+                "flex-1 inline-flex items-center justify-center gap-1.5",
+                "px-3 py-1.5 text-xs font-semibold",
+                "rounded-input",
+                "text-fg-secondary hover:text-fg hover:bg-surface-hover",
+                "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring focus-visible:ring-offset-2",
+                "cursor-pointer transition-colors",
+              ].join(" ")}
+            >
+              <Pencil size={12} />
+              Edit Workflow
+            </AriaButton>
+            <AriaButton
+              type="button"
+              onPress={() => setDeleteOpen(true)}
+              aria-label="Delete workflow"
+              className={[
+                "flex-1 inline-flex items-center justify-center gap-1.5",
+                "px-3 py-1.5 text-xs font-semibold",
+                "rounded-input",
+                "text-status-failed hover:bg-status-failed-bg",
+                "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring focus-visible:ring-offset-2",
+                "cursor-pointer transition-colors",
+              ].join(" ")}
+            >
+              <Trash2 size={12} />
+              Delete
+            </AriaButton>
           </div>
 
           {/* STATUS section */}

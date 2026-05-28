@@ -162,14 +162,14 @@ export const EnableCronToggling: Story = {
 };
 
 /**
- * OverflowMenuOpen — uses the `play` hook to open the `…` overflow menu
- * so we can review the Edit + Delete styling without clicking.
+ * DeleteDialogOpen — uses the `play` hook to open the Delete dialog so we
+ * can review the destructive confirmation styling without clicking.
  */
-export const OverflowMenuOpen: Story = {
+export const DeleteDialogOpen: Story = {
   args: { job: CURRENT, runsOverride: SAMPLE_RUNS },
   play: async ({ canvasElement }) => {
     const trigger = canvasElement.querySelector<HTMLButtonElement>(
-      'button[aria-label="More workflow actions"]',
+      'button[aria-label="Delete workflow"]',
     );
     trigger?.click();
   },
