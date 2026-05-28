@@ -8,6 +8,7 @@ import { JobCostWidget } from "@/components/widgets/JobCostWidget";
 import { HealthWidget } from "@/components/widgets/HealthWidget";
 import { JobCostTrendWidget } from "@/components/widgets/JobCostTrendWidget";
 import { JobRunsTable } from "@/components/jobs/JobRunsTable";
+import { WorkflowHeader } from "@/components/jobs/WorkflowHeader";
 import { useJob } from "@/apis/useJob";
 import { useJobCostSummary } from "@/apis/useJobCostSummary";
 import { useJobRuns } from "@/apis/useJobRuns";
@@ -67,11 +68,8 @@ export default function JobDetailPage({
             </div>
           ) : (
             <>
-              {/* Header — favorite control lives in the sidebar, not here. */}
-              <div>
-                <h1 className="text-2xl font-extrabold tracking-tight">{job.name}</h1>
-                <p className="text-fg-muted text-sm mt-0.5 font-mono">{job.schedule}</p>
-              </div>
+              {/* Workflow header — name, cron, timezone, status + favorite. */}
+              <WorkflowHeader job={job} />
 
               {/* 3-up widget row */}
               <div className="grid grid-cols-3 gap-4">

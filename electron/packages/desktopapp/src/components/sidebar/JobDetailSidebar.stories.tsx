@@ -101,16 +101,18 @@ const SAMPLE_RUNS: JobRun[] = [
 ];
 
 /**
- * Default — enabled workflow with a fresh run history. STATUS shows the
- * inline toggle in its "on" position; the search trigger sits at the top.
+ * Default — enabled, unfavorited workflow with a fresh run history. The
+ * STATUS section shows the Favorited row (outlined star) and the Enabled
+ * toggle in its "on" position. The workflow's identity (name / cron /
+ * timezone) lives on the main page, not in the sidebar.
  */
 export const Default: Story = {
   args: { job: CURRENT, runsOverride: SAMPLE_RUNS },
 };
 
 /**
- * Disabled — cron is off. The toggle reads as off and the palette label
- * for `toggle-cron` flips to "Enable Cron".
+ * Disabled — cron is off. The Enabled toggle reads as off and the palette
+ * label for `toggle-cron` flips to "Enable Cron".
  */
 export const Disabled: Story = {
   args: {
@@ -120,26 +122,13 @@ export const Disabled: Story = {
 };
 
 /**
- * Favorited — the star fills in with the brand color. Palette label
- * for `favorite-workflow` becomes "Unfavorite".
+ * Favorited — the Favorited row's star fills in with the brand color.
+ * Palette label for `favorite-workflow` becomes "Unfavorite". The same
+ * star is also shown on the main page's WorkflowHeader.
  */
 export const Favorited: Story = {
   args: {
     job: makeJob("weather-shell-claude", 0, { is_favorited: true }),
-    runsOverride: SAMPLE_RUNS,
-  },
-};
-
-/**
- * LongName — verifies the identity block truncates a very long workflow
- * name and that the favorite + overflow controls stay aligned.
- */
-export const LongName: Story = {
-  args: {
-    job: makeJob(
-      "a-rather-extraordinarily-long-workflow-name-that-must-truncate-here",
-      0,
-    ),
     runsOverride: SAMPLE_RUNS,
   },
 };

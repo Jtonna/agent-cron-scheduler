@@ -22,9 +22,9 @@ import {
 import { DeleteJobDialog } from "./DeleteJobDialog";
 import { SidebarSearchTrigger } from "./SidebarSearchTrigger";
 import { SidebarBackLink } from "./SidebarBackLink";
-import { SidebarIdentityBlock } from "./SidebarIdentityBlock";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
 import { SidebarListItem } from "./SidebarListItem";
+import { FavoriteToggle } from "@/components/jobs/FavoriteToggle";
 import { RunWithCustomizationsModal } from "@/components/jobs/RunWithCustomizationsModal";
 import { CompactActionButton } from "@/components/ui/CompactActionButton";
 import { PropertyRow } from "@/components/ui/PropertyRow";
@@ -46,9 +46,8 @@ import type { Job, JobRun } from "@/apis/types";
  *
  *   1. Back link             — SidebarBackLink ("Back to Workflows")
  *   2. Search trigger        — opens the global command palette
- *   3. Identity block        — workflow name + cron + tz + favorite star
- *   4. Primary action row    — Run split button (CompactActionButton)
- *   5. Secondary action row  — Delete (icon-only, w-9, left) +
+ *   3. Primary action row    — Run split button (CompactActionButton)
+ *   4. Secondary action row  — Delete (icon-only, w-9, left) +
  *                              Edit (flex-1, right). Both render with
  *                              visible chrome so they read as siblings of
  *                              the Run split-button above. The sidebar
@@ -58,8 +57,14 @@ import type { Job, JobRun } from "@/apis/types";
  *                              command palette still says
  *                              "Run/Edit/Delete Workflow" since it's
  *                              global.
- *   6. STATUS section        — eyebrow header + PropertyRows (enabled toggle + meta)
- *   7. RECENT RUNS section   — eyebrow header + SidebarListItem rows, capped at 6
+ *   5. STATUS section        — eyebrow header + PropertyRows. Includes a
+ *                              "Favorited" row whose value is the same
+ *                              `FavoriteToggle` star used on the main page
+ *                              header — favorite is reachable from both
+ *                              surfaces for consistency. The workflow's
+ *                              identity (name / cron / timezone) is owned
+ *                              by the main page header, not duplicated here.
+ *   6. RECENT RUNS section   — eyebrow header + SidebarListItem rows, capped at 6
  *
  * Vertical rhythm is one `gap-4` token between sections; section
  * headers and their content sit inside the same flex column with a
@@ -98,7 +103,7 @@ export function JobDetailSidebar({
 
   const { toggle, toggling, error: toggleError } = useToggleWorkflowEnabled();
   const { trigger, triggering, error: triggerError } = useTriggerWorkflow();
-  const { favorite, unfavorite, isPending: favPending } = useFavorite();
+  const { favorite, unfavorite } = useFavorite();
 
   // Recent runs (fetched here so the sidebar is self-contained). Stories
   // can override by passing `runsOverride`.
@@ -117,11 +122,6 @@ export function JobDetailSidebar({
 
   function handleRunWorkflow() {
     void trigger(job.id, {}).catch(() => {});
-  }
-
-  function handleFavorite() {
-    if (favPending) return;
-    void (favorited ? unfavorite(job.id) : favorite(job.id)).catch(() => {});
   }
 
   // ── Palette registration ──────────────────────────────────────────
@@ -204,38 +204,7 @@ export function JobDetailSidebar({
           {/* 2. Search trigger */}
           <SidebarSearchTrigger placeholder="Search · ⌘K" />
 
-          {/* 3. Identity block */}
-          <SidebarIdentityBlock
-            title={job.name}
-            meta={`${job.schedule} · ${job.timezone}`}
-            monoMeta
-            actions={
-              <button
-                type="button"
-                onClick={handleFavorite}
-                disabled={favPending}
-                aria-label={
-                  favorited ? "Unfavorite workflow" : "Favorite workflow"
-                }
-                aria-pressed={favorited}
-                className={[
-                  "p-1.5 rounded-input outline-none focus-visible:ring-2 focus-visible:ring-brand-ring transition-colors cursor-pointer",
-                  favPending
-                    ? "opacity-50 cursor-not-allowed"
-                    : "hover:bg-surface-hover",
-                ].join(" ")}
-              >
-                <Star
-                  size={16}
-                  className={
-                    favorited ? "fill-brand text-brand" : "text-fg-subtle"
-                  }
-                />
-              </button>
-            }
-          />
-
-          {/* 4. Primary action row — Run Workflow split button */}
+          {/* 3. Primary action row — Run Workflow split button */}
           <div className="flex flex-col gap-2">
             <div
               role="group"
@@ -317,7 +286,7 @@ export function JobDetailSidebar({
             )}
           </div>
 
-          {/* 5. Secondary action row — Delete (icon-only, left) + Edit (right) */}
+          {/* 4. Secondary action row — Delete (icon-only, left) + Edit (right) */}
           <div className="flex gap-2">
             <CompactActionButton
               intent="destructive"
@@ -339,10 +308,20 @@ export function JobDetailSidebar({
             </CompactActionButton>
           </div>
 
-          {/* 6. STATUS section */}
+          {/* 5. STATUS section */}
           <section className="flex flex-col gap-1.5">
             <SidebarSectionHeader title="Status" />
             <div className="flex flex-col">
+              <PropertyRow
+                label="Favorited"
+                value={
+                  <FavoriteToggle
+                    jobId={job.id}
+                    favorited={favorited}
+                    size={16}
+                  />
+                }
+              />
               <PropertyRow
                 label="Enabled"
                 value={
@@ -361,7 +340,7 @@ export function JobDetailSidebar({
             </div>
           </section>
 
-          {/* 7. RECENT RUNS section */}
+          {/* 6. RECENT RUNS section */}
           <section className="flex flex-col gap-1.5">
             <SidebarSectionHeader
               title="Recent Runs"
