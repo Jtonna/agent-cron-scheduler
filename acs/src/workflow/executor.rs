@@ -1034,6 +1034,7 @@ mod tests {
             timezone: None,
             schedule_mode: ScheduleMode::default(),
             enabled: true,
+            is_favorited: false,
             steps,
             default_input: None,
             working_dir: None,

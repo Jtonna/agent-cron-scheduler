@@ -12,20 +12,11 @@ import { JobRunCard } from "@/components/jobs/JobRunCard";
 import type { JobRun } from "@/components/jobs/JobRunCard";
 import { apiStatusToJobState } from "@/components/ui/JobStateIndicator";
 import { useHealth } from "@/apis/useHealth";
+import { useJobs } from "@/apis/useJobs";
 import { useRecentRuns } from "@/apis/useRecentRuns";
 import type { RecentRunEntry } from "@/apis/types";
 import { formatDuration, formatTimeAgo, formatUptime } from "@/apis/format";
 import { Loader2 } from "lucide-react";
-
-// Mock favorited jobs — replace with real data once ACS-17 lands.
-const FAVORITED_JOBS = [
-  { id: "01941111-1111-7111-8111-111111111111", name: "backup-db" },
-  { id: "01942222-2222-7222-8222-222222222222", name: "sync-users" },
-  { id: "01943333-3333-7333-8333-333333333333", name: "health-check" },
-  { id: "01944444-4444-7444-8444-444444444444", name: "deploy-staging" },
-  { id: "01945555-5555-7555-8555-555555555555", name: "cleanup-logs" },
-  { id: "01946666-6666-7666-8666-666666666666", name: "nightly-report" },
-];
 
 const STATUS_FILTER_MAP: Record<string, string | undefined> = {
   "All runs": undefined,
@@ -59,7 +50,15 @@ export default function Home() {
   const router = useRouter();
   const [activeFilter, setActiveFilter] = useState("All runs");
   const { health } = useHealth();
+  const { jobs } = useJobs();
   const { runs, loading: runsLoading, loadingMore, hasMore, loadMore } = useRecentRuns();
+
+  // Real favorites from the workflow store. Sort alphabetically for a
+  // stable order across re-fetches.
+  const favoritedJobs = jobs
+    .filter((j) => j.is_favorited)
+    .map((j) => ({ id: j.id, name: j.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   // Infinite scroll: observe a sentinel at the bottom of the grid and call loadMore when visible
@@ -101,7 +100,7 @@ export default function Home() {
           </p>
           <FilterTabs />
           <ChatBar onSend={(msg) => router.push(`/chat?q=${encodeURIComponent(msg)}`)} />
-          <FavoritedJobs jobs={FAVORITED_JOBS} />
+          <FavoritedJobs jobs={favoritedJobs} />
         </div>
         <div className="bg-gradient-to-br from-gradient-hero-from via-gradient-hero-via to-gradient-hero-to rounded-card min-h-[420px] flex items-center justify-center">
           <span className="text-fg-subtle text-sm">Hero illustration</span>

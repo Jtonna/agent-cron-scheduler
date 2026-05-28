@@ -49,6 +49,9 @@ function compareJobs(
   key: SortKey,
   runsByJob: Map<string, RecentRunEntry[]>,
 ): number {
+  // Favorites pin to the top regardless of secondary sort.
+  if (a.is_favorited !== b.is_favorited) return a.is_favorited ? -1 : 1;
+
   if (key === "name") {
     return a.name.localeCompare(b.name);
   }

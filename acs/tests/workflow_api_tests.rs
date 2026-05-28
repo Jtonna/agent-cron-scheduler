@@ -371,6 +371,116 @@ async fn test_delete_workflow() {
     assert_eq!(get_resp.status(), 404);
 }
 
+/// 7b. POST/DELETE /api/workflows/{id}/favorite toggles is_favorited
+///     end-to-end via the dedicated endpoints, does not bump version, and
+///     returns 404 for unknown workflows.
+#[tokio::test]
+async fn test_favorite_endpoints_roundtrip() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    // Create a fresh workflow.
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("fav-roundtrip")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["is_favorited"], false);
+    let initial_version = created["version"].as_u64().unwrap();
+
+    // POST favorite → 200 with is_favorited=true, version unchanged.
+    let fav_resp = client
+        .post(format!("{}/api/workflows/{}/favorite", base_url, id))
+        .send()
+        .await
+        .expect("POST favorite");
+    assert_eq!(fav_resp.status(), 200);
+    let fav_body: serde_json::Value = fav_resp.json().await.unwrap();
+    assert_eq!(fav_body["is_favorited"], true);
+    assert_eq!(fav_body["version"].as_u64().unwrap(), initial_version);
+
+    // GET reflects the new state.
+    let get_resp: serde_json::Value = client
+        .get(format!("{}/api/workflows/{}", base_url, id))
+        .send()
+        .await
+        .expect("GET")
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(get_resp["is_favorited"], true);
+
+    // DELETE favorite → 200 with is_favorited=false.
+    let unfav_resp = client
+        .delete(format!("{}/api/workflows/{}/favorite", base_url, id))
+        .send()
+        .await
+        .expect("DELETE favorite");
+    assert_eq!(unfav_resp.status(), 200);
+    let unfav_body: serde_json::Value = unfav_resp.json().await.unwrap();
+    assert_eq!(unfav_body["is_favorited"], false);
+    assert_eq!(unfav_body["version"].as_u64().unwrap(), initial_version);
+}
+
+#[tokio::test]
+async fn test_favorite_endpoint_unknown_workflow_returns_404() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    let bogus = uuid::Uuid::now_v7();
+    let resp = client
+        .post(format!("{}/api/workflows/{}/favorite", base_url, bogus))
+        .send()
+        .await
+        .expect("POST favorite");
+    assert_eq!(resp.status(), 404);
+}
+
+/// 7c. PATCH /api/workflows/{id} with is_favorited toggles the flag and
+///     leaves version untouched.
+#[tokio::test]
+async fn test_patch_is_favorited_does_not_bump_version() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("fav-patch-int")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+    let initial_version = created["version"].as_u64().unwrap();
+
+    let resp = client
+        .patch(format!("{}/api/workflows/{}", base_url, id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_favorited": true}"#)
+        .send()
+        .await
+        .expect("PATCH");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["is_favorited"], true);
+    assert_eq!(body["version"].as_u64().unwrap(), initial_version);
+}
+
 /// 8. POST /api/workflows/{id}/trigger returns 202 with run_id
 #[tokio::test]
 async fn test_trigger_workflow_returns_202() {

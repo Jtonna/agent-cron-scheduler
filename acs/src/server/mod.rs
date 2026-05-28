@@ -65,6 +65,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             post(workflow_routes::trigger_workflow),
         )
         .route(
+            "/api/workflows/{id}/favorite",
+            post(workflow_routes::favorite_workflow).delete(workflow_routes::unfavorite_workflow),
+        )
+        .route(
             "/api/workflows/{id}/runs",
             get(workflow_routes::list_workflow_runs),
         )

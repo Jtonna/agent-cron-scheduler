@@ -29,4 +29,10 @@ pub trait WorkflowStore: Send + Sync {
         status: RunStatus,
         finished_at: DateTime<Utc>,
     ) -> Result<()>;
+
+    /// Toggle the `is_favorited` flag on a workflow and return the updated
+    /// record. Bumps `updated_at` but does NOT bump `version` — favorites are
+    /// a UI-only preference, not a definition change. Returns
+    /// `AcsError::NotFound` if `id` doesn't exist.
+    async fn set_favorited(&self, id: Uuid, is_favorited: bool) -> Result<Workflow>;
 }

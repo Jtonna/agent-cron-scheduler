@@ -634,6 +634,7 @@ mod tests {
             timezone: Some("America/New_York".to_string()),
             schedule_mode: ScheduleMode::default(),
             enabled: true,
+            is_favorited: false,
             steps: vec![make_shell_step("step-1")],
             default_input: Some(serde_json::json!({"k": 1})),
             working_dir: Some("/tmp".to_string()),

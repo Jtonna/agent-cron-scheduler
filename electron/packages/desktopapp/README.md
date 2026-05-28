@@ -64,6 +64,7 @@ src/
 │   ├── useJobCostSummary.ts       # GET /api/cost/workflows/{id} (per-workflow cost)
 │   ├── useJobRuns.ts              # GET /api/workflows/{id}/runs
 │   ├── useRecentRuns.ts           # GET /api/runs/recent (with grow-limit pagination)
+│   ├── useFavorite.ts             # POST/DELETE /api/workflows/{id}/favorite (mutation)
 │   └── useSystemLogs.ts           # GET /api/logs (with SSE-driven append + 1MB cap)
 │
 ├── app/                           # Next.js App Router
@@ -338,7 +339,6 @@ All in `src/app/globals.css` under `@theme`. To re-theme, edit one file.
 - Pre-existing rules-of-hooks lint warnings (5) need a focused pass — not blocking the build but real.
 - The dev script intentionally uses `next dev --webpack` (not Turbopack) due to a Turbopack memory leak in long-running sessions. Revisit when the Next.js team ships a fix.
 - Several routes referenced in nav/links don't exist yet (`/jobs/[id]/runs/[run_id]`, `/docs/*`, `/settings`). They render the 404 page when clicked.
-- `FAVORITED_JOBS` in `src/app/page.tsx` is mocked until backend support lands (tracked as `ACS-17`).
 - Backend pagination on `/api/runs/recent` is not implemented — the dashboard fakes it by growing the `limit` query param (tracked as `ACS-15`). Same for status filtering (`ACS-16`).
 
 ---

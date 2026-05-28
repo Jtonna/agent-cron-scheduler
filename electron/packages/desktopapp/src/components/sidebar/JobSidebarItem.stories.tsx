@@ -16,6 +16,7 @@ const SAMPLE_JOB: Job = {
   schedule: "0 0 * * *",
   schedule_mode: "Cron",
   enabled: true,
+  is_favorited: false,
   allow_concurrent: false,
   on_failure: "abort",
   steps: [],

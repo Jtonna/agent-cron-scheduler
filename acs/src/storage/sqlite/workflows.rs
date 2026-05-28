@@ -84,6 +84,10 @@ fn row_to_workflow(row: &Row<'_>) -> rusqlite::Result<Workflow> {
     let created_at = parse_dt(row, "created_at")?;
     let updated_at = parse_dt(row, "updated_at")?;
 
+    // is_favorited was added in a later schema migration. Tolerate older rows
+    // that don't have the column populated by treating a missing column as false.
+    let is_favorited = row.get::<_, i64>("is_favorited").unwrap_or(0) != 0;
+
     Ok(Workflow {
         id,
         name: row.get("name")?,
@@ -92,6 +96,7 @@ fn row_to_workflow(row: &Row<'_>) -> rusqlite::Result<Workflow> {
         timezone,
         schedule_mode,
         enabled: row.get::<_, i64>("enabled")? != 0,
+        is_favorited,
         steps,
         default_input,
         working_dir: row.get("working_dir")?,
@@ -204,6 +209,7 @@ impl WorkflowStore for SqliteWorkflowStore {
             timezone: new.timezone,
             schedule_mode: new.schedule_mode,
             enabled: new.enabled,
+            is_favorited: false,
             steps: new.steps,
             default_input: new.default_input,
             working_dir: new.working_dir,
@@ -297,6 +303,10 @@ impl WorkflowStore for SqliteWorkflowStore {
                 if let Some(enabled) = update.enabled {
                     wf.enabled = enabled;
                 }
+                if let Some(is_favorited) = update.is_favorited {
+                    // is_favorited is UI-only metadata; never bumps version.
+                    wf.is_favorited = is_favorited;
+                }
                 if let Some(steps) = update.steps {
                     if wf.steps != steps {
                         definition_changed = true;
@@ -364,6 +374,40 @@ impl WorkflowStore for SqliteWorkflowStore {
             })
             .await?;
         Ok(())
+    }
+
+    async fn set_favorited(&self, id: Uuid, is_favorited: bool) -> Result<Workflow> {
+        let id_s = id.to_string();
+        let now_s = Utc::now().to_rfc3339();
+        let fav_i = is_favorited as i64;
+
+        let res: Workflow = self
+            .db
+            .with_conn(move |c| {
+                let n = c
+                    .execute(
+                        "UPDATE workflows SET is_favorited = ?1, updated_at = ?2 WHERE id = ?3",
+                        params![fav_i, now_s, id_s],
+                    )
+                    .map_err(|e| AcsError::Storage(format!("UPDATE is_favorited failed: {}", e)))?;
+                if n == 0 {
+                    return Err(AcsError::NotFound(format!(
+                        "Workflow with id '{}' not found",
+                        id
+                    )));
+                }
+                let mut stmt = c
+                    .prepare("SELECT * FROM workflows WHERE id = ?")
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+                stmt.query_row([&id.to_string()], row_to_workflow)
+                    .optional()
+                    .map_err(|e| AcsError::Storage(e.to_string()))?
+                    .ok_or_else(|| {
+                        AcsError::NotFound(format!("Workflow with id '{}' not found", id))
+                    })
+            })
+            .await?;
+        Ok(res)
     }
 
     async fn record_run_outcome(
@@ -439,12 +483,12 @@ fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
             id, name, version, schedule, timezone, schedule_mode, enabled,
             steps_json, default_input, working_dir, env_vars,
             allow_concurrent, on_failure, last_run_at, last_run_status,
-            last_run_id, created_at, updated_at
+            last_run_id, created_at, updated_at, is_favorited
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7,
             ?8, ?9, ?10, ?11,
             ?12, ?13, ?14, ?15,
-            ?16, ?17, ?18
+            ?16, ?17, ?18, ?19
         )",
         params![
             wf.id.to_string(),
@@ -465,6 +509,7 @@ fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
             wf.last_run_id.map(|u| u.to_string()),
             wf.created_at.to_rfc3339(),
             wf.updated_at.to_rfc3339(),
+            wf.is_favorited as i64,
         ],
     )
     .map_err(|e| map_insert_err(&wf.name, e))?;
@@ -499,8 +544,8 @@ fn update_workflow_row(conn: &Connection, wf: &Workflow) -> Result<(), AcsError>
             default_input = ?8, working_dir = ?9,
             env_vars = ?10, allow_concurrent = ?11, on_failure = ?12,
             last_run_at = ?13, last_run_status = ?14, last_run_id = ?15,
-            updated_at = ?16
-         WHERE id = ?17",
+            updated_at = ?16, is_favorited = ?17
+         WHERE id = ?18",
         params![
             wf.name,
             wf.version as i64,
@@ -518,6 +563,7 @@ fn update_workflow_row(conn: &Connection, wf: &Workflow) -> Result<(), AcsError>
             last_run_status,
             wf.last_run_id.map(|u| u.to_string()),
             wf.updated_at.to_rfc3339(),
+            wf.is_favorited as i64,
             wf.id.to_string(),
         ],
     )
@@ -759,6 +805,74 @@ mod tests {
             .await
             .expect("update");
         assert_eq!(updated.version, 2);
+    }
+
+    // ── set_favorited ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_set_favorited_round_trip() {
+        let store = SqliteWorkflowStore::in_memory_for_tests();
+        let created = store
+            .create_workflow(minimal_new_workflow("fav-1"))
+            .await
+            .expect("create");
+        assert!(!created.is_favorited, "fresh workflows default to false");
+        let initial_version = created.version;
+
+        let updated = store
+            .set_favorited(created.id, true)
+            .await
+            .expect("favorite");
+        assert!(updated.is_favorited);
+        // is_favorited must NOT bump version.
+        assert_eq!(updated.version, initial_version);
+
+        let got = store
+            .get_workflow(created.id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert!(got.is_favorited);
+
+        // Toggling back to false also returns the updated record.
+        let unfaved = store
+            .set_favorited(created.id, false)
+            .await
+            .expect("unfavorite");
+        assert!(!unfaved.is_favorited);
+    }
+
+    #[tokio::test]
+    async fn test_set_favorited_unknown_workflow_returns_not_found() {
+        let store = SqliteWorkflowStore::in_memory_for_tests();
+        let err = store
+            .set_favorited(Uuid::now_v7(), true)
+            .await
+            .expect_err("must error");
+        let acs = err.downcast_ref::<AcsError>().expect("must be AcsError");
+        assert!(matches!(acs, AcsError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_update_is_favorited_via_patch_does_not_bump_version() {
+        let store = SqliteWorkflowStore::in_memory_for_tests();
+        let created = store
+            .create_workflow(minimal_new_workflow("fav-patch"))
+            .await
+            .expect("create");
+        assert_eq!(created.version, 1);
+        let updated = store
+            .update_workflow(
+                created.id,
+                WorkflowUpdate {
+                    is_favorited: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("update");
+        assert!(updated.is_favorited);
+        assert_eq!(updated.version, 1);
     }
 
     #[tokio::test]

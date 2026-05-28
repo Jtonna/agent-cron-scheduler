@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS workflows (
     last_run_status     TEXT,
     last_run_id         TEXT,
     created_at          TEXT NOT NULL,
-    updated_at          TEXT NOT NULL
+    updated_at          TEXT NOT NULL,
+    is_favorited        INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS workflow_runs (
@@ -88,6 +89,33 @@ pub fn apply_pragmas(conn: &Connection) -> Result<(), AcsError> {
 pub fn apply_schema(conn: &Connection) -> Result<(), AcsError> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|e| AcsError::Storage(format!("Failed to apply schema: {}", e)))?;
+    apply_additive_migrations(conn)?;
+    Ok(())
+}
+
+/// Additive column migrations for tables that may already exist from older
+/// daemon versions. SQLite does not support `ADD COLUMN IF NOT EXISTS`, so
+/// each `ALTER TABLE ... ADD COLUMN` is executed individually and the
+/// "duplicate column name" error is swallowed — that's the success-case for
+/// databases that already have the column from a previous run or from the
+/// `CREATE TABLE` above on a fresh install.
+fn apply_additive_migrations(conn: &Connection) -> Result<(), AcsError> {
+    let stmts = [
+        // is_favorited added in v4.2.x — pin favorited workflows to the top.
+        "ALTER TABLE workflows ADD COLUMN is_favorited INTEGER NOT NULL DEFAULT 0",
+    ];
+    for sql in stmts {
+        if let Err(e) = conn.execute(sql, []) {
+            let msg = e.to_string();
+            if msg.contains("duplicate column name") {
+                continue;
+            }
+            return Err(AcsError::Storage(format!(
+                "Additive migration failed ({}): {}",
+                sql, e
+            )));
+        }
+    }
     Ok(())
 }
 

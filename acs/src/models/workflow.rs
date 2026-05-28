@@ -136,6 +136,11 @@ pub struct Workflow {
     #[serde(default)]
     pub schedule_mode: ScheduleMode,
     pub enabled: bool,
+    /// Whether this workflow is favorited and should be pinned to the top of
+    /// list views. Persisted; toggled via the dedicated favorite endpoints
+    /// (or via PATCH). Does NOT bump `version` when changed.
+    #[serde(default)]
+    pub is_favorited: bool,
     pub steps: Vec<StepDef>,
     #[serde(default)]
     pub default_input: Option<serde_json::Value>,
@@ -168,6 +173,7 @@ impl PartialEq for Workflow {
             && self.timezone == other.timezone
             && self.schedule_mode == other.schedule_mode
             && self.enabled == other.enabled
+            && self.is_favorited == other.is_favorited
             && self.steps == other.steps
             && self.default_input == other.default_input
             && self.working_dir == other.working_dir
@@ -216,6 +222,8 @@ pub struct WorkflowUpdate {
     pub timezone: Option<String>,
     pub schedule_mode: Option<ScheduleMode>,
     pub enabled: Option<bool>,
+    #[serde(default)]
+    pub is_favorited: Option<bool>,
     pub steps: Option<Vec<StepDef>>,
     pub default_input: Option<serde_json::Value>,
     pub working_dir: Option<String>,
@@ -631,6 +639,7 @@ mod tests {
             timezone: Some("America/New_York".to_string()),
             schedule_mode: ScheduleMode::default(),
             enabled: true,
+            is_favorited: false,
             steps: vec![make_shell_step("step-1")],
             default_input: None,
             working_dir: Some("/tmp".to_string()),

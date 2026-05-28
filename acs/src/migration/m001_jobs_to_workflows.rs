@@ -396,6 +396,7 @@ fn build_workflow(job: Job, steps: Vec<StepDef>) -> Workflow {
         timezone: job.timezone,
         schedule_mode: job.schedule_mode,
         enabled: job.enabled,
+        is_favorited: false,
         steps,
         default_input: None,
         working_dir: job.working_dir,

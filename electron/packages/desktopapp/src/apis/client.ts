@@ -151,6 +151,14 @@ export const api = {
       body: JSON.stringify(params),
     });
   },
+
+  favoriteWorkflow(id: string): Promise<Job> {
+    return request<Job>(`/api/workflows/${id}/favorite`, { method: "POST" });
+  },
+
+  unfavoriteWorkflow(id: string): Promise<Job> {
+    return request<Job>(`/api/workflows/${id}/favorite`, { method: "DELETE" });
+  },
 };
 
 export type WorkflowUpdate = Record<string, unknown>;

@@ -825,6 +825,9 @@ pub async fn update_workflow(
     if body.enabled.is_some() {
         changed.push("enabled");
     }
+    if body.is_favorited.is_some() {
+        changed.push("is_favorited");
+    }
     if body.steps.is_some() {
         changed.push("steps");
     }
@@ -910,6 +913,69 @@ pub async fn delete_workflow(
             (status, body).into_response()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/workflows/{id}/favorite  + DELETE /api/workflows/{id}/favorite
+// ---------------------------------------------------------------------------
+
+/// Internal helper: set `is_favorited` to the given value, emit a
+/// `WorkflowChanged{Updated}` SSE so list views refresh, and return the
+/// updated [`Workflow`] as JSON.
+async fn set_favorited_handler(
+    state: Arc<AppState>,
+    id: String,
+    is_favorited: bool,
+) -> axum::response::Response {
+    let wf = match resolve_workflow(&state, &id).await {
+        Ok(w) => w,
+        Err((status, body)) => return (status, body).into_response(),
+    };
+
+    match state
+        .workflow_store
+        .set_favorited(wf.id, is_favorited)
+        .await
+    {
+        Ok(updated) => {
+            let _ = state
+                .workflow_event_tx
+                .send(WorkflowEvent::WorkflowChanged {
+                    workflow_id: updated.id,
+                    version: updated.version,
+                    change_kind: WorkflowChangeKind::Updated,
+                });
+            tracing::info!(
+                workflow_id = %updated.id,
+                name = %updated.name,
+                is_favorited = updated.is_favorited,
+                "workflow favorite toggled"
+            );
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(&updated).unwrap()),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let (status, body) = map_store_error(e);
+            (status, body).into_response()
+        }
+    }
+}
+
+pub async fn favorite_workflow(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    set_favorited_handler(state, id, true).await
+}
+
+pub async fn unfavorite_workflow(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    set_favorited_handler(state, id, false).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1643,6 +1709,7 @@ mod tests {
                 timezone: new.timezone,
                 schedule_mode: new.schedule_mode,
                 enabled: new.enabled,
+                is_favorited: false,
                 steps: new.steps,
                 default_input: new.default_input,
                 working_dir: new.working_dir,
@@ -1695,6 +1762,9 @@ mod tests {
             if let Some(e) = update.enabled {
                 wf.enabled = e;
             }
+            if let Some(f) = update.is_favorited {
+                wf.is_favorited = f;
+            }
             if let Some(steps) = update.steps {
                 if wf.steps != steps {
                     bumped = true;
@@ -1738,6 +1808,15 @@ mod tests {
             wf.last_run_at = Some(finished_at);
             wf.updated_at = Utc::now();
             Ok(())
+        }
+        async fn set_favorited(&self, id: Uuid, is_favorited: bool) -> anyhow::Result<Workflow> {
+            let mut wfs = self.workflows.write().await;
+            let wf = wfs.iter_mut().find(|w| w.id == id).ok_or_else(|| {
+                crate::errors::AcsError::NotFound(format!("Workflow with id '{}' not found", id))
+            })?;
+            wf.is_favorited = is_favorited;
+            wf.updated_at = Utc::now();
+            Ok(wf.clone())
         }
     }
 

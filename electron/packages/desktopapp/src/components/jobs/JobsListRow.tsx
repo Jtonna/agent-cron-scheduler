@@ -11,6 +11,7 @@ import {
   type JobState,
 } from "@/components/ui/JobStateIndicator";
 import { RunTooltip } from "@/components/ui/RunTooltip";
+import { FavoriteToggle } from "./FavoriteToggle";
 
 /**
  * JobsListRow
@@ -79,7 +80,10 @@ export function JobsListRow({ job, runs }: JobsListRowProps) {
         className="grid grid-cols-[20px_minmax(0,1.6fr)_120px_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-4 px-4 py-3 rounded-input border border-border bg-surface hover:bg-surface-hover hover:border-border-strong transition-colors text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
       >
         <JobStateIndicator state={leading} variant="dot" size="sm" />
-        <span className="font-medium text-fg truncate">{job.name}</span>
+        <span className="font-medium text-fg truncate inline-flex items-center gap-1">
+          <FavoriteToggle jobId={job.id} favorited={job.is_favorited} size={14} />
+          <span className="truncate">{job.name}</span>
+        </span>
         <span className="flex items-center gap-1">
           {recent.length === 0 ? (
             <span className="text-[10px] text-fg-faint italic">no runs</span>

@@ -53,6 +53,13 @@ export interface Job {
   schedule: string;
   schedule_mode: "Cron" | string;
   enabled: boolean;
+  /**
+   * Whether this workflow is favorited and pinned to the top of UI list
+   * views. Toggled via the dedicated `POST`/`DELETE
+   * /api/workflows/{id}/favorite` endpoints (`api.favoriteWorkflow` /
+   * `api.unfavoriteWorkflow`). Defaults to `false`.
+   */
+  is_favorited: boolean;
   allow_concurrent: boolean;
   on_failure: "abort" | string;
   steps: WorkflowStep[];

@@ -22,6 +22,8 @@ All request and response bodies use JSON (`Content-Type: application/json`) unle
   - [GET /api/workflows/{id}](#get-apiworkflowsid)
   - [PATCH /api/workflows/{id}](#patch-apiworkflowsid)
   - [DELETE /api/workflows/{id}](#delete-apiworkflowsid)
+  - [POST /api/workflows/{id}/favorite](#post-apiworkflowsidfavorite)
+  - [DELETE /api/workflows/{id}/favorite](#delete-apiworkflowsidfavorite)
   - [POST /api/workflows/{id}/trigger](#post-apiworkflowsidtrigger)
   - [GET /api/workflows/{id}/runs](#get-apiworkflowsidruns)
   - [GET /api/runs/recent](#get-apirunsrecent)
@@ -334,6 +336,54 @@ Delete a workflow.
 | 500 Internal Server Error | Storage failure. |
 
 **Side effects:** Broadcasts a `WorkflowChanged` SSE event with `change_kind: "deleted"`.
+
+---
+
+### POST /api/workflows/{id}/favorite
+
+Mark the workflow as favorited. Favorited workflows are pinned to the top of UI list views. Idempotent — calling on an already-favorited workflow returns the same result. Does NOT bump `version`.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description             |
+|-----------|--------|-------------------------|
+| `id`      | string | Workflow UUID or name.  |
+
+**Request:** No body.
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns the updated [Workflow](#workflow) record with `is_favorited: true`. |
+| 404 Not Found | Workflow not found. |
+| 500 Internal Server Error | Storage failure. |
+
+**Side effects:** Broadcasts a `WorkflowChanged` SSE event with `change_kind: "updated"`.
+
+---
+
+### DELETE /api/workflows/{id}/favorite
+
+Clear the workflow's favorite flag. Idempotent. Does NOT bump `version`.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description             |
+|-----------|--------|-------------------------|
+| `id`      | string | Workflow UUID or name.  |
+
+**Request:** No body.
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Returns the updated [Workflow](#workflow) record with `is_favorited: false`. |
+| 404 Not Found | Workflow not found. |
+| 500 Internal Server Error | Storage failure. |
+
+**Side effects:** Broadcasts a `WorkflowChanged` SSE event with `change_kind: "updated"`.
 
 ---
 
@@ -952,6 +1002,7 @@ The lean workflow object returned by `GET /api/workflows`, `GET /api/workflows/{
 | `timezone`        | string                                | Yes      | IANA timezone name, or `null` for UTC.                                             |
 | `schedule_mode`   | string                                | No       | One of `"Cron"` or `"WaitForCompletion"`. Default: `"Cron"`.                      |
 | `enabled`         | bool                                  | No       | Whether the workflow is scheduled.                                                 |
+| `is_favorited`    | bool                                  | No       | Whether the workflow is favorited and pinned to the top of UI list views. Defaults to `false`. Toggle via the dedicated `POST`/`DELETE /api/workflows/{id}/favorite` endpoints or `PATCH /api/workflows/{id}`. Does NOT bump `version`. |
 | `steps`           | array of [StepDef](#stepdef)          | No       | Ordered list of step definitions. Must contain at least one step.                  |
 | `default_input`   | any JSON value                        | Yes      | Baseline trigger payload used for cron-fired runs (or manual triggers with no body). |
 | `working_dir`     | string                                | Yes      | Default working directory for all steps (overridable per step).                    |
@@ -1081,6 +1132,7 @@ Request body for `PATCH /api/workflows/{id}`. All fields are optional; only incl
 | `timezone`       | string                                | New IANA timezone.                                                       |
 | `schedule_mode`  | string                                | New scheduling mode.                                                     |
 | `enabled`        | bool                                  | Enable or disable the workflow.                                          |
+| `is_favorited`   | bool                                  | Favorite or unfavorite the workflow. Pinned favorites surface at the top of UI list views. Does NOT bump `version`. |
 | `steps`          | array of [StepDef](#stepdef)          | Replace the entire step list. Must contain at least one step if provided.|
 | `default_input`  | any JSON value                        | New default trigger payload.                                             |
 | `working_dir`    | string                                | New default working directory.                                           |

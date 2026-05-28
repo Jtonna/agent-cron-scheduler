@@ -8,6 +8,7 @@ import { JobCostWidget } from "@/components/widgets/JobCostWidget";
 import { HealthWidget } from "@/components/widgets/HealthWidget";
 import { JobCostTrendWidget } from "@/components/widgets/JobCostTrendWidget";
 import { JobRunsTable } from "@/components/jobs/JobRunsTable";
+import { FavoriteToggle } from "@/components/jobs/FavoriteToggle";
 import { useJob } from "@/apis/useJob";
 import { useJobCostSummary } from "@/apis/useJobCostSummary";
 import { useJobRuns } from "@/apis/useJobRuns";
@@ -44,7 +45,7 @@ export default function JobDetailPage({
             <JobDetailSidebar
               job={job}
               runningCount={runningCount}
-              favorited={false}
+              favorited={job.is_favorited}
             />
           ) : (
             <div className="p-6 flex items-center justify-center text-fg-subtle text-sm">
@@ -75,7 +76,10 @@ export default function JobDetailPage({
             <>
               {/* Header */}
               <div>
-                <h1 className="text-2xl font-extrabold tracking-tight">{job.name}</h1>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-2xl font-extrabold tracking-tight">{job.name}</h1>
+                  <FavoriteToggle jobId={job.id} favorited={job.is_favorited} size={20} />
+                </div>
                 <p className="text-fg-muted text-sm mt-0.5 font-mono">{job.schedule}</p>
               </div>
 

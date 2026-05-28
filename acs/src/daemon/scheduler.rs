@@ -549,6 +549,7 @@ mod tests {
             timezone: None,
             schedule_mode,
             enabled: true,
+            is_favorited: false,
             steps: vec![StepDef::Shell(ShellStep {
                 common: StepDefCommon {
                     id: "s1".to_string(),
