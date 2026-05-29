@@ -1,16 +1,19 @@
 /**
  * WorkflowGraphEditor stories
  *
- * Visualises the /create page editor with two fixtures:
- *   - Empty: just a single seeded shell step (what the page boots into).
- *   - FresnoWeather: a multi-step example mirroring the
- *     `examples/fresno-weather-workflow.json` pattern — a shell fetch,
- *     a match on its result, and an agent summarisation step.
+ * Visualises the shared editor used by /create and /workflows/[id]/edit:
+ *   - Empty: just a single seeded shell step (what /create boots into).
+ *   - FresnoWeather: a multi-step `create` example mirroring the
+ *     `examples/fresno-weather-workflow.json` pattern.
+ *   - EditMode: seeds the editor in `edit` mode with a fully-formed
+ *     `Job` fixture so the "Save Changes" copy and the edit-mode header
+ *     are exercised.
  */
 
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
 import { WorkflowGraphEditor } from "./WorkflowGraphEditor";
 import { makeDefaultStep, type NewWorkflow } from "./types";
+import type { Job } from "@/apis/types";
 
 const meta: Meta<typeof WorkflowGraphEditor> = {
   title: "Pages/CreateWorkflow",
@@ -76,14 +79,81 @@ const FRESNO: NewWorkflow = {
   ],
 };
 
+/**
+ * Server-shape fixture — the `Job` read model has more fields than
+ * `NewWorkflow`, all of which the editor strips on seed. Cast through
+ * `unknown` because the storybook-only fixture intentionally uses richer
+ * step kinds than the read-side `WorkflowStep` union enumerates.
+ */
+const EXISTING_JOB: Job = {
+  id: "wf_existing_123",
+  name: "weather-greeter",
+  schedule: "0 8 * * *",
+  schedule_mode: "Cron",
+  enabled: true,
+  is_favorited: false,
+  allow_concurrent: false,
+  on_failure: "abort",
+  timezone: "America/Los_Angeles",
+  working_dir: "",
+  env_vars: null,
+  default_input: null,
+  created_at: "2025-01-01T00:00:00Z",
+  updated_at: "2025-01-02T00:00:00Z",
+  version: 3,
+  last_run_at: "2025-01-02T08:00:00Z",
+  last_run_id: "run_abc",
+  last_run_status: "Completed",
+  next_run_at: "2025-01-03T08:00:00Z",
+  steps: [
+    {
+      id: "fetch",
+      kind: "http",
+      method: "GET",
+      url: "https://api.example.com/weather",
+      headers: null,
+      body: null,
+      expect_status: [200],
+      always_run: false,
+      on_failure: "abort",
+      timeout_secs: null,
+      working_dir: null,
+      env_vars: null,
+      capture: {},
+    },
+    {
+      id: "greet",
+      kind: "shell",
+      command: "echo 'good morning'",
+      pass_stdin: false,
+      always_run: false,
+      on_failure: "abort",
+      timeout_secs: null,
+      working_dir: null,
+      env_vars: null,
+      capture: {},
+    },
+  ],
+};
+
 export const Empty: Story = {
   args: {
+    mode: "create",
     initialWorkflow: EMPTY,
   },
 };
 
 export const FresnoWeather: Story = {
   args: {
+    mode: "create",
     initialWorkflow: FRESNO,
+  },
+};
+
+export const EditMode: Story = {
+  args: {
+    mode: "edit",
+    workflowId: EXISTING_JOB.id,
+    initialWorkflow: EXISTING_JOB,
   },
 };

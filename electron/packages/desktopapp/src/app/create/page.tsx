@@ -27,7 +27,7 @@ export default function CreatePage() {
   return (
     <div className="min-h-screen bg-surface text-fg flex flex-col">
       <Navbar />
-      <WorkflowGraphEditor initialWorkflow={seedWorkflow()} />
+      <WorkflowGraphEditor mode="create" initialWorkflow={seedWorkflow()} />
     </div>
   );
 }
