@@ -159,6 +159,19 @@ export const api = {
   unfavoriteWorkflow(id: string): Promise<Job> {
     return request<Job>(`/api/workflows/${id}/favorite`, { method: "DELETE" });
   },
+
+  /**
+   * Create a new workflow. The body shape must match the backend
+   * `POST /api/workflows` request — see `acs/src/models/workflow.rs`.
+   * Validation errors come back as standard ApiError with the
+   * server-provided code/message.
+   */
+  createWorkflow(body: Record<string, unknown>): Promise<Job> {
+    return request<Job>("/api/workflows", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
 };
 
 export type WorkflowUpdate = Record<string, unknown>;

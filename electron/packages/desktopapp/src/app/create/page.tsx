@@ -1,13 +1,33 @@
+"use client";
+
+/**
+ * /create page
+ *
+ * Prototype graph-based workflow builder. Renders the navbar + the
+ * WorkflowGraphEditor. The editor owns its own state — the page just
+ * seeds the initial NewWorkflow with one empty shell step so the canvas
+ * isn't blank on first load.
+ */
+
 import { Navbar } from "@/components/navbar/Navbar";
+import { WorkflowGraphEditor } from "./WorkflowGraphEditor";
+import { makeDefaultStep, type NewWorkflow } from "./types";
+
+function seedWorkflow(): NewWorkflow {
+  return {
+    name: "",
+    schedule: "0 9 * * *",
+    timezone: "America/Los_Angeles",
+    enabled: true,
+    steps: [makeDefaultStep("shell")],
+  };
+}
 
 export default function CreatePage() {
   return (
-    <div className="min-h-screen bg-surface text-fg">
+    <div className="min-h-screen bg-surface text-fg flex flex-col">
       <Navbar />
-      <div className="px-16 py-14">
-        <h1 className="text-3xl font-extrabold tracking-tight mb-2">Build a job</h1>
-        <p className="text-fg-muted text-[15px]">Create a new scheduled or on-demand job.</p>
-      </div>
+      <WorkflowGraphEditor initialWorkflow={seedWorkflow()} />
     </div>
   );
 }
