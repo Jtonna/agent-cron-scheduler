@@ -3,17 +3,15 @@
 /**
  * WorkflowGraphEditor
  *
- * The interactive editor at the heart of /create AND /workflows/[id]/edit.
- * Owns the `NewWorkflow` state and renders the new whiteboard-style
- * canvas:
+ * The interactive canvas at the heart of /create AND /workflows/[id]/edit.
+ * Owns the `NewWorkflow.steps` mutation surface and renders the
+ * whiteboard-style canvas:
  *
- *   - ScheduleCard (top-centre, compact floating card with cron + tz +
- *     enabled toggle + Save/Create primary button)
  *   - MiniMap (top-left, with a "Minimap" eyebrow label so users know
  *     what the aerial view is for)
  *   - Controls (zoom in/out/fit, top-right)
- *   - KindPaletteTray (left dock, vertically centred so it coexists with
- *     the minimap above; chip click appends a step at the end)
+ *   - KindPaletteDock (bottom-centre horizontal dock; chip click appends
+ *     a step at the end)
  *   - ReactFlow canvas with custom StepNode + InsertEdge (mid-edge +
  *     button that opens a kind picker), dot-grid background on a
  *     muted surface that gives the white cursor real contrast
@@ -21,13 +19,14 @@
  *     into match cases — each level pushes a frame onto the modal
  *     stack, owned by `useStepEditorStack`)
  *
- * The workflow name is NOT rendered here — it lives in the
- * `CanvasBreadcrumb` above the canvas, where the parent page wires it up
- * via the `onNameChange` prop the editor exposes for that purpose. This
- * keeps the whiteboard clean and the breadcrumb authoritative.
+ * The workflow identity (name, schedule, timezone, enabled) and the
+ * Save / Create button NO LONGER live on the canvas. They live in the
+ * `EditorSidebar` mounted by the page on the left. The editor exposes
+ * controlled props so the page can keep both surfaces in sync without
+ * the editor having to know about the sidebar.
  *
  * State / logic split:
- *   - The `NewWorkflow` state and its mutation callbacks (insert,
+ *   - The `NewWorkflow` state and its step-mutation callbacks (insert,
  *     delete, reorder, append) live in this file because they're tied
  *     to the canvas action surface.
  *   - The modal stack — drilling into match cases, breadcrumb
@@ -35,19 +34,18 @@
  *     `useStepEditorStack`.
  *   - Server-shape `Job` ↔ `NewWorkflow` conversion lives in
  *     `workflowSerialization.ts`.
+ *   - Submit wiring (create vs update, navigation, error state) lives
+ *     in the page; the page reads `serialiseWorkflow(getWorkflow())`
+ *     when the sidebar's submit button fires via the
+ *     `onWorkflowChange` snapshot.
  *
  * The component runs in one of two modes via discriminated-union props:
- *   - `mode: "create"` — seeds with a fresh `NewWorkflow`, submits via
- *     `useCreateWorkflow`, navigates to the newly-created workflow's
- *     detail page on success.
+ *   - `mode: "create"` — seeds with a fresh `NewWorkflow`.
  *   - `mode: "edit"` — seeds from an existing `Workflow` (the `Job` read
- *     shape from `apis/types.ts`) after stripping server-only fields,
- *     submits via `useUpdateWorkflow`, navigates back to the same
- *     workflow's detail page on success.
+ *     shape from `apis/types.ts`) after stripping server-only fields.
  */
 
-import { useCallback, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -61,13 +59,10 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import { useCreateWorkflow } from "@/apis/useCreateWorkflow";
-import { useUpdateWorkflow } from "@/apis/useUpdateWorkflow";
 import type { Job } from "@/apis/types";
 import { StepNode } from "./StepNode";
 import { StepEditorModal } from "./StepEditorModal";
-import { ScheduleCard } from "./ScheduleCard";
-import { KindPaletteTray } from "./KindPaletteTray";
+import { KindPaletteDock } from "./KindPaletteDock";
 import { InsertEdge } from "./EdgePlusButton";
 import { EDITOR_CURSOR_CSS } from "./cursors";
 import {
@@ -81,30 +76,43 @@ import {
 import { makeDefaultStep } from "./types";
 import type { NewWorkflow, StepKind } from "./types";
 import { useStepEditorStack } from "./useStepEditorStack";
-import { jobToNewWorkflow, serialiseWorkflow } from "./workflowSerialization";
+import { jobToNewWorkflow } from "./workflowSerialization";
 
 const nodeTypes = { step: StepNode };
 const edgeTypes: EdgeTypes = { insert: InsertEdge };
 
 interface WorkflowGraphEditorPropsCommon {
   /**
-   * Controlled workflow name. When provided, this value overrides the
-   * editor's internal `workflow.name` on every render — the parent
-   * (typically the page hosting the `CanvasBreadcrumb` editable crumb)
-   * becomes the source of truth for the name. When omitted, the editor
-   * keeps using whatever `initialWorkflow.name` it was seeded with.
+   * Controlled workflow name. Sourced from the page-level state shared
+   * with `EditorSidebar`. Overrides whatever name the editor was
+   * seeded with on every render.
    */
-  name?: string;
+  name: string;
   /**
-   * Notifies the parent of name changes so it can keep the breadcrumb
-   * (or any other out-of-canvas name editor) in sync.
+   * Controlled schedule. Sourced from the page-level state shared with
+   * `EditorSidebar`.
    */
-  onNameChange?: (name: string) => void;
+  schedule: string;
+  /** Controlled timezone. */
+  timezone: string;
+  /** Controlled enabled flag. */
+  enabled: boolean;
+  /**
+   * Fires whenever the editor mutates the workflow (step insert /
+   * delete / reorder / nested change inside the modal). The page uses
+   * this to keep its `NewWorkflow` snapshot in sync so the sidebar's
+   * Save button can serialise the latest state.
+   */
+  onWorkflowChange?: (next: NewWorkflow) => void;
 }
 
 export type WorkflowGraphEditorProps =
   | ({ mode: "create"; initialWorkflow: NewWorkflow } & WorkflowGraphEditorPropsCommon)
-  | ({ mode: "edit"; workflowId: string; initialWorkflow: Job } & WorkflowGraphEditorPropsCommon);
+  | ({
+      mode: "edit";
+      workflowId: string;
+      initialWorkflow: Job;
+    } & WorkflowGraphEditorPropsCommon);
 
 export function WorkflowGraphEditor(props: WorkflowGraphEditorProps) {
   return (
@@ -115,9 +123,6 @@ export function WorkflowGraphEditor(props: WorkflowGraphEditorProps) {
 }
 
 function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
-  const router = useRouter();
-  const isEdit = props.mode === "edit";
-
   const seed = useMemo<NewWorkflow>(
     () =>
       props.mode === "edit"
@@ -130,35 +135,29 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
 
   const [internalWorkflow, setWorkflow] = useState<NewWorkflow>(seed);
 
-  // Controlled-name overlay. If the parent passes `name`, that's the
-  // source of truth — derive the effective `workflow` by overlaying it
-  // on top of the internal state. No effect, no setState loop, no
-  // custom setter wrapper: the existing `setWorkflow` calls below only
-  // ever touch steps/schedule/etc., never `name`, so the overlay stays
-  // authoritative for the displayed name. `onNameChange` is wired in
-  // for symmetry / future use.
-  const { name: controlledName } = props;
+  // Controlled overlays. The page owns name/schedule/timezone/enabled;
+  // the editor's internal `setWorkflow` calls below only ever touch
+  // `steps`, so the overlay stays authoritative for the controlled
+  // fields without an effect or setState loop.
+  const { name, schedule, timezone, enabled, onWorkflowChange } = props;
   const workflow: NewWorkflow = useMemo(
-    () =>
-      controlledName !== undefined
-        ? { ...internalWorkflow, name: controlledName }
-        : internalWorkflow,
-    [controlledName, internalWorkflow],
+    () => ({
+      ...internalWorkflow,
+      name,
+      schedule,
+      timezone: timezone.length > 0 ? timezone : undefined,
+      enabled,
+    }),
+    [internalWorkflow, name, schedule, timezone, enabled],
   );
 
+  // Tell the page about the latest snapshot whenever it changes so the
+  // submit handler always has fresh `steps`.
+  useEffect(() => {
+    onWorkflowChange?.(workflow);
+  }, [workflow, onWorkflowChange]);
+
   const stack = useStepEditorStack(workflow, setWorkflow);
-
-  const { create, creating, error: createError } = useCreateWorkflow();
-  const editWorkflowId = props.mode === "edit" ? props.workflowId : "";
-  const {
-    update,
-    updating,
-    error: updateError,
-  } = useUpdateWorkflow(editWorkflowId);
-  const [submissionError, setSubmissionError] = useState<string | null>(null);
-
-  const busy = isEdit ? updating : creating;
-  const serverError = isEdit ? updateError : createError;
 
   /* ── Mutations ────────────────────────────────────────────────────── */
 
@@ -238,39 +237,13 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
     [stack],
   );
 
-  /* ── Submit ───────────────────────────────────────────────────────── */
-
-  const handleSubmit = useCallback(async () => {
-    setSubmissionError(null);
-    try {
-      const body = serialiseWorkflow(workflow);
-      if (props.mode === "edit") {
-        await update(body);
-        router.push(`/workflows/${props.workflowId}`);
-      } else {
-        const created = await create(body);
-        router.push(`/workflows/${created.id}`);
-      }
-    } catch (e) {
-      setSubmissionError(e instanceof Error ? e.message : "Unknown error");
-    }
-  }, [create, router, update, workflow, props]);
-
-  const submitLabel = isEdit
-    ? busy
-      ? "Saving…"
-      : "Save Changes"
-    : busy
-      ? "Creating…"
-      : "Create Workflow";
-
   const { currentStep, currentFrame, breadcrumb, handleStepChange, handleOpenNested, pop, closeAll } =
     stack;
 
   return (
     <div
       data-acs-editor
-      className="flex flex-col h-[calc(100vh-var(--height-navbar))]"
+      className="flex-1 flex flex-col min-h-0"
     >
       {/* Accessibility: force high-contrast SVG cursors throughout the
           editor surface so OSX-style white cursors stay visible against
@@ -318,34 +291,15 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
           />
         </div>
 
-        {/* ── Top-centre: schedule card + primary action ─────────────── */}
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20">
-          <ScheduleCard
-            workflow={workflow}
-            onChange={setWorkflow}
-            submitLabel={submitLabel}
-            onSubmit={handleSubmit}
-            submitDisabled={busy || workflow.steps.length === 0 || !workflow.name.trim()}
-          />
-        </div>
-
-        {/* ── Left dock: kind palette tray (vertically centred so it
-             coexists with the minimap stack above) ─────────────────── */}
-        <KindPaletteTray onAdd={handleAppend} />
+        {/* ── Bottom-centre dock: kind palette ──────────────────────── */}
+        <KindPaletteDock onAdd={handleAppend} />
 
         {/* ── Empty state hint ───────────────────────────────────────── */}
         {workflow.steps.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-fg-muted text-sm">
-              No steps yet — pick a kind from the left palette.
+              No steps yet — pick a kind from the dock below.
             </div>
-          </div>
-        )}
-
-        {/* ── Submission / server errors ─────────────────────────────── */}
-        {(submissionError || serverError) && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 max-w-md bg-status-failed-bg border border-status-failed-border text-status-failed rounded-card px-4 py-2 text-sm shadow-menu">
-            {submissionError ?? serverError}
           </div>
         )}
       </div>

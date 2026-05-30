@@ -1,21 +1,24 @@
 /**
  * WorkflowGraphEditor stories
  *
- * Visualises the shared editor used by /create and /workflows/[id]/edit
- * after the whiteboard-style redesign:
- *   - EmptyCreate — fresh /create entry, one seeded shell step.
+ * Showcases the canvas-only surface of the editor (no sidebar chrome).
+ * Each story wraps the editor in a stateful harness that supplies the
+ * controlled identity props (name / schedule / timezone / enabled) the
+ * page would normally hold on its behalf.
+ *
+ *   - EmptyCreate — fresh `/create` entry, one seeded shell step.
  *   - FilledCreate — multi-step `create` example mirroring the
  *     `examples/fresno-weather-workflow.json` pattern.
  *   - EditMode — seeds the editor in `edit` mode with a fully-formed
- *     `Job` fixture so the "Save Changes" copy and the edit-mode header
- *     are exercised.
- *   - EditModeWithModalOpen — same as EditMode; storybook viewers
- *     should click a node to see the palette modal.
+ *     `Job` fixture.
+ *   - EditModeWithModalOpen — same as EditMode; viewers click a node to
+ *     open the palette modal.
  *   - MatchStepNestedModal — workflow seeded with a match step;
  *     clicking the match node and drilling into a case opens the
  *     nested modal with breadcrumb.
  */
 
+import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
 import { WorkflowGraphEditor } from "./WorkflowGraphEditor";
 import { makeDefaultStep, type NewWorkflow } from "./types";
@@ -169,31 +172,90 @@ const EXISTING_JOB: Job = {
   ],
 };
 
+/**
+ * Stateful harness — supplies the controlled identity props the page
+ * would normally manage, so the editor can render in isolation.
+ */
+function CreateHarness({ seed }: { seed: NewWorkflow }) {
+  const [name, setName] = useState(seed.name);
+  const [schedule, setSchedule] = useState(seed.schedule);
+  const [timezone, setTimezone] = useState(seed.timezone ?? "");
+  const [enabled, setEnabled] = useState(seed.enabled ?? true);
+  // setters are intentionally unused inside the story — they exist
+  // so the editor's controlled inputs are wired even if the sidebar
+  // isn't part of the story.
+  void setName;
+  void setSchedule;
+  void setTimezone;
+  void setEnabled;
+  return (
+    <div className="h-screen flex flex-col bg-surface">
+      <WorkflowGraphEditor
+        mode="create"
+        initialWorkflow={seed}
+        name={name}
+        schedule={schedule}
+        timezone={timezone}
+        enabled={enabled}
+      />
+    </div>
+  );
+}
+
+function EditHarness({ workflowId, job }: { workflowId: string; job: Job }) {
+  const [name, setName] = useState(job.name);
+  const [schedule, setSchedule] = useState(job.schedule);
+  const [timezone, setTimezone] = useState(job.timezone ?? "");
+  const [enabled, setEnabled] = useState(job.enabled);
+  void setName;
+  void setSchedule;
+  void setTimezone;
+  void setEnabled;
+  return (
+    <div className="h-screen flex flex-col bg-surface">
+      <WorkflowGraphEditor
+        mode="edit"
+        workflowId={workflowId}
+        initialWorkflow={job}
+        name={name}
+        schedule={schedule}
+        timezone={timezone}
+        enabled={enabled}
+      />
+    </div>
+  );
+}
+
 export const EmptyCreate: Story = {
-  args: { mode: "create", initialWorkflow: EMPTY },
+  render: () => <CreateHarness seed={EMPTY} />,
 };
 
 export const FilledCreate: Story = {
-  args: { mode: "create", initialWorkflow: FRESNO },
+  render: () => <CreateHarness seed={FRESNO} />,
 };
 
 export const EditMode: Story = {
-  args: { mode: "edit", workflowId: EXISTING_JOB.id, initialWorkflow: EXISTING_JOB },
+  render: () => (
+    <EditHarness workflowId={EXISTING_JOB.id} job={EXISTING_JOB} />
+  ),
 };
 
 export const EditModeWithModalOpen: Story = {
-  args: { mode: "edit", workflowId: EXISTING_JOB.id, initialWorkflow: EXISTING_JOB },
+  render: () => (
+    <EditHarness workflowId={EXISTING_JOB.id} job={EXISTING_JOB} />
+  ),
   parameters: {
     docs: {
       description: {
-        story: "Click any step node in the canvas to open the palette-style step editor modal.",
+        story:
+          "Click any step node in the canvas to open the palette-style step editor modal.",
       },
     },
   },
 };
 
 export const MatchStepNestedModal: Story = {
-  args: { mode: "create", initialWorkflow: NESTED_MATCH },
+  render: () => <CreateHarness seed={NESTED_MATCH} />,
   parameters: {
     docs: {
       description: {
