@@ -25,6 +25,13 @@ export interface StepNodeData extends Record<string, unknown> {
   isJoin?: boolean;
   /** Label for a branch (case key / "default"), if any. */
   branchLabel?: string;
+  /** Whether this node may be deleted (the editor disables delete for the last top-level step). */
+  canDelete?: boolean;
+  /* ── Imperative callbacks wired by the parent editor. ───────────── */
+  onEdit?: (path: string) => void;
+  onDelete?: (path: string) => void;
+  onSwitchKind?: (path: string) => void;
+  onReorder?: (path: string, dir: "up" | "down") => void;
 }
 
 const NODE_WIDTH = 240;
@@ -35,16 +42,32 @@ interface BuildResult {
   edges: Edge[];
 }
 
+export interface BuildOptions {
+  onEdit?: (path: string) => void;
+  onDelete?: (path: string) => void;
+  onSwitchKind?: (path: string) => void;
+  onReorder?: (path: string, dir: "up" | "down") => void;
+  /** Called by the InsertEdge custom edge when the user picks a kind to insert. */
+  onInsertAfter?: (sourcePath: string, kind: import("./types").StepKind) => void;
+  /** Whether the editor permits deleting the final remaining top-level step. */
+  topLevelCanDelete?: boolean;
+}
+
 /**
  * Walks the step tree depth-first and returns a flat list of reactflow
  * nodes + edges. The returned graph is not yet positioned — call
  * `layoutGraph` to run dagre.
  */
-export function buildGraph(steps: NewStep[]): BuildResult {
+export function buildGraph(steps: NewStep[], opts: BuildOptions = {}): BuildResult {
   const nodes: Node<StepNodeData>[] = [];
   const edges: Edge[] = [];
 
-  function addStep(step: NewStep, path: string, branchLabel?: string): void {
+  function addStep(
+    step: NewStep,
+    path: string,
+    branchLabel?: string,
+    canDelete = true,
+  ): void {
     nodes.push({
       id: path,
       type: "step",
@@ -53,6 +76,11 @@ export function buildGraph(steps: NewStep[]): BuildResult {
         path,
         summary: summarizeStep(step),
         branchLabel,
+        canDelete,
+        onEdit: opts.onEdit,
+        onDelete: opts.onDelete,
+        onSwitchKind: opts.onSwitchKind,
+        onReorder: opts.onReorder,
       },
       position: { x: 0, y: 0 },
     });
@@ -75,7 +103,9 @@ export function buildGraph(steps: NewStep[]): BuildResult {
     for (let i = 0; i < chainSteps.length; i++) {
       const step = chainSteps[i];
       const path = `${basePath}/${i}`;
-      addStep(step, path, i === 0 ? branchLabel : undefined);
+      const isTopLevel = basePath === "s";
+      const canDelete = !isTopLevel || chainSteps.length > 1 || (opts.topLevelCanDelete ?? false);
+      addStep(step, path, i === 0 ? branchLabel : undefined, canDelete);
 
       if (i === 0) entry = path;
 
@@ -84,7 +114,10 @@ export function buildGraph(steps: NewStep[]): BuildResult {
           id: `e:${prevExit}->${path}`,
           source: prevExit,
           target: path,
-          type: "smoothstep",
+          type: opts.onInsertAfter ? "insert" : "smoothstep",
+          data: opts.onInsertAfter
+            ? { sourcePath: prevExit, onInsert: opts.onInsertAfter }
+            : undefined,
         });
       }
 
@@ -111,6 +144,7 @@ export function buildGraph(steps: NewStep[]): BuildResult {
               type: "smoothstep",
               label: caseKey,
               style: { stroke: "var(--color-fg-subtle)" },
+              labelStyle: { fontFamily: "monospace", fontSize: 10 },
             });
           }
           if (caseExit) branchExits.push(caseExit);
@@ -284,6 +318,65 @@ export function deleteStepAtPath(steps: NewStep[], path: string): NewStep[] {
 
     if (remaining.length === 1) {
       return list.filter((_, i) => i !== idx);
+    }
+
+    const current = list[idx];
+    if (current.kind !== "match") return list;
+    const tag = remaining[1];
+    if (tag === "cases") {
+      const caseKey = remaining[2];
+      const rest = remaining.slice(3);
+      const updated: NewStep = {
+        ...current,
+        cases: {
+          ...current.cases,
+          [caseKey]: recurse(current.cases[caseKey] ?? [], rest),
+        },
+      };
+      const copy = [...list];
+      copy[idx] = updated;
+      return copy;
+    }
+    if (tag === "default") {
+      const rest = remaining.slice(2);
+      const updated: NewStep = {
+        ...current,
+        default: recurse(current.default ?? [], rest),
+      };
+      const copy = [...list];
+      copy[idx] = updated;
+      return copy;
+    }
+    return list;
+  }
+
+  return recurse(steps, parts);
+}
+
+/**
+ * Moves the step at `path` one position up or down within its sibling
+ * array. Returns the input unchanged if the move would go out of bounds
+ * or the path is invalid.
+ */
+export function reorderStepAtPath(
+  steps: NewStep[],
+  path: string,
+  dir: "up" | "down",
+): NewStep[] {
+  const parts = path.split("/").slice(1);
+  if (parts.length === 0) return steps;
+
+  function recurse(list: NewStep[], remaining: string[]): NewStep[] {
+    const head = remaining[0];
+    const idx = parseInt(head, 10);
+    if (Number.isNaN(idx) || idx < 0 || idx >= list.length) return list;
+
+    if (remaining.length === 1) {
+      const target = dir === "up" ? idx - 1 : idx + 1;
+      if (target < 0 || target >= list.length) return list;
+      const copy = [...list];
+      [copy[idx], copy[target]] = [copy[target], copy[idx]];
+      return copy;
     }
 
     const current = list[idx];

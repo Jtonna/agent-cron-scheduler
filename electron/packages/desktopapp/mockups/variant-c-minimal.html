@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Variant C — Minimal v2</title>
+<style>
+  :root {
+    --bg: #FAFAF7;
+    --card: #FFFFFF;
+    --modal-bg: #FAFAF8;
+    --border: #E5E5E0;
+    --border-strong: #DCDCD4;
+    --ink: #18181B;
+    --muted: #6B7280;
+    --muted-2: #9CA3AF;
+    --accent: #C68A3B;
+    --accent-soft: #F6EEDD;
+    --accent-deep: #7A5418;
+    --shadow: 0 1px 2px rgba(20,20,20,.04), 0 6px 24px rgba(20,20,20,.06);
+    --shadow-lift: 0 2px 4px rgba(20,20,20,.05), 0 12px 36px rgba(20,20,20,.10);
+    --shadow-menu: 0 12px 32px rgba(0,0,0,0.12), 0 2px 4px rgba(0,0,0,0.06);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif; font-size: 14px; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+  .nav {
+    position: fixed; top: 0; left: 0; right: 0; height: 40px; z-index: 50;
+    display: flex; align-items: center; padding: 0 16px;
+    background: rgba(250,250,247,.85); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  .logo { width: 16px; height: 16px; border-radius: 4px; background: var(--ink);
+    display: inline-flex; align-items: center; justify-content: center; color: white; font-size: 10px; font-weight: 600; }
+  .crumbs { margin-left: 10px; color: var(--muted); font-size: 12px; }
+  .crumbs b { color: var(--ink); font-weight: 500; }
+
+  .canvas { position: absolute; top: 40px; left: 0; right: 0; bottom: 0; background: var(--bg); overflow: hidden; }
+
+  .brief {
+    position: fixed; top: 50px; right: 16px; z-index: 60;
+    max-width: 320px; padding: 7px 11px; border-radius: 999px;
+    background: rgba(24,24,27,.88); color: #F5F5F0; font-size: 11px; line-height: 1.4;
+    box-shadow: var(--shadow);
+  }
+
+  .name-inline { position: absolute; top: 64px; left: 32px; z-index: 30; display: flex; align-items: center; gap: 10px; }
+  .name-inline .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .name-inline .name {
+    font-size: 20px; font-weight: 500; letter-spacing: -.01em;
+    border: none; background: transparent; outline: none; color: var(--ink); padding: 2px 4px; border-radius: 4px;
+  }
+  .name-inline .name:hover, .name-inline .name:focus { background: #F2F2EC; }
+
+  .iconbar {
+    position: absolute; top: 68px; left: 50%; transform: translateX(-50%); z-index: 30;
+    display: flex; align-items: center; gap: 4px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+    padding: 4px; box-shadow: var(--shadow);
+  }
+  .ic-btn {
+    width: 30px; height: 30px; border-radius: 999px; border: none; background: transparent;
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    color: var(--ink); position: relative;
+  }
+  .ic-btn:hover { background: #F4F4EE; }
+  .ic-btn.active { background: var(--accent-soft); color: var(--accent-deep); }
+  .ic-btn svg { width: 15px; height: 15px; }
+  .ic-btn .badge { position: absolute; bottom: 2px; right: 2px; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--accent); border: 1.5px solid var(--card); }
+  .ic-divider { width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
+  .ic-save { height: 30px; padding: 0 14px; border-radius: 999px; background: var(--ink); color: white; border: none;
+    font-size: 12px; font-weight: 500; cursor: pointer; margin-left: 2px; }
+  .ic-save:hover { background: #000; }
+
+  .popover {
+    position: absolute; top: 112px; left: 50%; transform: translateX(-50%); z-index: 35;
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow-lift); padding: 14px; width: 280px;
+  }
+  .popover::before {
+    content: ""; position: absolute; top: -6px; left: 50%; transform: translateX(-50%) rotate(45deg);
+    width: 10px; height: 10px; background: var(--card); border-left: 1px solid var(--border); border-top: 1px solid var(--border);
+  }
+  .popover .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+  .pop-pill {
+    display: flex; align-items: center; gap: 8px;
+    background: #FCFCF9; border: 1px solid var(--border-strong); border-radius: 999px;
+    padding: 8px 14px; font-size: 13px;
+  }
+  .pop-pill .clock { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--accent); position: relative; flex-shrink: 0; }
+  .pop-pill .clock::after { content: ""; position: absolute; top: 1px; left: 5px; width: 1.5px; height: 5px; background: var(--accent); }
+  .pop-pill .schedule { flex: 1; }
+  .pop-pill .edit { font-size: 11px; color: var(--muted); cursor: pointer; padding: 3px 7px; border-radius: 5px; }
+  .pop-pill .edit:hover { background: #F2F2EC; color: var(--ink); }
+  .pop-sub { font-size: 11px; color: var(--muted-2); margin-top: 6px; padding-left: 14px; }
+  .pop-quick { display: flex; gap: 4px; margin-top: 10px; flex-wrap: wrap; }
+  .pop-quick span { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: #F4F4EE; color: var(--muted); cursor: pointer; }
+  .pop-quick span.on { background: var(--accent-soft); color: var(--accent-deep); }
+  .pop-quick span:hover { background: #EAEAE2; }
+
+  .zoom {
+    position: absolute; top: 110px; right: 24px; width: 150px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: var(--shadow); padding: 7px; z-index: 25;
+  }
+  .mini { width: 100%; height: 70px; background: #F4F4EE; border: 1px solid var(--border); border-radius: 5px; position: relative; overflow: hidden; }
+  .mini .vp { position: absolute; top: 10px; left: 14px; width: 70px; height: 40px;
+    border: 1.5px solid var(--accent); border-radius: 3px; background: rgba(198,138,59,.08); }
+  .mini .dot-n { position: absolute; width: 4px; height: 4px; background: var(--ink); border-radius: 1px; }
+  .zoom-ctrls { display: flex; gap: 3px; margin-top: 6px; }
+  .zoom-ctrls button { flex: 1; height: 20px; border: 1px solid var(--border-strong); background: #FCFCF9;
+    border-radius: 4px; cursor: pointer; font-size: 11px; color: var(--ink); }
+  .zoom-ctrls button:hover { background: var(--accent-soft); }
+
+  .node {
+    position: absolute; min-width: 150px; padding: 9px 11px;
+    background: var(--card); border: 1px solid var(--border-strong); border-radius: 7px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    font-size: 13px;
+  }
+  .node .num {
+    position: absolute; top: -8px; left: -8px; width: 18px; height: 18px;
+    background: var(--ink); color: white; border-radius: 50%;
+    font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center;
+  }
+  .node .kind { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .node .id { font-weight: 500; margin-top: 1px; }
+  .node.match { background: #FBF7EF; border-color: #EFE3CC; }
+  .node.case { min-width: 100px; background: #F7F1E5; }
+  .node.selected { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), 0 1px 2px rgba(0,0,0,.04); }
+
+  /* Floating edit affordance near selected node */
+  .edit-chip {
+    position: absolute; z-index: 28;
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 26px; padding: 0 10px 0 8px; border-radius: 999px;
+    background: var(--ink); color: #fff; font-size: 11px; font-weight: 500;
+    border: none; cursor: pointer; box-shadow: var(--shadow-lift);
+  }
+  .edit-chip:hover { background: #000; }
+  .edit-chip svg { width: 11px; height: 11px; }
+
+  .edges { position: absolute; inset: 0; pointer-events: none; }
+
+  /* ===== Palette-style modal (step editor) ===== */
+  .backdrop {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(24, 24, 27, 0.6);
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 20vh 1rem 0;
+  }
+  .modal {
+    width: 100%; max-width: 36rem;
+    background: var(--modal-bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow-menu);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .modal-head {
+    display: flex; align-items: center; gap: 10px;
+    height: 44px; padding: 0 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .kind-chip {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: var(--accent-soft); color: var(--accent-deep);
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .kind-chip svg { width: 13px; height: 13px; }
+  .modal-title { flex: 1; font-size: 13.5px; color: var(--ink); }
+  .modal-title b { font-weight: 500; }
+  .modal-title .step-name { color: var(--accent-deep); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; }
+  .kind-badge {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); background: #F4F4EE; padding: 3px 8px; border-radius: 999px;
+  }
+
+  .modal-body { max-height: 60vh; overflow-y: auto; padding: 14px 16px; }
+  .form-field { margin-bottom: 14px; }
+  .form-field label {
+    display: block; font-size: 10px; color: var(--muted); margin-bottom: 5px;
+    text-transform: uppercase; letter-spacing: .05em; font-weight: 500;
+  }
+  .form-field input[type="text"], .form-field input[type="number"], .form-field textarea {
+    width: 100%; border: 1px solid var(--border-strong); border-radius: 6px;
+    padding: 7px 9px; font-size: 13px; background: var(--card); color: var(--ink);
+    outline: none; transition: border-color .1s, box-shadow .1s;
+  }
+  .form-field input:focus, .form-field textarea:focus {
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .form-field input.mono, .form-field textarea {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
+  }
+  .form-field textarea { resize: vertical; min-height: 84px; }
+
+  .segmented {
+    display: inline-flex; padding: 2px; background: #F4F4EE;
+    border: 1px solid var(--border-strong); border-radius: 7px;
+  }
+  .segmented button {
+    border: none; background: transparent; padding: 5px 11px;
+    font-size: 11px; font-weight: 500; color: var(--muted);
+    border-radius: 5px; cursor: pointer; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .segmented button:hover { color: var(--ink); }
+  .segmented button.on { background: var(--card); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+
+  .headers-grid { display: flex; flex-direction: column; gap: 6px; }
+  .header-row { display: grid; grid-template-columns: 1fr 1.4fr 22px; gap: 6px; align-items: center; }
+  .header-row input { padding: 6px 8px; font-size: 12px; }
+  .header-row .del {
+    width: 22px; height: 22px; border: none; background: transparent;
+    color: var(--muted-2); cursor: pointer; border-radius: 4px; font-size: 14px;
+  }
+  .header-row .del:hover { background: #F0F0EA; color: var(--ink); }
+  .add-row {
+    margin-top: 6px; background: transparent; border: 1px dashed var(--border-strong);
+    color: var(--muted); font-size: 11px; padding: 6px 10px; border-radius: 6px;
+    cursor: pointer; width: 100%; text-align: left;
+  }
+  .add-row:hover { border-color: var(--accent); color: var(--accent-deep); background: var(--accent-soft); }
+
+  .body-wrap { position: relative; }
+  .json-toggle {
+    position: absolute; top: 6px; right: 6px; z-index: 2;
+    font-size: 10px; padding: 2px 7px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent-deep); font-weight: 600;
+    cursor: pointer; user-select: none; border: 1px solid transparent;
+  }
+  .json-toggle:hover { border-color: var(--accent); }
+
+  .chip-input {
+    display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+    border: 1px solid var(--border-strong); border-radius: 6px;
+    padding: 5px 6px; background: var(--card); min-height: 32px;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--accent-soft); color: var(--accent-deep);
+    padding: 2px 4px 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .chip button {
+    width: 14px; height: 14px; border: none; background: transparent;
+    color: var(--accent-deep); cursor: pointer; font-size: 12px; line-height: 1;
+    border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .chip button:hover { background: rgba(122,84,24,.15); }
+  .chip-input .ghost {
+    border: none; background: transparent; outline: none; font-size: 12px;
+    padding: 2px 4px; flex: 1; min-width: 60px; color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  .advanced {
+    display: flex; align-items: center; gap: 7px;
+    padding: 9px 2px; font-size: 12px; color: var(--muted); cursor: pointer;
+    user-select: none; border-top: 1px solid var(--border); margin-top: 4px;
+  }
+  .advanced:hover { color: var(--ink); }
+  .advanced .caret {
+    width: 6px; height: 6px;
+    border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+    transform: rotate(-45deg); display: inline-block;
+  }
+
+  .modal-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-top: 1px solid var(--border);
+    background: var(--card);
+  }
+  .btn-ghost {
+    border: none; background: transparent; color: var(--muted);
+    padding: 7px 14px; font-size: 12.5px; font-weight: 500;
+    border-radius: 6px; cursor: pointer;
+  }
+  .btn-ghost:hover { background: #F0F0EA; color: var(--ink); }
+  .btn-primary {
+    border: none; background: var(--accent); color: white;
+    padding: 7px 16px; font-size: 12.5px; font-weight: 500;
+    border-radius: 6px; cursor: pointer; box-shadow: 0 1px 2px rgba(122,84,24,.2);
+  }
+  .btn-primary:hover { background: var(--accent-deep); }
+  .foot-hint { font-size: 10.5px; color: var(--muted-2); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <span class="logo">a</span>
+  <span class="crumbs">Workflows / <b>weather-greeter-demo</b></span>
+</div>
+
+<div class="brief">
+  <b>Variant C — Minimal v2.</b> Inline name, icon-popover schedule, palette-style modal for step editing (Cmd+K twin).
+</div>
+
+<div class="canvas">
+
+  <svg class="edges" width="100%" height="100%">
+    <defs>
+      <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="#B8B8AE" />
+      </marker>
+    </defs>
+    <path d="M 240 320 C 320 320, 320 420, 400 420" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr3)"/>
+    <path d="M 550 420 C 620 420, 620 420, 690 420" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr3)"/>
+    <path d="M 840 420 C 900 420, 900 320, 970 320" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr3)"/>
+    <path d="M 840 440 C 900 440, 900 520, 970 520" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr3)"/>
+    <path d="M 1120 320 C 1180 320, 1180 420, 1240 420" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr3)"/>
+    <path d="M 1120 520 C 1180 520, 1180 420, 1240 420" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr3)"/>
+  </svg>
+
+  <!-- Selected node is fetch-weather (http) now -->
+  <div class="node selected" style="top: 300px; left: 100px;">
+    <span class="num">1</span>
+    <div class="kind">http</div>
+    <div class="id">fetch_weather</div>
+  </div>
+  <!-- Floating edit chip near the selected node -->
+  <button class="edit-chip" style="top: 268px; left: 168px;">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 113 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+    Edit step
+  </button>
+
+  <div class="node" style="top: 400px; left: 400px;">
+    <span class="num">2</span>
+    <div class="kind">script</div>
+    <div class="id">parse-response</div>
+  </div>
+  <div class="node match" style="top: 400px; left: 690px;">
+    <span class="num">3</span>
+    <div class="kind">match</div>
+    <div class="id">weather-condition</div>
+  </div>
+  <div class="node case" style="top: 300px; left: 970px;">
+    <span class="num">4</span>
+    <div class="kind">case</div>
+    <div class="id">sunny</div>
+  </div>
+  <div class="node case" style="top: 500px; left: 970px;">
+    <span class="num">5</span>
+    <div class="kind">case</div>
+    <div class="id">rainy</div>
+  </div>
+  <div class="node" style="top: 400px; left: 1240px;">
+    <span class="num">6</span>
+    <div class="kind">notify</div>
+    <div class="id">send-greeting</div>
+  </div>
+
+</div>
+
+<div class="name-inline">
+  <span class="dot"></span>
+  <input class="name" value="weather-greeter-demo" />
+</div>
+
+<div class="iconbar">
+  <button class="ic-btn active" title="Schedule">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    <span class="badge"></span>
+  </button>
+  <button class="ic-btn" title="Timezone">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>
+  </button>
+  <button class="ic-btn" title="Enabled">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>
+    <span class="badge"></span>
+  </button>
+  <div class="ic-divider"></div>
+  <button class="ic-save">Save</button>
+</div>
+
+<div class="popover">
+  <div class="lbl">Schedule</div>
+  <div class="pop-pill">
+    <span class="clock"></span>
+    <span class="schedule mono">0 9 * * *</span>
+    <span class="edit">edit</span>
+  </div>
+  <div class="pop-sub">Every day at 9:00 AM · next: tomorrow 9:00 AM EST</div>
+  <div class="pop-quick">
+    <span>hourly</span>
+    <span class="on">daily 9am</span>
+    <span>weekdays</span>
+    <span>weekly</span>
+    <span>custom…</span>
+  </div>
+</div>
+
+<div class="zoom">
+  <div class="mini">
+    <div class="vp"></div>
+    <div class="dot-n" style="top: 18px; left: 10px;"></div>
+    <div class="dot-n" style="top: 32px; left: 38px;"></div>
+    <div class="dot-n" style="top: 32px; left: 60px;"></div>
+    <div class="dot-n" style="top: 18px; left: 88px;"></div>
+    <div class="dot-n" style="top: 46px; left: 88px;"></div>
+    <div class="dot-n" style="top: 32px; left: 116px;"></div>
+  </div>
+  <div class="zoom-ctrls">
+    <button>−</button>
+    <button>⌂</button>
+    <button>+</button>
+  </div>
+</div>
+
+<!-- ===== Palette-style step editor modal ===== -->
+<div class="backdrop">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Edit step">
+    <div class="modal-head">
+      <span class="kind-chip" aria-hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+      </span>
+      <div class="modal-title"><b>Edit step:</b> <span class="step-name">fetch_weather</span></div>
+      <span class="kind-badge">http</span>
+    </div>
+
+    <div class="modal-body">
+
+      <div class="form-field">
+        <label>Step id</label>
+        <input type="text" class="mono" value="fetch_weather" />
+      </div>
+
+      <div class="form-field">
+        <label>HTTP method</label>
+        <div class="segmented" role="tablist">
+          <button class="on">GET</button>
+          <button>POST</button>
+          <button>PUT</button>
+          <button>PATCH</button>
+          <button>DELETE</button>
+        </div>
+      </div>
+
+      <div class="form-field">
+        <label>URL</label>
+        <input type="text" class="mono" value="https://api.weather.gov/points/40.7128,-74.0060/forecast" />
+      </div>
+
+      <div class="form-field">
+        <label>Headers</label>
+        <div class="headers-grid">
+          <div class="header-row">
+            <input type="text" class="mono" value="Accept" />
+            <input type="text" class="mono" value="application/geo+json" />
+            <button class="del" title="Remove">×</button>
+          </div>
+          <div class="header-row">
+            <input type="text" class="mono" value="User-Agent" />
+            <input type="text" class="mono" value="agent-cron-scheduler/1.0" />
+            <button class="del" title="Remove">×</button>
+          </div>
+        </div>
+        <button class="add-row">+ Add header</button>
+      </div>
+
+      <div class="form-field">
+        <label>Body</label>
+        <div class="body-wrap">
+          <span class="json-toggle">JSON</span>
+          <textarea spellcheck="false">{
+  "format": "compact"
+}</textarea>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="form-field" style="margin-bottom: 0;">
+          <label>Expected status codes</label>
+          <div class="chip-input">
+            <span class="chip">200<button title="Remove">×</button></span>
+            <span class="chip">201<button title="Remove">×</button></span>
+            <input class="ghost" placeholder="add…" />
+          </div>
+        </div>
+        <div class="form-field" style="margin-bottom: 0;">
+          <label>Timeout (seconds)</label>
+          <input type="number" value="30" />
+        </div>
+      </div>
+
+      <div class="advanced">
+        <span class="caret"></span> Advanced
+        <span style="margin-left: auto; font-size: 10.5px; color: var(--muted-2);">retries, auth, follow redirects, TLS…</span>
+      </div>
+
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn-ghost">Cancel</button>
+      <span class="foot-hint">esc to dismiss · ⌘↵ to save</span>
+      <button class="btn-primary">Save Step</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

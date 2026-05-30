@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Variant C — Reorder & Insert</title>
+<style>
+  :root {
+    --bg: #FAFAF7;
+    --card: #FFFFFF;
+    --border: #E5E5E0;
+    --border-strong: #DCDCD4;
+    --ink: #18181B;
+    --muted: #6B7280;
+    --muted-2: #9CA3AF;
+    --accent: #C68A3B;
+    --accent-soft: #F6EEDD;
+    --accent-deep: #7A5418;
+    --danger: #C25A55;
+    --danger-soft: #F8E5E3;
+    --shadow: 0 1px 2px rgba(20,20,20,.04), 0 6px 24px rgba(20,20,20,.06);
+    --shadow-lift: 0 2px 4px rgba(20,20,20,.05), 0 12px 36px rgba(20,20,20,.10);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif; font-size: 14px; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+  .nav {
+    position: fixed; top: 0; left: 0; right: 0; height: 40px; z-index: 50;
+    display: flex; align-items: center; padding: 0 16px;
+    background: rgba(250,250,247,.85); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  .logo { width: 16px; height: 16px; border-radius: 4px; background: var(--ink);
+    display: inline-flex; align-items: center; justify-content: center; color: white; font-size: 10px; font-weight: 600; }
+  .crumbs { margin-left: 10px; color: var(--muted); font-size: 12px; }
+  .crumbs b { color: var(--ink); font-weight: 500; }
+
+  .brief {
+    position: fixed; top: 50px; right: 16px; z-index: 60;
+    max-width: 380px; padding: 7px 11px; border-radius: 999px;
+    background: rgba(24,24,27,.88); color: #F5F5F0; font-size: 11px; line-height: 1.4;
+    box-shadow: var(--shadow);
+  }
+
+  .canvas { position: absolute; top: 40px; left: 0; right: 0; bottom: 0; background: var(--bg); overflow: hidden; }
+
+  /* Nodes */
+  .node {
+    position: absolute; min-width: 160px; padding: 9px 11px;
+    background: var(--card); border: 1px solid var(--border-strong); border-radius: 7px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04); font-size: 13px;
+    z-index: 5;
+  }
+  .node .num {
+    position: absolute; top: -8px; left: -8px; width: 18px; height: 18px;
+    background: var(--ink); color: white; border-radius: 50%;
+    font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center;
+  }
+  .node .kind { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .node .id { font-weight: 500; margin-top: 1px; }
+  .node.match { background: #FBF7EF; border-color: #EFE3CC; }
+  .node.case { min-width: 110px; background: #F7F1E5; }
+
+  /* Drag handle */
+  .grip {
+    position: absolute; top: 6px; left: 6px;
+    color: var(--muted-2); font-size: 11px; cursor: grab;
+    letter-spacing: -1px; line-height: 1;
+  }
+  .grip:hover { color: var(--ink); }
+
+  /* Hovered node — outline + action row */
+  .node.hovered {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft), 0 1px 2px rgba(0,0,0,.04);
+  }
+  .node-actions {
+    position: absolute; top: -14px; right: -4px;
+    display: flex; gap: 2px; padding: 3px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+    box-shadow: var(--shadow);
+    z-index: 12;
+  }
+  .node-actions button {
+    width: 22px; height: 22px; border: none; background: transparent;
+    border-radius: 50%; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--muted);
+  }
+  .node-actions button:hover { background: var(--accent-soft); color: var(--accent-deep); }
+  .node-actions button.trash:hover { background: var(--danger-soft); color: var(--danger); }
+  .node-actions button.trash.active { background: var(--danger-soft); color: var(--danger); }
+  .node-actions button svg { width: 12px; height: 12px; }
+
+  /* Tooltip near trash */
+  .tip {
+    position: absolute; z-index: 30;
+    background: var(--ink); color: white; font-size: 10.5px;
+    padding: 5px 9px; border-radius: 5px; white-space: nowrap;
+    box-shadow: var(--shadow);
+  }
+  .tip::after {
+    content: ""; position: absolute; top: -4px; left: 16px;
+    width: 8px; height: 8px; background: var(--ink); transform: rotate(45deg);
+  }
+
+  /* Edge insertion + button */
+  .edge-plus {
+    position: absolute; z-index: 8;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--card); border: 1.5px dashed var(--accent);
+    color: var(--accent-deep); font-size: 14px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,.06);
+    line-height: 1;
+  }
+  .edge-plus:hover { background: var(--accent); color: white; border-style: solid; }
+
+  /* Annotations */
+  .annot {
+    position: absolute; z-index: 20;
+    max-width: 220px; font-size: 11px; line-height: 1.45;
+    color: var(--ink); background: var(--card);
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    padding: 7px 10px; border-radius: 6px;
+    box-shadow: var(--shadow);
+  }
+  .annot .lbl {
+    display: inline-block; font-size: 9px; color: var(--accent-deep);
+    background: var(--accent-soft); padding: 1px 6px; border-radius: 999px;
+    text-transform: uppercase; letter-spacing: .05em; font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .annot b { font-weight: 500; }
+
+  /* Palette tray (left edge) */
+  .tray {
+    position: fixed; top: 50%; left: 16px; transform: translateY(-50%);
+    z-index: 40;
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 8px; background: var(--card);
+    border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow-lift);
+  }
+  .tray-title {
+    font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em;
+    padding: 2px 4px 4px; text-align: center;
+  }
+  .tray-chip {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 10px 7px 8px;
+    background: #FCFCF9; border: 1px solid var(--border-strong);
+    border-radius: 8px; cursor: grab;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px;
+    color: var(--ink); min-width: 110px;
+  }
+  .tray-chip:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-deep); }
+  .tray-chip .ic {
+    width: 18px; height: 18px; border-radius: 5px;
+    background: var(--accent-soft); color: var(--accent-deep);
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .tray-chip .ic svg { width: 11px; height: 11px; }
+  .tray-chip.in-flight {
+    opacity: .55; border-style: dashed; cursor: grabbing;
+  }
+
+  /* In-flight ghost chip (positioned on canvas) */
+  .ghost-chip {
+    position: absolute; z-index: 45;
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 10px 7px 8px;
+    background: var(--card); border: 1px dashed var(--accent);
+    border-radius: 8px; opacity: .78;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px;
+    color: var(--accent-deep); pointer-events: none;
+    box-shadow: var(--shadow-lift);
+  }
+  .ghost-chip .ic {
+    width: 18px; height: 18px; border-radius: 5px;
+    background: var(--accent-soft); color: var(--accent-deep);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .ghost-chip .ic svg { width: 11px; height: 11px; }
+
+  /* Insertion indicator (where the dragged chip would land) */
+  .drop-indicator {
+    position: absolute; z-index: 7;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 0 5px rgba(198,138,59,.22);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 5px rgba(198,138,59,.22); }
+    50% { box-shadow: 0 0 0 9px rgba(198,138,59,.10); }
+  }
+
+  /* Match case + button */
+  .case-add {
+    position: absolute; z-index: 8;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: #F7F1E5; border: 1.5px dashed var(--accent);
+    color: var(--accent-deep); font-size: 14px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; line-height: 1;
+  }
+  .case-add:hover { background: var(--accent); color: white; border-style: solid; }
+
+  /* Edges */
+  .edges { position: absolute; inset: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <span class="logo">a</span>
+  <span class="crumbs">Workflows / <b>weather-greeter-demo</b> / reorder & insert</span>
+</div>
+
+<div class="brief">
+  <b>Variant C — Reorder & Insert.</b> Drag-handle nodes, edge-insert +, hover actions, draggable kind palette.
+</div>
+
+<div class="canvas">
+
+  <svg class="edges" width="100%" height="100%">
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="#B8B8AE" />
+      </marker>
+      <marker id="arr-faint" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="#C25A55" opacity=".5" />
+      </marker>
+    </defs>
+
+    <!-- main linear chain: step1 -> step2 -> step3 -> step4 (match) -> step5 -->
+    <path d="M 380 280 C 460 280, 460 280, 540 280" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+    <path d="M 720 280 C 800 280, 800 280, 880 280" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+    <path d="M 1060 280 C 1120 280, 1120 280, 1180 280" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
+    <!-- fan-out from match -->
+    <path d="M 1340 270 C 1400 270, 1400 190, 1460 190" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+    <path d="M 1340 290 C 1400 290, 1400 370, 1460 370" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
+    <!-- final converge -->
+    <path d="M 1620 190 C 1700 190, 1700 460, 1780 460" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+    <path d="M 1620 370 C 1700 370, 1700 460, 1780 460" stroke="#B8B8AE" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
+    <!-- annotation dashed connectors -->
+    <path d="M 490 200 L 480 260" stroke="#C68A3B" stroke-width="1" fill="none" stroke-dasharray="3 3"/>
+    <path d="M 290 380 L 250 310" stroke="#C68A3B" stroke-width="1" fill="none" stroke-dasharray="3 3"/>
+    <path d="M 900 380 L 900 320" stroke="#C68A3B" stroke-width="1" fill="none" stroke-dasharray="3 3"/>
+    <path d="M 1040 440 L 1020 320" stroke="#C68A3B" stroke-width="1" fill="none" stroke-dasharray="3 3"/>
+    <path d="M 1500 100 L 1410 180" stroke="#C68A3B" stroke-width="1" fill="none" stroke-dasharray="3 3"/>
+
+    <!-- faint preview "what edges would reconnect after deletion" near step3 -->
+    <path d="M 880 305 C 980 340, 1080 340, 1180 305" stroke="#C25A55" stroke-width="1.2" fill="none" stroke-dasharray="4 4" opacity=".55" marker-end="url(#arr-faint)"/>
+  </svg>
+
+  <!-- ========== NODES ========== -->
+  <div class="node" style="top: 250px; left: 230px;">
+    <span class="num">1</span>
+    <span class="grip">⠿</span>
+    <div class="kind" style="padding-left: 14px;">set_var</div>
+    <div class="id" style="padding-left: 14px;">setup_vars</div>
+  </div>
+
+  <div class="node" style="top: 250px; left: 540px;">
+    <span class="num">2</span>
+    <span class="grip">⠿</span>
+    <div class="kind" style="padding-left: 14px;">http</div>
+    <div class="id" style="padding-left: 14px;">fetch_weather</div>
+  </div>
+
+  <!-- step 3: hovered + actions visible, trash is being hovered -->
+  <div class="node hovered" style="top: 250px; left: 880px;">
+    <span class="num">3</span>
+    <span class="grip">⠿</span>
+    <div class="kind" style="padding-left: 14px;">script</div>
+    <div class="id" style="padding-left: 14px;">parse_response</div>
+
+    <div class="node-actions">
+      <button title="Change kind">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M7 17l-4-4 4-4M17 7l4 4-4 4M14 4l-4 16"/></svg>
+      </button>
+      <button title="Edit step">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 113 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+      </button>
+      <button class="trash active" title="Delete step">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6M5 6l1 14a2 2 0 002 2h8a2 2 0 002-2l1-14"/></svg>
+      </button>
+    </div>
+    <div class="tip" style="top: -42px; right: -150px;">Remove step. Adjacent edges will reconnect.</div>
+  </div>
+
+  <div class="node match" style="top: 250px; left: 1180px;">
+    <span class="num">4</span>
+    <span class="grip">⠿</span>
+    <div class="kind" style="padding-left: 14px;">match</div>
+    <div class="id" style="padding-left: 14px;">weather_cond</div>
+  </div>
+
+  <div class="node case" style="top: 165px; left: 1460px;">
+    <span class="num">5</span>
+    <div class="kind">case</div>
+    <div class="id">hot</div>
+  </div>
+  <div class="node case" style="top: 345px; left: 1460px;">
+    <span class="num">6</span>
+    <div class="kind">case</div>
+    <div class="id">cold</div>
+  </div>
+
+  <!-- "+ add case" affordance near match node -->
+  <div class="case-add" style="top: 440px; left: 1500px;" title="Add a new case">+</div>
+
+  <div class="node" style="top: 430px; left: 1780px;">
+    <span class="num">7</span>
+    <span class="grip">⠿</span>
+    <div class="kind" style="padding-left: 14px;">agent</div>
+    <div class="id" style="padding-left: 14px;">summarize</div>
+  </div>
+
+  <!-- ========== Edge insertion + buttons ========== -->
+  <div class="edge-plus" style="top: 269px; left: 449px;" title="Insert step here">+</div>
+  <div class="edge-plus" style="top: 269px; left: 789px;" title="Insert step here">+</div>
+  <div class="edge-plus" style="top: 269px; left: 1109px;" title="Insert step here">+</div>
+
+  <!-- ========== Drop indicator (where dragged chip would land) ========== -->
+  <div class="drop-indicator" style="top: 273px; left: 1105px;"></div>
+
+  <!-- ========== Ghost chip in-flight ========== -->
+  <div class="ghost-chip" style="top: 220px; left: 1050px;">
+    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="8" r="4"/><path d="M5 21a7 7 0 0114 0"/></svg></span>
+    agent
+  </div>
+
+  <!-- ========== ANNOTATIONS ========== -->
+  <div class="annot" style="top: 130px; left: 420px;">
+    <span class="lbl">edge insert</span>
+    Click <b>+</b> mid-edge to insert a new step between these two.
+  </div>
+
+  <div class="annot" style="top: 390px; left: 170px;">
+    <span class="lbl">drag handle</span>
+    Drag the <b>⠿</b> handle to reorder. Adjacent edges re-wire automatically.
+  </div>
+
+  <div class="annot" style="top: 390px; left: 790px;">
+    <span class="lbl">hover actions</span>
+    Hover a node for quick actions: <b>change kind</b>, <b>edit</b>, <b>delete</b>.
+  </div>
+
+  <div class="annot" style="top: 460px; left: 880px;">
+    <span class="lbl">delete preview</span>
+    Trash icon shows a tooltip; faint dashed edges preview the reconnection that follows.
+  </div>
+
+  <div class="annot" style="top: 60px; left: 1410px;">
+    <span class="lbl">case branch</span>
+    Tap <b>+</b> next to the match's case stack to add a new case branch.
+  </div>
+
+  <div class="annot" style="top: 130px; left: 970px; max-width: 240px;">
+    <span class="lbl">palette drop</span>
+    Dragging <b>agent</b> from the tray. Drop on an edge to insert between; drop on empty space to append.
+  </div>
+
+</div>
+
+<!-- ========== PALETTE TRAY (left edge) ========== -->
+<div class="tray">
+  <div class="tray-title">Kinds</div>
+
+  <div class="tray-chip">
+    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 17l5-5-5-5M12 19h8"/></svg></span>
+    shell
+  </div>
+  <div class="tray-chip">
+    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg></span>
+    script
+  </div>
+  <div class="tray-chip">
+    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span>
+    http
+  </div>
+  <div class="tray-chip">
+    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3v6a3 3 0 003 3h6a3 3 0 013 3v6"/></svg></span>
+    match
+  </div>
+  <div class="tray-chip">
+    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M12 5v14"/></svg></span>
+    set_var
+  </div>
+  <div class="tray-chip in-flight">
+    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="8" r="4"/><path d="M5 21a7 7 0 0114 0"/></svg></span>
+    agent
+  </div>
+</div>
+
+</body>
+</html>

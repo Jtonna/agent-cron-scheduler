@@ -1,13 +1,19 @@
 /**
  * WorkflowGraphEditor stories
  *
- * Visualises the shared editor used by /create and /workflows/[id]/edit:
- *   - Empty: just a single seeded shell step (what /create boots into).
- *   - FresnoWeather: a multi-step `create` example mirroring the
+ * Visualises the shared editor used by /create and /workflows/[id]/edit
+ * after the whiteboard-style redesign:
+ *   - EmptyCreate — fresh /create entry, one seeded shell step.
+ *   - FilledCreate — multi-step `create` example mirroring the
  *     `examples/fresno-weather-workflow.json` pattern.
- *   - EditMode: seeds the editor in `edit` mode with a fully-formed
+ *   - EditMode — seeds the editor in `edit` mode with a fully-formed
  *     `Job` fixture so the "Save Changes" copy and the edit-mode header
  *     are exercised.
+ *   - EditModeWithModalOpen — same as EditMode; storybook viewers
+ *     should click a node to see the palette modal.
+ *   - MatchStepNestedModal — workflow seeded with a match step;
+ *     clicking the match node and drilling into a case opens the
+ *     nested modal with breadcrumb.
  */
 
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
@@ -79,12 +85,39 @@ const FRESNO: NewWorkflow = {
   ],
 };
 
-/**
- * Server-shape fixture — the `Job` read model has more fields than
- * `NewWorkflow`, all of which the editor strips on seed. Cast through
- * `unknown` because the storybook-only fixture intentionally uses richer
- * step kinds than the read-side `WorkflowStep` union enumerates.
- */
+const NESTED_MATCH: NewWorkflow = {
+  name: "route-mood-demo",
+  schedule: "0 * * * *",
+  timezone: "UTC",
+  enabled: true,
+  steps: [
+    {
+      id: "route_mood",
+      kind: "match",
+      expr: "${steps.classify.exports.mood}",
+      cases: {
+        hot: [
+          {
+            id: "page_oncall",
+            kind: "shell",
+            command: "echo paging oncall",
+          },
+        ],
+        cold: [
+          {
+            id: "log_cold",
+            kind: "shell",
+            command: "echo cold path",
+          },
+        ],
+      },
+      default: [
+        { id: "log_default", kind: "shell", command: "echo neutral" },
+      ],
+    },
+  ],
+};
+
 const EXISTING_JOB: Job = {
   id: "wf_existing_123",
   name: "weather-greeter",
@@ -136,24 +169,37 @@ const EXISTING_JOB: Job = {
   ],
 };
 
-export const Empty: Story = {
-  args: {
-    mode: "create",
-    initialWorkflow: EMPTY,
-  },
+export const EmptyCreate: Story = {
+  args: { mode: "create", initialWorkflow: EMPTY },
 };
 
-export const FresnoWeather: Story = {
-  args: {
-    mode: "create",
-    initialWorkflow: FRESNO,
-  },
+export const FilledCreate: Story = {
+  args: { mode: "create", initialWorkflow: FRESNO },
 };
 
 export const EditMode: Story = {
-  args: {
-    mode: "edit",
-    workflowId: EXISTING_JOB.id,
-    initialWorkflow: EXISTING_JOB,
+  args: { mode: "edit", workflowId: EXISTING_JOB.id, initialWorkflow: EXISTING_JOB },
+};
+
+export const EditModeWithModalOpen: Story = {
+  args: { mode: "edit", workflowId: EXISTING_JOB.id, initialWorkflow: EXISTING_JOB },
+  parameters: {
+    docs: {
+      description: {
+        story: "Click any step node in the canvas to open the palette-style step editor modal.",
+      },
+    },
+  },
+};
+
+export const MatchStepNestedModal: Story = {
+  args: { mode: "create", initialWorkflow: NESTED_MATCH },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Click the `route_mood` match node, then click a case row's drill-in arrow to open the nested editor with breadcrumb.",
+      },
+    },
   },
 };

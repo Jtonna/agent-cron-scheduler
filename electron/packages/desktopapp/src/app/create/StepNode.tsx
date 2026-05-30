@@ -3,33 +3,41 @@
 /**
  * StepNode
  *
- * Custom reactflow node component used for every step on the /create
- * graph. Renders:
+ * Custom reactflow node component used for every step on the editor
+ * canvas. Renders:
  *   - a small persona-mesh badge with the kind icon
  *   - the step id (mono)
  *   - a one-line `summarize()` of the step's payload
  *   - branch-label eyebrow (when the node is the entry of a match case)
+ *   - hover-revealed quick actions (kind switch, edit, delete)
+ *   - hover-revealed drag-handle grip on the top-left
  *
- * Click selection is handled by reactflow itself (`onNodeClick` on the
- * parent canvas); this component just paints the chrome.
+ * Keyboard reorder (up/down arrows after grip-focus) moves the step in
+ * the underlying `steps[]` array. This stands in for full drag-reorder
+ * physics — see the TODO inside.
  */
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { Node } from "@xyflow/react";
+import { GripVertical } from "lucide-react";
 import { STEP_KIND_META } from "./stepMeta";
 import type { StepNodeData } from "./graph";
+import { HoverActions } from "./HoverActions";
 
 type StepNodeType = Node<StepNodeData, "step">;
 
 export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
   const meta = STEP_KIND_META[data.step.kind];
   const Icon = meta.Icon;
+  const canDelete = data.canDelete ?? true;
 
   return (
     <div
       className={[
-        "rounded-card border bg-surface overflow-hidden shadow-sm transition-shadow w-[240px]",
-        selected ? "border-fg ring-2 ring-brand-ring" : "border-border hover:border-border-strong",
+        "group relative rounded-card border bg-surface overflow-visible shadow-sm transition-shadow w-[240px]",
+        selected
+          ? "border-brand ring-2 ring-brand-ring"
+          : "border-border hover:border-border-strong",
       ].join(" ")}
     >
       <Handle
@@ -37,10 +45,35 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
         position={Position.Left}
         className="!bg-fg-subtle !border-surface"
       />
-      <div
-        data-mesh={meta.mesh}
-        className="px-3 py-2 flex items-center gap-2"
+
+      {/* Drag-handle grip — visible on hover. Focus + arrow keys reorder. */}
+      {/* TODO: implement true drag-and-drop reorder; for now, this is a keyboard affordance. */}
+      <button
+        type="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+            e.preventDefault();
+            data.onReorder?.(data.path, e.key === "ArrowUp" ? "up" : "down");
+          }
+        }}
+        className="absolute top-1 left-1 hidden group-hover:flex focus:flex items-center justify-center h-4 w-4 text-fg-subtle hover:text-fg cursor-grab active:cursor-grabbing outline-none focus-visible:ring-2 focus-visible:ring-brand-ring rounded"
+        aria-label="Reorder step (arrow keys when focused)"
+        title="Reorder (focus + ↑/↓)"
       >
+        <GripVertical size={11} />
+      </button>
+
+      {/* Hover quick actions */}
+      <HoverActions
+        KindIcon={Icon}
+        onSwitchKind={() => data.onSwitchKind?.(data.path)}
+        onEdit={() => data.onEdit?.(data.path)}
+        onDelete={() => data.onDelete?.(data.path)}
+        canDelete={canDelete}
+      />
+
+      <div data-mesh={meta.mesh} className="px-3 py-2 flex items-center gap-2">
         <span className="inline-flex h-6 w-6 items-center justify-center rounded-pill bg-surface/80 text-fg">
           <Icon size={13} strokeWidth={2.25} />
         </span>

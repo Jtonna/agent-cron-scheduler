@@ -15,6 +15,7 @@ import { Loader2 } from "lucide-react";
 import { Navbar } from "@/components/navbar/Navbar";
 import { useJob } from "@/apis/useJob";
 import { WorkflowGraphEditor } from "@/app/create/WorkflowGraphEditor";
+import { CanvasBreadcrumb } from "@/app/create/CanvasBreadcrumb";
 
 export default function EditWorkflowPage({
   params,
@@ -45,7 +46,16 @@ export default function EditWorkflowPage({
           </p>
         </div>
       ) : (
-        <WorkflowGraphEditor mode="edit" workflowId={id} initialWorkflow={job} />
+        <>
+          <CanvasBreadcrumb
+            crumbs={[
+              { label: "Workflows", href: "/workflows" },
+              { label: job.name || id, href: `/workflows/${id}` },
+              { label: "Edit" },
+            ]}
+          />
+          <WorkflowGraphEditor mode="edit" workflowId={id} initialWorkflow={job} />
+        </>
       )}
     </div>
   );

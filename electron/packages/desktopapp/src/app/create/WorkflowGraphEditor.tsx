@@ -4,11 +4,18 @@
  * WorkflowGraphEditor
  *
  * The interactive editor at the heart of /create AND /workflows/[id]/edit.
- * Owns the `NewWorkflow` state, renders:
- *   - the WorkflowHeaderCard (name / schedule / timezone / enabled)
- *   - a reactflow canvas with dagre-laid-out step nodes
- *   - a slide-in StepEditorPanel when a node is selected
- *   - a toolbar with "Add step" (via KindPicker) + a primary submit button
+ * Owns the `NewWorkflow` state and renders the new whiteboard-style
+ * canvas:
+ *
+ *   - WorkflowNameInline (top-left, inline editable name)
+ *   - ScheduleCard (top-centre, compact floating card with cron + tz +
+ *     enabled toggle + Save/Create primary button)
+ *   - Controls / MiniMap (top-right, repositioned)
+ *   - KindPaletteTray (left dock; chip click appends a step at the end)
+ *   - ReactFlow canvas with custom StepNode + InsertEdge (mid-edge +
+ *     button that opens a kind picker)
+ *   - StepEditorModal stack (palette-style modal; nested when drilling
+ *     into match cases — each level pushes a frame onto the modalStack)
  *
  * The component runs in one of two modes via discriminated-union props:
  *   - `mode: "create"` — seeds with a fresh `NewWorkflow`, submits via
@@ -18,10 +25,6 @@
  *     shape from `apis/types.ts`) after stripping server-only fields,
  *     submits via `useUpdateWorkflow`, navigates back to the same
  *     workflow's detail page on success.
- *
- * The graph is derived from `state.steps` every render; updates flow
- * through `getStepAtPath` / `updateStepAtPath` / `deleteStepAtPath` /
- * `insertStepAfter` helpers in `graph.ts`.
  */
 
 import { useCallback, useMemo, useState } from "react";
@@ -32,26 +35,28 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  type EdgeTypes,
   type Node,
   type NodeMouseHandler,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import { Plus, Workflow as WorkflowIcon } from "lucide-react";
-import { Button } from "@/components/ui/Button";
 import { useCreateWorkflow } from "@/apis/useCreateWorkflow";
 import { useUpdateWorkflow } from "@/apis/useUpdateWorkflow";
 import type { Job } from "@/apis/types";
-import { WorkflowHeaderCard } from "./WorkflowHeaderCard";
-import { StepEditorPanel } from "./StepEditorPanel";
-import { KindPicker } from "./KindPicker";
 import { StepNode } from "./StepNode";
+import { StepEditorModal, type BreadcrumbCrumb } from "./StepEditorModal";
+import { WorkflowNameInline } from "./WorkflowNameInline";
+import { ScheduleCard } from "./ScheduleCard";
+import { KindPaletteTray } from "./KindPaletteTray";
+import { InsertEdge } from "./EdgePlusButton";
 import {
   buildGraph,
   deleteStepAtPath,
   getStepAtPath,
   insertStepAfter,
   layoutGraph,
+  reorderStepAtPath,
   updateStepAtPath,
   type StepNodeData,
 } from "./graph";
@@ -59,10 +64,20 @@ import { makeDefaultStep } from "./types";
 import type { NewStep, NewWorkflow, StepKind } from "./types";
 
 const nodeTypes = { step: StepNode };
+const edgeTypes: EdgeTypes = { insert: InsertEdge };
 
 export type WorkflowGraphEditorProps =
   | { mode: "create"; initialWorkflow: NewWorkflow }
   | { mode: "edit"; workflowId: string; initialWorkflow: Job };
+
+/**
+ * One frame on the modal stack — identifies which step the user is
+ * currently editing by its path. The breadcrumb is derived from the
+ * stack when rendering.
+ */
+interface ModalFrame {
+  path: string;
+}
 
 export function WorkflowGraphEditor(props: WorkflowGraphEditorProps) {
   return (
@@ -81,16 +96,13 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
       props.mode === "edit"
         ? jobToNewWorkflow(props.initialWorkflow)
         : props.initialWorkflow,
-    // We intentionally seed only once — the prop is the initial value, not a
-    // controlled mirror. Re-seeding on every fetch would clobber in-flight
-    // edits (the same reason the old JSON textarea used an `initialized` flag).
+    // Seed once — see WorkflowGraphEditor history for the rationale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
   const [workflow, setWorkflow] = useState<NewWorkflow>(seed);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [modalStack, setModalStack] = useState<ModalFrame[]>([]);
   const { create, creating, error: createError } = useCreateWorkflow();
   const editWorkflowId = props.mode === "edit" ? props.workflowId : "";
   const {
@@ -103,50 +115,133 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
   const busy = isEdit ? updating : creating;
   const serverError = isEdit ? updateError : createError;
 
+  /* ── Mutations ────────────────────────────────────────────────────── */
+
+  const handleEdit = useCallback((path: string) => {
+    setModalStack([{ path }]);
+  }, []);
+
+  const handleDelete = useCallback((path: string) => {
+    setWorkflow((prev) => ({
+      ...prev,
+      steps: deleteStepAtPath(prev.steps, path),
+    }));
+    setModalStack((prev) => prev.filter((f) => f.path !== path));
+  }, []);
+
+  const handleReorder = useCallback((path: string, dir: "up" | "down") => {
+    setWorkflow((prev) => ({
+      ...prev,
+      steps: reorderStepAtPath(prev.steps, path, dir),
+    }));
+  }, []);
+
+  const handleSwitchKind = useCallback((path: string) => {
+    // Same surface as Edit — open the modal; the kind switcher lives in its header.
+    setModalStack([{ path }]);
+  }, []);
+
+  const handleInsertAfter = useCallback((sourcePath: string, kind: StepKind) => {
+    const newStep = makeDefaultStep(kind);
+    setWorkflow((prev) => ({
+      ...prev,
+      steps: insertStepAfter(prev.steps, sourcePath, newStep),
+    }));
+  }, []);
+
+  const handleAppend = useCallback((kind: StepKind) => {
+    const newStep = makeDefaultStep(kind);
+    setWorkflow((prev) => ({
+      ...prev,
+      steps: insertStepAfter(prev.steps, null, newStep),
+    }));
+  }, []);
+
+  /* ── Graph build ──────────────────────────────────────────────────── */
+
   const { nodes, edges } = useMemo(() => {
-    const built = buildGraph(workflow.steps);
+    const built = buildGraph(workflow.steps, {
+      onEdit: handleEdit,
+      onDelete: handleDelete,
+      onSwitchKind: handleSwitchKind,
+      onReorder: handleReorder,
+      onInsertAfter: handleInsertAfter,
+    });
     const positioned = layoutGraph(built.nodes, built.edges);
     return { nodes: positioned, edges: built.edges };
-  }, [workflow.steps]);
+  }, [
+    workflow.steps,
+    handleEdit,
+    handleDelete,
+    handleSwitchKind,
+    handleReorder,
+    handleInsertAfter,
+  ]);
 
-  const selectedStep = selectedPath ? getStepAtPath(workflow.steps, selectedPath) : null;
+  /* ── Click handlers ───────────────────────────────────────────────── */
 
   const handleNodeClick: NodeMouseHandler = useCallback((_event, node: Node) => {
     const data = node.data as StepNodeData;
-    setSelectedPath(data.path);
+    setModalStack([{ path: data.path }]);
   }, []);
+
+  /* ── Modal stack helpers ──────────────────────────────────────────── */
+
+  const currentFrame = modalStack[modalStack.length - 1];
+  const currentStep = currentFrame ? getStepAtPath(workflow.steps, currentFrame.path) : null;
 
   const handleStepChange = useCallback(
     (next: NewStep) => {
-      if (!selectedPath) return;
+      if (!currentFrame) return;
       setWorkflow((prev) => ({
         ...prev,
-        steps: updateStepAtPath(prev.steps, selectedPath, next),
+        steps: updateStepAtPath(prev.steps, currentFrame.path, next),
       }));
     },
-    [selectedPath],
+    [currentFrame],
   );
 
-  const handleStepDelete = useCallback(() => {
-    if (!selectedPath) return;
-    setWorkflow((prev) => ({
-      ...prev,
-      steps: deleteStepAtPath(prev.steps, selectedPath),
-    }));
-    setSelectedPath(null);
-  }, [selectedPath]);
-
-  const handleAddStep = useCallback(
-    (kind: StepKind) => {
-      const newStep = makeDefaultStep(kind);
-      setWorkflow((prev) => ({
-        ...prev,
-        steps: insertStepAfter(prev.steps, selectedPath, newStep),
-      }));
-      setPickerOpen(false);
+  const handleOpenNested = useCallback(
+    (caseKey: string | null) => {
+      if (!currentFrame) return;
+      const parentStep = getStepAtPath(workflow.steps, currentFrame.path);
+      if (!parentStep || parentStep.kind !== "match") return;
+      const childList =
+        caseKey === null ? parentStep.default ?? [] : parentStep.cases[caseKey] ?? [];
+      if (childList.length === 0) {
+        // Drilling into an empty case — append a placeholder shell so the
+        // user has something to edit. Otherwise getStepAtPath returns null.
+        const placeholder = makeDefaultStep("shell");
+        setWorkflow((prev) => ({
+          ...prev,
+          steps: updateStepAtPath(prev.steps, currentFrame.path, {
+            ...parentStep,
+            cases:
+              caseKey !== null
+                ? { ...parentStep.cases, [caseKey]: [placeholder] }
+                : parentStep.cases,
+            default: caseKey === null ? [placeholder] : parentStep.default,
+          }),
+        }));
+      }
+      const childPath =
+        caseKey === null
+          ? `${currentFrame.path}/default/0`
+          : `${currentFrame.path}/cases/${caseKey}/0`;
+      setModalStack((prev) => [...prev, { path: childPath }]);
     },
-    [selectedPath],
+    [currentFrame, workflow.steps],
   );
+
+  const popModal = useCallback(() => {
+    setModalStack((prev) => prev.slice(0, -1));
+  }, []);
+
+  const closeAllModals = useCallback(() => {
+    setModalStack([]);
+  }, []);
+
+  /* ── Submit ───────────────────────────────────────────────────────── */
 
   const handleSubmit = useCallback(async () => {
     setSubmissionError(null);
@@ -164,12 +259,6 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
     }
   }, [create, router, update, workflow, props]);
 
-  const canDelete = workflow.steps.length > 1 || (selectedPath?.split("/").length ?? 0) > 2;
-
-  const heading = isEdit ? "Edit workflow" : "Build a workflow";
-  const subheading = isEdit
-    ? "Tweak steps and settings, then save your changes."
-    : "Sketch the steps, click any node to edit, and POST to create it.";
   const submitLabel = isEdit
     ? busy
       ? "Saving…"
@@ -178,94 +267,106 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
       ? "Creating…"
       : "Create Workflow";
 
+  /* ── Breadcrumb derivation for nested modals ──────────────────────── */
+
+  const breadcrumb = useMemo<BreadcrumbCrumb[]>(() => {
+    if (modalStack.length <= 1) return [];
+    const crumbs: BreadcrumbCrumb[] = [];
+    for (let i = 0; i < modalStack.length - 1; i++) {
+      const frame = modalStack[i];
+      const step = getStepAtPath(workflow.steps, frame.path);
+      const label = step?.id ?? frame.path.split("/").pop() ?? "step";
+      const targetIndex = i;
+      crumbs.push({
+        label,
+        onClick: () => setModalStack((prev) => prev.slice(0, targetIndex + 1)),
+      });
+    }
+    return crumbs;
+  }, [modalStack, workflow.steps]);
+
   return (
     <div className="flex flex-col h-[calc(100vh-var(--height-navbar))]">
-      <div className="px-8 pt-6 pb-3 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-fg flex items-center gap-2">
-              <WorkflowIcon size={20} className="text-fg-subtle" />
-              {heading}
-            </h1>
-            <p className="text-fg-muted text-sm mt-1">{subheading}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Button
-                intent="secondary"
-                size="md"
-                shape="pill"
-                icon={<Plus size={14} />}
-                onPress={() => setPickerOpen((v) => !v)}
-              >
-                Add step
-              </Button>
-              {pickerOpen && (
-                <div className="absolute right-0 top-full mt-2 z-30">
-                  <KindPicker
-                    onPick={handleAddStep}
-                    onClose={() => setPickerOpen(false)}
-                  />
-                </div>
-              )}
-            </div>
-            <Button
-              intent="primary"
-              size="md"
-              shape="pill"
-              onPress={handleSubmit}
-              isDisabled={busy || workflow.steps.length === 0 || !workflow.name.trim()}
-            >
-              {submitLabel}
-            </Button>
-          </div>
+      <div className="flex-1 relative bg-surface-secondary overflow-hidden">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          onNodeClick={handleNodeClick}
+          fitView
+          fitViewOptions={{ padding: 0.25 }}
+          proOptions={{ hideAttribution: true }}
+          nodesDraggable
+          nodesConnectable={false}
+          elementsSelectable
+        >
+          <Background gap={20} color="var(--color-border)" />
+          <MiniMap
+            pannable
+            zoomable
+            position="top-right"
+            maskColor="rgba(243,244,246,0.6)"
+            className="!bg-surface !border !border-border !rounded-card"
+          />
+          <Controls
+            position="top-right"
+            showInteractive={false}
+            className="!bg-surface !border !border-border !rounded-card !shadow-sm"
+            style={{ top: 156 }}
+          />
+        </ReactFlow>
+
+        {/* ── Top-left: inline workflow name ─────────────────────────── */}
+        <div className="absolute top-4 left-6 z-20">
+          <WorkflowNameInline
+            value={workflow.name}
+            onChange={(name) => setWorkflow((prev) => ({ ...prev, name }))}
+          />
         </div>
-        <WorkflowHeaderCard workflow={workflow} onChange={setWorkflow} />
+
+        {/* ── Top-centre: schedule card + primary action ─────────────── */}
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20">
+          <ScheduleCard
+            workflow={workflow}
+            onChange={setWorkflow}
+            submitLabel={submitLabel}
+            onSubmit={handleSubmit}
+            submitDisabled={busy || workflow.steps.length === 0 || !workflow.name.trim()}
+          />
+        </div>
+
+        {/* ── Left dock: kind palette tray ───────────────────────────── */}
+        <KindPaletteTray onAdd={handleAppend} />
+
+        {/* ── Empty state hint ───────────────────────────────────────── */}
+        {workflow.steps.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="text-fg-muted text-sm">
+              No steps yet — pick a kind from the left palette.
+            </div>
+          </div>
+        )}
+
+        {/* ── Submission / server errors ─────────────────────────────── */}
         {(submissionError || serverError) && (
-          <div className="bg-status-failed-bg border border-status-failed-border text-status-failed rounded-card px-4 py-2 text-sm">
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 max-w-md bg-status-failed-bg border border-status-failed-border text-status-failed rounded-card px-4 py-2 text-sm shadow-menu">
             {submissionError ?? serverError}
           </div>
         )}
       </div>
 
-      <div className="flex-1 flex border-t border-border-subtle min-h-0">
-        <div className="flex-1 min-w-0 bg-surface-secondary relative">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodeClick={handleNodeClick}
-            onPaneClick={() => setSelectedPath(null)}
-            fitView
-            fitViewOptions={{ padding: 0.2 }}
-            proOptions={{ hideAttribution: true }}
-            nodesDraggable
-            nodesConnectable={false}
-            elementsSelectable
-          >
-            <Background gap={20} color="var(--color-border)" />
-            <MiniMap pannable zoomable maskColor="rgba(243,244,246,0.6)" />
-            <Controls position="bottom-right" showInteractive={false} />
-          </ReactFlow>
-          {workflow.steps.length === 0 && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="text-fg-muted text-sm">
-                No steps yet — click &ldquo;Add step&rdquo; above.
-              </div>
-            </div>
-          )}
-        </div>
-        {selectedStep && selectedPath && (
-          <StepEditorPanel
-            step={selectedStep}
-            path={selectedPath}
-            onChange={handleStepChange}
-            onClose={() => setSelectedPath(null)}
-            onDelete={handleStepDelete}
-            canDelete={canDelete}
-          />
-        )}
-      </div>
+      {/* ── Modal stack (palette-style step editor + nested frames) ─── */}
+      {currentStep && currentFrame && (
+        <StepEditorModal
+          key={currentFrame.path}
+          step={currentStep}
+          breadcrumb={breadcrumb}
+          onChange={handleStepChange}
+          onClose={() => (modalStack.length > 1 ? popModal() : closeAllModals())}
+          onOpenNested={handleOpenNested}
+        />
+      )}
     </div>
   );
 }
