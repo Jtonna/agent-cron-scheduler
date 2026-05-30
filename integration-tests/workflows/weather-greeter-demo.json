@@ -1,0 +1,72 @@
+{
+  "name": "weather-greeter-demo",
+  "schedule": "0 9 * * *",
+  "timezone": "America/Los_Angeles",
+  "enabled": false,
+  "allow_concurrent": false,
+  "default_input": {
+    "city": "Fresno",
+    "lat": "36.7378",
+    "lon": "-119.7871",
+    "mood": "happy"
+  },
+  "steps": [
+    {
+      "kind": "set_var",
+      "id": "init",
+      "exports": {
+        "city": "${input.city}",
+        "lat": "${input.lat}",
+        "lon": "${input.lon}",
+        "mood": "${input.mood}"
+      }
+    },
+    {
+      "kind": "http",
+      "id": "fetch_weather",
+      "method": "GET",
+      "url": "https://api.open-meteo.com/v1/forecast?latitude=${steps.init.exports.lat}&longitude=${steps.init.exports.lon}&current=temperature_2m,weather_code,wind_speed_10m&temperature_unit=fahrenheit",
+      "expect_status": [200],
+      "timeout_secs": 30
+    },
+    {
+      "kind": "shell",
+      "id": "build_context",
+      "command": "echo Briefing for ${steps.init.exports.city} (mood=${steps.init.exports.mood}). Raw weather: ${steps.fetch_weather.stdout}"
+    },
+    {
+      "kind": "match",
+      "id": "route_mood",
+      "expr": "${steps.init.exports.mood}",
+      "cases": {
+        "happy": [
+          {
+            "kind": "agent",
+            "id": "compose_happy",
+            "agent_type": "claude_code_cli",
+            "prompt": "Compose a 2-sentence cheerful morning briefing for ${steps.init.exports.city}. Use the actual temperature from this weather JSON: ${steps.fetch_weather.stdout}. Also incorporate this context line you should reference faithfully: ${steps.build_context.stdout}. End with a playful nudge for a happy mood.",
+            "timeout_secs": 120
+          }
+        ],
+        "tired": [
+          {
+            "kind": "agent",
+            "id": "compose_tired",
+            "agent_type": "claude_code_cli",
+            "prompt": "Compose a 2-sentence gentle, low-energy morning briefing for ${steps.init.exports.city}. Use the actual temperature from this weather JSON: ${steps.fetch_weather.stdout}. Incorporate this context line: ${steps.build_context.stdout}. Acknowledge that the user feels tired.",
+            "timeout_secs": 120
+          }
+        ]
+      },
+      "default": [
+        {
+          "kind": "agent",
+          "id": "compose_neutral",
+          "agent_type": "claude_code_cli",
+          "prompt": "Compose a 2-sentence neutral morning briefing for ${steps.init.exports.city}. Use the actual temperature from this weather JSON: ${steps.fetch_weather.stdout}. Incorporate this context line: ${steps.build_context.stdout}.",
+          "timeout_secs": 120
+        }
+      ]
+    }
+  ]
+}
