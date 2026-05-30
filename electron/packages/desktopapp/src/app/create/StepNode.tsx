@@ -11,10 +11,13 @@
  *   - branch-label eyebrow (when the node is the entry of a match case)
  *   - hover-revealed quick actions (kind switch, edit, delete)
  *   - hover-revealed drag-handle grip on the top-left
+ *   - small left/right connection handles styled as grabbable dots
+ *     (hover-revealed) used for edge reconnect — the actual gesture is
+ *     handled by reactflow via `onReconnect` in `WorkflowGraphEditor`.
  *
  * Keyboard reorder (up/down arrows after grip-focus) moves the step in
- * the underlying `steps[]` array. This stands in for full drag-reorder
- * physics — see the TODO inside.
+ * the underlying `steps[]` array — this remains as an accessibility
+ * affordance alongside the new free drag + edge-reconnect gestures.
  */
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
@@ -40,10 +43,12 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
           : "border-border hover:border-border-strong",
       ].join(" ")}
     >
+      {/* Handles — small dots, brightened on group hover so the user
+          knows they can grab an edge end. Tokens only. */}
       <Handle
         type="target"
         position={Position.Left}
-        className="!bg-fg-subtle !border-surface"
+        className="!w-[10px] !h-[10px] !bg-border group-hover:!bg-brand !border-2 !border-surface transition-colors cursor-grab"
       />
 
       {/* Drag-handle grip — visible on hover. Focus + arrow keys reorder. */}
@@ -97,7 +102,7 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
       <Handle
         type="source"
         position={Position.Right}
-        className="!bg-fg-subtle !border-surface"
+        className="!w-[10px] !h-[10px] !bg-border group-hover:!bg-brand !border-2 !border-surface transition-colors cursor-grab"
       />
     </div>
   );

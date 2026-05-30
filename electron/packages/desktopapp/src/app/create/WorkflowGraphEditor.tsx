@@ -19,6 +19,18 @@
  *     into match cases — each level pushes a frame onto the modal
  *     stack, owned by `useStepEditorStack`)
  *
+ * Interaction model:
+ *   - Nodes are freely draggable (reactflow's built-in node drag). The
+ *     dragged position survives until the next topology change, at
+ *     which point dagre re-runs and the chain snaps back to layout.
+ *     Manual positions are NEVER persisted to the backend — see the
+ *     `nodePositionsRef` comment near the layout call.
+ *   - Edge heads (target ends) can be dragged onto another node to
+ *     reorder the underlying `steps[]` array via
+ *     `reorderViaEdgeReconnect`. Wiring constraints are enforced via
+ *     `isValidConnection`: same-scope only, no self-loops, single
+ *     in / single out, no match-boundary crossings.
+ *
  * The workflow identity (name, schedule, timezone, enabled) and the
  * Save / Create button NO LONGER live on the canvas. They live in the
  * `EditorSidebar` mounted by the page on the left. The editor exposes
@@ -53,9 +65,13 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  type Connection,
+  type Edge,
   type EdgeTypes,
+  type IsValidConnection,
   type Node,
   type NodeMouseHandler,
+  type OnNodeDrag,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -68,9 +84,12 @@ import { EDITOR_CURSOR_CSS } from "./cursors";
 import {
   buildGraph,
   deleteStepAtPath,
+  getScopeForPath,
   insertStepAfter,
   layoutGraph,
   reorderStepAtPath,
+  reorderViaEdgeReconnect,
+  sameScope,
   type StepNodeData,
 } from "./graph";
 import { makeDefaultStep } from "./types";
@@ -208,6 +227,30 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
 
   /* ── Graph build ──────────────────────────────────────────────────── */
 
+  // Intentional: positions are derived from topology, not persisted.
+  // The override map holds temporary user-drag positions that survive
+  // until the next topology change (steps[] identity change), at which
+  // point it's cleared inline and dagre takes over again. Uses the
+  // "derived state from props" pattern — comparing the previously-seen
+  // steps reference during render and resetting via the setState
+  // return-value path. This avoids the cascading-renders lint that the
+  // useEffect-reset version triggers.
+  type PositionState = {
+    stepsRef: typeof workflow.steps;
+    map: ReadonlyMap<string, { x: number; y: number }>;
+  };
+  const [positionState, setPositionState] = useState<PositionState>(() => ({
+    stepsRef: workflow.steps,
+    map: new Map(),
+  }));
+  if (positionState.stepsRef !== workflow.steps) {
+    // Synchronous reset during render — React discards the in-flight
+    // render and rerenders with the new state. The useMemo below reads
+    // `positionState.map` and gates it on the same identity check, so
+    // the discarded render won't apply stale positions.
+    setPositionState({ stepsRef: workflow.steps, map: new Map() });
+  }
+
   const { nodes, edges } = useMemo(() => {
     const built = buildGraph(workflow.steps, {
       onEdit: handleEdit,
@@ -216,16 +259,80 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
       onReorder: handleReorder,
       onInsertAfter: handleInsertAfter,
     });
+    // Intentional: positions are derived from topology, not persisted.
     const positioned = layoutGraph(built.nodes, built.edges);
-    return { nodes: positioned, edges: built.edges };
+    // Apply per-node drag overrides only when the override map is for
+    // the current topology — otherwise it's stale from a previous
+    // steps[] generation and we let dagre's positions stand.
+    const overrideMap =
+      positionState.stepsRef === workflow.steps ? positionState.map : null;
+    const withOverrides = overrideMap
+      ? positioned.map((n) => {
+          const override = overrideMap.get(n.id);
+          return override ? { ...n, position: override } : n;
+        })
+      : positioned;
+    return { nodes: withOverrides, edges: built.edges };
   }, [
     workflow.steps,
+    positionState,
     handleEdit,
     handleDelete,
     handleSwitchKind,
     handleReorder,
     handleInsertAfter,
   ]);
+
+  /* ── Free drag (positions live only until next topology change) ──── */
+
+  const handleNodeDragStop: OnNodeDrag = useCallback((_event, node) => {
+    setPositionState((prev) => {
+      const next = new Map(prev.map);
+      next.set(node.id, node.position);
+      return { stepsRef: prev.stepsRef, map: next };
+    });
+  }, []);
+
+  /* ── Edge reconnect → reorder underlying chain ────────────────────── */
+
+  // Precompute the set of node ids that already have an incoming edge
+  // and an outgoing edge, so `isValidConnection` can enforce the
+  // single-in / single-out invariant. Match-fanout source ids are
+  // intentionally allowed multiple outs at the model level — we only
+  // gate user-initiated reconnects, which always target same-scope
+  // reordering.
+  const isValidConnection = useCallback<IsValidConnection<Edge>>(
+    (conn) => {
+      if (!conn.source || !conn.target) return false;
+      if (conn.source === conn.target) return false;
+      const sourceScope = getScopeForPath(conn.source);
+      const targetScope = getScopeForPath(conn.target);
+      if (!sourceScope || !targetScope) return false;
+      // Strict linear-chain wiring: same scope only. No cross-branch reorders.
+      if (!sameScope(sourceScope, targetScope)) return false;
+      return true;
+    },
+    [],
+  );
+
+  const handleReconnect = useCallback(
+    (oldEdge: Edge, newConnection: Connection) => {
+      const newTarget = newConnection.target;
+      const source = newConnection.source ?? oldEdge.source;
+      if (!source || !newTarget) return;
+      // No-op cases: same node, same target as before.
+      if (source === newTarget) return;
+      if (newTarget === oldEdge.target) return;
+      const sourceScope = getScopeForPath(source);
+      const targetScope = getScopeForPath(newTarget);
+      if (!sourceScope || !targetScope) return;
+      if (!sameScope(sourceScope, targetScope)) return;
+      setWorkflow((prev) =>
+        reorderViaEdgeReconnect(prev, source, newTarget, sourceScope),
+      );
+    },
+    [],
+  );
 
   /* ── Click handlers ───────────────────────────────────────────────── */
 
@@ -256,6 +363,9 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           onNodeClick={handleNodeClick}
+          onNodeDragStop={handleNodeDragStop}
+          onReconnect={handleReconnect}
+          isValidConnection={isValidConnection}
           fitView
           fitViewOptions={{ padding: 0.25 }}
           proOptions={{ hideAttribution: true }}
@@ -298,7 +408,7 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
         {workflow.steps.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-fg-muted text-sm">
-              No steps yet — pick a kind from the dock below.
+              No steps yet — pick a kind from the dock below. Drag edge ends between nodes to reorder.
             </div>
           </div>
         )}

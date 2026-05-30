@@ -10,18 +10,28 @@
  * editor's modal stack and node action callbacks can import only the
  * narrow mutation surface they need:
  *
- *   - `getStepAtPath`     — resolve a path to its step (or `null`)
- *   - `updateStepAtPath`  — replace a step in-place
- *   - `deleteStepAtPath`  — remove a step from its sibling array
- *   - `reorderStepAtPath` — swap a step up/down within its siblings
- *   - `insertStepAfter`   — sibling insertion after a path (or at the
- *                           top level when path is `null`)
+ *   - `getStepAtPath`             — resolve a path to its step (or `null`)
+ *   - `updateStepAtPath`          — replace a step in-place
+ *   - `deleteStepAtPath`          — remove a step from its sibling array
+ *   - `reorderStepAtPath`         — swap a step up/down within its siblings
+ *   - `insertStepAfter`           — sibling insertion after a path (or at
+ *                                   the top level when path is `null`)
+ *   - `reorderViaEdgeReconnect`   — reorder the underlying linear chain
+ *                                   to express "after node A, the next
+ *                                   node is now node C" — used by the
+ *                                   reactflow edge-reconnect handler
+ *                                   (see WorkflowGraphEditor).
+ *   - `getScopeForPath`           — derive the chain scope (top-level
+ *                                   chain or match-case branch) that a
+ *                                   given path belongs to.
+ *   - `sameScope`                 — equality on `ChainScope` values, used
+ *                                   to reject cross-branch reconnects.
  *
  * All helpers are pure, return new arrays on success, and return the
  * input unchanged on invalid paths.
  */
 
-import type { NewStep } from "./types";
+import type { NewStep, NewWorkflow } from "./types";
 
 /**
  * Resolves a step path to the step object. Returns null for invalid paths.
@@ -274,4 +284,155 @@ export function insertStepAfter(
   }
 
   return recurse(steps, parts);
+}
+
+/* ── Edge reconnection ─────────────────────────────────────────────── */
+
+/**
+ * Identifies which linear chain a given step path belongs to. Reorders
+ * triggered by edge reconnects are only meaningful within a single
+ * scope — crossing match-case boundaries has no clean linear-chain
+ * semantic.
+ */
+export type ChainScope =
+  | { kind: "top-level" }
+  | { kind: "case"; matchPath: string; caseKey: string }
+  | { kind: "default"; matchPath: string };
+
+/**
+ * Given a node path like `s/2/cases/ok/1`, returns the scope of the
+ * chain that contains the step (its parent chain). Returns `null` if
+ * the path is malformed.
+ */
+export function getScopeForPath(path: string): ChainScope | null {
+  const parts = path.split("/");
+  if (parts.length < 2 || parts[0] !== "s") return null;
+  if (Number.isNaN(parseInt(parts[parts.length - 1], 10))) return null;
+  const parent = parts.slice(0, -1);
+  if (parent.length === 1) return { kind: "top-level" };
+  const lastTag = parent[parent.length - 2];
+  if (lastTag === "cases") {
+    const caseKey = parent[parent.length - 1];
+    const matchPath = parent.slice(0, -2).join("/");
+    return { kind: "case", matchPath, caseKey };
+  }
+  if (parent[parent.length - 1] === "default") {
+    const matchPath = parent.slice(0, -1).join("/");
+    return { kind: "default", matchPath };
+  }
+  return null;
+}
+
+/** Structural equality for `ChainScope` values. */
+export function sameScope(a: ChainScope, b: ChainScope): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "top-level") return true;
+  if (a.kind === "case" && b.kind === "case") {
+    return a.matchPath === b.matchPath && a.caseKey === b.caseKey;
+  }
+  if (a.kind === "default" && b.kind === "default") {
+    return a.matchPath === b.matchPath;
+  }
+  return false;
+}
+
+function getChainForScope(workflow: NewWorkflow, scope: ChainScope): NewStep[] | null {
+  if (scope.kind === "top-level") return workflow.steps;
+  const matchStep = getStepAtPath(workflow.steps, scope.matchPath);
+  if (!matchStep || matchStep.kind !== "match") return null;
+  if (scope.kind === "case") {
+    return matchStep.cases[scope.caseKey] ?? null;
+  }
+  return matchStep.default ?? null;
+}
+
+function setChainForScope(
+  workflow: NewWorkflow,
+  scope: ChainScope,
+  nextChain: NewStep[],
+): NewWorkflow {
+  if (scope.kind === "top-level") {
+    return { ...workflow, steps: nextChain };
+  }
+  const matchStep = getStepAtPath(workflow.steps, scope.matchPath);
+  if (!matchStep || matchStep.kind !== "match") return workflow;
+  let nextMatch: NewStep;
+  if (scope.kind === "case") {
+    nextMatch = {
+      ...matchStep,
+      cases: { ...matchStep.cases, [scope.caseKey]: nextChain },
+    };
+  } else {
+    nextMatch = { ...matchStep, default: nextChain };
+  }
+  return {
+    ...workflow,
+    steps: updateStepAtPath(workflow.steps, scope.matchPath, nextMatch),
+  };
+}
+
+function localIndex(path: string): number {
+  const parts = path.split("/");
+  const idx = parseInt(parts[parts.length - 1], 10);
+  return Number.isNaN(idx) ? -1 : idx;
+}
+
+/**
+ * Reorders the linear chain that contains both `sourceNodeId` (node A)
+ * and `newTargetNodeId` (node C) so that C immediately follows A.
+ *
+ * Algorithm: find A and C's indices in their shared chain, splice C
+ * out, then re-insert it at A's index + 1 (adjusting for the shift if
+ * C originally sat before A).
+ *
+ * Returns the input workflow unchanged when:
+ *   - either path doesn't resolve to a step in the supplied scope
+ *   - the scope is malformed or doesn't exist
+ *   - the drop is a no-op (`C === A` or C is already A's immediate next)
+ *   - either path escapes the supplied scope (lives in a sub-chain)
+ *
+ * Cross-scope reconnects must be rejected by the caller via
+ * `getScopeForPath` + `sameScope` before invoking this helper.
+ */
+export function reorderViaEdgeReconnect(
+  workflow: NewWorkflow,
+  sourceNodeId: string,
+  newTargetNodeId: string,
+  scope: ChainScope,
+): NewWorkflow {
+  if (sourceNodeId === newTargetNodeId) return workflow;
+
+  const chain = getChainForScope(workflow, scope);
+  if (!chain) return workflow;
+
+  const expectedParent =
+    scope.kind === "top-level"
+      ? "s"
+      : scope.kind === "case"
+        ? `${scope.matchPath}/cases/${scope.caseKey}`
+        : `${scope.matchPath}/default`;
+  const prefix = `${expectedParent}/`;
+  if (!sourceNodeId.startsWith(prefix) || !newTargetNodeId.startsWith(prefix)) {
+    return workflow;
+  }
+  if (
+    sourceNodeId.slice(prefix.length).includes("/") ||
+    newTargetNodeId.slice(prefix.length).includes("/")
+  ) {
+    return workflow;
+  }
+
+  const aIdx = localIndex(sourceNodeId);
+  const cIdx = localIndex(newTargetNodeId);
+  if (aIdx < 0 || cIdx < 0) return workflow;
+  if (aIdx >= chain.length || cIdx >= chain.length) return workflow;
+
+  if (cIdx === aIdx + 1) return workflow;
+
+  const nextChain = [...chain];
+  const [moved] = nextChain.splice(cIdx, 1);
+  const insertAt = cIdx < aIdx ? aIdx : aIdx + 1;
+  nextChain.splice(insertAt, 0, moved);
+
+  return setChainForScope(workflow, scope, nextChain);
 }

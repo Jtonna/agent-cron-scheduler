@@ -26,6 +26,10 @@ export {
   deleteStepAtPath,
   reorderStepAtPath,
   insertStepAfter,
+  reorderViaEdgeReconnect,
+  getScopeForPath,
+  sameScope,
+  type ChainScope,
 } from "./graphPaths";
 
 export interface StepNodeData extends Record<string, unknown> {
@@ -126,6 +130,9 @@ export function buildGraph(steps: NewStep[], opts: BuildOptions = {}): BuildResu
           source: prevExit,
           target: path,
           type: opts.onInsertAfter ? "insert" : "smoothstep",
+          // `reconnectable: "target"` makes only the head end draggable.
+          // The semantic is "after node A, the next node is now C".
+          reconnectable: "target",
           data: opts.onInsertAfter
             ? { sourcePath: prevExit, onInsert: opts.onInsertAfter }
             : undefined,
