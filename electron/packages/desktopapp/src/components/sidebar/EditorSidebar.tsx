@@ -11,36 +11,60 @@
  * border-border-subtle` (owned by the page grid cell, matching how
  * `/workflows/[id]` is wired).
  *
- * Sections, top to bottom:
+ * Sections, top to bottom (mirrors `JobDetailSidebar` exactly):
  *
  *   1. Back link             — SidebarBackLink. "Back to Workflows" in
  *                              create mode, "Back to Workflow" in edit
  *                              mode (pointing at the parent detail page).
- *   2. Identity block        — workflow **name** edited inline. Renders
- *                              as a heading-styled span by default;
- *                              clicking (or focusing via keyboard) swaps
- *                              in an input. Same pattern as the old
- *                              `EditableCrumb` in `CanvasBreadcrumb`,
- *                              just relocated and dressed to match the
- *                              sidebar identity slot. Replaces the
- *                              breadcrumb + the old `WorkflowNameInline`
- *                              that previously lived on the canvas.
- *   3. SCHEDULE section      — eyebrow header + PropertyRows for cron,
- *                              timezone, and enabled. The cron input
- *                              uses a mono face and shows a subtle
+ *   2. Search trigger        — SidebarSearchTrigger. Opens the global
+ *                              command palette via `useCommandPalette()`,
+ *                              same component and position as
+ *                              `JobDetailSidebar`. The provider already
+ *                              wraps the whole app (see `apis/providers.tsx`)
+ *                              so no extra plumbing is needed at the page
+ *                              level — only Storybook needs to mock the
+ *                              context (see `EditorSidebar.stories.tsx`).
+ *   3. Identity block        — workflow **name** edited inline. Renders
+ *                              as a heading-styled span by default; clicking
+ *                              (or focusing via keyboard) swaps in an input.
+ *                              The idle button shows the "editable field"
+ *                              affordance: a faint dashed border that
+ *                              firms up on hover and turns into a solid
+ *                              focus ring when active. Same idiom is
+ *                              reused for the cron input and the timezone
+ *                              popover trigger below, so every editable
+ *                              control in the sidebar reads as a field.
+ *   4. SCHEDULE section      — eyebrow header + PropertyRows for cron,
+ *                              timezone, and enabled. The cron input uses
+ *                              a mono face, shares the dashed-border
+ *                              editable affordance, and shows a subtle
  *                              cron-to-English preview below the row.
  *                              The timezone value slot hosts a compact
  *                              searchable popover (ported from the old
- *                              `ScheduleCard`). The enabled value slot
- *                              hosts the shared `Toggle` primitive.
- *   4. Save section          — a `CompactActionButton` (primary intent)
- *                              labelled "Create Workflow" in create
- *                              mode or "Save Changes" in edit mode.
- *                              Disabled when the name is blank, the
- *                              workflow has no steps, or a submission
- *                              is in flight. Errors render below the
- *                              button in the standard `text-status-failed`
- *                              line.
+ *                              `ScheduleCard`); its trigger also wears
+ *                              the dashed affordance so it reads as a
+ *                              picker, not flat text. The enabled value
+ *                              slot hosts the shared `Toggle` primitive
+ *                              and is intentionally left without the
+ *                              dashed cue — the toggle is its own
+ *                              affordance.
+ *   5. Save section          — a `CompactActionButton` (primary intent)
+ *                              labelled "Create Workflow" in create mode
+ *                              or "Save Changes" in edit mode. Disabled
+ *                              when the name is blank, the workflow has
+ *                              no steps, or a submission is in flight.
+ *                              Errors render below the button in the
+ *                              standard `text-status-failed` line.
+ *
+ * Editable-field affordance: we picked the **faint dashed border** pattern
+ * because it is already in active use in the app (see
+ * `app/create/editors/primitives.tsx` and `MatchStepBody.tsx`) as the
+ * "this slot accepts input" cue, and it reads as a field without
+ * shouting. The hover state firms the border to `border-border` and
+ * gently tints the background via `bg-surface-hover`; the focused state
+ * drops the dash, paints a solid border, and adds a `ring-2
+ * ring-brand-ring/40` ring. Cursor is `text` on hover for inputs,
+ * matching native form-field expectations.
  *
  * The sidebar is purely presentational with respect to state: the parent
  * page owns the `NewWorkflow` (or its edit-mode equivalent), the editable
@@ -51,6 +75,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Clock, Globe2 } from "lucide-react";
 import { SidebarBackLink } from "./SidebarBackLink";
+import { SidebarSearchTrigger } from "./SidebarSearchTrigger";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
 import { PropertyRow } from "@/components/ui/PropertyRow";
 import { Toggle } from "@/components/ui/Toggle";
@@ -85,6 +110,24 @@ export interface EditorSidebarProps {
   /** Optional error string rendered under the save button. */
   errorText?: string | null;
 }
+
+/**
+ * Shared Tailwind class string for the editable-field affordance.
+ * Reused by the inline cron input and the timezone popover trigger so
+ * every editable control in the sidebar wears the same chrome.
+ *
+ *  - idle:    faint dashed border, transparent background
+ *  - hover:   dashed → solid `border-border`, subtle `bg-surface-hover`
+ *  - focus:   solid `border-fg` + `ring-2 ring-brand-ring/40`
+ *  - empty:   muted `placeholder:text-fg-subtle`
+ */
+const EDITABLE_FIELD_CLASSES = [
+  "bg-transparent border border-dashed border-border-subtle",
+  "hover:border-solid hover:border-border hover:bg-surface-hover",
+  "focus:border-solid focus:border-fg focus:bg-surface-hover",
+  "rounded-input outline-none focus:ring-2 focus:ring-brand-ring/40",
+  "placeholder:text-fg-subtle transition-colors",
+].join(" ");
 
 export function EditorSidebar({
   mode,
@@ -122,14 +165,17 @@ export function EditorSidebar({
         {/* 1. Back link */}
         <SidebarBackLink href={backHref}>{backLabel}</SidebarBackLink>
 
-        {/* 2. Identity — editable workflow name */}
+        {/* 2. Search trigger — opens global command palette (⌘K) */}
+        <SidebarSearchTrigger placeholder="Search · ⌘K" />
+
+        {/* 3. Identity — editable workflow name */}
         <EditableNameBlock
           value={name}
           onChange={onNameChange}
           placeholder={isEdit ? "Untitled workflow" : "New workflow"}
         />
 
-        {/* 3. SCHEDULE section */}
+        {/* 4. SCHEDULE section */}
         <section className="flex flex-col gap-1.5">
           <SidebarSectionHeader title="Schedule" />
           <div className="flex flex-col">
@@ -142,7 +188,10 @@ export function EditorSidebar({
                   onChange={(e) => onScheduleChange(e.target.value)}
                   placeholder="0 9 * * *"
                   aria-label="Cron schedule"
-                  className="font-mono text-xs text-fg bg-transparent border border-transparent hover:border-border-subtle focus:border-border focus:bg-surface-hover rounded-input px-1.5 py-1 outline-none focus:ring-2 focus:ring-brand-ring/40 text-right w-[140px]"
+                  className={[
+                    "font-mono text-xs text-fg cursor-text text-right w-[140px] px-1.5 py-1",
+                    EDITABLE_FIELD_CLASSES,
+                  ].join(" ")}
                 />
               }
             />
@@ -169,7 +218,7 @@ export function EditorSidebar({
           </div>
         </section>
 
-        {/* 4. Save section */}
+        {/* 5. Save section */}
         <section className="flex flex-col gap-1.5">
           <SidebarSectionHeader title={isEdit ? "Save" : "Create"} />
           <CompactActionButton
@@ -201,10 +250,12 @@ interface EditableNameBlockProps {
 /**
  * The identity row equivalent for the editor — workflow name rendered
  * as a heading-weight line that flips to an input on click/focus.
- * Anatomy mirrors `SidebarIdentityBlock` (same `px-2 py-3 border-b
- * border-border-subtle` outer shell, same `text-base font-semibold`
- * type) so the editor's identity block visually aligns with the one
- * on `/workflows/[id]`.
+ *
+ * Wears the same dashed-border editable affordance as the other editable
+ * fields in the sidebar (cron input, timezone popover) so the user can
+ * tell at a glance that the name is editable. The dashed border is
+ * scoped to the inline target (not the outer block) so the section-
+ * separator border at the bottom stays solid.
  */
 function EditableNameBlock({
   value,
@@ -235,14 +286,21 @@ function EditableNameBlock({
           }}
           placeholder={placeholder}
           aria-label="Edit workflow name"
-          className="w-full text-base font-semibold text-fg bg-surface-hover border border-border rounded-input px-2 py-1 outline-none focus:ring-2 focus:ring-brand-ring/40 focus:border-fg"
+          className={[
+            "w-full text-base font-semibold text-fg px-2 py-1 cursor-text",
+            EDITABLE_FIELD_CLASSES,
+          ].join(" ")}
         />
       ) : (
         <button
           type="button"
           onClick={() => setEditing(true)}
           aria-label="Edit workflow name"
-          className="w-full text-left text-base font-semibold text-fg truncate hover:bg-surface-hover rounded-input px-2 py-1 -mx-2 -my-1 cursor-text focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring/40"
+          className={[
+            "w-full text-left text-base font-semibold text-fg truncate px-2 py-1 cursor-text",
+            EDITABLE_FIELD_CLASSES,
+            "focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring/40",
+          ].join(" ")}
           title={value || placeholder}
         >
           {value || (
@@ -265,6 +323,11 @@ interface TimezonePopoverProps {
  * Compact, inline timezone picker for the sidebar PropertyRow value slot.
  * Ported from the old `ScheduleCard` so we don't lose the searchable list
  * UX, but tightened up to fit on the right side of a property row.
+ *
+ * The trigger wears the same dashed-border editable affordance as the
+ * other editable fields in the sidebar so it reads as a picker rather
+ * than static text. Cursor is `pointer` (not `text`) because activating
+ * it opens a popover instead of accepting keystrokes.
  */
 function TimezonePopover({ value, onChange }: TimezonePopoverProps) {
   const [open, setOpen] = useState(false);
@@ -289,7 +352,11 @@ function TimezonePopover({ value, onChange }: TimezonePopoverProps) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1.5 px-1.5 py-1 rounded-input hover:bg-surface-hover cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-brand-ring/40 max-w-[160px]"
+        className={[
+          "inline-flex items-center gap-1.5 px-1.5 py-1 max-w-[160px] cursor-pointer",
+          EDITABLE_FIELD_CLASSES,
+          "focus-visible:ring-2 focus-visible:ring-brand-ring/40",
+        ].join(" ")}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label="Pick timezone"

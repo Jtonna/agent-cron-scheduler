@@ -2,19 +2,42 @@
  * EditorSidebar stories.
  *
  * Showcases the editor's left rail in both create and edit modes,
- * plus the editing-name and error / empty-steps disabled states.
- * Each story wraps the sidebar in a tiny harness that owns the
- * controlled fields so typing actually persists across keystrokes.
+ * plus the editing-name, error, empty-steps disabled, and the at-rest
+ * "editable affordances visible" states. Each story wraps the sidebar
+ * in a tiny harness that owns the controlled fields so typing actually
+ * persists across keystrokes.
+ *
+ * The sidebar now hosts a `SidebarSearchTrigger` which calls
+ * `useCommandPalette()`. That hook throws outside its provider, so the
+ * Storybook meta wraps every story in a `CommandPaletteContext.Provider`
+ * with a no-op fake — same pattern used by `JobDetailSidebar.stories.tsx`.
  */
 
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
 import { EditorSidebar, type EditorSidebarMode } from "./EditorSidebar";
+import { CommandPaletteContext } from "@/components/command-palette/CommandPaletteContext";
+
+const fakePaletteCtx = {
+  isOpen: false,
+  open: () => {},
+  close: () => {},
+  toggle: () => {},
+  registerCommands: () => "reg-0",
+  unregisterCommands: () => {},
+};
 
 const meta: Meta<typeof EditorSidebar> = {
   title: "Sidebar/EditorSidebar",
   component: EditorSidebar,
   parameters: { layout: "fullscreen" },
+  decorators: [
+    (Story) => (
+      <CommandPaletteContext.Provider value={fakePaletteCtx}>
+        <Story />
+      </CommandPaletteContext.Provider>
+    ),
+  ],
 };
 export default meta;
 
@@ -107,6 +130,24 @@ export const EditingName: Story = {
       initialName="rename-me"
       stepCount={1}
       autoFocusName
+    />
+  ),
+};
+
+/**
+ * IdleEditableFields — at-rest view that demonstrates the dashed-border
+ * editable affordance on the name, cron, and timezone fields without any
+ * hover or focus. Use this to verify that fields look like fields even
+ * when nothing is being interacted with.
+ */
+export const IdleEditableFields: Story = {
+  render: () => (
+    <Harness
+      mode={{ kind: "edit", workflowId: "wf_idle" }}
+      initialName="daily-digest"
+      initialSchedule="0 9 * * 1-5"
+      initialTimezone="America/New_York"
+      stepCount={3}
     />
   ),
 };
