@@ -11,29 +11,37 @@
  *   - branch-label eyebrow (when the node is the entry of a match case)
  *   - hover-revealed quick actions (kind switch, edit, delete)
  *   - hover-revealed drag-handle grip on the top-left
- *   - small left/right connection handles styled as visible dots
- *     (always rendered, brightened on hover) used for edge wiring —
- *     the actual gesture is handled by reactflow via `onConnect` /
- *     `onReconnect` in `WorkflowGraphEditor`.
+ *   - left/right connection handles used for edge wiring — the actual
+ *     gesture is handled by reactflow via `onConnect` / `onReconnect`
+ *     in `WorkflowGraphEditor`.
  *
- * Handle visibility (n8n-style, post-ACS-20):
- *   - Idle: small `bg-fg-muted` dot, always visible so the user knows
- *     the affordance exists at rest.
- *   - Hover: brightens to `bg-fg`.
- *   - In-flight connection: reactflow swaps in its own internal
- *     "connecting" state class; we style that via a `:hover`-equivalent
- *     selector with the brand accent.
+ * Handle geometry (post-ACS-20 fix for "wiring doesn't work"):
+ *   - The `<Handle>` element itself is a generous 18×18 transparent
+ *     hit target — large enough to grab reliably with a mouse and to
+ *     forgive imprecise drops. `pointer-events: all` is forced so the
+ *     surrounding card's hover styling never absorbs the grab.
+ *   - Inside the handle we render a small visible 8px dot. The dot is
+ *     `pointer-events: none` so it doesn't compete with the parent for
+ *     the gesture, and the dot's position is locked to the handle's
+ *     centre via flex centring (no offset between the visual and the
+ *     hit zone — the original bug had a tiny 10px combined target with
+ *     no slack).
+ *   - Dot is always visible at `bg-fg-muted`, brightens on group hover
+ *     to `bg-fg`. In-flight connection styling is handled at the
+ *     ReactFlow level via `connectionLineStyle`.
  *
  * Disconnected state:
  *   - When `data.disconnected` is true (the node was added via the
  *     dock and not yet wired into the chain), the outer border switches
  *     to a dashed brand-coloured stroke and a small "Not wired" badge
- *     appears in the top-right corner. The badge clears as soon as the
- *     user drags a connection into this node.
+ *     appears along the bottom edge. The badge clears as soon as the
+ *     user drags a connection into this node. The target handle stays
+ *     present and active on disconnected nodes — that's how the user
+ *     wires them in.
  *
  * Keyboard reorder (up/down arrows after grip-focus) moves the step in
  * the underlying `steps[]` array — this remains as an accessibility
- * affordance alongside the new free drag + edge-reconnect gestures.
+ * affordance alongside the free drag + edge-reconnect gestures.
  */
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
@@ -64,15 +72,21 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
         borderClass,
       ].join(" ")}
     >
-      {/* Handles — small dots, visible at rest in a muted tone so the
-          user can find them, brightened on group hover, and accented
-          when a connection is in flight (via reactflow's `.connecting`
-          internal class). Tokens only. */}
+      {/* Handles — generous 18px transparent hit zones with a small
+          8px visible dot centred inside. The hit zone is intentionally
+          much larger than the dot so users can grab it reliably; the
+          dot is `pointer-events: none` so it can't intercept the grab.
+          The previous 10px combined hit/visual target was the root
+          cause of "wiring doesn't seem to work" — too small to grab
+          with any consistency. Tokens only. */}
       <Handle
         type="target"
         position={Position.Left}
-        className="!w-[10px] !h-[10px] !bg-fg-muted group-hover:!bg-fg !border-2 !border-surface transition-colors cursor-crosshair"
-      />
+        className="!w-[18px] !h-[18px] !bg-transparent !border-0 cursor-crosshair flex items-center justify-center"
+        style={{ pointerEvents: "all" }}
+      >
+        <span className="pointer-events-none block w-2 h-2 rounded-full bg-fg-muted group-hover:bg-fg ring-2 ring-surface transition-colors" />
+      </Handle>
 
       {/* Drag-handle grip — visible on hover. Focus + arrow keys reorder. */}
       {/* TODO: implement true drag-and-drop reorder; for now, this is a keyboard affordance. */}
@@ -138,8 +152,11 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
       <Handle
         type="source"
         position={Position.Right}
-        className="!w-[10px] !h-[10px] !bg-fg-muted group-hover:!bg-fg !border-2 !border-surface transition-colors cursor-crosshair"
-      />
+        className="!w-[18px] !h-[18px] !bg-transparent !border-0 cursor-crosshair flex items-center justify-center"
+        style={{ pointerEvents: "all" }}
+      >
+        <span className="pointer-events-none block w-2 h-2 rounded-full bg-fg-muted group-hover:bg-fg ring-2 ring-surface transition-colors" />
+      </Handle>
     </div>
   );
 }

@@ -101,6 +101,7 @@ import {
   ReactFlowProvider,
   applyEdgeChanges,
   applyNodeChanges,
+  useReactFlow,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -115,7 +116,7 @@ import "@xyflow/react/dist/style.css";
 import type { Job } from "@/apis/types";
 import { StepNode } from "./StepNode";
 import { StepEditorModal } from "./StepEditorModal";
-import { KindPaletteDock } from "./KindPaletteDock";
+import { DOCK_DRAG_MIME, KindPaletteDock } from "./KindPaletteDock";
 import { InsertEdge } from "./EdgePlusButton";
 import { EDITOR_CURSOR_CSS } from "./cursors";
 import {
@@ -484,20 +485,32 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
 
   /* ── Connection wiring (manual user-drag from handle to handle) ───── */
 
-  // Precompute the set of node ids that already have an incoming edge
-  // and an outgoing edge, so `isValidConnection` can enforce the
-  // single-in / single-out invariant. Match-fanout source ids are
-  // intentionally allowed multiple outs at the model level — we only
-  // gate user-initiated reconnects, which always target same-scope
-  // reordering.
+  // Single source of truth for "is this drag a legal wire?". Used both
+  // by reactflow during the in-flight drag (to color the line valid /
+  // invalid and to accept the drop) AND by `handleConnect` /
+  // `handleReconnect` as a guard before mutating `steps[]`. The clauses
+  // below enumerate every reason a connection can be refused — each
+  // failure path is documented so future maintenance can tell at a
+  // glance whether a real wire is being rejected by accident.
   const isValidConnection = useCallback<IsValidConnection<Edge>>(
     (conn) => {
+      // 1. Missing source/target ids — reactflow occasionally hands us
+      //    half-formed Connection objects during cancelation; ignore.
       if (!conn.source || !conn.target) return false;
+      // 2. Self-loop — a node cannot wire to itself in a linear chain.
       if (conn.source === conn.target) return false;
+      // 3. Either path is malformed (couldn't be parsed as a chain
+      //    location). Shouldn't happen for nodes we rendered, but the
+      //    guard keeps the helper safe to call.
       const sourceScope = getScopeForPath(conn.source);
       const targetScope = getScopeForPath(conn.target);
       if (!sourceScope || !targetScope) return false;
-      // Strict linear-chain wiring: same scope only. No cross-branch reorders.
+      // 4. Strict linear-chain topology: a wire may only reorder within
+      //    a single chain (top-level OR a single match-case branch).
+      //    Cross-branch reconnects have no clean linear-chain semantic
+      //    so we reject them. This DOES allow wiring to a disconnected
+      //    node in the same scope — the disconnected flag is purely
+      //    visual; the underlying path is still part of `steps[]`.
       if (!sameScope(sourceScope, targetScope)) return false;
       return true;
     },
@@ -574,6 +587,62 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
     });
   }, [internalWorkflow.steps.length]);
 
+  /* ── Dock-drop: drag a chip onto the canvas to place at the cursor ── */
+
+  // Reactflow's instance for translating client coordinates to canvas
+  // coordinates. Available because we render inside ReactFlowProvider
+  // (see `WorkflowGraphEditor`, the outer wrapper component).
+  const { screenToFlowPosition } = useReactFlow();
+
+  const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Required: without preventing the default `dragover` the browser
+   * refuses the drop entirely (no `drop` event will fire). Setting
+   * `dropEffect = "move"` keeps the OS-level cursor consistent with
+   * the dock's "move" effectAllowed.
+   */
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.dataTransfer.types.includes(DOCK_DRAG_MIME)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  }, []);
+
+  /**
+   * Drop handler: read the kind from the data-transfer payload, insert
+   * a new step, and seed its position in `positionsRef` so the
+   * reconcile effect uses the drop coordinate instead of the scratch
+   * fallback. Centred on the cursor (StepNode is 240w × ~92h).
+   */
+  const handleDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      const kind = e.dataTransfer.getData(DOCK_DRAG_MIME) as StepKind | "";
+      if (!kind) return;
+      e.preventDefault();
+
+      const flowPos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      // Centre the dropped node on the cursor — StepNode is 240×~92.
+      const position = { x: flowPos.x - 120, y: flowPos.y - 46 };
+
+      const newPath = computeAppendedTopLevelPath(internalWorkflow.steps.length);
+      // Seed the position BEFORE the reconcile effect runs so the new
+      // node lands at the cursor, not at the scratch anchor.
+      positionsRef.current.set(newPath, position);
+
+      const newStep = makeDefaultStep(kind);
+      setWorkflow((prev) => ({
+        ...prev,
+        steps: insertStepAfter(prev.steps, null, newStep),
+      }));
+      setDisconnectedIds((prev) => {
+        const next = new Set(prev);
+        next.add(newPath);
+        return next;
+      });
+    },
+    [internalWorkflow.steps.length, screenToFlowPosition],
+  );
+
   /* ── Click handlers ───────────────────────────────────────────────── */
 
   const handleNodeClick: NodeMouseHandler = useCallback(
@@ -609,7 +678,12 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
           editor surface so OSX-style white cursors stay visible against
           the near-white canvas. Scoped to [data-acs-editor]. */}
       <style>{EDITOR_CURSOR_CSS}</style>
-      <div className="flex-1 relative bg-surface-tertiary overflow-hidden">
+      <div
+        ref={canvasWrapperRef}
+        className="flex-1 relative bg-surface-tertiary overflow-hidden"
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+      >
         <ReactFlow
           nodes={nodesWithDisconnectedFlag}
           edges={edges}
