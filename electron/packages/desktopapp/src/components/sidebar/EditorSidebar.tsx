@@ -103,6 +103,16 @@ export interface EditorSidebarProps {
   onEnabledChange: (next: boolean) => void;
   /** Number of steps in the workflow; used for save-disabled state. */
   stepCount: number;
+  /**
+   * Number of editor nodes that are currently visually disconnected
+   * from the chain (added via the dock and not yet wired). Surfaces as
+   * a small advisory under the save button so the user knows the
+   * runtime order may not match the visual layout. Does NOT disable
+   * save — disconnected steps still serialise at their position in
+   * `steps[]`. See `WorkflowGraphEditor` for the runtime/visual
+   * mismatch note (ACS-20).
+   */
+  disconnectedCount?: number;
   /** Submit handler — wired to create/update. */
   onSubmit: () => void;
   /** True while a submission is in flight. */
@@ -140,6 +150,7 @@ export function EditorSidebar({
   enabled,
   onEnabledChange,
   stepCount,
+  disconnectedCount = 0,
   onSubmit,
   busy = false,
   errorText = null,
@@ -232,6 +243,11 @@ export function EditorSidebar({
           </CompactActionButton>
           {errorText && (
             <p className="px-1 text-xs text-status-failed">{errorText}</p>
+          )}
+          {disconnectedCount > 0 && (
+            <p className="px-1 text-[11px] text-fg-muted" title="Disconnected steps still run as part of the linear chain (appended at the end).">
+              {disconnectedCount} step{disconnectedCount === 1 ? "" : "s"} not wired into the chain
+            </p>
           )}
         </section>
       </div>

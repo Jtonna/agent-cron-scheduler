@@ -92,6 +92,7 @@ function LoadedEditor({ workflowId, job, router }: LoadedEditorProps) {
 
   const workflowRef = useRef<NewWorkflow>(seed);
   const [stepCount, setStepCount] = useState(seed.steps.length);
+  const [disconnectedCount, setDisconnectedCount] = useState(0);
   const handleWorkflowChange = useCallback((next: NewWorkflow) => {
     workflowRef.current = next;
     setStepCount(next.steps.length);
@@ -131,6 +132,7 @@ function LoadedEditor({ workflowId, job, router }: LoadedEditorProps) {
           enabled={enabled}
           onEnabledChange={setEnabled}
           stepCount={stepCount}
+          disconnectedCount={disconnectedCount}
           onSubmit={handleSubmit}
           busy={updating}
           errorText={errorText}
@@ -146,6 +148,7 @@ function LoadedEditor({ workflowId, job, router }: LoadedEditorProps) {
           timezone={timezone}
           enabled={enabled}
           onWorkflowChange={handleWorkflowChange}
+          onDisconnectedCountChange={setDisconnectedCount}
         />
       </div>
     </div>

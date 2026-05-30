@@ -48,6 +48,7 @@ export default function CreatePage() {
   // Latest snapshot of the editor's workflow (mostly tracks `steps`).
   const workflowRef = useRef<NewWorkflow>(seed);
   const [stepCount, setStepCount] = useState(seed.steps.length);
+  const [disconnectedCount, setDisconnectedCount] = useState(0);
   const handleWorkflowChange = useCallback((next: NewWorkflow) => {
     workflowRef.current = next;
     setStepCount(next.steps.length);
@@ -85,6 +86,7 @@ export default function CreatePage() {
             enabled={enabled}
             onEnabledChange={setEnabled}
             stepCount={stepCount}
+            disconnectedCount={disconnectedCount}
             onSubmit={handleSubmit}
             busy={creating}
             errorText={errorText}
@@ -99,6 +101,7 @@ export default function CreatePage() {
             timezone={timezone}
             enabled={enabled}
             onWorkflowChange={handleWorkflowChange}
+            onDisconnectedCountChange={setDisconnectedCount}
           />
         </div>
       </div>

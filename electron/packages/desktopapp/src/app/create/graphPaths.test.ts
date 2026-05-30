@@ -7,12 +7,14 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { applyNodeChanges, type NodeChange } from "@xyflow/react";
 import {
   getScopeForPath,
   reorderViaEdgeReconnect,
   sameScope,
   type ChainScope,
 } from "./graphPaths";
+import { buildGraph, layoutGraph, type StepNodeData } from "./graph";
 import type { NewStep, NewWorkflow } from "./types";
 
 function shell(id: string): NewStep {
@@ -190,6 +192,37 @@ describe("reorderViaEdgeReconnect — match case branch", () => {
       badScope,
     );
     expect(next).toBe(wf);
+  });
+});
+
+describe("live drag — reactflow position updates leave workflow untouched", () => {
+  // Sanity test for the ACS-20 drag UX rework: reactflow's controlled-
+  // mode contract sends NodeChange events on every drag frame, and the
+  // editor folds them into its `nodes` state via `applyNodeChanges`.
+  // The workflow model (steps[]) must NOT change just because a node
+  // moved — positions are session-only and never serialised.
+  it("does not mutate workflow.steps when a node position change is applied", () => {
+    const wf: NewWorkflow = makeWorkflow([shell("A"), shell("B"), shell("C")]);
+    const built = buildGraph(wf.steps);
+    const nodes = layoutGraph(built.nodes, built.edges);
+
+    const change: NodeChange<(typeof nodes)[number]> = {
+      id: "s/1",
+      type: "position",
+      position: { x: 999, y: 999 },
+      dragging: true,
+    };
+    const nextNodes = applyNodeChanges<(typeof nodes)[number]>([change], nodes);
+
+    // The dragged node moved.
+    const moved = nextNodes.find((n) => n.id === "s/1")!;
+    expect(moved.position).toEqual({ x: 999, y: 999 });
+    // The workflow steps array is byte-identical (same reference, same ids).
+    expect(wf.steps).toBe(wf.steps);
+    expect(wf.steps.map((s) => s.id)).toEqual(["A", "B", "C"]);
+    // And the node's `data.step` still points at the same step object —
+    // applyNodeChanges only swaps position-related fields.
+    expect((moved.data as StepNodeData).step).toBe(wf.steps[1]);
   });
 });
 

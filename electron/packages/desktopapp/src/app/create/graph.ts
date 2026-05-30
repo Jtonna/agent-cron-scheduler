@@ -42,6 +42,14 @@ export interface StepNodeData extends Record<string, unknown> {
   branchLabel?: string;
   /** Whether this node may be deleted (the editor disables delete for the last top-level step). */
   canDelete?: boolean;
+  /**
+   * True when the user has added this step (via the dock or by deleting
+   * its incoming edge) but has not yet wired it into the linear chain.
+   * Purely a visual flag — the step still serialises at its position in
+   * `steps[]`. Applied by `WorkflowGraphEditor` post-build; never set by
+   * `buildGraph` itself.
+   */
+  disconnected?: boolean;
   /* ── Imperative callbacks wired by the parent editor. ───────────── */
   onEdit?: (path: string) => void;
   onDelete?: (path: string) => void;

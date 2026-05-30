@@ -11,9 +11,25 @@
  *   - branch-label eyebrow (when the node is the entry of a match case)
  *   - hover-revealed quick actions (kind switch, edit, delete)
  *   - hover-revealed drag-handle grip on the top-left
- *   - small left/right connection handles styled as grabbable dots
- *     (hover-revealed) used for edge reconnect — the actual gesture is
- *     handled by reactflow via `onReconnect` in `WorkflowGraphEditor`.
+ *   - small left/right connection handles styled as visible dots
+ *     (always rendered, brightened on hover) used for edge wiring —
+ *     the actual gesture is handled by reactflow via `onConnect` /
+ *     `onReconnect` in `WorkflowGraphEditor`.
+ *
+ * Handle visibility (n8n-style, post-ACS-20):
+ *   - Idle: small `bg-fg-muted` dot, always visible so the user knows
+ *     the affordance exists at rest.
+ *   - Hover: brightens to `bg-fg`.
+ *   - In-flight connection: reactflow swaps in its own internal
+ *     "connecting" state class; we style that via a `:hover`-equivalent
+ *     selector with the brand accent.
+ *
+ * Disconnected state:
+ *   - When `data.disconnected` is true (the node was added via the
+ *     dock and not yet wired into the chain), the outer border switches
+ *     to a dashed brand-coloured stroke and a small "Not wired" badge
+ *     appears in the top-right corner. The badge clears as soon as the
+ *     user drags a connection into this node.
  *
  * Keyboard reorder (up/down arrows after grip-focus) moves the step in
  * the underlying `steps[]` array — this remains as an accessibility
@@ -33,22 +49,29 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
   const meta = STEP_KIND_META[data.step.kind];
   const Icon = meta.Icon;
   const canDelete = data.canDelete ?? true;
+  const disconnected = data.disconnected === true;
+
+  const borderClass = selected
+    ? "border-brand ring-2 ring-brand-ring"
+    : disconnected
+      ? "border-2 border-dashed border-brand/60 hover:border-brand"
+      : "border border-border hover:border-border-strong";
 
   return (
     <div
       className={[
-        "group relative rounded-card border bg-surface overflow-visible shadow-sm transition-shadow w-[240px] cursor-pointer hover:shadow-menu",
-        selected
-          ? "border-brand ring-2 ring-brand-ring"
-          : "border-border hover:border-border-strong",
+        "group relative rounded-card bg-surface overflow-visible shadow-sm transition-shadow w-[240px] cursor-pointer hover:shadow-menu",
+        borderClass,
       ].join(" ")}
     >
-      {/* Handles — small dots, brightened on group hover so the user
-          knows they can grab an edge end. Tokens only. */}
+      {/* Handles — small dots, visible at rest in a muted tone so the
+          user can find them, brightened on group hover, and accented
+          when a connection is in flight (via reactflow's `.connecting`
+          internal class). Tokens only. */}
       <Handle
         type="target"
         position={Position.Left}
-        className="!w-[10px] !h-[10px] !bg-border group-hover:!bg-brand !border-2 !border-surface transition-colors cursor-grab"
+        className="!w-[10px] !h-[10px] !bg-fg-muted group-hover:!bg-fg !border-2 !border-surface transition-colors cursor-crosshair"
       />
 
       {/* Drag-handle grip — visible on hover. Focus + arrow keys reorder. */}
@@ -99,10 +122,23 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
           {data.summary}
         </div>
       </div>
+
+      {/* Disconnected affordance — small badge along the bottom edge of
+          the card so it doesn't fight the hover actions for the top
+          corners. Tokens only. */}
+      {disconnected && (
+        <div
+          className="absolute -bottom-2 left-1/2 -translate-x-1/2 z-10 px-1.5 py-0.5 rounded-pill bg-surface border border-brand text-brand text-[9px] font-mono uppercase tracking-wider shadow-sm whitespace-nowrap pointer-events-none"
+          title="This step is not wired into the chain — drag from a handle to connect"
+        >
+          not wired
+        </div>
+      )}
+
       <Handle
         type="source"
         position={Position.Right}
-        className="!w-[10px] !h-[10px] !bg-border group-hover:!bg-brand !border-2 !border-surface transition-colors cursor-grab"
+        className="!w-[10px] !h-[10px] !bg-fg-muted group-hover:!bg-fg !border-2 !border-surface transition-colors cursor-crosshair"
       />
     </div>
   );
