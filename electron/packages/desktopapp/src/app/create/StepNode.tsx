@@ -73,7 +73,7 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
         canDelete={canDelete}
       />
 
-      <div data-mesh={meta.mesh} className="px-3 py-2 flex items-center gap-2">
+      <div data-mesh={meta.mesh} className="rounded-t-card px-3 py-2 flex items-center gap-2">
         <span className="inline-flex h-6 w-6 items-center justify-center rounded-pill bg-surface/80 text-fg">
           <Icon size={13} strokeWidth={2.25} />
         </span>
