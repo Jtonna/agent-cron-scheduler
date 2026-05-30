@@ -26,6 +26,18 @@
  *                                   given path belongs to.
  *   - `sameScope`                 — equality on `ChainScope` values, used
  *                                   to reject cross-branch reconnects.
+ *   - `getChainForScope` /
+ *     `setChainForScope`          — chain accessors for a given
+ *                                   `ChainScope` (top-level / case /
+ *                                   default). Exposed for scope-aware
+ *                                   editor affordances (tail-+ button,
+ *                                   scope-region overlays).
+ *   - `appendStepToScope`         — appends a new step to the tail of the
+ *                                   chain at a given scope and returns
+ *                                   both the next workflow and the new
+ *                                   step's path so callers can wire it
+ *                                   up. Used by the scope-aware dock-
+ *                                   drop and the per-chain tail-+ button.
  *
  * All helpers are pure, return new arrays on success, and return the
  * input unchanged on invalid paths.
@@ -336,7 +348,18 @@ export function sameScope(a: ChainScope, b: ChainScope): boolean {
   return false;
 }
 
-function getChainForScope(workflow: NewWorkflow, scope: ChainScope): NewStep[] | null {
+/**
+ * Returns the chain (linear `NewStep[]`) for the given scope, or `null`
+ * when the scope refers to a non-existent location (e.g. a case key
+ * that's not present on the target match step, or a match path that
+ * doesn't resolve to a `match` step).
+ *
+ * Exported because the editor needs to walk every scope's chain to (a)
+ * find each scope's tail node for the tail-+ affordance and (b)
+ * compute scope-region bounding boxes for the drop-zone highlight
+ * overlay.
+ */
+export function getChainForScope(workflow: NewWorkflow, scope: ChainScope): NewStep[] | null {
   if (scope.kind === "top-level") return workflow.steps;
   const matchStep = getStepAtPath(workflow.steps, scope.matchPath);
   if (!matchStep || matchStep.kind !== "match") return null;
@@ -346,7 +369,16 @@ function getChainForScope(workflow: NewWorkflow, scope: ChainScope): NewStep[] |
   return matchStep.default ?? null;
 }
 
-function setChainForScope(
+/**
+ * Returns a new workflow with the chain at the given scope replaced by
+ * `nextChain`. Returns the input workflow unchanged when the scope
+ * doesn't resolve (e.g. matchPath doesn't point at a `match` step).
+ *
+ * Exported alongside `getChainForScope` for the same reason — the
+ * scope-aware editor affordances need a single mutation surface for
+ * appending into any chain.
+ */
+export function setChainForScope(
   workflow: NewWorkflow,
   scope: ChainScope,
   nextChain: NewStep[],
@@ -435,4 +467,65 @@ export function reorderViaEdgeReconnect(
   nextChain.splice(insertAt, 0, moved);
 
   return setChainForScope(workflow, scope, nextChain);
+}
+
+/* ── Scope-aware append ────────────────────────────────────────────── */
+
+/**
+ * Appends `newStep` to the tail of the chain identified by `scope` and
+ * returns both the updated workflow and the new step's full path (so
+ * the caller can mark it as wired / disconnected, seed a position,
+ * etc.). Used by:
+ *
+ *   - The scope-aware dock-drop: when a chip is dropped over a case or
+ *     default scope region, the new step is appended into that scope
+ *     and auto-wired to the prior tail.
+ *   - The per-chain tail-+ button: an explicit "add a step after this
+ *     chain's tail" affordance that always wires the new step in.
+ *
+ * Returns `null` when the scope doesn't resolve (e.g. matchPath points
+ * at a non-`match` step). For a case scope whose case key isn't yet
+ * present on the match step, the case is created with a single-element
+ * chain — that supports the "add into empty case" path that the modal
+ * editor creates when a user adds a new case key.
+ */
+export function appendStepToScope(
+  workflow: NewWorkflow,
+  scope: ChainScope,
+  newStep: NewStep,
+): { workflow: NewWorkflow; newPath: string } | null {
+  if (scope.kind === "top-level") {
+    const nextChain = [...workflow.steps, newStep];
+    return {
+      workflow: { ...workflow, steps: nextChain },
+      newPath: `s/${workflow.steps.length}`,
+    };
+  }
+
+  const matchStep = getStepAtPath(workflow.steps, scope.matchPath);
+  if (!matchStep || matchStep.kind !== "match") {
+    console.warn(
+      `appendStepToScope: matchPath ${scope.matchPath} does not resolve to a match step`,
+    );
+    return null;
+  }
+
+  if (scope.kind === "case") {
+    const existing = matchStep.cases[scope.caseKey] ?? [];
+    const nextChain = [...existing, newStep];
+    const nextWorkflow = setChainForScope(workflow, scope, nextChain);
+    return {
+      workflow: nextWorkflow,
+      newPath: `${scope.matchPath}/cases/${scope.caseKey}/${existing.length}`,
+    };
+  }
+
+  // default scope
+  const existing = matchStep.default ?? [];
+  const nextChain = [...existing, newStep];
+  const nextWorkflow = setChainForScope(workflow, scope, nextChain);
+  return {
+    workflow: nextWorkflow,
+    newPath: `${scope.matchPath}/default/${existing.length}`,
+  };
 }

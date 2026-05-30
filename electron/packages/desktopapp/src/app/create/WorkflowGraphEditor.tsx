@@ -77,6 +77,25 @@
  *     by the dashed-border affordance + the sidebar "N step(s) not
  *     wired" hint. See option (a) in the ACS-20 task brief.
  *
+ * Scope-aware drop + tail-+ affordance (ACS-20 follow-up):
+ *
+ *   - While a dock chip is being dragged over the canvas, each
+ *     non-top-level scope (every match case + every match default)
+ *     renders a faint tinted overlay around the bounding box of its
+ *     nodes. The scope under the cursor gets a stronger highlight, so
+ *     the user can see exactly which chain a drop will land in.
+ *   - On drop: if the cursor falls within (or within `SCOPE_DROP_PAD`
+ *     pixels of) a scope's bounding box, the new step is appended into
+ *     that scope and AUTO-WIRED to the scope's prior tail. Otherwise
+ *     the drop lands at top level — auto-wired to the top-level tail
+ *     when nearby, otherwise disconnected (legacy behaviour).
+ *   - Every chain's tail node grows a small floating `+` button
+ *     (`TailPlusButton`) ~16px off its right edge. Clicking it opens
+ *     the same kind picker the edge-+ uses, and the picked kind is
+ *     appended into the tail's scope (auto-wired). Tail nodes that are
+ *     themselves `match` steps are suppressed (a match has no "next"
+ *     in the linear chain — it fans out into branches instead).
+ *
  * The workflow identity (name, schedule, timezone, enabled) and the
  * Save / Create button NO LONGER live on the canvas. They live in the
  * `EditorSidebar` mounted by the page on the left. The editor exposes
@@ -115,6 +134,7 @@ import {
   applyEdgeChanges,
   applyNodeChanges,
   useReactFlow,
+  useViewport,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -131,20 +151,25 @@ import { StepNode } from "./StepNode";
 import { StepEditorModal } from "./StepEditorModal";
 import { DOCK_DRAG_MIME, KindPaletteDock } from "./KindPaletteDock";
 import { InsertEdge } from "./EdgePlusButton";
+import { TailPlusButton } from "./TailPlusButton";
 import { EDITOR_CURSOR_CSS } from "./cursors";
 import {
+  appendStepToScope,
   buildGraph,
   deleteStepAtPath,
+  getChainForScope,
   getScopeForPath,
+  getStepAtPath,
   insertStepAfter,
   layoutGraph,
   reorderStepAtPath,
   reorderViaEdgeReconnect,
   sameScope,
+  type ChainScope,
   type StepNodeData,
 } from "./graph";
 import { makeDefaultStep } from "./types";
-import type { NewWorkflow, StepKind } from "./types";
+import type { NewStep, NewWorkflow, StepKind } from "./types";
 import { useStepEditorStack } from "./useStepEditorStack";
 import { jobToNewWorkflow } from "./workflowSerialization";
 
@@ -162,6 +187,23 @@ interface BuildCallbacks {
 /** Pixel offset applied to each newly-added scratch node so successive
  * dock-clicks don't pile on top of each other. */
 const SCRATCH_OFFSET = { x: 60, y: 80 };
+
+/** Slack (in flow coordinates) added around each scope's node bounding
+ * box for drop-zone detection AND highlight rendering. ~40px feels
+ * snug enough to avoid spurious cross-scope drops yet generous enough
+ * that a user dropping just outside the right edge of a case still
+ * lands in the case. */
+const SCOPE_DROP_PAD = 40;
+
+/** Extra proximity radius (flow coords) for "did the drop land near the
+ * top-level tail?" — if so the dropped node is auto-wired instead of
+ * left disconnected. Matches the spec's ~120px heuristic. */
+const TOP_LEVEL_PROXIMITY = 120;
+
+/** Assumed StepNode dimensions, mirrored from `graph.ts`. Used for
+ * scope-region bounding-box math. */
+const NODE_WIDTH = 240;
+const NODE_HEIGHT = 92;
 
 /** Style applied to the in-flight connection line (drag from a handle). */
 const CONNECTION_LINE_STYLE = {
@@ -609,27 +651,91 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
 
   const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
 
+  // Snapshot the live node positions as a plain Map derived from the
+  // editor-owned `nodes` state. We deliberately avoid reading
+  // `positionsRef.current` during render — that ref is a write-only
+  // mirror used by the reconcile effect to preserve positions across
+  // topology changes. Render-time reads come from `nodes`.
+  const positionsByNode = useMemo(() => {
+    const map = new Map<string, { x: number; y: number }>();
+    for (const n of nodes) map.set(n.id, n.position);
+    return map;
+  }, [nodes]);
+
+  const scopeRegions = useMemo(
+    () => collectScopeRegions(workflow, positionsByNode),
+    [workflow, positionsByNode],
+  );
+
+  const tails = useMemo(
+    () => collectTails(workflow, positionsByNode),
+    [workflow, positionsByNode],
+  );
+
+  /**
+   * While dragging a dock chip over the canvas, which scope is the
+   * cursor over? Drives both the highlight overlay and the drop
+   * routing. `null` means "no scope" — drop falls back to top-level.
+   */
+  const [hoveredScope, setHoveredScope] = useState<ChainScope | null>(null);
+
+  /**
+   * Whether ANY dock-chip drag is currently in flight over the
+   * canvas. Toggles on `dragenter`/`dragleave`. Drives the overlay
+   * visibility — we don't want scope regions visible during normal
+   * canvas interaction.
+   */
+  const [dockDragActive, setDockDragActive] = useState(false);
+
   /**
    * Required: without preventing the default `dragover` the browser
    * refuses the drop entirely (no `drop` event will fire). Setting
    * `dropEffect = "move"` keeps the OS-level cursor consistent with
    * the dock's "move" effectAllowed.
    */
-  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    if (!e.dataTransfer.types.includes(DOCK_DRAG_MIME)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
+  const handleDragOver = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      if (!e.dataTransfer.types.includes(DOCK_DRAG_MIME)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const flowPos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      const scopeAt = findScopeAt(scopeRegions, flowPos);
+      setHoveredScope((prev) => {
+        if (prev === null && scopeAt === null) return prev;
+        if (prev && scopeAt && sameScope(prev, scopeAt)) return prev;
+        return scopeAt;
+      });
+      if (!dockDragActive) setDockDragActive(true);
+    },
+    [screenToFlowPosition, scopeRegions, dockDragActive],
+  );
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    // Only treat leaves of the canvas wrapper itself as "left"; child
+    // dragenter/leave events from the reactflow inner DOM would
+    // otherwise toggle us off mid-drag. `relatedTarget` is the node
+    // the cursor moved to; if it's still inside our wrapper, ignore.
+    const wrapper = canvasWrapperRef.current;
+    if (wrapper && e.relatedTarget instanceof Node && wrapper.contains(e.relatedTarget)) {
+      return;
+    }
+    setDockDragActive(false);
+    setHoveredScope(null);
   }, []);
 
   /**
-   * Drop handler: read the kind from the data-transfer payload, insert
-   * a new step, and seed its position in `positionsRef` so the
-   * reconcile effect uses the drop coordinate instead of the scratch
-   * fallback. Centred on the cursor (StepNode is 240w × ~92h).
+   * Drop handler: read the kind from the data-transfer payload. If the
+   * drop landed within a non-top-level scope (case or default), append
+   * into that scope and auto-wire. Otherwise drop at top level — if
+   * the drop is near the top-level tail, append + auto-wire; if not,
+   * insert as a disconnected node at the cursor (legacy behaviour).
    */
   const handleDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
       const kind = e.dataTransfer.getData(DOCK_DRAG_MIME) as StepKind | "";
+      // Always clear drag UI state, even on a no-op drop.
+      setDockDragActive(false);
+      setHoveredScope(null);
       if (!kind) return;
       e.preventDefault();
 
@@ -637,23 +743,97 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
       // Centre the dropped node on the cursor — StepNode is 240×~92.
       const position = { x: flowPos.x - 120, y: flowPos.y - 46 };
 
-      const newPath = computeAppendedTopLevelPath(internalWorkflow.steps.length);
-      // Seed the position BEFORE the reconcile effect runs so the new
-      // node lands at the cursor, not at the scratch anchor.
-      positionsRef.current.set(newPath, position);
+      // Re-resolve scope from the drop coordinate (the cached
+      // `hoveredScope` may be stale by a frame).
+      const dropScope = findScopeAt(scopeRegions, flowPos);
 
+      if (dropScope) {
+        // Scope-aware drop: append into the case/default chain and
+        // auto-wire to the prior tail. The result of `appendStepToScope`
+        // gives us the canonical path so we can seed the position
+        // synchronously, before the reconcile effect runs.
+        const newStep = makeDefaultStep(kind);
+        setWorkflow((prev) => {
+          const result = appendStepToScope(prev, dropScope, newStep);
+          if (!result) return prev;
+          positionsRef.current.set(result.newPath, position);
+          return result.workflow;
+        });
+        return;
+      }
+
+      // Top-level drop. If the cursor is within proximity of the
+      // top-level tail, auto-wire by appending without flagging
+      // disconnected. Otherwise stay with the disconnected-on-drop
+      // behaviour so the user can wire it themselves.
+      const topChain = workflow.steps;
+      const topTailPath =
+        topChain.length > 0 ? `s/${topChain.length - 1}` : null;
+      const topTailStep = topTailPath
+        ? getStepAtPath(workflow.steps, topTailPath)
+        : null;
+      const topTailPos = topTailPath ? positionsRef.current.get(topTailPath) : null;
+      const nearTopTail =
+        topTailPos &&
+        topTailStep &&
+        topTailStep.kind !== "match" &&
+        Math.hypot(
+          flowPos.x - (topTailPos.x + NODE_WIDTH / 2),
+          flowPos.y - (topTailPos.y + NODE_HEIGHT / 2),
+        ) < TOP_LEVEL_PROXIMITY;
+
+      const newPath = computeAppendedTopLevelPath(workflow.steps.length);
+      positionsRef.current.set(newPath, position);
       const newStep = makeDefaultStep(kind);
       setWorkflow((prev) => ({
         ...prev,
         steps: insertStepAfter(prev.steps, null, newStep),
       }));
-      setDisconnectedIds((prev) => {
-        const next = new Set(prev);
-        next.add(newPath);
-        return next;
+      if (!nearTopTail) {
+        setDisconnectedIds((prev) => {
+          const next = new Set(prev);
+          next.add(newPath);
+          return next;
+        });
+      }
+    },
+    [scopeRegions, screenToFlowPosition, workflow.steps],
+  );
+
+  /**
+   * Tail-+ click handler: append a step into the given scope using the
+   * shared `appendStepToScope` helper. New node is auto-wired (not
+   * disconnected) because the click is an explicit "add after this
+   * tail" gesture. Position is seeded just past the tail's right edge
+   * so the new node lands in a sensible spot before the user nudges
+   * it (otherwise the reconcile effect's scratch fallback can drop it
+   * far from the parent chain).
+   */
+  const handleTailAppend = useCallback(
+    (scope: ChainScope, kind: StepKind) => {
+      const chain = getChainForScope(workflow, scope);
+      if (!chain || chain.length === 0) return;
+      const tailIdx = chain.length - 1;
+      const tailBase =
+        scope.kind === "top-level"
+          ? "s"
+          : scope.kind === "case"
+            ? `${scope.matchPath}/cases/${scope.caseKey}`
+            : `${scope.matchPath}/default`;
+      const tailPath = `${tailBase}/${tailIdx}`;
+      const tailPos = positionsRef.current.get(tailPath);
+      const seedPos = tailPos
+        ? { x: tailPos.x + NODE_WIDTH + 80, y: tailPos.y }
+        : null;
+      const newStep = makeDefaultStep(kind);
+      setWorkflow((prev) => {
+        const result = appendStepToScope(prev, scope, newStep);
+        if (!result) return prev;
+        if (seedPos) positionsRef.current.set(result.newPath, seedPos);
+        return result.workflow;
       });
     },
-    [internalWorkflow.steps.length, screenToFlowPosition],
+    [workflow],
   );
 
   /* ── Click handlers ───────────────────────────────────────────────── */
@@ -705,6 +885,7 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
         ref={canvasWrapperRef}
         className="flex-1 relative bg-surface-tertiary overflow-hidden"
         onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         <ReactFlow
@@ -744,6 +925,16 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
             position="top-right"
             showInteractive={false}
             className="!bg-surface !border !border-border !rounded-card !shadow-sm"
+          />
+          {/* Scope overlays + tail-+ buttons live in a viewport-
+              transformed layer so they pan/zoom with the canvas. The
+              overlay is only visible while a dock chip is being dragged
+              (`dockDragActive`); tail buttons are always visible. */}
+          <ViewportOverlay
+            regions={dockDragActive ? scopeRegions : EMPTY_REGIONS}
+            hoveredScope={hoveredScope}
+            tails={tails}
+            onTailAppend={handleTailAppend}
           />
         </ReactFlow>
 
@@ -819,4 +1010,245 @@ function computeScratchAnchor(
     n++;
   }
   return { x: maxX + 240, y: avgY / Math.max(n, 1) };
+}
+
+/** Shared empty array so the `ViewportOverlay`'s `regions` prop stays
+ * referentially stable when there's no in-flight dock drag. */
+const EMPTY_REGIONS: ScopeRegion[] = [];
+
+/**
+ * Mounts inside `<ReactFlow>` as a child — gives us access to
+ * `useViewport` (translation + zoom) so we can render scope-region
+ * overlays and per-chain tail-+ buttons in canvas coordinates.
+ *
+ * The wrapping div uses the same matrix transform reactflow applies
+ * to its `.react-flow__viewport`, so all positioning math is in flow
+ * coordinates. `pointer-events` is `none` on the layer; individual
+ * tail buttons re-enable pointer events on themselves.
+ */
+function ViewportOverlay({
+  regions,
+  hoveredScope,
+  tails,
+  onTailAppend,
+}: {
+  regions: ScopeRegion[];
+  hoveredScope: ChainScope | null;
+  tails: TailInfo[];
+  onTailAppend: (scope: ChainScope, kind: StepKind) => void;
+}) {
+  const { x, y, zoom } = useViewport();
+  return (
+    <div
+      // z-10 keeps overlays above the canvas grid but below the
+      // controls/minimap (which sit at z-20 in their own absolutely-
+      // positioned wrappers). Tail buttons re-enable pointer events.
+      className="absolute inset-0 z-10 pointer-events-none"
+      style={{
+        transform: `translate(${x}px, ${y}px) scale(${zoom})`,
+        transformOrigin: "0 0",
+      }}
+    >
+      {regions.map((r) => {
+        const isHovered = hoveredScope && sameScope(hoveredScope, r.scope);
+        return (
+          <div
+            key={r.key}
+            className={[
+              "absolute rounded-card transition-colors",
+              isHovered
+                ? "bg-brand/10 border border-dashed border-brand/60"
+                : "bg-fg/[0.04] border border-dashed border-border-strong/40",
+            ].join(" ")}
+            style={{
+              left: r.x,
+              top: r.y,
+              width: r.width,
+              height: r.height,
+            }}
+          />
+        );
+      })}
+      {tails.map((t) => (
+        <TailPlusButton
+          key={t.tailNodeId}
+          tailNodeId={t.tailNodeId}
+          scope={t.scope}
+          position={t.position}
+          onAppend={onTailAppend}
+        />
+      ))}
+    </div>
+  );
+}
+
+/* ── Scope-region & tail helpers ──────────────────────────────────── */
+
+interface ScopeRegion {
+  /** Stable id used as a React key. */
+  key: string;
+  scope: ChainScope;
+  /** Bounding box in flow coordinates, padded by `SCOPE_DROP_PAD`. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface TailInfo {
+  tailNodeId: string;
+  scope: ChainScope;
+  position: { x: number; y: number };
+}
+
+/**
+ * Walks all non-top-level chains in the workflow (every match case and
+ * every match default, recursively through nested matches) and yields
+ * a `ScopeRegion` per chain whose bounding box can be computed from
+ * the live position map. Scopes whose nodes have no measured position
+ * yet are skipped.
+ */
+function collectScopeRegions(
+  workflow: NewWorkflow,
+  positions: ReadonlyMap<string, { x: number; y: number }>,
+): ScopeRegion[] {
+  const regions: ScopeRegion[] = [];
+
+  function visit(steps: NewStep[], basePath: string) {
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const path = `${basePath}/${i}`;
+      if (step.kind !== "match") continue;
+
+      for (const caseKey of Object.keys(step.cases ?? {})) {
+        const scope: ChainScope = { kind: "case", matchPath: path, caseKey };
+        const chain = step.cases[caseKey] ?? [];
+        const region = chainRegion(
+          chain,
+          `${path}/cases/${caseKey}`,
+          scope,
+          `case:${path}:${caseKey}`,
+          positions,
+        );
+        if (region) regions.push(region);
+        visit(chain, `${path}/cases/${caseKey}`);
+      }
+      if (step.default && step.default.length > 0) {
+        const scope: ChainScope = { kind: "default", matchPath: path };
+        const region = chainRegion(
+          step.default,
+          `${path}/default`,
+          scope,
+          `default:${path}`,
+          positions,
+        );
+        if (region) regions.push(region);
+        visit(step.default, `${path}/default`);
+      }
+    }
+  }
+  visit(workflow.steps, "s");
+  return regions;
+}
+
+function chainRegion(
+  chain: NewStep[],
+  basePath: string,
+  scope: ChainScope,
+  key: string,
+  positions: ReadonlyMap<string, { x: number; y: number }>,
+): ScopeRegion | null {
+  if (chain.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let hadAny = false;
+  for (let i = 0; i < chain.length; i++) {
+    const pos = positions.get(`${basePath}/${i}`);
+    if (!pos) continue;
+    hadAny = true;
+    if (pos.x < minX) minX = pos.x;
+    if (pos.y < minY) minY = pos.y;
+    if (pos.x + NODE_WIDTH > maxX) maxX = pos.x + NODE_WIDTH;
+    if (pos.y + NODE_HEIGHT > maxY) maxY = pos.y + NODE_HEIGHT;
+  }
+  if (!hadAny) return null;
+  return {
+    key,
+    scope,
+    x: minX - SCOPE_DROP_PAD,
+    y: minY - SCOPE_DROP_PAD,
+    width: maxX - minX + SCOPE_DROP_PAD * 2,
+    height: maxY - minY + SCOPE_DROP_PAD * 2,
+  };
+}
+
+/**
+ * Returns the scope whose region contains the given flow coordinate,
+ * or `null` if the cursor isn't over any scope region. When regions
+ * overlap (e.g. nested matches), the deepest scope wins — we prefer
+ * the most specific match by picking the smallest-area region.
+ */
+function findScopeAt(
+  regions: ScopeRegion[],
+  pos: { x: number; y: number },
+): ChainScope | null {
+  let best: ScopeRegion | null = null;
+  for (const r of regions) {
+    if (pos.x < r.x || pos.x > r.x + r.width) continue;
+    if (pos.y < r.y || pos.y > r.y + r.height) continue;
+    if (!best || r.width * r.height < best.width * best.height) {
+      best = r;
+    }
+  }
+  return best ? best.scope : null;
+}
+
+/**
+ * Walks every chain in the workflow and returns its tail node info
+ * (id + position + scope), filtering out tails whose underlying step
+ * is a `match` (those are fan-out points, not "next step" hosts).
+ */
+function collectTails(
+  workflow: NewWorkflow,
+  positions: ReadonlyMap<string, { x: number; y: number }>,
+): TailInfo[] {
+  const tails: TailInfo[] = [];
+
+  function tailOf(scope: ChainScope, chainBasePath: string) {
+    const chain = getChainForScope(workflow, scope);
+    if (!chain || chain.length === 0) return;
+    const tailIdx = chain.length - 1;
+    const tailPath = `${chainBasePath}/${tailIdx}`;
+    const tailStep = getStepAtPath(workflow.steps, tailPath);
+    if (!tailStep) return;
+    if (tailStep.kind === "match") return; // suppressed
+    const pos = positions.get(tailPath);
+    if (!pos) return;
+    tails.push({ tailNodeId: tailPath, scope, position: pos });
+  }
+
+  tailOf({ kind: "top-level" }, "s");
+
+  function visit(steps: NewStep[], basePath: string) {
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const path = `${basePath}/${i}`;
+      if (step.kind !== "match") continue;
+      for (const caseKey of Object.keys(step.cases ?? {})) {
+        tailOf(
+          { kind: "case", matchPath: path, caseKey },
+          `${path}/cases/${caseKey}`,
+        );
+        visit(step.cases[caseKey] ?? [], `${path}/cases/${caseKey}`);
+      }
+      if (step.default && step.default.length > 0) {
+        tailOf({ kind: "default", matchPath: path }, `${path}/default`);
+        visit(step.default, `${path}/default`);
+      }
+    }
+  }
+  visit(workflow.steps, "s");
+  return tails;
 }

@@ -6,9 +6,10 @@
  * branch documented in the function's contract.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyNodeChanges, type NodeChange } from "@xyflow/react";
 import {
+  appendStepToScope,
   getScopeForPath,
   reorderViaEdgeReconnect,
   sameScope,
@@ -248,5 +249,82 @@ describe("reorderViaEdgeReconnect — match default branch", () => {
     const m = next.steps[0];
     if (m.kind !== "match") throw new Error("expected match");
     expect(ids(m.default ?? [])).toEqual(["D1", "D3", "D2"]);
+  });
+});
+
+describe("appendStepToScope", () => {
+  it("appends to top-level chain and returns the new path", () => {
+    const wf = makeWorkflow([shell("A"), shell("B")]);
+    const result = appendStepToScope(wf, { kind: "top-level" }, shell("C"));
+    expect(result).not.toBeNull();
+    expect(result!.newPath).toBe("s/2");
+    expect(ids(result!.workflow.steps)).toEqual(["A", "B", "C"]);
+    // Original untouched.
+    expect(ids(wf.steps)).toEqual(["A", "B"]);
+  });
+
+  it("appends into a match case chain at a nested path", () => {
+    const matchStep: NewStep = {
+      id: "m1",
+      kind: "match",
+      expr: "${x}",
+      cases: { happy: [shell("X"), shell("Y")] },
+      default: [],
+    };
+    const wf = makeWorkflow([matchStep]);
+    const scope: ChainScope = { kind: "case", matchPath: "s/0", caseKey: "happy" };
+    const result = appendStepToScope(wf, scope, shell("Z"));
+    expect(result).not.toBeNull();
+    expect(result!.newPath).toBe("s/0/cases/happy/2");
+    const nm = result!.workflow.steps[0];
+    if (nm.kind !== "match") throw new Error("expected match");
+    expect(ids(nm.cases.happy)).toEqual(["X", "Y", "Z"]);
+  });
+
+  it("appends into a match default chain at a nested path", () => {
+    const matchStep: NewStep = {
+      id: "m1",
+      kind: "match",
+      expr: "${x}",
+      cases: {},
+      default: [shell("D1")],
+    };
+    const wf = makeWorkflow([matchStep]);
+    const scope: ChainScope = { kind: "default", matchPath: "s/0" };
+    const result = appendStepToScope(wf, scope, shell("D2"));
+    expect(result).not.toBeNull();
+    expect(result!.newPath).toBe("s/0/default/1");
+    const nm = result!.workflow.steps[0];
+    if (nm.kind !== "match") throw new Error("expected match");
+    expect(ids(nm.default ?? [])).toEqual(["D1", "D2"]);
+  });
+
+  it("appends into an empty case (case key present but chain is empty)", () => {
+    const matchStep: NewStep = {
+      id: "m1",
+      kind: "match",
+      expr: "${x}",
+      cases: { empty: [] },
+      default: [],
+    };
+    const wf = makeWorkflow([matchStep]);
+    const scope: ChainScope = { kind: "case", matchPath: "s/0", caseKey: "empty" };
+    const result = appendStepToScope(wf, scope, shell("First"));
+    expect(result).not.toBeNull();
+    expect(result!.newPath).toBe("s/0/cases/empty/0");
+    const nm = result!.workflow.steps[0];
+    if (nm.kind !== "match") throw new Error("expected match");
+    expect(ids(nm.cases.empty)).toEqual(["First"]);
+  });
+
+  it("returns null and warns when matchPath does not resolve to a match step", () => {
+    const wf = makeWorkflow([shell("A")]);
+    // s/0 is a shell, not a match.
+    const scope: ChainScope = { kind: "case", matchPath: "s/0", caseKey: "ok" };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = appendStepToScope(wf, scope, shell("X"));
+    expect(result).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

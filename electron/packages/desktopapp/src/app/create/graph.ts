@@ -29,6 +29,9 @@ export {
   reorderViaEdgeReconnect,
   getScopeForPath,
   sameScope,
+  getChainForScope,
+  setChainForScope,
+  appendStepToScope,
   type ChainScope,
 } from "./graphPaths";
 

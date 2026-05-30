@@ -10,17 +10,14 @@
  * Implemented as a custom reactflow edge so it inherits proper path
  * routing; the button sits at the edge midpoint via a Foreignobject.
  *
- * Portal: the kind picker popover is rendered via `createPortal` into
- * `document.body` and positioned via `usePopoverAnchor` (with a
- * flip-above when the picker would overflow the viewport). Without this,
- * the popover lives inside the reactflow EdgeLabelRenderer — whose
- * transformed canvas stacking context drops the popover behind
- * neighbouring nodes. Same family of fix as the StepEditorModal portal
- * (commit ebc820a).
+ * Portal: the kind picker popover is rendered via the shared
+ * `KindPickerPopover` (extracted post-ACS-20 so the per-chain tail-+
+ * button can share the same popover). It portals to `document.body`
+ * to escape the reactflow canvas stacking context that would otherwise
+ * drop the popover behind neighbouring nodes.
  */
 
 import { useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -28,14 +25,8 @@ import {
   type EdgeProps,
 } from "@xyflow/react";
 import { Plus } from "lucide-react";
-import { KindPicker } from "./KindPicker";
-import { usePopoverAnchor } from "./usePopoverAnchor";
+import { KindPickerPopover } from "./KindPickerPopover";
 import type { StepKind } from "./types";
-
-/** Approximate picker dimensions used for viewport-overflow math. The
- * picker has `w-[260px]` and renders 3 rows of 2 chips ≈ ~210px tall. */
-const PICKER_WIDTH = 260;
-const PICKER_HEIGHT = 220;
 
 export interface InsertEdgeData extends Record<string, unknown> {
   /** Path of the source step (where insertion happens after). */
@@ -92,55 +83,12 @@ export function InsertEdge(props: EdgeProps) {
         </div>
       </EdgeLabelRenderer>
       {pickerOpen && insertData && (
-        <PortalledKindPicker
+        <KindPickerPopover
           anchorRef={buttonRef}
-          onPick={(kind) => {
-            insertData.onInsert(insertData.sourcePath, kind);
-            setPickerOpen(false);
-          }}
+          onPick={(kind) => insertData.onInsert(insertData.sourcePath, kind)}
           onClose={() => setPickerOpen(false)}
         />
       )}
     </>
-  );
-}
-
-interface PortalledKindPickerProps {
-  anchorRef: React.RefObject<HTMLButtonElement | null>;
-  onPick: (kind: StepKind) => void;
-  onClose: () => void;
-}
-
-/**
- * Renders the `KindPicker` into `document.body` so it escapes the
- * reactflow canvas stacking context. Position is computed via
- * `usePopoverAnchor`, which centres on the trigger, clamps to the
- * viewport, and flips above when there isn't room below.
- */
-function PortalledKindPicker({ anchorRef, onPick, onClose }: PortalledKindPickerProps) {
-  const coords = usePopoverAnchor(anchorRef, {
-    width: PICKER_WIDTH,
-    height: PICKER_HEIGHT,
-  });
-
-  // SSR guard — createPortal requires a real DOM node.
-  if (typeof document === "undefined") return null;
-  if (!coords) return null;
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        style={{ position: "fixed", top: coords.top, left: coords.left, width: PICKER_WIDTH }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <KindPicker onPick={onPick} onClose={onClose} />
-      </div>
-    </div>,
-    document.body,
   );
 }
