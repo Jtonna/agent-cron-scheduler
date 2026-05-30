@@ -34,7 +34,7 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
   return (
     <div
       className={[
-        "group relative rounded-card border bg-surface overflow-visible shadow-sm transition-shadow w-[240px]",
+        "group relative rounded-card border bg-surface overflow-visible shadow-sm transition-shadow w-[240px] cursor-pointer hover:shadow-menu",
         selected
           ? "border-brand ring-2 ring-brand-ring"
           : "border-border hover:border-border-strong",

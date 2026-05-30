@@ -3,10 +3,17 @@
 /**
  * StepEditorModal
  *
- * Palette-style modal for editing one step. Mirrors the chrome of
- * `CommandPalette` (ink backdrop, ~20vh anchor, max-w-xl, rounded-menu,
- * surface-secondary body, hairline header/footer separators, focus
- * restore on close).
+ * Linear-style modal for editing one step. Sits higher in the viewport
+ * (10vh anchor), wider than the command palette (max-w-3xl) so the
+ * larger editor bodies (match cases, agent prompts, http URLs) breathe.
+ * Surface-secondary body, hairline header/footer separators, focus
+ * restore on close.
+ *
+ * Portal: the modal is rendered via `createPortal` directly into
+ * `document.body`. Without this, the modal would be parented inside the
+ * reactflow canvas container — whose transformed/overflow-hidden
+ * stacking context defeats `position: fixed` and traps the backdrop to
+ * the canvas instead of covering the viewport.
  *
  * Owns:
  *   - header with kind-icon chip, breadcrumb-aware title, kind-switcher pill
@@ -27,6 +34,7 @@
  */
 
 import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, X } from "lucide-react";
 import type {
   NewAgentStep,
@@ -102,9 +110,14 @@ export function StepEditorModal({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose, switcherOpen]);
 
-  return (
+  // SSR guard — createPortal requires a real DOM node. Both consumer
+  // pages declare `"use client"` so this only ever returns null during
+  // the very brief server pass; the hydration render fills it in.
+  if (typeof document === "undefined") return null;
+
+  const overlay = (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-ink-900/60 pt-[20vh] px-4"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-ink-900/60 pt-[10vh] px-4"
       style={{ backgroundColor: "rgba(17,24,39,0.6)" }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -117,10 +130,10 @@ export function StepEditorModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelId}
-        className="w-full max-w-xl flex flex-col overflow-hidden rounded-menu border border-border bg-surface-secondary shadow-menu"
+        className="w-full max-w-3xl flex flex-col overflow-hidden rounded-menu border border-border bg-surface-secondary shadow-menu"
       >
         {/* ── Header ────────────────────────────────────────────────── */}
-        <div className="relative flex items-center gap-2.5 h-11 px-3 border-b border-border">
+        <div className="relative flex items-center gap-2.5 h-12 px-3.5 border-b border-border">
           <span
             data-mesh={meta.mesh}
             className="inline-flex h-[22px] w-[22px] rounded-input items-center justify-center flex-shrink-0"
@@ -157,7 +170,7 @@ export function StepEditorModal({
             type="button"
             onClick={() => setSwitcherOpen((v) => !v)}
             className={[
-              "inline-flex items-center gap-1 px-2.5 py-1 rounded-pill border text-[11px] font-mono cursor-pointer transition-colors",
+              "inline-flex items-center gap-1 px-2.5 py-1 rounded-pill border text-[11px] font-mono cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring/40",
               switcherOpen
                 ? "bg-brand-muted border-brand text-brand-hover"
                 : "bg-surface border-border text-fg hover:bg-surface-hover",
@@ -172,7 +185,7 @@ export function StepEditorModal({
           <button
             type="button"
             onClick={onClose}
-            className="text-fg-subtle hover:text-fg p-1.5 rounded-input cursor-pointer"
+            className="text-fg-subtle hover:text-fg hover:bg-surface-hover p-1.5 rounded-input cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring/40"
             aria-label="Close editor"
           >
             <X size={14} />
@@ -188,7 +201,7 @@ export function StepEditorModal({
         </div>
 
         {/* ── Body ──────────────────────────────────────────────────── */}
-        <div className="max-h-[64vh] overflow-y-auto px-4 py-4">
+        <div className="max-h-[75vh] overflow-y-auto px-5 py-4">
           <div className="mb-4">
             <FieldLabel>Step id</FieldLabel>
             <MonoTextInput
@@ -226,11 +239,11 @@ export function StepEditorModal({
         </div>
 
         {/* ── Footer ────────────────────────────────────────────────── */}
-        <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 border-t border-border bg-surface">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-border bg-surface">
           <button
             type="button"
             onClick={onClose}
-            className="text-fg-muted hover:text-fg hover:bg-surface-hover px-3.5 py-1.5 text-[12.5px] font-medium rounded-input cursor-pointer"
+            className="text-fg-muted hover:text-fg hover:bg-surface-hover px-3.5 py-1.5 text-[12.5px] font-medium rounded-input cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring/40"
           >
             Cancel
           </button>
@@ -240,7 +253,7 @@ export function StepEditorModal({
           <button
             type="button"
             onClick={onClose}
-            className="bg-brand hover:bg-brand-hover text-surface px-4 py-1.5 text-[12.5px] font-medium rounded-input cursor-pointer"
+            className="bg-brand hover:bg-brand-hover text-surface px-4 py-1.5 text-[12.5px] font-medium rounded-input cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring/60"
           >
             Save Step
           </button>
@@ -248,4 +261,6 @@ export function StepEditorModal({
       </div>
     </div>
   );
+
+  return createPortal(overlay, document.body);
 }

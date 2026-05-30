@@ -124,6 +124,35 @@ export const KindSwitcherOpen: Story = {
   ),
 };
 
+/**
+ * BiggerModalDemo
+ *
+ * Showcases the new Linear-style modal chrome (max-w-3xl, pt-[10vh],
+ * max-h-[75vh], h-12 header) hosting a content-heavy match step with
+ * several cases — the case rows benefit most from the extra width.
+ */
+export const BiggerModalDemo: Story = {
+  render: () => (
+    <Harness
+      initial={
+        {
+          ...makeDefaultStep("match"),
+          id: "route_by_status",
+          expr: "${steps.fetch.status_code}",
+          cases: {
+            "200": [makeDefaultStep("shell")],
+            "404": [makeDefaultStep("shell")],
+            "500": [makeDefaultStep("shell")],
+            "502": [makeDefaultStep("shell")],
+            "503": [makeDefaultStep("shell")],
+          },
+          default: [makeDefaultStep("shell")],
+        } as NewStep
+      }
+    />
+  ),
+};
+
 export const NestedMatch: Story = {
   render: () => (
     <Harness

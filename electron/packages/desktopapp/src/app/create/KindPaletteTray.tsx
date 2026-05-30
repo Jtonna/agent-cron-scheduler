@@ -4,7 +4,13 @@
  * KindPaletteTray
  *
  * Left-edge dock of all six step kinds. Clicking a chip appends a step
- * of that kind at the end of the workflow.
+ * of that kind at the end of the workflow. The tray is vertically
+ * centred on the left edge so it coexists with the labeled minimap
+ * stack pinned to the top-left without visual overlap.
+ *
+ * Chips advertise drag intent via `cursor-grab` (and `cursor-grabbing`
+ * when active) so they look draggable even though the actual drag-onto-
+ * canvas wiring is still pending — see the TODO below.
  *
  * TODO: true drag-from-tray-to-canvas (drop onto edges to insert
  * between, drop onto blank space to append). reactflow's external-drag
@@ -38,7 +44,7 @@ export function KindPaletteTray({ onAdd }: KindPaletteTrayProps) {
             onClick={() => onAdd(kind)}
             title={`Add ${meta.label} step`}
             aria-label={`Add ${meta.label} step`}
-            className="group inline-flex items-center justify-center h-8 w-8 rounded-input hover:bg-surface-hover cursor-pointer transition-colors"
+            className="group inline-flex items-center justify-center h-8 w-8 rounded-input hover:bg-surface-hover active:bg-surface-tertiary cursor-grab active:cursor-grabbing transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring/40"
           >
             <span
               data-mesh={meta.mesh}

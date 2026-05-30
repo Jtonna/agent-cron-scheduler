@@ -7,15 +7,23 @@
  * Owns the `NewWorkflow` state and renders the new whiteboard-style
  * canvas:
  *
- *   - WorkflowNameInline (top-left, inline editable name)
  *   - ScheduleCard (top-centre, compact floating card with cron + tz +
  *     enabled toggle + Save/Create primary button)
- *   - Controls / MiniMap (top-right, repositioned)
- *   - KindPaletteTray (left dock; chip click appends a step at the end)
+ *   - MiniMap (top-left, with a "Minimap" eyebrow label so users know
+ *     what the aerial view is for)
+ *   - Controls (zoom in/out/fit, top-right)
+ *   - KindPaletteTray (left dock, vertically centred so it coexists with
+ *     the minimap above; chip click appends a step at the end)
  *   - ReactFlow canvas with custom StepNode + InsertEdge (mid-edge +
- *     button that opens a kind picker)
+ *     button that opens a kind picker), dot-grid background on a
+ *     muted surface that gives the white cursor real contrast
  *   - StepEditorModal stack (palette-style modal; nested when drilling
  *     into match cases — each level pushes a frame onto the modalStack)
+ *
+ * The workflow name is NOT rendered here — it lives in the
+ * `CanvasBreadcrumb` above the canvas, where the parent page wires it up
+ * via the `onNameChange` prop the editor exposes for that purpose. This
+ * keeps the whiteboard clean and the breadcrumb authoritative.
  *
  * The component runs in one of two modes via discriminated-union props:
  *   - `mode: "create"` — seeds with a fresh `NewWorkflow`, submits via
@@ -31,6 +39,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   ReactFlow,
@@ -46,7 +55,6 @@ import { useUpdateWorkflow } from "@/apis/useUpdateWorkflow";
 import type { Job } from "@/apis/types";
 import { StepNode } from "./StepNode";
 import { StepEditorModal, type BreadcrumbCrumb } from "./StepEditorModal";
-import { WorkflowNameInline } from "./WorkflowNameInline";
 import { ScheduleCard } from "./ScheduleCard";
 import { KindPaletteTray } from "./KindPaletteTray";
 import { InsertEdge } from "./EdgePlusButton";
@@ -66,9 +74,25 @@ import type { NewStep, NewWorkflow, StepKind } from "./types";
 const nodeTypes = { step: StepNode };
 const edgeTypes: EdgeTypes = { insert: InsertEdge };
 
+interface WorkflowGraphEditorPropsCommon {
+  /**
+   * Controlled workflow name. When provided, this value overrides the
+   * editor's internal `workflow.name` on every render — the parent
+   * (typically the page hosting the `CanvasBreadcrumb` editable crumb)
+   * becomes the source of truth for the name. When omitted, the editor
+   * keeps using whatever `initialWorkflow.name` it was seeded with.
+   */
+  name?: string;
+  /**
+   * Notifies the parent of name changes so it can keep the breadcrumb
+   * (or any other out-of-canvas name editor) in sync.
+   */
+  onNameChange?: (name: string) => void;
+}
+
 export type WorkflowGraphEditorProps =
-  | { mode: "create"; initialWorkflow: NewWorkflow }
-  | { mode: "edit"; workflowId: string; initialWorkflow: Job };
+  | ({ mode: "create"; initialWorkflow: NewWorkflow } & WorkflowGraphEditorPropsCommon)
+  | ({ mode: "edit"; workflowId: string; initialWorkflow: Job } & WorkflowGraphEditorPropsCommon);
 
 /**
  * One frame on the modal stack — identifies which step the user is
@@ -101,8 +125,25 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
     [],
   );
 
-  const [workflow, setWorkflow] = useState<NewWorkflow>(seed);
+  const [internalWorkflow, setWorkflow] = useState<NewWorkflow>(seed);
   const [modalStack, setModalStack] = useState<ModalFrame[]>([]);
+
+  // Controlled-name overlay. If the parent passes `name`, that's the
+  // source of truth — derive the effective `workflow` by overlaying it
+  // on top of the internal state. No effect, no setState loop, no
+  // custom setter wrapper: the existing `setWorkflow` calls below only
+  // ever touch steps/schedule/etc., never `name`, so the overlay stays
+  // authoritative for the displayed name. `onNameChange` is wired in
+  // for symmetry / future use.
+  const { name: controlledName } = props;
+  const workflow: NewWorkflow = useMemo(
+    () =>
+      controlledName !== undefined
+        ? { ...internalWorkflow, name: controlledName }
+        : internalWorkflow,
+    [controlledName, internalWorkflow],
+  );
+
   const { create, creating, error: createError } = useCreateWorkflow();
   const editWorkflowId = props.mode === "edit" ? props.workflowId : "";
   const {
@@ -287,7 +328,7 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
 
   return (
     <div className="flex flex-col h-[calc(100vh-var(--height-navbar))]">
-      <div className="flex-1 relative bg-surface-secondary overflow-hidden">
+      <div className="flex-1 relative bg-surface-tertiary overflow-hidden">
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -301,27 +342,31 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
           nodesConnectable={false}
           elementsSelectable
         >
-          <Background gap={20} color="var(--color-border)" />
-          <MiniMap
-            pannable
-            zoomable
-            position="top-right"
-            maskColor="rgba(243,244,246,0.6)"
-            className="!bg-surface !border !border-border !rounded-card"
+          {/* Dot-grid canvas background — makes the whiteboard feel like
+              a real surface and gives the white cursor something to land
+              against. Color uses an existing faint foreground token. */}
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={20}
+            size={1.25}
+            color="var(--color-fg-faint)"
           />
           <Controls
             position="top-right"
             showInteractive={false}
             className="!bg-surface !border !border-border !rounded-card !shadow-sm"
-            style={{ top: 156 }}
           />
         </ReactFlow>
 
-        {/* ── Top-left: inline workflow name ─────────────────────────── */}
-        <div className="absolute top-4 left-6 z-20">
-          <WorkflowNameInline
-            value={workflow.name}
-            onChange={(name) => setWorkflow((prev) => ({ ...prev, name }))}
+        {/* ── Top-left: labeled minimap stack ───────────────────────── */}
+        <div className="absolute top-4 left-4 z-20 flex flex-col gap-1">
+          <span className="text-eyebrow pl-0.5">Minimap</span>
+          <MiniMap
+            pannable
+            zoomable
+            position="top-left"
+            maskColor="rgba(243,244,246,0.6)"
+            className="!relative !top-0 !left-0 !m-0 !bg-surface !border !border-border !rounded-card !shadow-sm"
           />
         </div>
 
@@ -336,7 +381,8 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
           />
         </div>
 
-        {/* ── Left dock: kind palette tray ───────────────────────────── */}
+        {/* ── Left dock: kind palette tray (vertically centred so it
+             coexists with the minimap stack above) ─────────────────── */}
         <KindPaletteTray onAdd={handleAppend} />
 
         {/* ── Empty state hint ───────────────────────────────────────── */}
