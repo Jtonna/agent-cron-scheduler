@@ -58,6 +58,7 @@ import { StepEditorModal, type BreadcrumbCrumb } from "./StepEditorModal";
 import { ScheduleCard } from "./ScheduleCard";
 import { KindPaletteTray } from "./KindPaletteTray";
 import { InsertEdge } from "./EdgePlusButton";
+import { EDITOR_CURSOR_CSS } from "./cursors";
 import {
   buildGraph,
   deleteStepAtPath,
@@ -327,7 +328,14 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
   }, [modalStack, workflow.steps]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-var(--height-navbar))]">
+    <div
+      data-acs-editor
+      className="flex flex-col h-[calc(100vh-var(--height-navbar))]"
+    >
+      {/* Accessibility: force high-contrast SVG cursors throughout the
+          editor surface so OSX-style white cursors stay visible against
+          the near-white canvas. Scoped to [data-acs-editor]. */}
+      <style>{EDITOR_CURSOR_CSS}</style>
       <div className="flex-1 relative bg-surface-tertiary overflow-hidden">
         <ReactFlow
           nodes={nodes}

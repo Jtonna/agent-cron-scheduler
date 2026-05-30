@@ -117,6 +117,7 @@ export function StepEditorModal({
 
   const overlay = (
     <div
+      data-acs-editor
       className="fixed inset-0 z-50 flex items-start justify-center bg-ink-900/60 pt-[10vh] px-4"
       style={{ backgroundColor: "rgba(17,24,39,0.6)" }}
       onMouseDown={(e) => {
