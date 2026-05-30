@@ -15,20 +15,52 @@
  *     gesture is handled by reactflow via `onConnect` / `onReconnect`
  *     in `WorkflowGraphEditor`.
  *
- * Handle geometry (post-ACS-20 fix for "wiring doesn't work"):
- *   - The `<Handle>` element itself is a generous 18×18 transparent
- *     hit target — large enough to grab reliably with a mouse and to
- *     forgive imprecise drops. `pointer-events: all` is forced so the
- *     surrounding card's hover styling never absorbs the grab.
- *   - Inside the handle we render a small visible 8px dot. The dot is
- *     `pointer-events: none` so it doesn't compete with the parent for
- *     the gesture, and the dot's position is locked to the handle's
- *     centre via flex centring (no offset between the visual and the
- *     hit zone — the original bug had a tiny 10px combined target with
- *     no slack).
- *   - Dot is always visible at `bg-fg-muted`, brightens on group hover
- *     to `bg-fg`. In-flight connection styling is handled at the
- *     ReactFlow level via `connectionLineStyle`.
+ * Interaction model (post-ACS-20, n8n-style):
+ *   - SINGLE click on the node body → selects the node (visible brand
+ *     ring via reactflow's built-in `selected` prop). Does NOT open the
+ *     editor — single-click had been swallowing reach-for-the-handle
+ *     gestures, which is the same trap n8n's editor explicitly avoids.
+ *   - DOUBLE click on the node body → opens the step editor modal.
+ *     Wired in `WorkflowGraphEditor` via `onNodeDoubleClick`. This
+ *     matches n8n's `CanvasNodeDefault.vue` (`@dblclick.stop="onActivate"`).
+ *   - Pencil icon in the hover-actions row still opens the modal as a
+ *     one-click fallback affordance for mouse-only users.
+ *   - The card body's cursor stays as the high-contrast pointer (no
+ *     pointer/edit-affordance change on hover) because the primary
+ *     editor-open gesture is now double-click, not single-click. The
+ *     hover treatment is the actions row + border darken.
+ *
+ * Handle geometry (n8n-style, post-ACS-20 UX rework):
+ *
+ *   We mirror n8n's `CanvasHandleDot.vue` / `CanvasHandleRenderer.vue`
+ *   pattern — handles are a small visible dot wrapped in a generous
+ *   transparent hit zone that PROTRUDES outward from the card edge,
+ *   so the dot reads as "this is a connection point, grab me" rather
+ *   than blending into the card chrome.
+ *
+ *   - The reactflow `<Handle>` element is a 24×24 transparent square
+ *     (n8n uses ~16px dot + 4px padding → 24px total hit zone). We
+ *     reproduce that with `!w-6 !h-6` and force a transparent
+ *     background so no stray reactflow chrome bleeds through.
+ *   - The handle is centred on the card edge (reactflow's default for
+ *     left/right positions), so HALF of the 24px hit zone protrudes
+ *     outward beyond the card border — that's the visual "stub" cue
+ *     and also doubles the forgiveness margin for an approaching
+ *     cursor (you can overshoot the card and still land in the zone).
+ *   - Inside the zone we render an 8px visible dot, `pointer-events:
+ *     none` so it never absorbs the grab. The dot is filled with the
+ *     surface token + a coloured ring, so it visually pops against
+ *     both the card and the canvas background.
+ *   - On hover (group or handle-local) the dot scales 1.25× and the
+ *     ring darkens — matches the n8n "border thickens + scale(1.5)"
+ *     idea but tuned slightly subtler for our denser node card.
+ *   - Cursor: source (right) handle uses `cursor-crosshair` like n8n's
+ *     output; target (left) handle uses the default pointer because
+ *     you don't *start* a connection from a target — you drop onto
+ *     one. The `[data-acs-editor]` CSS still applies our high-contrast
+ *     SVG cursor variants.
+ *   - In-flight connection styling is handled at the ReactFlow level
+ *     via `connectionLineStyle`.
  *
  * Disconnected state:
  *   - When `data.disconnected` is true (the node was added via the
@@ -53,12 +85,39 @@ import { HoverActions } from "./HoverActions";
 
 type StepNodeType = Node<StepNodeData, "step">;
 
+/**
+ * Shared handle hit-zone classes. 24px transparent square — large
+ * enough to forgive an imprecise cursor approach and to make the dot
+ * visually protrude from the card (reactflow centres handles on the
+ * positioned edge, so ~12px of the 24px zone sits OUTSIDE the card).
+ * `!bg-transparent !border-0` strips reactflow's default dot styling
+ * so our inner span fully owns the visual.
+ */
+const HANDLE_HIT_CLASSES =
+  "!w-6 !h-6 !bg-transparent !border-0 flex items-center justify-center";
+
+/**
+ * The visible dot inside the handle hit zone. `pointer-events: none`
+ * so it never competes with the parent <Handle> for the drag gesture.
+ * Group-hover or local-hover bumps the scale + ring colour so the
+ * connection-point affordance lights up when the user gets close.
+ */
+const HANDLE_DOT_CLASSES =
+  "pointer-events-none block w-2 h-2 rounded-full bg-surface ring-2 ring-fg-muted " +
+  "transition-transform transition-colors duration-150 " +
+  "group-hover:ring-fg group-hover/handle:scale-125 group-hover/handle:ring-brand";
+
 export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
   const meta = STEP_KIND_META[data.step.kind];
   const Icon = meta.Icon;
   const canDelete = data.canDelete ?? true;
   const disconnected = data.disconnected === true;
 
+  // Selection ring is the n8n analogue of `box-shadow: 0 0 0 6px
+  // var(--canvas--color--selected-transparent)` — a clear-but-quiet
+  // outline that doesn't fight the kind-mesh strip for attention.
+  // Tokens only; ring-brand-ring is the project's standard
+  // focus/selection halo.
   const borderClass = selected
     ? "border-brand ring-2 ring-brand-ring"
     : disconnected
@@ -68,25 +127,29 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
   return (
     <div
       className={[
-        "group relative rounded-card bg-surface overflow-visible shadow-sm transition-shadow w-[240px] cursor-pointer hover:shadow-menu",
+        // No `cursor-pointer` on the body — single-click now selects
+        // (reactflow built-in) and double-click opens the editor, so a
+        // pointer cursor on the body would mislead the user into
+        // thinking single-click would do something edit-ish. Default
+        // SVG cursor from `cursors.ts` applies via the
+        // `.react-flow__node` rule.
+        "group relative rounded-card bg-surface overflow-visible shadow-sm transition-shadow w-[240px] hover:shadow-menu",
         borderClass,
       ].join(" ")}
     >
-      {/* Handles — generous 18px transparent hit zones with a small
-          8px visible dot centred inside. The hit zone is intentionally
-          much larger than the dot so users can grab it reliably; the
-          dot is `pointer-events: none` so it can't intercept the grab.
-          The previous 10px combined hit/visual target was the root
-          cause of "wiring doesn't seem to work" — too small to grab
-          with any consistency. Tokens only. */}
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="!w-[18px] !h-[18px] !bg-transparent !border-0 cursor-crosshair flex items-center justify-center"
-        style={{ pointerEvents: "all" }}
-      >
-        <span className="pointer-events-none block w-2 h-2 rounded-full bg-fg-muted group-hover:bg-fg ring-2 ring-surface transition-colors" />
-      </Handle>
+      {/* Target (input) handle — left edge, protrudes ~12px. Cursor
+          stays as the default pointer because you don't START a
+          connection from a target; you drop onto one. */}
+      <div className="group/handle">
+        <Handle
+          type="target"
+          position={Position.Left}
+          className={HANDLE_HIT_CLASSES}
+          style={{ pointerEvents: "all" }}
+        >
+          <span className={HANDLE_DOT_CLASSES} />
+        </Handle>
+      </div>
 
       {/* Drag-handle grip — visible on hover. Focus + arrow keys reorder. */}
       {/* TODO: implement true drag-and-drop reorder; for now, this is a keyboard affordance. */}
@@ -106,7 +169,9 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
         <GripVertical size={11} />
       </button>
 
-      {/* Hover quick actions */}
+      {/* Hover quick actions — pencil still opens the modal in one
+          click, which is the mouse-only fallback for users who prefer
+          not to double-click. */}
       <HoverActions
         KindIcon={Icon}
         onSwitchKind={() => data.onSwitchKind?.(data.path)}
@@ -149,14 +214,19 @@ export function StepNode({ data, selected }: NodeProps<StepNodeType>) {
         </div>
       )}
 
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!w-[18px] !h-[18px] !bg-transparent !border-0 cursor-crosshair flex items-center justify-center"
-        style={{ pointerEvents: "all" }}
-      >
-        <span className="pointer-events-none block w-2 h-2 rounded-full bg-fg-muted group-hover:bg-fg ring-2 ring-surface transition-colors" />
-      </Handle>
+      {/* Source (output) handle — right edge, protrudes ~12px.
+          `cursor-crosshair` matches n8n's output-handle treatment so
+          the user knows this is where you START dragging a wire. */}
+      <div className="group/handle">
+        <Handle
+          type="source"
+          position={Position.Right}
+          className={`${HANDLE_HIT_CLASSES} cursor-crosshair`}
+          style={{ pointerEvents: "all" }}
+        >
+          <span className={HANDLE_DOT_CLASSES} />
+        </Handle>
+      </div>
     </div>
   );
 }

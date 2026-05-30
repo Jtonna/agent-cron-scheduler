@@ -16,6 +16,17 @@
  *   - ReactFlow canvas with custom StepNode + InsertEdge (mid-edge +
  *     button that opens a kind picker), dot-grid background on a
  *     muted surface that gives the white cursor real contrast
+ *
+ * Node interaction model (n8n-style, post-ACS-20):
+ *   - Single click on a node → SELECTS it (reactflow built-in;
+ *     StepNode renders a brand ring when `selected` is true).
+ *   - Double click on a node → opens the step editor modal via
+ *     `onNodeDoubleClick` → `stack.openAt(path)`. Previously this was
+ *     a single-click trigger but that was swallowing reach-for-the-
+ *     handle gestures (same trap n8n avoids in `CanvasNodeDefault.vue`
+ *     with `@dblclick.stop="onActivate"`).
+ *   - Pencil icon in `HoverActions` still opens the modal in one
+ *     click as a fallback for mouse-only users.
  *   - StepEditorModal stack (palette-style modal; nested when drilling
  *     into match cases — each level pushes a frame onto the modal
  *     stack, owned by `useStepEditorStack`)
@@ -52,7 +63,9 @@
  *     target handle (`onConnect`) — if valid (same scope, no loops,
  *     no double-wiring) the underlying `steps[]` reorders via
  *     `reorderViaEdgeReconnect` so the dropped-on node becomes the next
- *     step after the source. Edges then re-derive.
+ *     step after the source. Edges then re-derive. Handles protrude
+ *     ~12px from the card edge (n8n-style) with a 24px transparent
+ *     hit zone, so grabbing them is forgiving — see `StepNode.tsx`.
  *   - Edge head can be dragged onto another node (`onReconnect`) —
  *     same effect.
  *   - "Disconnected" nodes (added via the dock, not yet wired) are
@@ -645,7 +658,17 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
 
   /* ── Click handlers ───────────────────────────────────────────────── */
 
-  const handleNodeClick: NodeMouseHandler = useCallback(
+  // n8n-style: SINGLE click selects (reactflow built-in via the
+  // `selected` prop + our brand ring in StepNode), DOUBLE click opens
+  // the step editor modal. Single-click previously opened the modal,
+  // which kept swallowing reach-for-the-handle gestures — same trap
+  // n8n's editor explicitly avoids in `CanvasNodeDefault.vue`
+  // (`@dblclick.stop="onActivate"`). Reactflow exposes both
+  // `onNodeClick` and `onNodeDoubleClick` independently — they
+  // compose cleanly (the dblclick does NOT suppress the click), so
+  // selection still fires on the leading click of a double-click, and
+  // the user sees the ring snap in just before the modal opens.
+  const handleNodeDoubleClick: NodeMouseHandler = useCallback(
     (_event, node: Node) => {
       const data = node.data as StepNodeData;
       stack.openAt(data.path);
@@ -694,7 +717,7 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
           isValidConnection={isValidConnection}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
-          onNodeClick={handleNodeClick}
+          onNodeDoubleClick={handleNodeDoubleClick}
           fitView
           fitViewOptions={{ padding: 0.25 }}
           proOptions={{ hideAttribution: true }}
