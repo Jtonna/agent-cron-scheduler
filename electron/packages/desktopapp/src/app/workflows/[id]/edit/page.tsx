@@ -8,22 +8,23 @@
  * up here so the `CanvasBreadcrumb` can render it as an editable
  * crumb (replacing the old inline-on-canvas heading).
  *
- * The displayed name is derived: `null` means "use whatever the job
+ * The displayed-name derivation (`null` means "use whatever the job
  * came back with"; once the user edits the field we store the edited
- * value (including empty string) in state. This avoids a setState-in-
- * effect seed pattern and keeps the source-of-truth lookup local.
+ * value including `""`) lives in `useEditableWorkflowName` so the
+ * `/create` page can share the exact same pattern.
  *
  * Rendering loading/error UI inline (rather than inside the editor)
  * keeps the editor agnostic of how its `initialWorkflow` was produced —
  * the editor only ever sees a fully-formed `Job`.
  */
 
-import { use, useCallback, useState } from "react";
+import { use } from "react";
 import { Loader2 } from "lucide-react";
 import { Navbar } from "@/components/navbar/Navbar";
 import { useJob } from "@/apis/useJob";
 import { WorkflowGraphEditor } from "@/app/create/WorkflowGraphEditor";
 import { CanvasBreadcrumb } from "@/app/create/CanvasBreadcrumb";
+import { useEditableWorkflowName } from "@/app/create/useEditableWorkflowName";
 
 export default function EditWorkflowPage({
   params,
@@ -32,11 +33,9 @@ export default function EditWorkflowPage({
 }) {
   const { id } = use(params);
   const { job, loading, error } = useJob(id);
-  // `null` = user hasn't touched the field yet; fall back to job.name.
-  // Anything else (including "") = user-edited value.
-  const [editedName, setEditedName] = useState<string | null>(null);
-  const handleNameChange = useCallback((n: string) => setEditedName(n), []);
-  const displayedName = editedName ?? job?.name ?? "";
+  const [displayedName, handleNameChange] = useEditableWorkflowName({
+    initialName: job?.name ?? null,
+  });
 
   return (
     <div className="min-h-screen bg-surface text-fg flex flex-col">

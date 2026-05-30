@@ -8,7 +8,7 @@
  * pill, expect-status chip input, and a timeout number input.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { NewHttpStep } from "../types";
 import {
   ChipInput,
@@ -19,7 +19,6 @@ import {
   Segmented,
   TextAreaInput,
 } from "./primitives";
-import { useState } from "react";
 
 interface HttpStepBodyProps {
   value: NewHttpStep;

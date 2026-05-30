@@ -12,14 +12,17 @@
  * Name state is lifted to this page so the breadcrumb (display + edit
  * surface) and the editor (which needs the name for submit) can both
  * read and write the same value. The editor accepts `name` +
- * `onNameChange` controlled-input style for that reason.
+ * `onNameChange` controlled-input style for that reason. The lift +
+ * edit-vs-initial reconciliation lives in `useEditableWorkflowName` so
+ * the `/workflows/[id]/edit` page can share the exact same pattern.
  */
 
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { Navbar } from "@/components/navbar/Navbar";
 import { WorkflowGraphEditor } from "./WorkflowGraphEditor";
 import { CanvasBreadcrumb } from "./CanvasBreadcrumb";
 import { makeDefaultStep, type NewWorkflow } from "./types";
+import { useEditableWorkflowName } from "./useEditableWorkflowName";
 
 function seedWorkflow(): NewWorkflow {
   return {
@@ -33,8 +36,7 @@ function seedWorkflow(): NewWorkflow {
 
 export default function CreatePage() {
   const [seed] = useState<NewWorkflow>(() => seedWorkflow());
-  const [name, setName] = useState<string>(seed.name);
-  const handleNameChange = useCallback((n: string) => setName(n), []);
+  const [name, handleNameChange] = useEditableWorkflowName({ initialName: seed.name });
 
   return (
     <div className="min-h-screen bg-surface text-fg flex flex-col">

@@ -18,12 +18,23 @@
  *     button that opens a kind picker), dot-grid background on a
  *     muted surface that gives the white cursor real contrast
  *   - StepEditorModal stack (palette-style modal; nested when drilling
- *     into match cases — each level pushes a frame onto the modalStack)
+ *     into match cases — each level pushes a frame onto the modal
+ *     stack, owned by `useStepEditorStack`)
  *
  * The workflow name is NOT rendered here — it lives in the
  * `CanvasBreadcrumb` above the canvas, where the parent page wires it up
  * via the `onNameChange` prop the editor exposes for that purpose. This
  * keeps the whiteboard clean and the breadcrumb authoritative.
+ *
+ * State / logic split:
+ *   - The `NewWorkflow` state and its mutation callbacks (insert,
+ *     delete, reorder, append) live in this file because they're tied
+ *     to the canvas action surface.
+ *   - The modal stack — drilling into match cases, breadcrumb
+ *     derivation, live edit committer — lives in
+ *     `useStepEditorStack`.
+ *   - Server-shape `Job` ↔ `NewWorkflow` conversion lives in
+ *     `workflowSerialization.ts`.
  *
  * The component runs in one of two modes via discriminated-union props:
  *   - `mode: "create"` — seeds with a fresh `NewWorkflow`, submits via
@@ -54,7 +65,7 @@ import { useCreateWorkflow } from "@/apis/useCreateWorkflow";
 import { useUpdateWorkflow } from "@/apis/useUpdateWorkflow";
 import type { Job } from "@/apis/types";
 import { StepNode } from "./StepNode";
-import { StepEditorModal, type BreadcrumbCrumb } from "./StepEditorModal";
+import { StepEditorModal } from "./StepEditorModal";
 import { ScheduleCard } from "./ScheduleCard";
 import { KindPaletteTray } from "./KindPaletteTray";
 import { InsertEdge } from "./EdgePlusButton";
@@ -62,15 +73,15 @@ import { EDITOR_CURSOR_CSS } from "./cursors";
 import {
   buildGraph,
   deleteStepAtPath,
-  getStepAtPath,
   insertStepAfter,
   layoutGraph,
   reorderStepAtPath,
-  updateStepAtPath,
   type StepNodeData,
 } from "./graph";
 import { makeDefaultStep } from "./types";
-import type { NewStep, NewWorkflow, StepKind } from "./types";
+import type { NewWorkflow, StepKind } from "./types";
+import { useStepEditorStack } from "./useStepEditorStack";
+import { jobToNewWorkflow, serialiseWorkflow } from "./workflowSerialization";
 
 const nodeTypes = { step: StepNode };
 const edgeTypes: EdgeTypes = { insert: InsertEdge };
@@ -95,15 +106,6 @@ export type WorkflowGraphEditorProps =
   | ({ mode: "create"; initialWorkflow: NewWorkflow } & WorkflowGraphEditorPropsCommon)
   | ({ mode: "edit"; workflowId: string; initialWorkflow: Job } & WorkflowGraphEditorPropsCommon);
 
-/**
- * One frame on the modal stack — identifies which step the user is
- * currently editing by its path. The breadcrumb is derived from the
- * stack when rendering.
- */
-interface ModalFrame {
-  path: string;
-}
-
 export function WorkflowGraphEditor(props: WorkflowGraphEditorProps) {
   return (
     <ReactFlowProvider>
@@ -127,7 +129,6 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
   );
 
   const [internalWorkflow, setWorkflow] = useState<NewWorkflow>(seed);
-  const [modalStack, setModalStack] = useState<ModalFrame[]>([]);
 
   // Controlled-name overlay. If the parent passes `name`, that's the
   // source of truth — derive the effective `workflow` by overlaying it
@@ -145,6 +146,8 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
     [controlledName, internalWorkflow],
   );
 
+  const stack = useStepEditorStack(workflow, setWorkflow);
+
   const { create, creating, error: createError } = useCreateWorkflow();
   const editWorkflowId = props.mode === "edit" ? props.workflowId : "";
   const {
@@ -159,17 +162,21 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
 
   /* ── Mutations ────────────────────────────────────────────────────── */
 
-  const handleEdit = useCallback((path: string) => {
-    setModalStack([{ path }]);
-  }, []);
+  const handleEdit = useCallback(
+    (path: string) => stack.openAt(path),
+    [stack],
+  );
 
-  const handleDelete = useCallback((path: string) => {
-    setWorkflow((prev) => ({
-      ...prev,
-      steps: deleteStepAtPath(prev.steps, path),
-    }));
-    setModalStack((prev) => prev.filter((f) => f.path !== path));
-  }, []);
+  const handleDelete = useCallback(
+    (path: string) => {
+      setWorkflow((prev) => ({
+        ...prev,
+        steps: deleteStepAtPath(prev.steps, path),
+      }));
+      stack.forgetPath(path);
+    },
+    [stack],
+  );
 
   const handleReorder = useCallback((path: string, dir: "up" | "down") => {
     setWorkflow((prev) => ({
@@ -178,10 +185,11 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
     }));
   }, []);
 
-  const handleSwitchKind = useCallback((path: string) => {
+  const handleSwitchKind = useCallback(
     // Same surface as Edit — open the modal; the kind switcher lives in its header.
-    setModalStack([{ path }]);
-  }, []);
+    (path: string) => stack.openAt(path),
+    [stack],
+  );
 
   const handleInsertAfter = useCallback((sourcePath: string, kind: StepKind) => {
     const newStep = makeDefaultStep(kind);
@@ -222,66 +230,13 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
 
   /* ── Click handlers ───────────────────────────────────────────────── */
 
-  const handleNodeClick: NodeMouseHandler = useCallback((_event, node: Node) => {
-    const data = node.data as StepNodeData;
-    setModalStack([{ path: data.path }]);
-  }, []);
-
-  /* ── Modal stack helpers ──────────────────────────────────────────── */
-
-  const currentFrame = modalStack[modalStack.length - 1];
-  const currentStep = currentFrame ? getStepAtPath(workflow.steps, currentFrame.path) : null;
-
-  const handleStepChange = useCallback(
-    (next: NewStep) => {
-      if (!currentFrame) return;
-      setWorkflow((prev) => ({
-        ...prev,
-        steps: updateStepAtPath(prev.steps, currentFrame.path, next),
-      }));
+  const handleNodeClick: NodeMouseHandler = useCallback(
+    (_event, node: Node) => {
+      const data = node.data as StepNodeData;
+      stack.openAt(data.path);
     },
-    [currentFrame],
+    [stack],
   );
-
-  const handleOpenNested = useCallback(
-    (caseKey: string | null) => {
-      if (!currentFrame) return;
-      const parentStep = getStepAtPath(workflow.steps, currentFrame.path);
-      if (!parentStep || parentStep.kind !== "match") return;
-      const childList =
-        caseKey === null ? parentStep.default ?? [] : parentStep.cases[caseKey] ?? [];
-      if (childList.length === 0) {
-        // Drilling into an empty case — append a placeholder shell so the
-        // user has something to edit. Otherwise getStepAtPath returns null.
-        const placeholder = makeDefaultStep("shell");
-        setWorkflow((prev) => ({
-          ...prev,
-          steps: updateStepAtPath(prev.steps, currentFrame.path, {
-            ...parentStep,
-            cases:
-              caseKey !== null
-                ? { ...parentStep.cases, [caseKey]: [placeholder] }
-                : parentStep.cases,
-            default: caseKey === null ? [placeholder] : parentStep.default,
-          }),
-        }));
-      }
-      const childPath =
-        caseKey === null
-          ? `${currentFrame.path}/default/0`
-          : `${currentFrame.path}/cases/${caseKey}/0`;
-      setModalStack((prev) => [...prev, { path: childPath }]);
-    },
-    [currentFrame, workflow.steps],
-  );
-
-  const popModal = useCallback(() => {
-    setModalStack((prev) => prev.slice(0, -1));
-  }, []);
-
-  const closeAllModals = useCallback(() => {
-    setModalStack([]);
-  }, []);
 
   /* ── Submit ───────────────────────────────────────────────────────── */
 
@@ -309,23 +264,8 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
       ? "Creating…"
       : "Create Workflow";
 
-  /* ── Breadcrumb derivation for nested modals ──────────────────────── */
-
-  const breadcrumb = useMemo<BreadcrumbCrumb[]>(() => {
-    if (modalStack.length <= 1) return [];
-    const crumbs: BreadcrumbCrumb[] = [];
-    for (let i = 0; i < modalStack.length - 1; i++) {
-      const frame = modalStack[i];
-      const step = getStepAtPath(workflow.steps, frame.path);
-      const label = step?.id ?? frame.path.split("/").pop() ?? "step";
-      const targetIndex = i;
-      crumbs.push({
-        label,
-        onClick: () => setModalStack((prev) => prev.slice(0, targetIndex + 1)),
-      });
-    }
-    return crumbs;
-  }, [modalStack, workflow.steps]);
+  const { currentStep, currentFrame, breadcrumb, handleStepChange, handleOpenNested, pop, closeAll } =
+    stack;
 
   return (
     <div
@@ -417,67 +357,10 @@ function WorkflowGraphEditorInner(props: WorkflowGraphEditorProps) {
           step={currentStep}
           breadcrumb={breadcrumb}
           onChange={handleStepChange}
-          onClose={() => (modalStack.length > 1 ? popModal() : closeAllModals())}
+          onClose={() => (breadcrumb.length > 0 ? pop() : closeAll())}
           onOpenNested={handleOpenNested}
         />
       )}
     </div>
   );
-}
-
-/**
- * Converts a server-shape `Job` (workflow read model) into the local
- * `NewWorkflow` shape used by the editor. Strips server-managed fields
- * (`id`, `version`, `created_at`, `updated_at`, `last_run_*`,
- * `next_run_at`, `is_favorited`) and normalises null-vs-undefined for
- * the optional fields. The step list is cast through `unknown` because
- * the read-side `WorkflowStep` union doesn't enumerate all kinds the
- * backend actually supports (script, match, set_var) — they round-trip
- * as opaque structured data.
- */
-function jobToNewWorkflow(job: Job): NewWorkflow {
-  const next: NewWorkflow = {
-    name: job.name,
-    schedule: job.schedule,
-    steps: job.steps as unknown as NewStep[],
-  };
-  if (job.timezone) next.timezone = job.timezone;
-  if (job.schedule_mode === "Cron" || job.schedule_mode === "WaitForCompletion") {
-    next.schedule_mode = job.schedule_mode;
-  }
-  if (typeof job.enabled === "boolean") next.enabled = job.enabled;
-  if (typeof job.allow_concurrent === "boolean") next.allow_concurrent = job.allow_concurrent;
-  if (job.on_failure === "abort" || job.on_failure === "continue") {
-    next.on_failure = job.on_failure;
-  }
-  if (job.default_input) next.default_input = job.default_input;
-  if (job.working_dir) next.working_dir = job.working_dir;
-  if (job.env_vars) next.env_vars = job.env_vars;
-  return next;
-}
-
-/**
- * Strips empty / undefined fields out of the NewWorkflow before sending
- * it to the backend. The backend's struct uses `#[serde(default)]` so
- * absent fields are fine; sending `null` for some fields would actually
- * conflict with the type. PATCH semantics: this whole payload replaces
- * the workflow's mutable fields on the server.
- */
-function serialiseWorkflow(workflow: NewWorkflow): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    name: workflow.name.trim(),
-    schedule: workflow.schedule.trim(),
-    steps: workflow.steps,
-  };
-  if (workflow.timezone) body.timezone = workflow.timezone;
-  if (workflow.schedule_mode) body.schedule_mode = workflow.schedule_mode;
-  if (typeof workflow.enabled === "boolean") body.enabled = workflow.enabled;
-  if (typeof workflow.allow_concurrent === "boolean") {
-    body.allow_concurrent = workflow.allow_concurrent;
-  }
-  if (workflow.on_failure) body.on_failure = workflow.on_failure;
-  if (workflow.default_input) body.default_input = workflow.default_input;
-  if (workflow.working_dir) body.working_dir = workflow.working_dir;
-  if (workflow.env_vars) body.env_vars = workflow.env_vars;
-  return body;
 }

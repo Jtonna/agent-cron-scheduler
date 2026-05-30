@@ -47,13 +47,15 @@ import type {
 } from "./types";
 import { STEP_KIND_META } from "./stepMeta";
 import { KindSwitcherPopover } from "./KindSwitcherPopover";
-import { ShellStepBody } from "./editors/ShellStepBody";
-import { ScriptStepBody } from "./editors/ScriptStepBody";
-import { HttpStepBody } from "./editors/HttpStepBody";
-import { MatchStepBody } from "./editors/MatchStepBody";
-import { SetVarStepBody } from "./editors/SetVarStepBody";
-import { AgentStepBody } from "./editors/AgentStepBody";
-import { AdvancedSection } from "./editors/AdvancedSection";
+import {
+  AdvancedSection,
+  AgentStepBody,
+  HttpStepBody,
+  MatchStepBody,
+  ScriptStepBody,
+  SetVarStepBody,
+  ShellStepBody,
+} from "./editors";
 import { FieldLabel, MonoTextInput } from "./editors/primitives";
 
 export interface BreadcrumbCrumb {
