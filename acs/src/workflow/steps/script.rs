@@ -222,23 +222,18 @@ impl Step for ScriptStep {
     }
 }
 
-/// Check whether a command is available on the system PATH.
-///
-/// On Windows uses `where`; on Unix uses `which`. Returns `false` on error.
+/// Check whether a command is available on the system PATH (via `where`).
+/// Returns `false` on error. Only the Windows interpreter-resolution path
+/// consults this; on Unix the interpreters are invoked by fixed name.
+#[cfg(windows)]
 fn is_command_available(cmd: &str) -> bool {
-    #[cfg(windows)]
-    let check = std::process::Command::new("where")
+    std::process::Command::new("where")
         .arg(cmd)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
-    #[cfg(not(windows))]
-    let check = std::process::Command::new("which")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    check.map(|s| s.success()).unwrap_or(false)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Build a `portable_pty::CommandBuilder` for a script file with the given interpreter.
