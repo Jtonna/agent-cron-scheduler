@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS workflows (
     last_run_id         TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
-    is_favorited        INTEGER NOT NULL DEFAULT 0
+    is_favorited        INTEGER NOT NULL DEFAULT 0,
+    deleted             INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS workflow_runs (
@@ -146,6 +147,29 @@ mod tests {
             .query_row("PRAGMA synchronous;", [], |r| r.get(0))
             .expect("read synchronous");
         assert_eq!(sync, 1, "synchronous must be NORMAL");
+    }
+
+    #[test]
+    fn test_fresh_schema_has_deleted_column_defaulting_to_zero() {
+        let conn = Connection::open_in_memory().expect("open");
+        apply_pragmas(&conn).expect("pragmas");
+        apply_schema(&conn).expect("schema");
+
+        // Insert without specifying `deleted` — the DEFAULT 0 must apply.
+        conn.execute(
+            "INSERT INTO workflows (id, name, version, schedule, schedule_mode, \
+             enabled, steps_json, allow_concurrent, on_failure, created_at, updated_at) \
+             VALUES ('id-1', 'wf', 1, '* * * * *', 'cron', 1, '[]', 1, 'abort', \
+             '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert");
+        let deleted: i64 = conn
+            .query_row("SELECT deleted FROM workflows WHERE id = 'id-1'", [], |r| {
+                r.get(0)
+            })
+            .expect("read deleted");
+        assert_eq!(deleted, 0, "deleted must default to 0 on fresh install");
     }
 
     #[test]

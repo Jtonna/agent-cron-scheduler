@@ -33,6 +33,7 @@ mod m004_drop_input_schema;
 mod m005_shell_claude_to_agent;
 mod m006_agent_step_normalize;
 mod m007_add_token_columns;
+mod m008_add_workflow_deleted;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -77,6 +78,7 @@ fn registry() -> Vec<Box<dyn Migration>> {
         Box::new(m005_shell_claude_to_agent::ShellClaudeToAgent),
         Box::new(m006_agent_step_normalize::AgentStepNormalize),
         Box::new(m007_add_token_columns::AddTokenColumns),
+        Box::new(m008_add_workflow_deleted::AddWorkflowDeleted),
     ]
 }
 
