@@ -942,15 +942,10 @@ mod tests {
         let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
         let wf = seed_workflow(&wf_store, "cost-outside").await;
         let tz: Tz = "UTC".parse().unwrap();
-        // 400 days ago — outside the 365-day window
-        seed_raw_run(
-            &run_store,
-            &wf,
-            "Completed",
-            Some("2024-01-01T00:00:00+00:00"),
-            Some(1.0),
-        )
-        .await;
+        // 400 days ago — outside the 365-day window. Computed relative to now
+        // so the test never rots as the calendar advances.
+        let old = (Utc::now() - chrono::Duration::days(400)).to_rfc3339();
+        seed_raw_run(&run_store, &wf, "Completed", Some(&old), Some(1.0)).await;
         let summary = run_store
             .cost_summary_for(wf.id, &tz)
             .await
@@ -965,11 +960,12 @@ mod tests {
         let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
         let wf = seed_workflow(&wf_store, "cost-null-mix").await;
         let tz: Tz = "UTC".parse().unwrap();
-        let recent = "2026-05-09T12:00:00+00:00";
+        // Relative to now so the run stays inside the rolling 30-day window.
+        let recent = (Utc::now() - chrono::Duration::days(1)).to_rfc3339();
         // run with cost 0.5
-        seed_raw_run(&run_store, &wf, "Completed", Some(recent), Some(0.5)).await;
+        seed_raw_run(&run_store, &wf, "Completed", Some(&recent), Some(0.5)).await;
         // run with null cost — counted but not summed
-        seed_raw_run(&run_store, &wf, "Completed", Some(recent), None).await;
+        seed_raw_run(&run_store, &wf, "Completed", Some(&recent), None).await;
         let summary = run_store
             .cost_summary_for(wf.id, &tz)
             .await
@@ -985,10 +981,11 @@ mod tests {
         let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
         let wf = seed_workflow(&wf_store, "cost-statuses").await;
         let tz: Tz = "UTC".parse().unwrap();
-        let recent = "2026-05-09T12:00:00+00:00";
-        seed_raw_run(&run_store, &wf, "Failed", Some(recent), Some(0.1)).await;
-        seed_raw_run(&run_store, &wf, "Killed", Some(recent), Some(0.2)).await;
-        seed_raw_run(&run_store, &wf, "Completed", Some(recent), Some(0.3)).await;
+        // Relative to now so the runs stay inside the rolling 30-day window.
+        let recent = (Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+        seed_raw_run(&run_store, &wf, "Failed", Some(&recent), Some(0.1)).await;
+        seed_raw_run(&run_store, &wf, "Killed", Some(&recent), Some(0.2)).await;
+        seed_raw_run(&run_store, &wf, "Completed", Some(&recent), Some(0.3)).await;
         let summary = run_store
             .cost_summary_for(wf.id, &tz)
             .await
@@ -1003,8 +1000,10 @@ mod tests {
         let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
         let wf = seed_workflow(&wf_store, "cost-running").await;
         let tz: Tz = "UTC".parse().unwrap();
-        let recent = "2026-05-09T12:00:00+00:00";
-        seed_raw_run(&run_store, &wf, "Running", Some(recent), Some(5.0)).await;
+        // Relative to now: the run is inside the window, so a zero count below
+        // proves the Running status (not the date) is what excludes it.
+        let recent = (Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+        seed_raw_run(&run_store, &wf, "Running", Some(&recent), Some(5.0)).await;
         let summary = run_store
             .cost_summary_for(wf.id, &tz)
             .await
@@ -1142,8 +1141,9 @@ mod tests {
         let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
         let wf = seed_workflow(&wf_store, "cost-utc").await;
         let utc_tz: Tz = "UTC".parse().unwrap();
-        let recent = "2026-05-09T00:00:00+00:00";
-        seed_raw_run(&run_store, &wf, "Completed", Some(recent), Some(1.5)).await;
+        // Relative to now so the run stays inside the rolling 30-day window.
+        let recent = (Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+        seed_raw_run(&run_store, &wf, "Completed", Some(&recent), Some(1.5)).await;
         let summary = run_store
             .cost_summary_for(wf.id, &utc_tz)
             .await
@@ -1452,7 +1452,8 @@ mod tests {
         let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
         let wf = seed_workflow(&wf_store, "tok-summary").await;
         let tz: Tz = "UTC".parse().unwrap();
-        let recent = "2026-05-09T12:00:00+00:00";
+        // Relative to now so the runs stay inside the rolling 30-day window.
+        let recent = (Utc::now() - chrono::Duration::days(1)).to_rfc3339();
 
         // Seed three runs: Completed (100 in / 50 out), Failed (200 in / 80 out),
         // Killed (300 in / 120 out).
@@ -1460,15 +1461,24 @@ mod tests {
             &run_store,
             &wf,
             "Completed",
-            Some(recent),
+            Some(&recent),
             Some(0.1),
             100,
             50,
         )
         .await;
-        seed_raw_run_with_tokens(&run_store, &wf, "Failed", Some(recent), Some(0.2), 200, 80).await;
-        seed_raw_run_with_tokens(&run_store, &wf, "Killed", Some(recent), Some(0.3), 300, 120)
+        seed_raw_run_with_tokens(&run_store, &wf, "Failed", Some(&recent), Some(0.2), 200, 80)
             .await;
+        seed_raw_run_with_tokens(
+            &run_store,
+            &wf,
+            "Killed",
+            Some(&recent),
+            Some(0.3),
+            300,
+            120,
+        )
+        .await;
 
         let summary = run_store
             .cost_summary_for(wf.id, &tz)
@@ -1549,11 +1559,14 @@ mod tests {
         let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
         let wf = seed_workflow(&wf_store, "tok-zero").await;
         let tz: Tz = "UTC".parse().unwrap();
-        let recent = "2026-05-09T12:00:00+00:00";
+        // Relative to now so the runs stay inside the rolling 30-day window.
+        let recent = (Utc::now() - chrono::Duration::days(1)).to_rfc3339();
 
         // Shell steps produce no tokens — seed runs with 0 for both columns.
-        seed_raw_run_with_tokens(&run_store, &wf, "Completed", Some(recent), Some(0.1), 0, 0).await;
-        seed_raw_run_with_tokens(&run_store, &wf, "Completed", Some(recent), Some(0.2), 0, 0).await;
+        seed_raw_run_with_tokens(&run_store, &wf, "Completed", Some(&recent), Some(0.1), 0, 0)
+            .await;
+        seed_raw_run_with_tokens(&run_store, &wf, "Completed", Some(&recent), Some(0.2), 0, 0)
+            .await;
 
         let summary = run_store
             .cost_summary_for(wf.id, &tz)

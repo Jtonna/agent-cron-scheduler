@@ -37,9 +37,117 @@ use uuid::Uuid;
 use crate::errors::AcsError;
 use crate::migration::legacy_types::{ExecutionType, Job};
 use crate::migration::Migration;
-use crate::models::workflow::{
-    CaptureSpec, FailurePolicy, RunStatus, ScriptStep, ShellStep, StepDef, StepDefCommon, Workflow,
+
+use frozen::{
+    CaptureSpec, FailurePolicy, RunStatus, ScriptStep, ShellStep, Step as StepDef,
+    StepCommon as StepDefCommon, Workflow,
 };
+
+/// Frozen snapshot of the workflow JSON shape this migration has always
+/// produced. Intentionally decoupled from the live model types: do NOT update
+/// this module when live models change — a frozen migration's output must
+/// stay exactly as it was when the migration shipped. Later migrations and
+/// the runtime read this output with lenient, default-filling parsers, so
+/// fields added to the live model after this migration are simply absent
+/// here and take their defaults downstream.
+mod frozen {
+    use std::collections::HashMap;
+
+    use chrono::{DateTime, Utc};
+    use serde::Serialize;
+    use uuid::Uuid;
+
+    use crate::migration::legacy_types::ScheduleMode;
+
+    /// Only the `abort` policy is ever emitted by this migration.
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub(super) enum FailurePolicy {
+        Abort,
+    }
+
+    /// Only terminal statuses derived from a legacy exit code are emitted.
+    #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+    pub(super) enum RunStatus {
+        Completed,
+        Failed,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    pub(super) struct CaptureSpec {
+        pub stdout_max_bytes: usize,
+        pub parser: Option<String>,
+    }
+
+    impl Default for CaptureSpec {
+        fn default() -> Self {
+            CaptureSpec {
+                stdout_max_bytes: 65536,
+                parser: None,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    pub(super) struct StepCommon {
+        pub id: String,
+        pub on_failure: Option<FailurePolicy>,
+        pub always_run: bool,
+        pub timeout_secs: Option<u64>,
+        pub working_dir: Option<String>,
+        pub env_vars: Option<HashMap<String, String>>,
+        pub capture: CaptureSpec,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    pub(super) enum Step {
+        Shell(ShellStep),
+        Script(ScriptStep),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    pub(super) struct ShellStep {
+        #[serde(flatten)]
+        pub common: StepCommon,
+        pub command: String,
+        pub pass_stdin: bool,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    pub(super) struct ScriptStep {
+        #[serde(flatten)]
+        pub common: StepCommon,
+        pub path: String,
+        pub script_type: Option<String>,
+        pub args: Option<String>,
+        pub pass_stdin: bool,
+    }
+
+    /// The workflow record shape written to `workflows.json`.
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    pub(super) struct Workflow {
+        pub id: Uuid,
+        pub name: String,
+        pub version: u32,
+        pub schedule: String,
+        pub timezone: Option<String>,
+        pub schedule_mode: ScheduleMode,
+        pub enabled: bool,
+        pub steps: Vec<Step>,
+        pub default_input: Option<serde_json::Value>,
+        pub working_dir: Option<String>,
+        pub env_vars: Option<HashMap<String, String>>,
+        pub allow_concurrent: bool,
+        pub on_failure: FailurePolicy,
+        pub last_run_at: Option<DateTime<Utc>>,
+        pub last_run_status: Option<RunStatus>,
+        pub last_run_id: Option<Uuid>,
+        pub next_run_at: Option<DateTime<Utc>>,
+        pub created_at: DateTime<Utc>,
+        pub updated_at: DateTime<Utc>,
+    }
+}
 
 // ── Migration impl ────────────────────────────────────────────────────────────
 
@@ -396,7 +504,6 @@ fn build_workflow(job: Job, steps: Vec<StepDef>) -> Workflow {
         timezone: job.timezone,
         schedule_mode: job.schedule_mode,
         enabled: job.enabled,
-        is_favorited: false,
         steps,
         default_input: None,
         working_dir: job.working_dir,
@@ -434,8 +541,7 @@ fn script_type_from_path(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::migration::legacy_types::ExecutionType;
-    use crate::models::workflow::{RunStatus, ScheduleMode, StepDef};
+    use crate::migration::legacy_types::{ExecutionType, ScheduleMode};
     use chrono::Utc;
     use tempfile::TempDir;
     use uuid::Uuid;
@@ -559,7 +665,6 @@ mod tests {
             let common = match step {
                 StepDef::Shell(s) => &s.common,
                 StepDef::Script(s) => &s.common,
-                _ => panic!("Unexpected step kind"),
             };
             assert_eq!(
                 common.timeout_secs,
@@ -705,14 +810,20 @@ mod tests {
             "workflows.json should exist after migration"
         );
 
+        // Parse with the LIVE model deliberately: this cross-checks that the
+        // frozen output shape stays readable by the runtime's own parser
+        // (fields added to the live model after this migration fill in via
+        // serde defaults).
         let content = tokio::fs::read_to_string(&wf_path).await.unwrap();
-        let workflows: Vec<Workflow> = serde_json::from_str(&content).unwrap();
+        let workflows: Vec<crate::models::workflow::Workflow> =
+            serde_json::from_str(&content).unwrap();
         assert_eq!(workflows.len(), 1);
         assert_eq!(
             workflows[0].id, job.id,
             "workflow id must match original job id"
         );
         assert_eq!(workflows[0].name, job.name);
+        assert!(!workflows[0].deleted, "absent field takes its default");
     }
 
     #[tokio::test]

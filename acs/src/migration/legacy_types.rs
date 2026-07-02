@@ -3,6 +3,11 @@
 //! These structs describe the on-disk shape of `jobs.json` from the pre-Phase 6
 //! era. They are kept here so the migration code can deserialize old files.
 //! Nothing outside of the `migration` module should reference these types.
+//!
+//! Everything in this module is an intentionally frozen snapshot of a legacy
+//! on-disk format. It is deliberately decoupled from the live model types: do
+//! NOT update it when live models change — a frozen migration input must stay
+//! exactly as it was when the format shipped.
 
 use std::collections::HashMap;
 
@@ -10,7 +15,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::models::workflow::ScheduleMode;
+/// Frozen copy of the schedule-mode values understood by the legacy
+/// `jobs.json` format (and re-emitted verbatim into `workflows.json`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum ScheduleMode {
+    #[default]
+    Cron,
+    WaitForCompletion,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "value")]

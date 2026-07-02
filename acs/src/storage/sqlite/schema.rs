@@ -23,7 +23,7 @@ use crate::errors::AcsError;
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS workflows (
     id                  TEXT PRIMARY KEY,
-    name                TEXT NOT NULL UNIQUE,
+    name                TEXT NOT NULL,
     version             INTEGER NOT NULL,
     schedule            TEXT NOT NULL,
     timezone            TEXT,
@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS workflows (
     last_run_id         TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
-    is_favorited        INTEGER NOT NULL DEFAULT 0
+    is_favorited        INTEGER NOT NULL DEFAULT 0,
+    deleted             INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS workflow_runs (
@@ -73,6 +74,15 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 "#;
 
+/// Partial unique index enforcing name uniqueness among **live** workflows
+/// only. Soft-deleted rows are exempt, so a name becomes
+/// reusable after its owner is deleted while name resolution stays
+/// unambiguous. Applied *after* [`apply_additive_migrations`] because the
+/// index references the `deleted` column, which older databases only gain
+/// through the additive `ALTER TABLE` (or the m008 rebuild).
+pub const LIVE_NAME_INDEX_SQL: &str = "CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_name_live \
+     ON workflows(name) WHERE deleted = 0";
+
 /// Apply pragmas (WAL, foreign_keys, synchronous) to a freshly-opened
 /// connection. Call this for every `Connection` you open — pragmas are
 /// connection-scoped, not database-scoped.
@@ -90,6 +100,10 @@ pub fn apply_schema(conn: &Connection) -> Result<(), AcsError> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|e| AcsError::Storage(format!("Failed to apply schema: {}", e)))?;
     apply_additive_migrations(conn)?;
+    // Must run after the additive migrations: the partial index references the
+    // `deleted` column, which pre-m008 tables only gain via the ALTER above.
+    conn.execute(LIVE_NAME_INDEX_SQL, [])
+        .map_err(|e| AcsError::Storage(format!("Failed to create live-name index: {}", e)))?;
     Ok(())
 }
 
@@ -103,6 +117,10 @@ fn apply_additive_migrations(conn: &Connection) -> Result<(), AcsError> {
     let stmts = [
         // is_favorited added in v4.2.x — pin favorited workflows to the top.
         "ALTER TABLE workflows ADD COLUMN is_favorited INTEGER NOT NULL DEFAULT 0",
+        // deleted — soft-delete flag. Also added by the m008 table rebuild;
+        // this additive path covers connections that apply the schema before
+        // m008 has run.
+        "ALTER TABLE workflows ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
     ];
     for sql in stmts {
         if let Err(e) = conn.execute(sql, []) {
@@ -149,18 +167,65 @@ mod tests {
     }
 
     #[test]
-    fn test_workflows_name_uniqueness_enforced() {
+    fn test_fresh_schema_has_deleted_column_defaulting_to_zero() {
         let conn = Connection::open_in_memory().expect("open");
         apply_pragmas(&conn).expect("pragmas");
         apply_schema(&conn).expect("schema");
 
-        // Insert two rows with the same name — second should fail.
+        // Insert without specifying `deleted` — the DEFAULT 0 must apply.
+        conn.execute(
+            "INSERT INTO workflows (id, name, version, schedule, schedule_mode, \
+             enabled, steps_json, allow_concurrent, on_failure, created_at, updated_at) \
+             VALUES ('id-1', 'wf', 1, '* * * * *', 'cron', 1, '[]', 1, 'abort', \
+             '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert");
+        let deleted: i64 = conn
+            .query_row("SELECT deleted FROM workflows WHERE id = 'id-1'", [], |r| {
+                r.get(0)
+            })
+            .expect("read deleted");
+        assert_eq!(deleted, 0, "deleted must default to 0 on fresh install");
+    }
+
+    #[test]
+    fn test_workflows_name_uniqueness_enforced_among_live_rows() {
+        let conn = Connection::open_in_memory().expect("open");
+        apply_pragmas(&conn).expect("pragmas");
+        apply_schema(&conn).expect("schema");
+
+        // Insert two live rows with the same name — second should fail via the
+        // partial unique index idx_workflows_name_live.
         let stmt = "INSERT INTO workflows (id, name, version, schedule, schedule_mode, \
                     enabled, steps_json, allow_concurrent, on_failure, created_at, updated_at) \
                     VALUES (?, ?, 1, '* * * * *', 'cron', 1, '[]', 1, 'abort', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')";
         conn.execute(stmt, ["id-1", "dup-name"])
             .expect("first insert");
         let result = conn.execute(stmt, ["id-2", "dup-name"]);
-        assert!(result.is_err(), "duplicate name must violate UNIQUE");
+        assert!(
+            result.is_err(),
+            "duplicate live name must violate the partial unique index"
+        );
+    }
+
+    #[test]
+    fn test_workflows_deleted_rows_exempt_from_name_uniqueness() {
+        let conn = Connection::open_in_memory().expect("open");
+        apply_pragmas(&conn).expect("pragmas");
+        apply_schema(&conn).expect("schema");
+
+        // A soft-deleted row does not reserve its name: a live row with the
+        // same name can coexist (name reuse after soft-delete).
+        let stmt = "INSERT INTO workflows (id, name, version, schedule, schedule_mode, \
+                    enabled, steps_json, allow_concurrent, on_failure, created_at, updated_at, deleted) \
+                    VALUES (?, ?, 1, '* * * * *', 'cron', 1, '[]', 1, 'abort', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', ?)";
+        conn.execute(stmt, rusqlite::params!["id-1", "reused-name", 1i64])
+            .expect("insert deleted row");
+        conn.execute(stmt, rusqlite::params!["id-2", "reused-name", 0i64])
+            .expect("live row with same name must be allowed");
+        // But a second LIVE row with that name still conflicts.
+        let result = conn.execute(stmt, rusqlite::params!["id-3", "reused-name", 0i64]);
+        assert!(result.is_err(), "second live duplicate must be rejected");
     }
 }

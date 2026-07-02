@@ -28,8 +28,10 @@ The three active store traits are:
 | *(daemon)* | `SizeManagedWriter` | Daemon process log (`daemon.log`) |
 
 Step output is written by `FileLogSink` (not through a store trait) to per-run
-files under `logs/`.  Migration state is maintained in a standalone
-`migrations.json` file managed by the migration runner.
+files under `logs/`.  Migration execution is tracked in the
+`schema_migrations` table inside `acs.db`, owned by the migration runner
+(the standalone `migrations.json` file is legacy — see
+[Migration System](#9-migration-system)).
 
 ---
 
@@ -44,7 +46,7 @@ files under `logs/`.  Migration state is maintained in a standalone
 ├── acs.db                      # SQLite database holding workflows + workflow_runs tables
 ├── acs.db-wal                  # SQLite write-ahead log (created at runtime, managed by SQLite)
 ├── acs.db-shm                  # SQLite shared memory file (created at runtime, managed by SQLite)
-├── migrations.json             # Applied-migration state for the numbered migration runner
+├── migrations.json             # Legacy migration state; read once to backfill schema_migrations, then deleted
 ├── jobs.json.migrated.<ts>     # Backup of legacy jobs.json after m001 runs (unix timestamp suffix)
 ├── migrated_scripts/           # Created on demand by m001 migration when migrating non-shell hooks
 ├── scripts/                    # Reserved directory (created on startup; not currently used)
@@ -55,9 +57,11 @@ files under `logs/`.  Migration state is maintained in a standalone
 
 On daemon startup, `create_data_dirs()` ensures the top-level directory and
 the `logs/` and `scripts/` subdirectories exist.  The `acs.db` file is created
-by the `m002_json_to_sqlite` migration when the daemon first runs.  The
-`acs.db-wal` and `acs.db-shm` sidecar files are created by SQLite the first
-time the database is opened in WAL mode and persist alongside the DB.
+by the migration runner (to host its `schema_migrations` tracking table)
+before any migration runs; the `m002_json_to_sqlite` migration then applies
+the full data schema when the daemon first runs.  The `acs.db-wal` and
+`acs.db-shm` sidecar files are created by SQLite the first time the database
+is opened in WAL mode and persist alongside the DB.
 
 ---
 
@@ -92,7 +96,7 @@ Created idempotently by `apply_schema()` (every `CREATE TABLE` /
 ```sql
 CREATE TABLE workflows (
     id                  TEXT PRIMARY KEY,
-    name                TEXT NOT NULL UNIQUE,
+    name                TEXT NOT NULL,  -- uniqueness via idx_workflows_name_live (live rows only, v4.2.14)
     version             INTEGER NOT NULL,
     schedule            TEXT NOT NULL,
     timezone            TEXT,
@@ -108,8 +112,16 @@ CREATE TABLE workflows (
     last_run_status     TEXT,
     last_run_id         TEXT,
     created_at          TEXT NOT NULL,
-    updated_at          TEXT NOT NULL
+    updated_at          TEXT NOT NULL,
+    is_favorited        INTEGER NOT NULL DEFAULT 0,
+    deleted             INTEGER NOT NULL DEFAULT 0   -- soft-delete flag; added by m008 (v4.2.14)
 );
+
+-- Name uniqueness among LIVE workflows only (v4.2.14): soft-deleted
+-- rows are exempt, so a name becomes reusable after its owner is deleted
+-- while name resolution stays unambiguous.
+CREATE UNIQUE INDEX idx_workflows_name_live
+    ON workflows(name) WHERE deleted = 0;
 
 CREATE TABLE workflow_runs (
     run_id              TEXT PRIMARY KEY,
@@ -188,12 +200,17 @@ is silently dropped.  Recovery is operator-driven: restore from a known-good
 backup of the data directory.  Because every transaction is atomic, partial
 writes from a crash never leave the database structurally inconsistent.
 
-### `migrations.json`
+### Migration tracking state
 
-If `migrations.json` is missing or contains invalid JSON, `read_state()`
-returns an empty `HashSet`, treating the daemon as if no migrations have been
-applied.  **No backup file is created**; a corrupt state simply causes
-pending migrations to re-run (each migration's `run()` method is idempotent).
+Migration execution is tracked in the `schema_migrations` table inside
+`acs.db`, protected by the same SQLite atomicity guarantees as the data
+tables.  The legacy `migrations.json` file is read exactly once — to backfill
+the tracking table on databases that predate it — and deleted after a
+successful backfill (best-effort; a removal failure is only logged).  If it
+is missing or contains invalid JSON at that moment, the backfill seeds
+nothing and every migration runs normally; each migration's internal
+idempotency makes that safe on an already-migrated database.  A corrupt file
+is left in place for inspection.
 
 ---
 
@@ -333,10 +350,12 @@ secondary sort.
 
 ### Indexes
 
-The `workflow_runs` table has three secondary indexes:
+The `workflows` table has one secondary index and the `workflow_runs` table
+has three:
 
 | Index | Columns | Purpose |
 |---|---|---|
+| `idx_workflows_name_live` | `(name) WHERE deleted = 0` (partial, unique) | Name uniqueness among **live** workflows only; soft-deleted rows are exempt so names are reusable after deletion (v4.2.14). |
 | `idx_workflow_runs_workflow_id_finished_at` | `(workflow_id, finished_at)` | Per-workflow listings ordered by completion time. |
 | `idx_workflow_runs_finished_at` | `(finished_at)` | Cross-workflow recency queries. |
 | `idx_workflow_runs_status` | `(status)` | Filters that pick out e.g. all currently-running rows. |
@@ -474,6 +493,7 @@ On every `write_chunk(data)`:
 `acs/src/migration/m005_shell_claude_to_agent.rs`,
 `acs/src/migration/m006_agent_step_normalize.rs`,
 `acs/src/migration/m007_add_token_columns.rs`,
+`acs/src/migration/m008_add_workflow_deleted.rs`,
 `acs/src/migration/legacy_types.rs`
 
 ### Design
@@ -492,46 +512,85 @@ pub trait Migration: Send + Sync {
 
 `run()` must be **idempotent** — re-running on already-migrated data must be a
 no-op.  It returns `Ok(true)` when work was performed, or `Ok(false)` when
-there was nothing to do.
+there was nothing to do.  The runner records `success` either way; the return
+value only affects logging.  The internal idempotency checks are a safety
+property (they make the delete-row-and-re-run workflow below harmless) — the
+runner never consults them to decide execution.
 
-### State file
+Migrations are **frozen**: they carry their own private snapshot types for the
+data shapes they read and write (see the `frozen` modules in m001/m002 and
+`legacy_types.rs`) instead of referencing the live model structs.  Changes to
+the live models must never require editing an already-shipped migration —
+columns and JSON fields introduced after a migration's era are filled in by
+SQL `DEFAULT` clauses and serde defaults downstream.
 
-Applied migration names are tracked in `{data_dir}/migrations.json`:
+### Tracking table: `schema_migrations`
 
-```json
-{
-  "applied": [
-    "m001_jobs_to_workflows",
-    "m002_json_to_sqlite",
-    "m003_drop_step_output_summary",
-    "m004_drop_input_schema",
-    "m005_shell_claude_to_agent",
-    "m006_agent_step_normalize",
-    "m007_add_token_columns"
-  ]
-}
+Migration execution is tracked by name in a `schema_migrations` table inside
+`{data_dir}/acs.db`.  The table is created by the **runner itself** — not by a
+migration — before any migration logic runs:
+
+```sql
+CREATE TABLE schema_migrations (
+    name        TEXT PRIMARY KEY,             -- stable migration name, e.g. "m008_add_workflow_deleted"
+    applied_at  TEXT NOT NULL,                -- RFC 3339 timestamp of the recording
+    status      TEXT NOT NULL CHECK (status IN ('success','failed')),
+    duration_ms INTEGER,                      -- wall-clock run time; NULL for backfilled rows
+    error       TEXT                          -- error text for failed rows; NULL otherwise
+);
 ```
 
-Migration status is **not** exposed through `/health`. The on-disk
-`migrations.json` is the only structured surface; per-migration outcomes are
-also written to `daemon.log` via `tracing::info!` lines (e.g.
+Migration status is **not** exposed through `/health`.  The table is the only
+structured surface; per-migration outcomes are also written to `daemon.log`
+via `tracing::info!` lines (e.g.
 `"Migration m003 complete: stripped output_summary from N workflow_runs row(s)"`).
-
-`run_pending()` reads this file at daemon startup, skips already-applied
-migrations, and writes the updated state after each successful migration.
-Writes are atomic (`.tmp` + rename).
-
-If the file is missing, `read_state()` returns an empty set (fresh install).
-If the file is corrupt, `read_state()` logs a warning and returns an empty set
-(safe to re-run migrations; each is idempotent).
 
 ### Runner behaviour
 
-`run_pending()` iterates the registry in order.  On the first migration error
-it stops and propagates the error; partial progress (applied migrations before
-the failure) is preserved in the state file.  Migrations that return
-`Ok(false)` (nothing to do) are recorded in `skipped_not_needed` but are
-**not** added to the applied set.
+`run_pending()` iterates the registry in order.  The tracking table — and only
+the tracking table — decides what executes:
+
+| Row state for a migration | Action |
+|---|---|
+| No row | Run it, then record `success` or `failed` |
+| `status = 'success'` | Skip without invoking the migration |
+| `status = 'failed'` | **Abort daemon startup** with an error naming the migration |
+
+A migration that runs but finds nothing to do (e.g. legacy format absent)
+still records `success` — the row means "processed", so it never re-runs.  On
+failure the row is recorded with status `failed` and the error text, and the
+runner aborts immediately: later migrations do not run and get no row.
+
+**Recovery workflow for a failed migration** (this is the sanctioned dev
+workflow): fix the underlying issue, then delete the tracking row so the next
+startup re-runs it:
+
+```sql
+DELETE FROM schema_migrations WHERE name = '<migration name>';
+```
+
+The same mechanism re-runs any migration whose `success` row is deleted —
+safe, because every migration is internally idempotent.
+
+### Backfill from legacy `migrations.json`
+
+Databases that predate the tracking table recorded applied migrations in
+`{data_dir}/migrations.json`:
+
+```json
+{ "applied": ["m001_jobs_to_workflows", "m002_json_to_sqlite"] }
+```
+
+The first time the runner creates the tracking table it seeds a `success` row
+for every registry migration named in that file — those are treated as
+already applied without being invoked.  Every other migration then runs
+normally; on an already-migrated database their internal idempotency makes
+that a safe no-op, recorded as `success`.  After this one-time backfill the
+table is the sole source of truth and `migrations.json` is **deleted**
+(best-effort; a removal failure is only logged and can be cleaned up
+manually).  A corrupt legacy file seeds nothing and is left in place for
+inspection.  A fresh install has no legacy file, so all migrations simply
+run once and end recorded as `success`.
 
 ### Adding a migration
 
@@ -586,8 +645,8 @@ earlier daemon versions.
 
 | Condition | Action |
 |---|---|
-| `acs.db` already exists | No-op (return `Ok(false)`) |
-| Neither `workflows.json` nor `runs/` exists | Create empty `acs.db` with the schema applied, return `Ok(true)` |
+| `acs.db` contains a `workflows` table | No-op (return `Ok(false)`) — conversion or fresh-install schema already in place. Table-based rather than file-based because the migration runner creates `acs.db` up front to host `schema_migrations`. |
+| Neither `workflows.json` nor `runs/` exists | Apply the schema to `acs.db`, return `Ok(true)` |
 | Otherwise | Open `acs.db`, BEGIN transaction, INSERT every workflow from `workflows.json` and every run from `runs/<workflow_id>/<run_id>.json`, verify row counts match, sample-verify one row of each, COMMIT, then delete `workflows.json` and the entire `runs/` directory |
 
 Files inside `runs/` whose name is not a valid UUID `.json` filename (notably
@@ -600,8 +659,10 @@ the JSON sources are left untouched so the migration can be re-run after the
 underlying problem is fixed.  The error is propagated through
 `migration::run_pending()`, which aborts daemon startup.
 
-`migrations.json` is **not** moved into the `meta` table; it remains the
-canonical migration-state file alongside `acs.db` in the data directory.
+`migrations.json` is **not** moved into the `meta` table.  It is the legacy
+migration-state file: the runner reads it once to backfill the
+`schema_migrations` tracking table and then deletes it.  This migration
+itself never touches the file.
 
 ### m003_drop_step_output_summary
 
@@ -734,6 +795,42 @@ columns to the `workflow_runs` table introduced in v4.2.11. Both columns are
 | `acs.db` does not exist | No-op (return `Ok(false)`) — fresh install |
 | `total_input_tokens` column already present on `workflow_runs` | No-op (return `Ok(false)`) — idempotent |
 | Otherwise | BEGIN transaction → `ALTER TABLE workflow_runs ADD COLUMN total_input_tokens INTEGER NOT NULL DEFAULT 0;` and `ALTER TABLE workflow_runs ADD COLUMN total_output_tokens INTEGER NOT NULL DEFAULT 0;` → COMMIT |
+
+---
+
+### m008_add_workflow_deleted
+
+`m008_add_workflow_deleted` (v4.2.14) adds the `deleted` soft-delete
+column to the `workflows` table and replaces the inline `UNIQUE` constraint on
+`name` with a **partial unique index** covering live rows only:
+
+```sql
+CREATE UNIQUE INDEX idx_workflows_name_live ON workflows(name) WHERE deleted = 0;
+```
+
+SQLite cannot drop an inline column constraint in place, so the migration
+performs a standard table rebuild inside a single transaction (with
+`PRAGMA foreign_keys = OFF` for its duration, toggled outside the transaction
+where the pragma actually takes effect): create `workflows_new` without the
+inline `UNIQUE`, copy all rows, drop the old table, rename, create the partial
+index, then run `PRAGMA foreign_key_check` and roll back if the rebuild would
+orphan any `workflow_runs` rows.
+
+`DELETE /api/workflows/{id}` sets `deleted = 1`, keeping the row (name stored
+verbatim) and every `workflow_runs` record so cost/token history survives.
+Because the unique index only covers `deleted = 0` rows, the name is
+immediately reusable by a new workflow while name resolution among live
+workflows stays unambiguous.
+
+Existing workflows backfill to `deleted = 0`. Fresh installs receive the new
+table shape and index directly via `schema.rs` and this migration
+short-circuits.
+
+| Condition | Action |
+|---|---|
+| `acs.db` does not exist | No-op (return `Ok(false)`) — fresh install |
+| `workflows` DDL no longer contains `UNIQUE` | No-op (return `Ok(false)`) — idempotent (already rebuilt or created fresh) |
+| Otherwise | Table rebuild: additively ensure `is_favorited`/`deleted` columns → `CREATE TABLE workflows_new` (no inline `UNIQUE`) → copy rows → `DROP`/`RENAME` → `CREATE UNIQUE INDEX idx_workflows_name_live ...` → `foreign_key_check` → COMMIT |
 
 ---
 

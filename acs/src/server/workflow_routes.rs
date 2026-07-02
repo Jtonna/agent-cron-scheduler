@@ -123,6 +123,26 @@ fn map_store_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
                     message: msg.clone(),
                 }),
             ),
+            // A database constraint / foreign-key violation is a conflict with
+            // existing data, not an unexpected internal fault — surface it as a
+            // structured 409 instead of a bare 500.
+            AcsError::Storage(msg)
+                if {
+                    let lower = msg.to_lowercase();
+                    lower.contains("foreign key") || lower.contains("constraint")
+                } =>
+            {
+                (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "constraint_violation".to_string(),
+                        message: format!(
+                            "The operation conflicts with a database constraint: {}",
+                            msg
+                        ),
+                    }),
+                )
+            }
             _ => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -391,6 +411,26 @@ struct DefaultWorkingDirError {
     io_err: std::io::Error,
 }
 
+/// Derive the ACS-managed default working directory for a workflow name:
+/// `<root>/<sanitized-name>`, where `<root>` is `config.display_workflow_dir_root`
+/// when set, otherwise `<documents>/agent-cron-scheduler`. Returns `None` only
+/// when neither a configured root nor the user Documents dir can be resolved.
+///
+/// This is the single source of truth for "is this working_dir one we created
+/// and therefore safe to delete on soft-delete". It is used both when filling
+/// in the default on create and when deciding whether to remove the operating
+/// folder on delete.
+fn derive_default_working_dir(
+    config: &crate::models::DaemonConfig,
+    name: &str,
+) -> Option<std::path::PathBuf> {
+    let root: Option<std::path::PathBuf> = match config.display_workflow_dir_root.as_deref() {
+        Some(p) => Some(p.to_path_buf()),
+        None => dirs::document_dir().map(|d| d.join("agent-cron-scheduler")),
+    };
+    root.map(|r| r.join(sanitize_workflow_name(name)))
+}
+
 /// Fill in daemon-config-driven defaults on a freshly-deserialised
 /// `NewWorkflow` body. Called from `create_workflow` before the body reaches
 /// the store.
@@ -412,27 +452,18 @@ fn apply_new_workflow_defaults(
     }
 
     if body.working_dir.is_none() {
-        let root: Option<std::path::PathBuf> = match config.display_workflow_dir_root.as_deref() {
-            Some(p) => Some(p.to_path_buf()),
-            None => dirs::document_dir().map(|d| d.join("agent-cron-scheduler")),
-        };
-
-        match root {
-            Some(root_path) => {
-                let sanitized = sanitize_workflow_name(&body.name);
-                let target = root_path.join(&sanitized);
-                match std::fs::create_dir_all(&target) {
-                    Ok(()) => {
-                        body.working_dir = Some(target.to_string_lossy().into_owned());
-                    }
-                    Err(e) => {
-                        return Err(DefaultWorkingDirError {
-                            path: target,
-                            io_err: e,
-                        });
-                    }
+        match derive_default_working_dir(config, &body.name) {
+            Some(target) => match std::fs::create_dir_all(&target) {
+                Ok(()) => {
+                    body.working_dir = Some(target.to_string_lossy().into_owned());
                 }
-            }
+                Err(e) => {
+                    return Err(DefaultWorkingDirError {
+                        path: target,
+                        io_err: e,
+                    });
+                }
+            },
             None => {
                 tracing::warn!(
                     workflow_name = %body.name,
@@ -582,7 +613,13 @@ pub async fn list_workflow_costs(
         Err((status, body)) => return (status, body).into_response(),
     };
 
-    let workflows = match state.workflow_store.list_workflows().await {
+    // Include soft-deleted workflows so their persisted cost/token history
+    // remains visible (flagged via `workflow_deleted`).
+    let workflows = match state
+        .workflow_store
+        .list_workflows_including_deleted()
+        .await
+    {
         Ok(w) => w,
         Err(e) => {
             tracing::error!("Failed to list workflows for cost: {}", e);
@@ -634,6 +671,7 @@ pub async fn list_workflow_costs(
         entries.push(WorkflowCostEntry {
             workflow_id: wf.id,
             workflow_name: wf.name.clone(),
+            workflow_deleted: wf.deleted,
             cost_summary,
         });
     }
@@ -713,7 +751,13 @@ pub async fn get_workflow_costs(
         Err((status, body)) => return (status, body).into_response(),
     };
 
-    let workflow = match state.workflow_store.get_workflow(workflow_id).await {
+    // Include soft-deleted workflows: their cost history persists and this
+    // endpoint returns 200 with `workflow_deleted: true`.
+    let workflow = match state
+        .workflow_store
+        .get_workflow_including_deleted(workflow_id)
+        .await
+    {
         Ok(Some(wf)) => wf,
         Ok(None) => {
             return error_response(
@@ -762,6 +806,7 @@ pub async fn get_workflow_costs(
             serde_json::to_value(CostWorkflowResponse {
                 workflow_id,
                 workflow_name: workflow.name,
+                workflow_deleted: workflow.deleted,
                 cost_summary,
             })
             .unwrap(),
@@ -893,9 +938,47 @@ pub async fn delete_workflow(
     let version = wf.version;
     let workflow_name = wf.name.clone();
 
+    // Active-run guard: refuse to soft-delete a workflow that still
+    // has a run in progress. `list_runs(id, 0, 0)` returns all runs (limit 0 ==
+    // no limit).
+    match state.workflow_run_store.list_runs(workflow_id, 0, 0).await {
+        Ok(runs) => {
+            if let Some(active) = runs.iter().find(|r| r.status == RunStatus::Running) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "workflow_run_active".to_string(),
+                        message: format!(
+                            "Cannot delete workflow '{}' while run {} is still running. \
+                             Kill the run or wait for it to finish, then retry.",
+                            workflow_name, active.run_id
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                workflow_id = %workflow_id,
+                "Failed to list runs for delete active-run guard: {}",
+                e
+            );
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to check active runs: {}", e),
+            )
+            .into_response();
+        }
+    }
+
     match state.workflow_store.delete_workflow(workflow_id).await {
         Ok(()) => {
-            // Evict cache entry for the deleted workflow.
+            // Best-effort on-disk cleanup AFTER the DB update succeeds. Never
+            // fails the request.
+            cleanup_workflow_artifacts(&state, &wf).await;
+            // Evict cache entry; cost data recomputes from the persisted runs.
             state.cost_cache.forget(workflow_id).await;
             // Broadcast WorkflowChanged{Deleted}
             let _ = state
@@ -905,12 +988,59 @@ pub async fn delete_workflow(
                     version,
                     change_kind: WorkflowChangeKind::Deleted,
                 });
-            tracing::info!(workflow_id = %workflow_id, name = %workflow_name, "workflow deleted");
+            tracing::info!(workflow_id = %workflow_id, name = %workflow_name, "workflow soft-deleted");
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => {
             let (status, body) = map_store_error(e);
             (status, body).into_response()
+        }
+    }
+}
+
+/// Best-effort removal of on-disk artifacts for a soft-deleted workflow.
+/// Every failure is logged as a warning and swallowed — cleanup must never
+/// fail the delete request.
+///
+///   a) the run-log directory `<data_dir>/logs/<workflow_id>/`
+///   b) the operating folder — **only** when the stored `working_dir` equals
+///      the ACS-managed default path we would derive for this workflow. A
+///      custom, user-specified `working_dir` is NEVER touched.
+async fn cleanup_workflow_artifacts(state: &AppState, wf: &Workflow) {
+    let data_dir = resolve_data_dir_for(state);
+    let log_dir = data_dir.join("logs").join(wf.id.to_string());
+    if log_dir.exists() {
+        if let Err(e) = tokio::fs::remove_dir_all(&log_dir).await {
+            tracing::warn!(
+                workflow_id = %wf.id,
+                "failed to remove log dir {:?} on delete: {}",
+                log_dir, e
+            );
+        }
+    }
+
+    if let Some(ref working_dir) = wf.working_dir {
+        match derive_default_working_dir(&state.config, &wf.name) {
+            Some(default_dir) if std::path::Path::new(working_dir) == default_dir.as_path() => {
+                if default_dir.exists() {
+                    if let Err(e) = tokio::fs::remove_dir_all(&default_dir).await {
+                        tracing::warn!(
+                            workflow_id = %wf.id,
+                            "failed to remove operating folder {:?} on delete: {}",
+                            default_dir, e
+                        );
+                    }
+                }
+            }
+            _ => {
+                // Custom working_dir, or the name was changed since creation so
+                // it no longer matches the derived default — leave it untouched.
+                tracing::info!(
+                    workflow_id = %wf.id,
+                    working_dir = %working_dir,
+                    "leaving working_dir in place on delete (custom or non-default path)"
+                );
+            }
         }
     }
 }
@@ -1669,9 +1799,31 @@ mod tests {
     #[async_trait]
     impl WorkflowStore for InMemoryWorkflowStore {
         async fn list_workflows(&self) -> anyhow::Result<Vec<Workflow>> {
+            Ok(self
+                .workflows
+                .read()
+                .await
+                .iter()
+                .filter(|w| !w.deleted)
+                .cloned()
+                .collect())
+        }
+        async fn list_workflows_including_deleted(&self) -> anyhow::Result<Vec<Workflow>> {
             Ok(self.workflows.read().await.clone())
         }
         async fn get_workflow(&self, id: Uuid) -> anyhow::Result<Option<Workflow>> {
+            Ok(self
+                .workflows
+                .read()
+                .await
+                .iter()
+                .find(|w| w.id == id && !w.deleted)
+                .cloned())
+        }
+        async fn get_workflow_including_deleted(
+            &self,
+            id: Uuid,
+        ) -> anyhow::Result<Option<Workflow>> {
             Ok(self
                 .workflows
                 .read()
@@ -1686,14 +1838,14 @@ mod tests {
                 .read()
                 .await
                 .iter()
-                .find(|w| w.name == name)
+                .find(|w| w.name == name && !w.deleted)
                 .cloned())
         }
         async fn create_workflow(&self, new: NewWorkflow) -> anyhow::Result<Workflow> {
             // Mirror the real SqliteWorkflowStore: validate before persisting.
             crate::models::workflow::validate_new_workflow(&new)?;
             let mut wfs = self.workflows.write().await;
-            if wfs.iter().any(|w| w.name == new.name) {
+            if wfs.iter().any(|w| w.name == new.name && !w.deleted) {
                 return Err(crate::errors::AcsError::Conflict(format!(
                     "A workflow with name '{}' already exists",
                     new.name
@@ -1710,6 +1862,7 @@ mod tests {
                 schedule_mode: new.schedule_mode,
                 enabled: new.enabled,
                 is_favorited: false,
+                deleted: false,
                 steps: new.steps,
                 default_input: new.default_input,
                 working_dir: new.working_dir,
@@ -1734,10 +1887,13 @@ mod tests {
             let mut wfs = self.workflows.write().await;
             let idx = wfs
                 .iter()
-                .position(|w| w.id == id)
+                .position(|w| w.id == id && !w.deleted)
                 .ok_or_else(|| anyhow::anyhow!("not found"))?;
             if let Some(ref new_name) = update.name {
-                if wfs.iter().any(|w| w.name == *new_name && w.id != id) {
+                if wfs
+                    .iter()
+                    .any(|w| w.name == *new_name && w.id != id && !w.deleted)
+                {
                     return Err(crate::errors::AcsError::Conflict(format!(
                         "A workflow with name '{}' already exists",
                         new_name
@@ -1778,12 +1934,20 @@ mod tests {
             Ok(wf.clone())
         }
         async fn delete_workflow(&self, id: Uuid) -> anyhow::Result<()> {
+            // Soft delete: flag the row instead of removing it so its
+            // cost history persists and its name is freed for reuse.
             let mut wfs = self.workflows.write().await;
-            let len_before = wfs.len();
-            wfs.retain(|w| w.id != id);
-            if wfs.len() == len_before {
-                return Err(anyhow::anyhow!("not found"));
-            }
+            let wf = wfs
+                .iter_mut()
+                .find(|w| w.id == id && !w.deleted)
+                .ok_or_else(|| {
+                    crate::errors::AcsError::NotFound(format!(
+                        "Workflow with id '{}' not found",
+                        id
+                    ))
+                })?;
+            wf.deleted = true;
+            wf.updated_at = Utc::now();
             Ok(())
         }
         async fn record_run_outcome(
@@ -1811,9 +1975,15 @@ mod tests {
         }
         async fn set_favorited(&self, id: Uuid, is_favorited: bool) -> anyhow::Result<Workflow> {
             let mut wfs = self.workflows.write().await;
-            let wf = wfs.iter_mut().find(|w| w.id == id).ok_or_else(|| {
-                crate::errors::AcsError::NotFound(format!("Workflow with id '{}' not found", id))
-            })?;
+            let wf = wfs
+                .iter_mut()
+                .find(|w| w.id == id && !w.deleted)
+                .ok_or_else(|| {
+                    crate::errors::AcsError::NotFound(format!(
+                        "Workflow with id '{}' not found",
+                        id
+                    ))
+                })?;
             wf.is_favorited = is_favorited;
             wf.updated_at = Utc::now();
             Ok(wf.clone())

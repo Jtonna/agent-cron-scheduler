@@ -643,24 +643,28 @@ pub async fn start_daemon(
         }
     }
 
-    // Run pending migrations (numbered migration system).
-    // Must run AFTER tracing init so migration logs are visible.
+    // Run pending migrations (numbered migration system, tracked in the
+    // schema_migrations table). Must run AFTER tracing init so migration
+    // logs are visible.
     match crate::migration::run_pending(&data_dir).await {
         Ok(report) => {
-            if !report.newly_applied.is_empty() {
-                tracing::info!("Migrations applied: {:?}", report.newly_applied);
-            }
-            if !report.already_applied.is_empty() {
-                tracing::debug!(
-                    "Migrations already applied (skipped): {:?}",
-                    report.already_applied
+            if !report.seeded.is_empty() {
+                tracing::info!(
+                    "Migration tracking backfilled from legacy migrations.json: {:?}",
+                    report.seeded
                 );
             }
-            if !report.skipped_not_needed.is_empty() {
+            if !report.ran.is_empty() {
+                tracing::info!("Migrations applied: {:?}", report.ran);
+            }
+            if !report.ran_no_op.is_empty() {
                 tracing::debug!(
-                    "Migrations not needed (skipped): {:?}",
-                    report.skipped_not_needed
+                    "Migrations processed with nothing to do: {:?}",
+                    report.ran_no_op
                 );
+            }
+            if !report.skipped.is_empty() {
+                tracing::debug!("Migrations already applied (skipped): {:?}", report.skipped);
             }
         }
         Err(e) => {
