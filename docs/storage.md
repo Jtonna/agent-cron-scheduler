@@ -633,7 +633,12 @@ ever executed — the baseline runs normally instead of being seeded, so the
 crash window cannot wedge the database.
 
 A database that has a schema but **no** tracking table predates v4.2.14; the
-runner rejects it before creating or running anything.
+runner rejects it before creating or running anything.  A database that has
+a schema and a tracking table with **zero recorded rows** (lost history) is
+likewise rejected with guidance — run v4.2.14 once so it records its
+migration state, or seed `schema_migrations` rows manually — instead of
+seeding the baseline and then failing on migrations built for the
+fresh-install chain.
 
 ### Rebuild convention (`PRAGMA foreign_keys`)
 
