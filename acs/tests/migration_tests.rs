@@ -131,6 +131,11 @@ fn build_v4_database(data_dir: &std::path::Path) {
 /// comparison — raw sqlite_master DDL text legitimately differs between an
 /// ALTER-based history and a CREATE-based one while describing the same
 /// schema.
+///
+/// Known limitation: the PRAGMA-based view cannot see CHECK constraints,
+/// column collations, index column direction (DESC), or WITHOUT ROWID.
+/// None of those appear in the compared schemas today; if one is ever
+/// introduced, extend the fingerprint accordingly.
 fn schema_fingerprint(conn: &Connection) -> String {
     let mut out = String::new();
 
@@ -279,20 +284,37 @@ fn schema_fingerprint(conn: &Connection) -> String {
 
 #[test]
 fn fresh_v5_schema_is_identical_to_migrated_v4_2_14_schema() {
-    // Fresh v5 install: migration runner, then the storage layer's
-    // idempotent schema application (the daemon startup order).
+    // Fresh v5 install: migration runner first.
     let fresh = TempDir::new().expect("tmp fresh");
     let report = agent_cron_scheduler::migrations::run_pending(fresh.path()).expect("fresh run");
     assert_eq!(report.ran.len(), 7, "all v5 migrations must run fresh");
-    let _db = agent_cron_scheduler::storage::sqlite::init_db(&fresh.path().join("acs.db"))
-        .expect("init_db fresh");
 
-    // v4.2.14 upgrade: snapshot database through the same v5 startup path.
+    // v4.2.14 upgrade: snapshot database through the same runner.
     let upgraded = TempDir::new().expect("tmp v4");
     build_v4_database(upgraded.path());
     let report =
         agent_cron_scheduler::migrations::run_pending(upgraded.path()).expect("upgrade run");
     assert!(report.ran.is_empty(), "upgrade must execute nothing");
+
+    // Compare IMMEDIATELY after the runner, before init_db: the idempotent
+    // apply_schema would repair identical omissions on both sides and mask
+    // gaps in the migration chain itself.
+    {
+        let fresh_conn = Connection::open(fresh.path().join("acs.db")).expect("open fresh");
+        let upgraded_conn =
+            Connection::open(upgraded.path().join("acs.db")).expect("open upgraded");
+        assert_eq!(
+            schema_fingerprint(&fresh_conn),
+            schema_fingerprint(&upgraded_conn),
+            "runner output alone must already be structurally identical to a \
+             migrated v4.2.14 schema (before init_db's idempotent repair)"
+        );
+    }
+
+    // Then complete the daemon startup order: the storage layer's
+    // idempotent schema application.
+    let _db = agent_cron_scheduler::storage::sqlite::init_db(&fresh.path().join("acs.db"))
+        .expect("init_db fresh");
     let _db = agent_cron_scheduler::storage::sqlite::init_db(&upgraded.path().join("acs.db"))
         .expect("init_db upgraded");
 

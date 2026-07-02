@@ -47,7 +47,16 @@ impl Migration for DropStepOutputSummary {
     }
 
     fn up(&self, tx: &MigrationTx<'_>) -> Result<(), MigrateError> {
-        tx.execute_batch(SQL)
+        tx.execute_batch(SQL).map_err(|e| match e {
+            // SQLite's bare "malformed JSON" names no row; point the
+            // operator at the query that finds the offending records.
+            MigrateError::Db(msg) if msg.contains("malformed JSON") => MigrateError::Db(format!(
+                "{} — find the offending rows with: SELECT run_id FROM workflow_runs \
+                 WHERE json_valid(steps_json) = 0",
+                msg
+            )),
+            other => other,
+        })
     }
 }
 
@@ -80,6 +89,26 @@ mod tests {
             |r| r.get(0),
         )
         .expect("read")
+    }
+
+    #[test]
+    fn malformed_steps_json_error_carries_lookup_guidance() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO workflow_runs VALUES ('r1', ?1)",
+            ["not valid json {{{"],
+        )
+        .expect("insert");
+
+        let tx = conn.transaction().expect("tx");
+        let err = DropStepOutputSummary
+            .up(&MigrationTx::new(&tx))
+            .expect_err("malformed steps_json must fail");
+        assert!(
+            err.to_string().contains("json_valid(steps_json) = 0"),
+            "error must point at the offending-row query, got: {}",
+            err
+        );
     }
 
     #[test]

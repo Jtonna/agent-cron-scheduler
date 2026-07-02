@@ -116,9 +116,18 @@
 //!   the runner rejects it with the caller-supplied message before creating
 //!   or recording anything.
 //!
+//! A third state is also rejected when a probe is configured: the probe
+//! reports a schema and the tracking table exists but holds **zero rows**.
+//! A healthy tracked database always has history; an empty table means the
+//! history describing the schema was lost, and running anything (seeding
+//! the baseline, then executing migrations built for the fresh-install
+//! chain) would fail or corrupt. The runner returns
+//! [`MigrateError::TrackedSchemaWithoutHistory`] with actionable guidance —
+//! customisable via [`Runner::empty_history_error`].
+//!
 //! Without a probe, the runner assumes a tracked database already has its
-//! schema (baselines seed whenever the tracking table pre-exists) and the
-//! untracked-schema guard is disabled.
+//! schema (baselines seed whenever the tracking table pre-exists) and both
+//! guards are disabled.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -152,6 +161,12 @@ pub enum MigrateError {
     /// with the caller-supplied guard message.
     #[error("{0}")]
     UntrackedSchema(String),
+
+    /// The schema probe found a schema and the tracking table exists, but
+    /// it holds no rows — the history describing the schema is missing, so
+    /// nothing can be decided safely. Nothing was executed or recorded.
+    #[error("{0}")]
+    TrackedSchemaWithoutHistory(String),
 }
 
 // ── SQL-string API: values ────────────────────────────────────────────────────
@@ -241,16 +256,22 @@ impl ToSql for SqlValue {
     }
 }
 
-impl From<ValueRef<'_>> for SqlValue {
-    fn from(v: ValueRef<'_>) -> Self {
-        match v {
-            ValueRef::Null => SqlValue::Null,
-            ValueRef::Integer(i) => SqlValue::Integer(i),
-            ValueRef::Real(f) => SqlValue::Real(f),
-            ValueRef::Text(t) => SqlValue::Text(String::from_utf8_lossy(t).into_owned()),
-            ValueRef::Blob(b) => SqlValue::Blob(b.to_vec()),
-        }
-    }
+/// Convert a raw database value into a [`SqlValue`]. Fallible: text that is
+/// not valid UTF-8 is surfaced as an error rather than lossily substituted —
+/// silent substitution could mangle content that a migration then writes
+/// back.
+fn sql_value_from_ref(v: ValueRef<'_>) -> Result<SqlValue, MigrateError> {
+    Ok(match v {
+        ValueRef::Null => SqlValue::Null,
+        ValueRef::Integer(i) => SqlValue::Integer(i),
+        ValueRef::Real(f) => SqlValue::Real(f),
+        ValueRef::Text(t) => SqlValue::Text(
+            std::str::from_utf8(t)
+                .map_err(|e| MigrateError::Db(format!("invalid UTF-8 in text value: {}", e)))?
+                .to_string(),
+        ),
+        ValueRef::Blob(b) => SqlValue::Blob(b.to_vec()),
+    })
 }
 
 // ── SQL-string API: the runner-owned transaction handle ──────────────────────
@@ -312,7 +333,7 @@ impl<'a> MigrationTx<'a> {
                 let v = row
                     .get_ref(i)
                     .map_err(|e| MigrateError::Db(e.to_string()))?;
-                values.push(SqlValue::from(v));
+                values.push(sql_value_from_ref(v)?);
             }
             out.push(values);
         }
@@ -391,6 +412,7 @@ pub struct Runner {
     migrations: Vec<Box<dyn Migration>>,
     schema_probe: Option<SchemaProbe>,
     untracked_schema_error: Option<String>,
+    empty_history_error: Option<String>,
 }
 
 impl Runner {
@@ -403,6 +425,7 @@ impl Runner {
             migrations: Vec::new(),
             schema_probe: None,
             untracked_schema_error: None,
+            empty_history_error: None,
         }
     }
 
@@ -422,6 +445,15 @@ impl Runner {
     {
         self.schema_probe = Some(Box::new(probe));
         self.untracked_schema_error = Some(untracked_schema_error.into());
+        self
+    }
+
+    /// Override the error message returned when the probe finds a schema
+    /// and the tracking table exists but holds no rows (see the crate docs
+    /// for this state). A generic message is used when not set. Only
+    /// meaningful together with [`Runner::schema_probe`].
+    pub fn empty_history_error(mut self, message: impl Into<String>) -> Self {
+        self.empty_history_error = Some(message.into());
         self
     }
 
@@ -472,6 +504,20 @@ impl Runner {
             }
             map
         };
+
+        // A probed schema whose tracking table exists but holds NO rows is
+        // unaccountable: the history that should describe the schema is
+        // missing, and proceeding (seeding the baseline, then executing
+        // fresh-install migrations against an existing schema) would fail
+        // or corrupt. Reject with guidance before anything runs.
+        if self.schema_probe.is_some() && tracking_present && schema_present && recorded.is_empty()
+        {
+            return Err(MigrateError::TrackedSchemaWithoutHistory(
+                self.empty_history_error
+                    .clone()
+                    .unwrap_or_else(|| default_empty_history_error(&self.db_path)),
+            ));
+        }
 
         // Recorded rows the registry does not know about (migrations retired
         // by the application) are tolerated and reported.
@@ -641,6 +687,18 @@ fn default_untracked_schema_error(db_path: &Path) -> String {
     format!(
         "database {} has a schema but no schema_migrations tracking table; \
          refusing to run migrations against it",
+        db_path.display()
+    )
+}
+
+/// Guard message for the tracked-schema-without-history state when the
+/// caller has not supplied one via [`Runner::empty_history_error`].
+fn default_empty_history_error(db_path: &Path) -> String {
+    format!(
+        "database {} has a schema and a schema_migrations table, but no recorded \
+         migration history. Running migrations against it could fail or corrupt the \
+         schema. Seed schema_migrations rows for the migrations that are already \
+         applied, then retry.",
         db_path.display()
     )
 }
@@ -1310,6 +1368,49 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE name = 'schema_migrations'",
         );
         assert_eq!(n, 0, "the tracking table must not be created");
+    }
+
+    #[test]
+    fn tracked_schema_with_empty_history_is_rejected() {
+        // Tracking table and schema both present, but ZERO recorded rows:
+        // the history describing the schema is missing. Proceeding would
+        // seed the baseline and then run fresh-install migrations against
+        // an existing schema — reject with guidance instead.
+        let tmp = TempDir::new().unwrap();
+        let conn = open(&tmp);
+        conn.execute(TRACKING_TABLE_SQL, [])
+            .expect("tracking table");
+        conn.execute_batch("CREATE TABLE app_data (x INTEGER);")
+            .expect("schema");
+        drop(conn);
+
+        let make = || {
+            vec![
+                sql_baseline("m000_base", "CREATE TABLE app_data (x INTEGER);"),
+                sql("m001_next", "INSERT INTO app_data VALUES (1);"),
+            ]
+        };
+
+        // Default message.
+        let err = probed_runner(&tmp, make()).run().expect_err("must reject");
+        assert!(matches!(err, MigrateError::TrackedSchemaWithoutHistory(_)));
+        assert!(
+            err.to_string().contains("no recorded migration history"),
+            "default guidance expected, got: {}",
+            err
+        );
+
+        // Caller-supplied message override.
+        let err2 = probed_runner(&tmp, make())
+            .empty_history_error("seed the history rows, then retry")
+            .run()
+            .expect_err("must reject");
+        assert_eq!(err2.to_string(), "seed the history rows, then retry");
+
+        // Nothing was recorded or executed.
+        let conn = open(&tmp);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM schema_migrations"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM app_data"), 0);
     }
 
     // ── Rebuild convention ─────────────────────────────────────────────────────

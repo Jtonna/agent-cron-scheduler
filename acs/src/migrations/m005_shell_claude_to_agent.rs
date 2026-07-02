@@ -191,13 +191,20 @@ fn rewrite_step(item: &mut serde_json::Value) -> usize {
                     1
                 }
                 None => {
-                    // Matched the criterion but had no `-p` flag — stdin-fed
-                    // prompt. Skip with a warning so the operator can rewrite
-                    // by hand if they want cost capture.
-                    tracing::warn!(
-                        "m005_shell_claude_to_agent: shell-claude step has no `-p` flag (stdin-fed prompt); leaving as shell. command={}",
-                        truncate(&command, 200)
-                    );
+                    // Skip with a warning so the operator can rewrite by
+                    // hand if they want cost capture — distinguishing the
+                    // unparseable-command case from a stdin-fed prompt.
+                    if tokenize(&command).is_none() {
+                        tracing::warn!(
+                            "m005_shell_claude_to_agent: shell-claude step has malformed quoting (unterminated quote); leaving as shell. command={}",
+                            truncate(&command, 200)
+                        );
+                    } else {
+                        tracing::warn!(
+                            "m005_shell_claude_to_agent: shell-claude step has no `-p` flag (stdin-fed prompt); leaving as shell. command={}",
+                            truncate(&command, 200)
+                        );
+                    }
                     0
                 }
             }

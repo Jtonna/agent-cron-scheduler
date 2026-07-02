@@ -643,15 +643,30 @@ pub async fn start_daemon(
         }
     }
 
+    // Acquire the PID file BEFORE running migrations: two daemons starting
+    // simultaneously must not race the (non-idempotent) migrations. The
+    // loser blocks or exits here instead of reaching the runner.
+    let pid_file_path = data_dir.join("agentcronsystem.pid");
+    let pid_file = PidFile::new(pid_file_path);
+    pid_file.acquire()?;
+
     // Run pending migrations (ACS's registry through the milepost runner,
     // tracked in the schema_migrations table). Must run AFTER tracing init
     // so migration logs are visible. Any migration error is fatal: the
-    // daemon must not start against a partially-migrated database.
+    // daemon must not start against a partially-migrated database. The PID
+    // file is released on the failure paths so the exit is clean.
     let migration_data_dir = data_dir.clone();
-    let migration_outcome =
-        tokio::task::spawn_blocking(move || crate::migrations::run_pending(&migration_data_dir))
-            .await
-            .map_err(|e| anyhow::anyhow!("Migration task failed: {}", e))?;
+    let migration_outcome = match tokio::task::spawn_blocking(move || {
+        crate::migrations::run_pending(&migration_data_dir)
+    })
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            let _ = pid_file.release();
+            return Err(anyhow::anyhow!("Migration task failed: {}", e));
+        }
+    };
     match migration_outcome {
         Ok(report) => {
             if !report.seeded.is_empty() {
@@ -674,14 +689,10 @@ pub async fn start_daemon(
             }
         }
         Err(e) => {
+            let _ = pid_file.release();
             return Err(anyhow::anyhow!("Migration failed: {}", e));
         }
     }
-
-    // Acquire PID file
-    let pid_file_path = data_dir.join("agentcronsystem.pid");
-    let pid_file = PidFile::new(pid_file_path);
-    pid_file.acquire()?;
 
     // Initialize SQLite-backed stores. The migration runner above has
     // already brought `acs.db` to the current schema; `init_db` re-applies

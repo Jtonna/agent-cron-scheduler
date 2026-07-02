@@ -76,6 +76,28 @@ impl Migration for AddWorkflowDeleted {
     }
 
     fn up(&self, tx: &MigrationTx<'_>) -> Result<(), MigrateError> {
+        // Fail loud if the schema is already migrated: the rebuild's copy
+        // does not carry the `deleted` column (it did not exist in the
+        // pre-migration shape), so re-running against a migrated table
+        // would silently reset every soft-deleted row to live. That state
+        // is only reachable when the tracking row was lost — the fix is to
+        // restore the row, not to re-run.
+        let already_applied = !tx
+            .query(
+                "SELECT 1 FROM pragma_table_info('workflows') WHERE name = 'deleted'",
+                &[],
+            )?
+            .is_empty();
+        if already_applied {
+            return Err(MigrateError::Db(
+                "workflows already has the deleted column — this migration has already \
+                 been applied and re-running it would reset soft-delete state. Restore \
+                 its tracking row instead: INSERT INTO schema_migrations (name, \
+                 applied_at, status) VALUES ('m008_add_workflow_deleted', \
+                 strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'success');"
+                    .to_string(),
+            ));
+        }
         tx.execute_batch(SQL)
     }
 }

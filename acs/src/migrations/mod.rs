@@ -72,9 +72,17 @@ pub fn run_pending(data_dir: &Path) -> Result<MigrationRunReport, MigrateError> 
          v4.2.14, run it once so it records its migration state, then upgrade to v5.",
         db_path.display()
     );
+    let empty_history_guidance = format!(
+        "database {} has an ACS schema and a schema_migrations table, but no recorded \
+         migration history. Run v4.2.14 once so it records its migration state, or \
+         manually seed schema_migrations rows for the migrations that are already \
+         applied, then upgrade to v5.",
+        db_path.display()
+    );
     Runner::new(db_path)
         .migrations(registry())
         .schema_probe(|tx| tx.table_exists("workflows"), upgrade_guidance)
+        .empty_history_error(empty_history_guidance)
         .run()
 }
 
@@ -241,6 +249,107 @@ mod tests {
         assert_eq!(
             count(&open(tmp.path()), "SELECT COUNT(*) FROM workflows"),
             1
+        );
+    }
+
+    #[test]
+    fn m008_rerun_against_migrated_schema_fails_loud_without_data_change() {
+        // Reachable state: the schema already carries m008's outcome (the
+        // `deleted` column) but m008's tracking row is missing — e.g. lost
+        // to a crash window or manual row deletion. Re-running the rebuild
+        // would silently reset every soft-deleted row to live; it must
+        // fail loud instead, telling the operator to restore the row.
+        let tmp = TempDir::new().unwrap();
+        for name in [
+            "m001_jobs_to_workflows",
+            "m002_json_to_sqlite",
+            "m003_drop_step_output_summary",
+            "m004_drop_input_schema",
+            "m005_shell_claude_to_agent",
+            "m006_agent_step_normalize",
+            "m007_add_token_columns",
+        ] {
+            insert_row(tmp.path(), name);
+        }
+        open(tmp.path())
+            .execute_batch(
+                "CREATE TABLE workflows (
+                     id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                     deleted INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO workflows VALUES ('id-1', 'live-wf', 0);
+                 INSERT INTO workflows VALUES ('id-2', 'deleted-wf', 1);",
+            )
+            .unwrap();
+
+        let err = run_pending(tmp.path()).expect_err("m008 re-run must fail loud");
+        let msg = err.to_string();
+        assert!(msg.contains("m008_add_workflow_deleted"));
+        assert!(
+            msg.contains("already"),
+            "error must say the migration was already applied, got: {}",
+            msg
+        );
+
+        let conn = open(tmp.path());
+        // Soft-delete state untouched.
+        let deleted: i64 = conn
+            .query_row("SELECT deleted FROM workflows WHERE id = 'id-2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(deleted, 1, "soft-deleted row must NOT be resurrected");
+        // Failed row recorded with the restore-the-row guidance.
+        let (status, error): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, error FROM schema_migrations \
+                 WHERE name = 'm008_add_workflow_deleted'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
+        assert!(
+            error
+                .unwrap_or_default()
+                .contains("INSERT INTO schema_migrations"),
+            "failed row must carry the tracking-row restore statement"
+        );
+    }
+
+    #[test]
+    fn tracked_schema_with_empty_history_gets_acs_guidance() {
+        // Tracking table present but empty, plus an ACS schema. Must
+        // reject with the ACS-specific guidance rather than seeding the
+        // baseline and then looping on unrecoverable migration failures.
+        let tmp = TempDir::new().unwrap();
+        let conn = open(tmp.path());
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+                 name        TEXT PRIMARY KEY,
+                 applied_at  TEXT NOT NULL,
+                 status      TEXT NOT NULL CHECK (status IN ('success','failed')),
+                 duration_ms INTEGER,
+                 error       TEXT
+             );
+             CREATE TABLE workflows (id TEXT PRIMARY KEY);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let err = run_pending(tmp.path()).expect_err("must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no recorded migration history"),
+            "got: {}",
+            msg
+        );
+        assert!(msg.contains("v4.2.14"), "guidance must name the fix path");
+
+        // Nothing recorded, nothing executed.
+        assert_eq!(
+            count(&open(tmp.path()), "SELECT COUNT(*) FROM schema_migrations"),
+            0
         );
     }
 
