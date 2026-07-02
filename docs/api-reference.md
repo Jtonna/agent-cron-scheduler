@@ -124,7 +124,7 @@ Returns daemon health status, including uptime, workflow counts, version, and pl
   "uptime_seconds": 3600,
   "active_jobs": 5,
   "total_jobs": 8,
-  "version": "4.2.13",
+  "version": "4.2.14",
   "data_dir": "/home/user/.local/share/agent-cron-scheduler",
   "service": {
     "registered": true,
@@ -317,7 +317,15 @@ Partially update an existing workflow. Only the fields you include in the reques
 
 ### DELETE /api/workflows/{id}
 
-Delete a workflow.
+Soft-delete a workflow (v4.2.14, ACS-25).
+
+The workflow row and **all** of its runs are kept — the `workflow_runs` rows are
+the cost/token record — and the workflow is flagged as deleted. It then
+disappears from [GET /api/workflows](#get-apiworkflows), name resolution, the
+scheduler, and triggering (all behave as 404), and its **name is freed for
+reuse**. Its persisted cost history stays available via the cost endpoints
+(flagged `workflow_deleted: true`), and its runs stay readable via
+[GET /api/runs/{run_id}](#get-apirunsrun_id).
 
 **Path Parameters:**
 
@@ -331,11 +339,19 @@ Delete a workflow.
 
 | Status | Description |
 |--------|-------------|
-| 204 No Content | Workflow deleted. No response body. |
+| 204 No Content | Workflow soft-deleted. No response body. |
 | 404 Not Found | Workflow not found. |
+| 409 Conflict | The workflow has a run in progress (`error: "workflow_run_active"`). Kill or wait for the run, then retry. |
 | 500 Internal Server Error | Storage failure. |
 
-**Side effects:** Broadcasts a `WorkflowChanged` SSE event with `change_kind: "deleted"`.
+**Side effects:**
+
+- Best-effort on-disk cleanup after the DB update succeeds: the run-log
+  directory `<data_dir>/logs/<workflow_id>/` is removed, and the operating
+  folder is removed **only** when it is the ACS-managed default path — a
+  custom `working_dir` is never touched. Cleanup failures are logged, never
+  fail the request.
+- Broadcasts a `WorkflowChanged` SSE event with `change_kind: "deleted"`.
 
 ---
 
@@ -1074,6 +1090,7 @@ A single workflow's cost data as returned in `CostWorkflowsListResponse.workflow
 |---|---|---|
 | `workflow_id` | string (UUID) | The workflow identifier. |
 | `workflow_name` | string | The workflow name (slug). |
+| `workflow_deleted` | bool | `true` when the parent workflow has been soft-deleted (v4.2.14). Cost history is aggregated from persisted `workflow_runs`, so deleted workflows are still listed. Defaults to `false`. |
 | `cost_summary` | [CostSummary](#costsummary) | Aggregated cost analytics for this workflow (30-day totals, 1-year totals, and `daily_buckets` for the requested window). |
 
 ---
@@ -1097,6 +1114,7 @@ Response shape for `GET /api/cost/workflows/{id}`.
 |---|---|---|
 | `workflow_id` | string (UUID) | The workflow identifier. |
 | `workflow_name` | string | The workflow name (slug). |
+| `workflow_deleted` | bool | `true` when the workflow has been soft-deleted (v4.2.14). This endpoint still returns 200 with the persisted cost history. Defaults to `false`. |
 | `cost_summary` | [CostSummary](#costsummary) | Aggregated cost analytics for this workflow (30-day totals, 1-year totals, and `daily_buckets` for the requested window). |
 
 ---

@@ -35,6 +35,8 @@ Each workflow run executes its steps in sequence. Steps can spawn subprocesses, 
 | `last_run_status` | `Option<RunStatus>` | `null` | Status of the most recent completed run. Set by the daemon. |
 | `last_run_id` | `Option<Uuid>` | `null` | Run ID of the most recent run. Set by the daemon. |
 | `next_run_at` | `Option<DateTime<Utc>>` | `null` | Computed at runtime; never persisted. Only present in GET responses. |
+| `is_favorited` | `bool` | `false` | Whether the workflow is pinned to the top of UI list views. Does not bump `version`. |
+| `deleted` | `bool` | `false` | Soft-delete flag (v4.2.14). When `true` the workflow is hidden from list/resolve/schedule/trigger, but its row and runs persist. See [Deletion](#deletion-soft-delete). |
 | `created_at` | `DateTime<Utc>` | auto | Timestamp of creation. |
 | `updated_at` | `DateTime<Utc>` | auto | Timestamp of last update. |
 
@@ -54,6 +56,33 @@ Updatable: `name`, `schedule`, `timezone`, `schedule_mode`, `enabled`, `steps`, 
 
 Sending `null` for `timezone`, `working_dir`, or `default_input` in a PATCH body is treated the same as omitting the field — the existing value is unchanged. Send a non-null value to update them.
 
+### Deletion (soft delete)
+
+`DELETE /api/workflows/{id}` performs a **soft delete** (v4.2.14, ACS-25): the
+workflow row and **all** of its runs are kept — the `workflow_runs` rows are the
+cost/token record and must survive — and the workflow is flagged `deleted`.
+
+After deletion the workflow:
+
+- is excluded from `GET /api/workflows`, name resolution, the scheduler, and
+  triggering (all behave as `404`);
+- has its **name freed for reuse** — a new workflow can be created with the same
+  name. The old and new workflows remain distinct rows keyed by `id`, so cost
+  views list them separately;
+- keeps its runs readable via `GET /api/runs/{run_id}`, and its cost history
+  visible via the cost endpoints (flagged `workflow_deleted: true`).
+
+**Active-run guard.** If the workflow has a run currently `Running`, the delete
+is rejected with `409 Conflict` (`error: "workflow_run_active"`). Kill or wait
+for the run to finish, then retry.
+
+**On-disk cleanup (best-effort).** After the DB update succeeds, the run-log
+directory `<data_dir>/logs/<workflow_id>/` is removed, and the operating folder
+is removed **only** when it is the ACS-managed default path
+(`<user-documents>/agent-cron-scheduler/<sanitized-name>/` or the configured
+`display_workflow_dir_root` equivalent). A custom, user-specified `working_dir`
+is **never** touched. Cleanup failures are logged and never fail the request.
+
 ---
 
 ## Validation Rules
@@ -68,6 +97,10 @@ Validation runs on both `NewWorkflow` and `WorkflowUpdate` before any changes ar
 | Name must not be a valid UUID string. | `"Workflow name cannot be a valid UUID"` |
 
 The UUID restriction prevents ambiguity when referencing workflows by name or ID in CLI commands and API routes.
+
+Names must be unique **among live workflows**. Soft-deleted workflows (see
+[Deletion](#deletion-soft-delete)) are excluded from the uniqueness check, so a
+name becomes available for reuse once its owner is deleted.
 
 ### Cron expression validation
 

@@ -108,7 +108,9 @@ CREATE TABLE workflows (
     last_run_status     TEXT,
     last_run_id         TEXT,
     created_at          TEXT NOT NULL,
-    updated_at          TEXT NOT NULL
+    updated_at          TEXT NOT NULL,
+    is_favorited        INTEGER NOT NULL DEFAULT 0,
+    deleted             INTEGER NOT NULL DEFAULT 0   -- soft-delete flag; added by m008 (v4.2.14)
 );
 
 CREATE TABLE workflow_runs (
@@ -474,6 +476,7 @@ On every `write_chunk(data)`:
 `acs/src/migration/m005_shell_claude_to_agent.rs`,
 `acs/src/migration/m006_agent_step_normalize.rs`,
 `acs/src/migration/m007_add_token_columns.rs`,
+`acs/src/migration/m008_add_workflow_deleted.rs`,
 `acs/src/migration/legacy_types.rs`
 
 ### Design
@@ -734,6 +737,29 @@ columns to the `workflow_runs` table introduced in v4.2.11. Both columns are
 | `acs.db` does not exist | No-op (return `Ok(false)`) — fresh install |
 | `total_input_tokens` column already present on `workflow_runs` | No-op (return `Ok(false)`) — idempotent |
 | Otherwise | BEGIN transaction → `ALTER TABLE workflow_runs ADD COLUMN total_input_tokens INTEGER NOT NULL DEFAULT 0;` and `ALTER TABLE workflow_runs ADD COLUMN total_output_tokens INTEGER NOT NULL DEFAULT 0;` → COMMIT |
+
+---
+
+### m008_add_workflow_deleted
+
+`m008_add_workflow_deleted` adds the `deleted` soft-delete column to the
+`workflows` table (v4.2.14, ACS-25). It is `INTEGER NOT NULL DEFAULT 0`, so
+existing workflows backfill to `0` ("not deleted"). Fresh installs receive the
+column directly via `schema.rs` and this migration short-circuits. No table
+rebuild, no new tables, no foreign-key changes.
+
+`DELETE /api/workflows/{id}` sets `deleted = 1` (keeping the row and every
+`workflow_runs` record so cost/token history survives) and rewrites the row's
+`name` to a tombstone (`"<name>\u{1}<id>"`) so the `UNIQUE` constraint on
+`workflows.name` no longer reserves the original name — this frees the name for
+reuse without dropping the constraint. Readers strip the tombstone so the
+displayed name stays the original.
+
+| Condition | Action |
+|---|---|
+| `acs.db` does not exist | No-op (return `Ok(false)`) — fresh install |
+| `deleted` column already present on `workflows` | No-op (return `Ok(false)`) — idempotent |
+| Otherwise | `ALTER TABLE workflows ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;` |
 
 ---
 

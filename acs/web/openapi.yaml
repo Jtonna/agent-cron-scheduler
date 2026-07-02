@@ -7,7 +7,7 @@ info:
     ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
     Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "4.2.13"
+  version: "4.2.14"
   license:
     name: MIT
 
@@ -49,7 +49,7 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "4.2.13"
+                version: "4.2.14"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
                 service:
                   registered: true
@@ -268,18 +268,42 @@ paths:
 
     delete:
       operationId: deleteWorkflow
-      summary: Delete a workflow
+      summary: Delete a workflow (soft delete)
       description: |
-        Deletes a workflow by ID or name. If the workflow has an active run it
-        will be killed before deletion. Returns 204 on success with no body.
+        Soft-deletes a workflow by ID or name (v4.2.14, ACS-25). The workflow
+        row and **all** of its `workflow_runs` are kept — the run rows are the
+        cost/token record — and the workflow is flagged as deleted. It then
+        disappears from `GET /api/workflows`, name resolution, the scheduler,
+        and triggering (all behave as 404), and its name is freed for reuse.
+
+        Its persisted cost history remains available via `GET /api/cost/workflows`
+        and `GET /api/cost/workflows/{id}` (flagged `workflow_deleted: true`),
+        and its runs remain readable via `GET /api/runs/{run_id}`.
+
+        On-disk artifacts are removed best-effort after the DB update succeeds:
+        the run-log directory `<data_dir>/logs/<workflow_id>/`, and the
+        operating folder **only** when it is the ACS-managed default path — a
+        custom `working_dir` is never touched.
+
+        If the workflow currently has a **Running** run, the request is rejected
+        with `409 Conflict` (`error: "workflow_run_active"`); kill or wait for
+        the run to finish, then retry. Returns 204 on success with no body.
       tags: [Workflows]
       parameters:
         - $ref: "#/components/parameters/WorkflowId"
       responses:
         "204":
-          description: Workflow deleted (no content)
+          description: Workflow soft-deleted (no content)
         "404":
           description: Workflow not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: |
+            The workflow has a run in progress and cannot be deleted
+            (`error: "workflow_run_active"`).
           content:
             application/json:
               schema:
@@ -1665,6 +1689,13 @@ components:
           type: string
           description: Workflow name.
           example: deploy-pipeline
+        workflow_deleted:
+          type: boolean
+          default: false
+          description: |
+            `true` when the parent workflow has been soft-deleted (v4.2.14).
+            Cost/token history is aggregated from the persisted `workflow_runs`
+            rows, so deleted workflows are still listed here.
         cost_summary:
           $ref: "#/components/schemas/CostSummary"
 
@@ -1706,6 +1737,13 @@ components:
           type: string
           description: Workflow name.
           example: deploy-pipeline
+        workflow_deleted:
+          type: boolean
+          default: false
+          description: |
+            `true` when the workflow has been soft-deleted (v4.2.14). This
+            endpoint still returns 200 with the persisted cost history for a
+            deleted workflow.
         cost_summary:
           $ref: "#/components/schemas/CostSummary"
 
