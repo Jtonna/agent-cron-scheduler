@@ -3,8 +3,12 @@
 //!
 //! # Decision table
 //!
-//! 1. If `<data_dir>/acs.db` already exists → migration is already applied
-//!    (no-op, returns `Ok(false)`).
+//! 1. If `<data_dir>/acs.db` contains a `workflows` table → the conversion
+//!    (or the fresh-install schema) is already in place (no-op, returns
+//!    `Ok(false)`). The check is table-based rather than file-based because
+//!    the migration runner creates `acs.db` up front to host its
+//!    `schema_migrations` tracking table, so file existence alone proves
+//!    nothing.
 //! 2. If neither `<data_dir>/workflows.json` nor `<data_dir>/runs/` exists →
 //!    fresh install. Create `acs.db` with the empty schema and return
 //!    `Ok(true)` so the migration is recorded as applied.
@@ -28,13 +32,13 @@
 //!
 //! # `migrations.json` is intentionally left in place
 //!
-//! ACS-22 §4 step 5 envisaged copying applied-migration state into the
-//! SQLite `meta` table and deleting `migrations.json`. Doing so requires a
-//! refactor of the migration runner (`migration::mod`), which currently
-//! reads/writes `migrations.json` exclusively. The simpler design — adopted
-//! here — is to leave `migrations.json` as the canonical migration-state
-//! location indefinitely. The `meta` table exists in the schema for future
-//! SQLite-only metadata but is unused by this migration.
+//! Migration execution is tracked in the `schema_migrations` table inside
+//! `acs.db` (owned by the migration runner, see `migration::mod`).
+//! `migrations.json` is the legacy tracking file: the runner reads it one
+//! time to backfill the tracking table on databases that predate it, and
+//! never writes it again. This migration leaves the file untouched. The
+//! `meta` table exists in the schema for future SQLite-only metadata but is
+//! unused by this migration.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -64,9 +68,20 @@ impl Migration for JsonToSqlite {
         let workflows_path = data_dir.join("workflows.json");
         let runs_dir = data_dir.join("runs");
 
-        // 1. acs.db already exists → already applied.
+        // 1. A `workflows` table in acs.db means the conversion (or the
+        //    fresh-install schema) is already in place. Table-based rather
+        //    than file-based: the migration runner creates acs.db up front to
+        //    host its `schema_migrations` tracking table, so the file may
+        //    exist before this migration has ever run.
         if db_path.exists() {
-            return Ok(false);
+            let db_path_check = db_path.clone();
+            let has_workflows_table =
+                tokio::task::spawn_blocking(move || workflows_table_exists(&db_path_check))
+                    .await
+                    .map_err(|e| AcsError::Internal(format!("blocking task failed: {}", e)))??;
+            if has_workflows_table {
+                return Ok(false);
+            }
         }
 
         // 2. Fresh install: no JSON sources to read. Create the schema-only
@@ -170,7 +185,11 @@ impl Migration for JsonToSqlite {
                 // from a clean slate. The transaction was already rolled
                 // back inside `migrate_blocking`; the file removal here
                 // covers the case where the connection had already been
-                // opened (so the file exists on disk).
+                // opened (so the file exists on disk). Removing the file also
+                // drops the runner's schema_migrations rows — that is safe:
+                // the runner recreates the table immediately when it records
+                // this failure, and any earlier migrations simply re-run as
+                // no-ops on the next startup.
                 let _ = std::fs::remove_file(&db_path);
                 // Also remove any WAL sidecars that may have been created.
                 let _ = std::fs::remove_file(data_dir.join("acs.db-wal"));
@@ -179,6 +198,21 @@ impl Migration for JsonToSqlite {
             }
         }
     }
+}
+
+/// Return `true` when `acs.db` at `path` contains a `workflows` table — the
+/// marker that the conversion (or the fresh-install schema) already happened.
+fn workflows_table_exists(path: &Path) -> Result<bool, AcsError> {
+    let conn = Connection::open(path)
+        .map_err(|e| AcsError::Storage(format!("Failed to open SQLite at {:?}: {}", path, e)))?;
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'workflows'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| AcsError::Storage(format!("Failed to inspect sqlite_master: {}", e)))?;
+    Ok(n > 0)
 }
 
 // ─── JSON readers ─────────────────────────────────────────────────────────────
