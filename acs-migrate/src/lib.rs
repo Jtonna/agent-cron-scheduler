@@ -1,23 +1,22 @@
-//! Flyway-style SQLite migration runner for the agent-cron-scheduler daemon.
+//! SQLite migration framework for the agent-cron-scheduler daemon.
 //!
-//! # Two migration kinds, one set of rules
+//! # Why a separate crate
 //!
-//! The registry holds two kinds of migration under a single name ordering,
-//! a single `schema_migrations` tracking table, and identical execution
-//! semantics:
+//! Migrations live in their own crate — consumed by `acs` as a path
+//! dependency — for maintenance, clarity, and future development: the
+//! framework and the shipped migrations evolve, get reviewed, and get tested
+//! independently of the daemon, and nothing in a migration can accidentally
+//! reach into the daemon's live model types.
 //!
-//! - **SQL migrations** — embedded named `.sql` files (via `include_str!`),
-//!   executed as a script. This is the default and the documented convention
-//!   for all future migrations. Scripts must NOT contain `BEGIN`/`COMMIT`;
-//!   the runner owns the transaction.
-//! - **Code migrations** — Rust logic implementing
-//!   `fn(&rusqlite::Transaction) -> Result<(), MigrateError>`: it issues SQL
-//!   against the provided transaction, reads responses, transforms in Rust,
-//!   and writes back via SQL. This is the escape hatch for transforms SQL
-//!   cannot express (shell tokenizing, recursion into nested JSON) — used
-//!   only when justified and documented as such. It runs INSIDE the runner's
-//!   per-migration transaction and is recorded/tracked exactly like a SQL
-//!   migration.
+//! # One migration kind
+//!
+//! Every migration is a Rust file implementing the [`Migration`] trait. The
+//! framework hands the migration a [`MigrationTx`] — a small SQL-string API
+//! over the runner-owned transaction: execute runnable SQL from string
+//! constants, and read query output back as plain Rust values
+//! ([`SqlValue`]). Simple migrations are a single `execute_batch` of a SQL
+//! constant; complex migrations mix SQL strings with Rust-level logic
+//! (tokenizing, JSON recursion) in ways plain SQL cannot express.
 //!
 //! # Tracking table
 //!
@@ -63,7 +62,8 @@
 //!
 //! `PRAGMA foreign_keys` is a no-op inside a transaction, so table rebuilds
 //! (drop/rename of a parent table) cannot toggle it themselves. A migration
-//! flagged `rebuild` gets this treatment from the runner instead:
+//! whose [`Migration::rebuild`] hook returns `true` gets this treatment from
+//! the runner instead:
 //!
 //! 1. `PRAGMA foreign_keys = OFF` before the transaction opens;
 //! 2. the migration body runs inside the transaction;
@@ -73,31 +73,39 @@
 //!
 //! # Baseline convention (fresh install vs. existing database)
 //!
-//! A migration flagged `baseline` creates the schema starting point for
-//! fresh installs. On a database that already has migration tracking (the
-//! `schema_migrations` table pre-exists — every v4.2.14 install), the runner
-//! records a `success` row for it WITHOUT executing, so the baseline never
-//! runs against an existing schema. Databases with a schema but no tracking
-//! table predate v4.2.14 and are rejected with an "upgrade through v4.2.14
-//! first" error before anything runs.
+//! A migration whose [`Migration::baseline`] hook returns `true` creates the
+//! schema starting point for fresh installs. On a database that already has
+//! migration tracking (the `schema_migrations` table pre-exists — every
+//! v4.2.14 install), the runner records a `success` row for it WITHOUT
+//! executing, so the baseline never runs against an existing schema.
+//! Databases with a schema but no tracking table predate v4.2.14 and are
+//! rejected with an "upgrade through v4.2.14 first" error before anything
+//! runs.
 //!
 //! # Adding a new migration
 //!
-//! 1. Create `src/sql/mNNN_<name>.sql` (increment NNN past the last entry).
-//! 2. Append `Migration::sql("mNNN_<name>", include_str!("sql/mNNN_<name>.sql"))`
-//!    to [`registry`] — names must stay in ascending order.
-//! 3. Only if the transform is impossible in SQL: add a code migration
-//!    module and register it with [`Migration::code`], documenting why.
+//! 1. Create `src/mNNN_<name>.rs` (increment NNN past the last entry) with a
+//!    unit struct implementing [`Migration`]. Keep the SQL in string
+//!    constants; add Rust logic only where SQL alone cannot express the
+//!    transform.
+//! 2. Declare the module and append `Box::new(mNNN_<name>::YourStruct)` to
+//!    [`registry`] — names must stay in ascending order.
 
+mod m000_baseline;
+mod m003_drop_step_output_summary;
+mod m004_drop_input_schema;
 mod m005_shell_claude_to_agent;
 mod m006_agent_step_normalize;
+mod m007_add_token_columns;
+mod m008_add_workflow_deleted;
 mod shell_tokens;
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
-use rusqlite::{Connection, Transaction};
+use rusqlite::types::{ToSqlOutput, Value, ValueRef};
+use rusqlite::{Connection, ToSql, Transaction};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -125,110 +133,202 @@ pub enum MigrateError {
     UnsupportedUpgrade(String),
 }
 
-// ── Migration type ────────────────────────────────────────────────────────────
+// ── SQL-string API: values ────────────────────────────────────────────────────
 
-/// A code migration body: Rust logic operating on the runner's transaction.
-pub type CodeMigrationFn = Box<dyn Fn(&Transaction<'_>) -> Result<(), MigrateError> + Send + Sync>;
-
-/// What a migration executes.
-enum MigrationAction {
-    /// An embedded `.sql` script, executed as a batch. Must not contain
-    /// BEGIN/COMMIT — the runner owns the transaction.
-    Sql(&'static str),
-    /// Rust logic run inside the runner's transaction.
-    Code(CodeMigrationFn),
+/// A single SQLite value, as read from or bound into a SQL statement.
+/// Plain Rust data — no ORM, no derive machinery.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SqlValue {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Blob(Vec<u8>),
 }
 
-/// A single forward migration step. The name is the primary key in the
-/// `schema_migrations` tracking table and must never change after it ships.
-pub struct Migration {
-    name: &'static str,
-    action: MigrationAction,
-    /// Rebuild convention: toggle `PRAGMA foreign_keys` off around the
-    /// transaction and run `PRAGMA foreign_key_check` before commit.
-    rebuild: bool,
+impl SqlValue {
+    /// The text content, if this value is `Text`.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            SqlValue::Text(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The integer content, if this value is `Integer`.
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            SqlValue::Integer(i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// The float content, if this value is `Real`.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            SqlValue::Real(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    pub fn is_null(&self) -> bool {
+        matches!(self, SqlValue::Null)
+    }
+}
+
+impl From<&str> for SqlValue {
+    fn from(s: &str) -> Self {
+        SqlValue::Text(s.to_string())
+    }
+}
+
+impl From<String> for SqlValue {
+    fn from(s: String) -> Self {
+        SqlValue::Text(s)
+    }
+}
+
+impl From<i64> for SqlValue {
+    fn from(i: i64) -> Self {
+        SqlValue::Integer(i)
+    }
+}
+
+impl From<f64> for SqlValue {
+    fn from(f: f64) -> Self {
+        SqlValue::Real(f)
+    }
+}
+
+impl ToSql for SqlValue {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(match self {
+            SqlValue::Null => ToSqlOutput::Owned(Value::Null),
+            SqlValue::Integer(i) => ToSqlOutput::Owned(Value::Integer(*i)),
+            SqlValue::Real(f) => ToSqlOutput::Owned(Value::Real(*f)),
+            SqlValue::Text(s) => ToSqlOutput::Borrowed(ValueRef::Text(s.as_bytes())),
+            SqlValue::Blob(b) => ToSqlOutput::Borrowed(ValueRef::Blob(b)),
+        })
+    }
+}
+
+impl From<ValueRef<'_>> for SqlValue {
+    fn from(v: ValueRef<'_>) -> Self {
+        match v {
+            ValueRef::Null => SqlValue::Null,
+            ValueRef::Integer(i) => SqlValue::Integer(i),
+            ValueRef::Real(f) => SqlValue::Real(f),
+            ValueRef::Text(t) => SqlValue::Text(String::from_utf8_lossy(t).into_owned()),
+            ValueRef::Blob(b) => SqlValue::Blob(b.to_vec()),
+        }
+    }
+}
+
+// ── SQL-string API: the runner-owned transaction handle ──────────────────────
+
+/// The framework's SQL-string API over the runner-owned transaction.
+///
+/// A migration receives this in [`Migration::up`] and uses it to execute SQL
+/// from string constants and to read query output back as plain Rust values.
+/// Everything a migration does goes through this handle, so the whole
+/// migration commits or rolls back atomically with its tracking outcome.
+pub struct MigrationTx<'a> {
+    tx: &'a Transaction<'a>,
+}
+
+impl<'a> MigrationTx<'a> {
+    pub(crate) fn new(tx: &'a Transaction<'a>) -> Self {
+        Self { tx }
+    }
+
+    /// Execute one or more `;`-separated SQL statements with no parameters
+    /// and no results. Must not contain `BEGIN`/`COMMIT` — the runner owns
+    /// the transaction.
+    pub fn execute_batch(&self, sql: &str) -> Result<(), MigrateError> {
+        self.tx
+            .execute_batch(sql)
+            .map_err(|e| MigrateError::Db(e.to_string()))
+    }
+
+    /// Execute a single SQL statement with positional (`?1`, `?2`, …)
+    /// parameters. Returns the number of rows affected.
+    pub fn execute(&self, sql: &str, params: &[SqlValue]) -> Result<usize, MigrateError> {
+        self.tx
+            .execute(sql, rusqlite::params_from_iter(params.iter()))
+            .map_err(|e| MigrateError::Db(e.to_string()))
+    }
+
+    /// Run a query with positional parameters, returning every row as a
+    /// `Vec<SqlValue>` in column order.
+    pub fn query(
+        &self,
+        sql: &str,
+        params: &[SqlValue],
+    ) -> Result<Vec<Vec<SqlValue>>, MigrateError> {
+        let mut stmt = self
+            .tx
+            .prepare(sql)
+            .map_err(|e| MigrateError::Db(e.to_string()))?;
+        let column_count = stmt.column_count();
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params.iter()))
+            .map_err(|e| MigrateError::Db(e.to_string()))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| MigrateError::Db(e.to_string()))? {
+            let mut values = Vec::with_capacity(column_count);
+            for i in 0..column_count {
+                let v = row
+                    .get_ref(i)
+                    .map_err(|e| MigrateError::Db(e.to_string()))?;
+                values.push(SqlValue::from(v));
+            }
+            out.push(values);
+        }
+        Ok(out)
+    }
+}
+
+// ── Migration trait ───────────────────────────────────────────────────────────
+
+/// A single forward migration step: a Rust file whose SQL lives in string
+/// constants, executed through the runner-provided [`MigrationTx`].
+///
+/// The name is the primary key in the `schema_migrations` tracking table and
+/// must never change after it ships.
+pub trait Migration: Send + Sync {
+    /// The stable migration name, e.g. `"m008_add_workflow_deleted"`.
+    fn name(&self) -> &'static str;
+
     /// Baseline convention: on a database that already has migration
-    /// tracking, record success without executing.
-    baseline: bool,
-}
-
-impl Migration {
-    /// A plain SQL migration (the default kind).
-    pub fn sql(name: &'static str, sql: &'static str) -> Self {
-        Self {
-            name,
-            action: MigrationAction::Sql(sql),
-            rebuild: false,
-            baseline: false,
-        }
+    /// tracking, record success without executing. See the module docs.
+    fn baseline(&self) -> bool {
+        false
     }
 
-    /// A SQL migration that rebuilds a table participating in a foreign key
-    /// (see the module docs for the rebuild convention).
-    pub fn sql_rebuild(name: &'static str, sql: &'static str) -> Self {
-        Self {
-            name,
-            action: MigrationAction::Sql(sql),
-            rebuild: true,
-            baseline: false,
-        }
+    /// Rebuild convention: toggle `PRAGMA foreign_keys` off around the
+    /// transaction and run `PRAGMA foreign_key_check` before commit. See the
+    /// module docs.
+    fn rebuild(&self) -> bool {
+        false
     }
 
-    /// The fresh-install baseline SQL migration (see the module docs for the
-    /// baseline convention).
-    pub fn sql_baseline(name: &'static str, sql: &'static str) -> Self {
-        Self {
-            name,
-            action: MigrationAction::Sql(sql),
-            rebuild: false,
-            baseline: true,
-        }
-    }
-
-    /// A code migration — Rust logic for transforms SQL cannot express.
-    pub fn code<F>(name: &'static str, f: F) -> Self
-    where
-        F: Fn(&Transaction<'_>) -> Result<(), MigrateError> + Send + Sync + 'static,
-    {
-        Self {
-            name,
-            action: MigrationAction::Code(Box::new(f)),
-            rebuild: false,
-            baseline: false,
-        }
-    }
-
-    /// The stable migration name.
-    pub fn name(&self) -> &'static str {
-        self.name
-    }
+    /// The migration body, run inside the runner-owned transaction.
+    fn up(&self, tx: &MigrationTx<'_>) -> Result<(), MigrateError>;
 }
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 /// All available migrations, ordered by name (which is also execution
 /// order). Append new migrations at the end with a higher number.
-pub fn registry() -> Vec<Migration> {
+pub fn registry() -> Vec<Box<dyn Migration>> {
     vec![
-        Migration::sql_baseline("m000_baseline", include_str!("sql/m000_baseline.sql")),
-        Migration::sql(
-            "m003_drop_step_output_summary",
-            include_str!("sql/m003_drop_step_output_summary.sql"),
-        ),
-        Migration::sql(
-            "m004_drop_input_schema",
-            include_str!("sql/m004_drop_input_schema.sql"),
-        ),
-        Migration::code("m005_shell_claude_to_agent", m005_shell_claude_to_agent::up),
-        Migration::code("m006_agent_step_normalize", m006_agent_step_normalize::up),
-        Migration::sql(
-            "m007_add_token_columns",
-            include_str!("sql/m007_add_token_columns.sql"),
-        ),
-        Migration::sql_rebuild(
-            "m008_add_workflow_deleted",
-            include_str!("sql/m008_add_workflow_deleted.sql"),
-        ),
+        Box::new(m000_baseline::Baseline),
+        Box::new(m003_drop_step_output_summary::DropStepOutputSummary),
+        Box::new(m004_drop_input_schema::DropInputSchema),
+        Box::new(m005_shell_claude_to_agent::ShellClaudeToAgent),
+        Box::new(m006_agent_step_normalize::AgentStepNormalize),
+        Box::new(m007_add_token_columns::AddTokenColumns),
+        Box::new(m008_add_workflow_deleted::AddWorkflowDeleted),
     ]
 }
 
@@ -315,7 +415,7 @@ pub fn run_pending(data_dir: &Path) -> Result<MigrationRunReport, MigrateError> 
 /// scripted migrations.
 fn run_with_registry(
     data_dir: &Path,
-    migrations: &[Migration],
+    migrations: &[Box<dyn Migration>],
 ) -> Result<MigrationRunReport, MigrateError> {
     let db_path = data_dir.join("acs.db");
     let mut report = MigrationRunReport::default();
@@ -356,7 +456,7 @@ fn run_with_registry(
 
     // Recorded rows the registry does not know about (retired pre-v5
     // migrations such as m001/m002) are tolerated and reported.
-    let known: Vec<&str> = migrations.iter().map(|m| m.name).collect();
+    let known: Vec<&str> = migrations.iter().map(|m| m.name()).collect();
     report.unknown = recorded
         .keys()
         .filter(|name| !known.contains(&name.as_str()))
@@ -374,41 +474,41 @@ fn run_with_registry(
     // A recorded failure blocks startup before ANYTHING runs — silently
     // continuing could compound damage on a half-migrated database.
     for migration in migrations {
-        if recorded.get(migration.name).map(String::as_str) == Some("failed") {
+        if recorded.get(migration.name()).map(String::as_str) == Some("failed") {
             return Err(MigrateError::Blocked(format!(
                 "migration '{}' previously failed and is blocking startup. Fix the \
                  underlying issue, then delete its tracking row so the next startup \
                  re-runs it: DELETE FROM schema_migrations WHERE name = '{}'; \
                  (database: {})",
-                migration.name,
-                migration.name,
+                migration.name(),
+                migration.name(),
                 db_path.display()
             )));
         }
     }
 
     for migration in migrations {
-        if recorded.contains_key(migration.name) {
+        if recorded.contains_key(migration.name()) {
             // Only `success` rows reach this point (failures returned above).
-            report.skipped.push(migration.name.to_string());
+            report.skipped.push(migration.name().to_string());
             continue;
         }
 
-        if migration.baseline && tracking_present {
+        if migration.baseline() && tracking_present {
             // Existing database: the schema the baseline would create is
             // already there in some (possibly newer) form. Record it as
             // applied without executing.
-            record(&conn, migration.name, "success", None, None)?;
-            report.seeded.push(migration.name.to_string());
+            record(&conn, migration.name(), "success", None, None)?;
+            report.seeded.push(migration.name().to_string());
             tracing::info!(
                 "baseline migration '{}' recorded without executing (existing database)",
-                migration.name
+                migration.name()
             );
             continue;
         }
 
-        execute_one(&mut conn, migration, &db_path)?;
-        report.ran.push(migration.name.to_string());
+        execute_one(&mut conn, migration.as_ref(), &db_path)?;
+        report.ran.push(migration.name().to_string());
     }
 
     Ok(report)
@@ -429,21 +529,21 @@ fn apply_runner_pragmas(conn: &Connection) -> Result<(), MigrateError> {
 /// convention when flagged, and record the outcome row.
 fn execute_one(
     conn: &mut Connection,
-    migration: &Migration,
+    migration: &dyn Migration,
     db_path: &Path,
 ) -> Result<(), MigrateError> {
     let started = Instant::now();
 
     // PRAGMA foreign_keys is a no-op inside a transaction, so rebuilds
     // toggle it outside the transaction boundaries.
-    if migration.rebuild {
+    if migration.rebuild() {
         conn.execute_batch("PRAGMA foreign_keys = OFF;")
             .map_err(|e| MigrateError::Db(format!("Failed to disable foreign_keys: {}", e)))?;
     }
 
     let result = run_in_transaction(conn, migration);
 
-    if migration.rebuild {
+    if migration.rebuild() {
         // Best-effort restore regardless of outcome; every production
         // connection also sets its own pragmas.
         let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
@@ -452,10 +552,10 @@ fn execute_one(
     let duration_ms = started.elapsed().as_millis() as i64;
     match result {
         Ok(()) => {
-            record(conn, migration.name, "success", Some(duration_ms), None)?;
+            record(conn, migration.name(), "success", Some(duration_ms), None)?;
             tracing::info!(
                 "migration '{}' applied in {}ms",
-                migration.name,
+                migration.name(),
                 duration_ms
             );
             Ok(())
@@ -464,7 +564,7 @@ fn execute_one(
             let error_text = e.to_string();
             record(
                 conn,
-                migration.name,
+                migration.name(),
                 "failed",
                 Some(duration_ms),
                 Some(&error_text),
@@ -474,31 +574,29 @@ fn execute_one(
                  and later migrations were not run. After fixing the underlying issue, \
                  delete the tracking row so the next startup re-runs it: \
                  DELETE FROM schema_migrations WHERE name = '{}'; (database: {})",
-                migration.name,
+                migration.name(),
                 error_text,
-                migration.name,
+                migration.name(),
                 db_path.display()
             )))
         }
     }
 }
 
-/// The transactional body of a migration: open, run the action, verify
-/// foreign keys for rebuilds, commit. Any error path drops the transaction,
-/// which rolls it back.
-fn run_in_transaction(conn: &mut Connection, migration: &Migration) -> Result<(), MigrateError> {
+/// The transactional body of a migration: open, run the body against the
+/// [`MigrationTx`] handle, verify foreign keys for rebuilds, commit. Any
+/// error path drops the transaction, which rolls it back.
+fn run_in_transaction(
+    conn: &mut Connection,
+    migration: &dyn Migration,
+) -> Result<(), MigrateError> {
     let tx = conn
         .transaction()
         .map_err(|e| MigrateError::Db(format!("Failed to start transaction: {}", e)))?;
 
-    match &migration.action {
-        MigrationAction::Sql(sql) => tx
-            .execute_batch(sql)
-            .map_err(|e| MigrateError::Db(e.to_string()))?,
-        MigrationAction::Code(f) => f(&tx)?,
-    }
+    migration.up(&MigrationTx::new(&tx))?;
 
-    if migration.rebuild {
+    if migration.rebuild() {
         let violations: i64 = tx
             .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
                 r.get(0)
@@ -524,6 +622,70 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    // ── Scripted test migration ────────────────────────────────────────────────
+
+    type ScriptedBody = Box<dyn Fn(&MigrationTx<'_>) -> Result<(), MigrateError> + Send + Sync>;
+
+    /// A registry entry driven by a closure, so tests can express any body —
+    /// from a single SQL batch to SQL-plus-Rust logic.
+    struct Scripted {
+        name: &'static str,
+        baseline: bool,
+        rebuild: bool,
+        body: ScriptedBody,
+    }
+
+    impl Migration for Scripted {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn baseline(&self) -> bool {
+            self.baseline
+        }
+        fn rebuild(&self) -> bool {
+            self.rebuild
+        }
+        fn up(&self, tx: &MigrationTx<'_>) -> Result<(), MigrateError> {
+            (self.body)(tx)
+        }
+    }
+
+    /// Migration whose body is a single SQL batch.
+    fn sql(name: &'static str, sql: &'static str) -> Box<dyn Migration> {
+        code(name, move |tx| tx.execute_batch(sql))
+    }
+
+    fn sql_baseline(name: &'static str, sql: &'static str) -> Box<dyn Migration> {
+        Box::new(Scripted {
+            name,
+            baseline: true,
+            rebuild: false,
+            body: Box::new(move |tx| tx.execute_batch(sql)),
+        })
+    }
+
+    fn sql_rebuild(name: &'static str, sql: &'static str) -> Box<dyn Migration> {
+        Box::new(Scripted {
+            name,
+            baseline: false,
+            rebuild: true,
+            body: Box::new(move |tx| tx.execute_batch(sql)),
+        })
+    }
+
+    /// Migration with an arbitrary Rust body.
+    fn code<F>(name: &'static str, f: F) -> Box<dyn Migration>
+    where
+        F: Fn(&MigrationTx<'_>) -> Result<(), MigrateError> + Send + Sync + 'static,
+    {
+        Box::new(Scripted {
+            name,
+            baseline: false,
+            rebuild: false,
+            body: Box::new(f),
+        })
+    }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -566,6 +728,45 @@ mod tests {
         conn.query_row(sql, [], |r| r.get(0)).expect("count query")
     }
 
+    // ── SQL-string API ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn migration_tx_api_round_trips_values() {
+        let mut conn = Connection::open_in_memory().expect("open");
+        let tx = conn.transaction().expect("tx");
+        let mtx = MigrationTx::new(&tx);
+
+        mtx.execute_batch("CREATE TABLE t (i INTEGER, f REAL, s TEXT, n TEXT, b BLOB);")
+            .expect("batch");
+        let affected = mtx
+            .execute(
+                "INSERT INTO t (i, f, s, n, b) VALUES (?1, ?2, ?3, ?4, ?5)",
+                &[
+                    SqlValue::from(42i64),
+                    SqlValue::from(1.5f64),
+                    SqlValue::from("hello"),
+                    SqlValue::Null,
+                    SqlValue::Blob(vec![1, 2, 3]),
+                ],
+            )
+            .expect("insert");
+        assert_eq!(affected, 1);
+
+        let rows = mtx
+            .query(
+                "SELECT i, f, s, n, b FROM t WHERE s = ?1",
+                &[SqlValue::from("hello")],
+            )
+            .expect("query");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row[0].as_i64(), Some(42));
+        assert_eq!(row[1].as_f64(), Some(1.5));
+        assert_eq!(row[2].as_str(), Some("hello"));
+        assert!(row[3].is_null());
+        assert_eq!(row[4], SqlValue::Blob(vec![1, 2, 3]));
+    }
+
     // ── Registry invariants ─────────────────────────────────────────────────
 
     #[test]
@@ -587,8 +788,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let make = || {
             vec![
-                Migration::sql("m001_a", "CREATE TABLE t_a (x INTEGER);"),
-                Migration::sql("m002_b", "INSERT INTO t_a (x) VALUES (1);"),
+                sql("m001_a", "CREATE TABLE t_a (x INTEGER);"),
+                sql("m002_b", "INSERT INTO t_a (x) VALUES (1);"),
             ]
         };
 
@@ -619,12 +820,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // Each migration appends its own marker; order is proven by rowid.
         let registry = vec![
-            Migration::sql(
+            sql(
                 "m001_first",
                 "CREATE TABLE trace (step TEXT); INSERT INTO trace VALUES ('first');",
             ),
-            Migration::sql("m002_second", "INSERT INTO trace VALUES ('second');"),
-            Migration::sql("m003_third", "INSERT INTO trace VALUES ('third');"),
+            sql("m002_second", "INSERT INTO trace VALUES ('second');"),
+            sql("m003_third", "INSERT INTO trace VALUES ('third');"),
         ];
         run_with_registry(tmp.path(), &registry).unwrap();
 
@@ -640,45 +841,51 @@ mod tests {
         assert_eq!(steps, vec!["first", "second", "third"]);
     }
 
-    // ── Code migrations tracked identically to SQL migrations ─────────────────
+    // ── SQL-plus-Rust bodies tracked like any other migration ─────────────────
 
     #[test]
-    fn code_migration_tracked_skipped_and_rerun_identically_to_sql() {
+    fn rust_logic_migration_tracked_skipped_and_rerun_like_any_other() {
         let tmp = TempDir::new().unwrap();
         let invocations = Arc::new(AtomicUsize::new(0));
         let make = |inv: &Arc<AtomicUsize>| {
             let inv = Arc::clone(inv);
             vec![
-                Migration::sql("m001_sql", "CREATE TABLE t_sql (x INTEGER);"),
-                Migration::code("m002_code", move |tx| {
+                sql("m001_sql", "CREATE TABLE t_sql (x INTEGER);"),
+                code("m002_logic", move |tx| {
+                    // A body mixing queries, Rust-level decisions, and writes.
                     inv.fetch_add(1, Ordering::SeqCst);
-                    tx.execute_batch("CREATE TABLE t_code (x INTEGER);")
-                        .map_err(|e| MigrateError::Db(e.to_string()))
+                    tx.execute_batch("CREATE TABLE IF NOT EXISTS t_logic (x INTEGER);")?;
+                    let rows = tx.query("SELECT COUNT(*) FROM t_logic", &[])?;
+                    let existing = rows[0][0].as_i64().unwrap_or(0);
+                    if existing == 0 {
+                        tx.execute(
+                            "INSERT INTO t_logic (x) VALUES (?1)",
+                            &[SqlValue::from(7i64)],
+                        )?;
+                    }
+                    Ok(())
                 }),
             ]
         };
 
         // First run: both execute and get identical success rows.
         let report = run_with_registry(tmp.path(), &make(&invocations)).unwrap();
-        assert_eq!(report.ran, vec!["m001_sql", "m002_code"]);
+        assert_eq!(report.ran, vec!["m001_sql", "m002_logic"]);
         let rows = tracking_rows(tmp.path());
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|(_, status, _)| status == "success"));
         assert_eq!(invocations.load(Ordering::SeqCst), 1);
 
-        // Second run: both skip; the code body is not invoked.
+        // Second run: both skip; the body is not invoked.
         let report2 = run_with_registry(tmp.path(), &make(&invocations)).unwrap();
-        assert_eq!(report2.skipped, vec!["m001_sql", "m002_code"]);
+        assert_eq!(report2.skipped, vec!["m001_sql", "m002_logic"]);
         assert_eq!(invocations.load(Ordering::SeqCst), 1, "no re-invocation");
 
-        // Deleting the code migration's row re-runs it, same as SQL.
-        delete_row(tmp.path(), "m002_code");
-        open(tmp.path())
-            .execute_batch("DROP TABLE t_code;")
-            .unwrap();
+        // Deleting its row re-runs it, same rules as every migration.
+        delete_row(tmp.path(), "m002_logic");
         let report3 = run_with_registry(tmp.path(), &make(&invocations)).unwrap();
         assert_eq!(report3.skipped, vec!["m001_sql"]);
-        assert_eq!(report3.ran, vec!["m002_code"]);
+        assert_eq!(report3.ran, vec!["m002_logic"]);
         assert_eq!(invocations.load(Ordering::SeqCst), 2);
     }
 
@@ -689,17 +896,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let make = || {
             vec![
-                Migration::sql(
+                sql(
                     "m001_ok",
                     "CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);",
                 ),
                 // The INSERT succeeds, then the script hits a bad statement —
                 // the whole migration must roll back, including that INSERT.
-                Migration::sql(
+                sql(
                     "m002_fail",
                     "INSERT INTO t VALUES (2); INSERT INTO no_such_table VALUES (1);",
                 ),
-                Migration::sql("m003_never", "INSERT INTO t VALUES (3);"),
+                sql("m003_never", "INSERT INTO t VALUES (3);"),
             ]
         };
 
@@ -768,8 +975,8 @@ mod tests {
         insert_row(tmp.path(), "m002_late", "failed");
 
         let registry = vec![
-            Migration::sql("m001_early", "CREATE TABLE t_early (x INTEGER);"),
-            Migration::sql("m002_late", "CREATE TABLE t_late (x INTEGER);"),
+            sql("m001_early", "CREATE TABLE t_early (x INTEGER);"),
+            sql("m002_late", "CREATE TABLE t_late (x INTEGER);"),
         ];
         let err = run_with_registry(tmp.path(), &registry).expect_err("must block");
         assert!(err.to_string().contains("m002_late"));
@@ -784,38 +991,40 @@ mod tests {
     }
 
     #[test]
-    fn code_failure_rolls_back_its_transaction() {
+    fn rust_logic_failure_rolls_back_its_transaction() {
         let tmp = TempDir::new().unwrap();
         let registry = vec![
-            Migration::sql(
+            sql(
                 "m001_setup",
                 "CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);",
             ),
-            Migration::code("m002_code_fail", |tx| {
-                // Real writes that must be rolled back when the code errors.
-                tx.execute_batch("INSERT INTO t VALUES (2); INSERT INTO t VALUES (3);")
-                    .map_err(|e| MigrateError::Db(e.to_string()))?;
-                Err(MigrateError::Db("simulated code failure".to_string()))
+            code("m002_logic_fail", |tx| {
+                // Real writes that must be rolled back when the body errors.
+                tx.execute_batch("INSERT INTO t VALUES (2); INSERT INTO t VALUES (3);")?;
+                Err(MigrateError::Db("simulated migration failure".to_string()))
             }),
         ];
 
         let err = run_with_registry(tmp.path(), &registry).expect_err("must fail");
-        assert!(err.to_string().contains("simulated code failure"));
+        assert!(err.to_string().contains("simulated migration failure"));
 
-        // Rollback proof: the code migration's inserts are gone.
+        // Rollback proof: the migration's inserts are gone.
         assert_eq!(
             count(&open(tmp.path()), "SELECT COUNT(*) FROM t"),
             1,
-            "code migration writes must be rolled back on failure"
+            "migration writes must be rolled back on failure"
         );
         let rows = tracking_rows(tmp.path());
-        let failed = rows.iter().find(|(n, _, _)| n == "m002_code_fail").unwrap();
+        let failed = rows
+            .iter()
+            .find(|(n, _, _)| n == "m002_logic_fail")
+            .unwrap();
         assert_eq!(failed.1, "failed");
         assert!(failed
             .2
             .as_deref()
             .unwrap_or_default()
-            .contains("simulated code failure"));
+            .contains("simulated migration failure"));
     }
 
     #[test]
@@ -823,8 +1032,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let make = || {
             vec![
-                Migration::sql("m001_a", "CREATE TABLE IF NOT EXISTS t (x INTEGER);"),
-                Migration::sql("m002_b", "INSERT INTO t VALUES (1);"),
+                sql("m001_a", "CREATE TABLE IF NOT EXISTS t (x INTEGER);"),
+                sql("m002_b", "INSERT INTO t VALUES (1);"),
             ]
         };
         run_with_registry(tmp.path(), &make()).unwrap();
@@ -851,7 +1060,7 @@ mod tests {
         insert_row(tmp.path(), "m001_jobs_to_workflows", "success");
         insert_row(tmp.path(), "m002_json_to_sqlite", "success");
 
-        let registry = vec![Migration::sql("m003_x", "CREATE TABLE t (x INTEGER);")];
+        let registry = vec![sql("m003_x", "CREATE TABLE t (x INTEGER);")];
         let report = run_with_registry(tmp.path(), &registry).expect("unknown rows tolerated");
         assert_eq!(
             report.unknown,
@@ -873,8 +1082,8 @@ mod tests {
     fn baseline_executes_on_fresh_database() {
         let tmp = TempDir::new().unwrap();
         let registry = vec![
-            Migration::sql_baseline("m000_base", "CREATE TABLE base (x INTEGER);"),
-            Migration::sql("m001_next", "INSERT INTO base VALUES (1);"),
+            sql_baseline("m000_base", "CREATE TABLE base (x INTEGER);"),
+            sql("m001_next", "INSERT INTO base VALUES (1);"),
         ];
         let report = run_with_registry(tmp.path(), &registry).unwrap();
         assert_eq!(report.ran, vec!["m000_base", "m001_next"]);
@@ -894,8 +1103,8 @@ mod tests {
 
         let registry = vec![
             // Would fail if executed (duplicate table) — proving it doesn't run.
-            Migration::sql_baseline("m000_base", "CREATE TABLE existing_data (x INTEGER);"),
-            Migration::sql("m001_next", "INSERT INTO existing_data VALUES (1);"),
+            sql_baseline("m000_base", "CREATE TABLE existing_data (x INTEGER);"),
+            sql("m001_next", "INSERT INTO existing_data VALUES (1);"),
         ];
         let report = run_with_registry(tmp.path(), &registry).unwrap();
         assert_eq!(report.seeded, vec!["m000_base"]);
@@ -950,7 +1159,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_fk_pair(tmp.path());
 
-        let registry = vec![Migration::sql_rebuild(
+        let registry = vec![sql_rebuild(
             "m001_rebuild",
             "CREATE TABLE parent_new (id TEXT PRIMARY KEY, extra INTEGER NOT NULL DEFAULT 0);
              INSERT INTO parent_new (id) SELECT id FROM parent;
@@ -977,7 +1186,7 @@ mod tests {
 
         // This rebuild drops the parent rows, orphaning the child — the
         // runner's foreign_key_check must catch it and roll everything back.
-        let registry = vec![Migration::sql_rebuild(
+        let registry = vec![sql_rebuild(
             "m001_bad_rebuild",
             "CREATE TABLE parent_new (id TEXT PRIMARY KEY);
              DROP TABLE parent;
@@ -1012,14 +1221,14 @@ mod tests {
         // proving the runner re-enabled foreign_keys on its connection once
         // the rebuild committed.
         let registry = vec![
-            Migration::sql_rebuild(
+            sql_rebuild(
                 "m001_rebuild",
                 "CREATE TABLE parent_new (id TEXT PRIMARY KEY);
                  INSERT INTO parent_new (id) SELECT id FROM parent;
                  DROP TABLE parent;
                  ALTER TABLE parent_new RENAME TO parent;",
             ),
-            Migration::sql(
+            sql(
                 "m002_violate",
                 "INSERT INTO child VALUES ('c2', 'no_such_parent');",
             ),

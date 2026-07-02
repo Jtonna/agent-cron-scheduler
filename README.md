@@ -204,7 +204,7 @@ acs/                     # Rust project root
     pty/                 # Process spawning abstraction
   web/                   # Swagger UI + openapi.yaml (embedded via rust-embed)
   tests/                 # Integration tests (workflow_api_tests, cli_tests, migration_tests)
-acs-migrate/             # Migration runner crate: .sql migrations + code-migration escape hatch
+acs-migrate/             # Migration framework crate: .rs migrations (SQL strings + Rust logic)
 electron/                # Electron app and frontend
   packages/
     frontend/            # Next.js dashboard (independent)

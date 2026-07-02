@@ -1,13 +1,13 @@
 //! m006_agent_step_normalize — normalize `agent` steps that still carry a
 //! `command_template` field.
 //!
-//! # Why this is a code migration
+//! # Why this migration carries Rust logic
 //!
 //! Same reason as m005: the transform needs the shell tokenizer, CLI-flag
 //! parsing, and recursion into nested `match` step branches, none of which
-//! SQLite's json1 functions can express. It runs as Rust logic inside the
-//! runner-provided transaction, tracked exactly like a `.sql` migration, and
-//! is frozen by construction (pure `serde_json::Value`, no live model types).
+//! SQL alone can express. The body mixes SQL strings (via the framework's
+//! [`MigrationTx`] API) with Rust-level JSON transformation, and is frozen
+//! by construction (pure `serde_json::Value`, no live model types).
 //!
 //! # Background
 //!
@@ -35,75 +35,80 @@
 //!      - Whatever tokens remain → `extra_args` array (empty `[]` if none)
 //!      - Drop `command_template`.
 
-use rusqlite::{params, Transaction};
-
 use crate::shell_tokens::{tokenize, truncate};
-use crate::MigrateError;
+use crate::{MigrateError, Migration, MigrationTx, SqlValue};
 
-/// Execute the migration against the runner-provided transaction.
-pub(crate) fn up(tx: &Transaction<'_>) -> Result<(), MigrateError> {
-    let rows: Vec<(String, String)> = {
-        let mut stmt = tx
-            .prepare("SELECT id, steps_json FROM workflows")
-            .map_err(|e| MigrateError::Db(format!("Failed to prepare SELECT: {}", e)))?;
-        let mapped = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            .map_err(|e| MigrateError::Db(format!("Failed to execute SELECT: {}", e)))?;
-        let mut out = Vec::new();
-        for r in mapped {
-            out.push(r.map_err(|e| MigrateError::Db(format!("Row read failed: {}", e)))?);
-        }
-        out
-    };
+pub(crate) struct AgentStepNormalize;
 
-    let mut workflows_rewritten: usize = 0;
-    let mut steps_rewritten: usize = 0;
-
-    for (workflow_id, steps_json) in rows {
-        let mut value: serde_json::Value = serde_json::from_str(&steps_json).map_err(|e| {
-            MigrateError::Db(format!(
-                "Failed to parse steps_json for workflow {}: {}",
-                workflow_id, e
-            ))
-        })?;
-
-        let rewritten = normalize_steps_array(&mut value);
-        if rewritten == 0 {
-            continue;
-        }
-
-        let new_json = serde_json::to_string(&value).map_err(|e| {
-            MigrateError::Db(format!(
-                "Failed to re-serialise steps_json for workflow {}: {}",
-                workflow_id, e
-            ))
-        })?;
-
-        let now = chrono::Utc::now().to_rfc3339();
-        tx.execute(
-            "UPDATE workflows
-             SET steps_json = ?1,
-                 version = version + 1,
-                 updated_at = ?2
-             WHERE id = ?3",
-            params![new_json, now, workflow_id],
-        )
-        .map_err(|e| {
-            MigrateError::Db(format!("UPDATE for workflow {} failed: {}", workflow_id, e))
-        })?;
-
-        workflows_rewritten += 1;
-        steps_rewritten += rewritten;
+impl Migration for AgentStepNormalize {
+    fn name(&self) -> &'static str {
+        "m006_agent_step_normalize"
     }
 
-    if workflows_rewritten > 0 {
-        tracing::info!(
-            "m006_agent_step_normalize: normalized {} agent steps across {} workflows",
-            steps_rewritten,
-            workflows_rewritten
-        );
+    fn up(&self, tx: &MigrationTx<'_>) -> Result<(), MigrateError> {
+        let rows = tx.query("SELECT id, steps_json FROM workflows", &[])?;
+
+        let mut workflows_rewritten: usize = 0;
+        let mut steps_rewritten: usize = 0;
+
+        for row in rows {
+            let workflow_id = row[0]
+                .as_str()
+                .ok_or_else(|| MigrateError::Db("workflows.id is not text".to_string()))?
+                .to_string();
+            let steps_json = row[1].as_str().ok_or_else(|| {
+                MigrateError::Db(format!(
+                    "workflows.steps_json is not text for workflow {}",
+                    workflow_id
+                ))
+            })?;
+
+            let mut value: serde_json::Value = serde_json::from_str(steps_json).map_err(|e| {
+                MigrateError::Db(format!(
+                    "Failed to parse steps_json for workflow {}: {}",
+                    workflow_id, e
+                ))
+            })?;
+
+            let rewritten = normalize_steps_array(&mut value);
+            if rewritten == 0 {
+                continue;
+            }
+
+            let new_json = serde_json::to_string(&value).map_err(|e| {
+                MigrateError::Db(format!(
+                    "Failed to re-serialise steps_json for workflow {}: {}",
+                    workflow_id, e
+                ))
+            })?;
+
+            let now = chrono::Utc::now().to_rfc3339();
+            tx.execute(
+                "UPDATE workflows
+                 SET steps_json = ?1,
+                     version = version + 1,
+                     updated_at = ?2
+                 WHERE id = ?3",
+                &[
+                    SqlValue::from(new_json),
+                    SqlValue::from(now),
+                    SqlValue::from(workflow_id),
+                ],
+            )?;
+
+            workflows_rewritten += 1;
+            steps_rewritten += rewritten;
+        }
+
+        if workflows_rewritten > 0 {
+            tracing::info!(
+                "m006_agent_step_normalize: normalized {} agent steps across {} workflows",
+                steps_rewritten,
+                workflows_rewritten
+            );
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Walk a `steps_json` array, normalizing any agent steps that carry
@@ -471,7 +476,9 @@ mod tests {
         .expect("insert");
 
         let tx = conn.transaction().expect("tx");
-        up(&tx).expect("migrate");
+        AgentStepNormalize
+            .up(&MigrationTx::new(&tx))
+            .expect("migrate");
         tx.commit().expect("commit");
 
         let (version, steps_after): (u32, String) = conn

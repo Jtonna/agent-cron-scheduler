@@ -1,22 +1,25 @@
--- m008_add_workflow_deleted — soft-delete support on `workflows`:
--- add the `deleted` column and replace the inline UNIQUE constraint on
--- `name` with a partial unique index over live rows.
---
--- DELETE /api/workflows/{id} is a soft delete: the workflow row and all of
--- its workflow_runs are kept (the run rows are the cost/token record) and
--- the workflow is flagged deleted = 1, keeping its name verbatim. Name
--- uniqueness then holds among LIVE workflows only, so the inline UNIQUE on
--- workflows.name (which SQLite cannot drop in place) is removed via a
--- standard table rebuild and replaced with a partial unique index.
---
--- This migration is flagged `rebuild` in the registry: the runner disables
--- PRAGMA foreign_keys before opening the transaction (the pragma is a no-op
--- inside one), runs PRAGMA foreign_key_check before committing (rolling back
--- on any violation), and re-enables foreign_keys after.
---
--- Existing rows keep their names verbatim and get deleted = 0 via the
--- column default.
+//! m008_add_workflow_deleted — soft-delete support on `workflows`:
+//! add the `deleted` column and replace the inline UNIQUE constraint on
+//! `name` with a partial unique index over live rows.
+//!
+//! DELETE /api/workflows/{id} is a soft delete: the workflow row and all of
+//! its workflow_runs are kept (the run rows are the cost/token record) and
+//! the workflow is flagged deleted = 1, keeping its name verbatim. Name
+//! uniqueness then holds among LIVE workflows only, so the inline UNIQUE on
+//! workflows.name (which SQLite cannot drop in place) is removed via a
+//! standard table rebuild and replaced with a partial unique index.
+//!
+//! This migration opts into the runner's rebuild convention: the runner
+//! disables PRAGMA foreign_keys before opening the transaction (the pragma
+//! is a no-op inside one), runs PRAGMA foreign_key_check before committing
+//! (rolling back on any violation), and re-enables foreign_keys after.
+//!
+//! Existing rows keep their names verbatim and get deleted = 0 via the
+//! column default.
 
+use crate::{MigrateError, Migration, MigrationTx};
+
+const SQL: &str = r#"
 CREATE TABLE workflows_new (
     id                  TEXT PRIMARY KEY,
     name                TEXT NOT NULL,
@@ -59,3 +62,20 @@ ALTER TABLE workflows_new RENAME TO workflows;
 
 CREATE UNIQUE INDEX idx_workflows_name_live
     ON workflows(name) WHERE deleted = 0;
+"#;
+
+pub(crate) struct AddWorkflowDeleted;
+
+impl Migration for AddWorkflowDeleted {
+    fn name(&self) -> &'static str {
+        "m008_add_workflow_deleted"
+    }
+
+    fn rebuild(&self) -> bool {
+        true
+    }
+
+    fn up(&self, tx: &MigrationTx<'_>) -> Result<(), MigrateError> {
+        tx.execute_batch(SQL)
+    }
+}

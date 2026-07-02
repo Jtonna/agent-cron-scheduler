@@ -251,9 +251,9 @@ Since v5.0.0, migrations live in the `acs-migrate/` crate (a sibling of
 `acs/`, consumed as a path dependency) rather than in a module of the daemon.
 
 - **`run_pending(data_dir)`** (`acs-migrate/src/lib.rs`): synchronous entry point the daemon calls at startup on a blocking task. Walks the registry in name order; execution is decided solely by the `schema_migrations` tracking table inside `acs.db` (no row = run; `success` = skip; `failed` = abort startup before anything runs). Each migration executes inside its own transaction; failures roll back completely, record a `failed` row with the error text, and abort. Rows for retired migrations (m001/m002 from v4 installs) are tolerated.
-- **Two migration kinds, one set of rules**: SQL migrations (embedded `.sql` files via `include_str!` — the default and the convention for new migrations) and code migrations (`fn(&rusqlite::Transaction) -> Result<(), MigrateError>` — the escape hatch for transforms SQL cannot express; currently only m005/m006, which need shell tokenizing and nested-JSON recursion). Both are tracked identically.
-- **Registry** (name-ordered): `m000_baseline` (baseline-flagged SQL), `m003_drop_step_output_summary` (SQL), `m004_drop_input_schema` (SQL), `m005_shell_claude_to_agent` (code), `m006_agent_step_normalize` (code), `m007_add_token_columns` (SQL), `m008_add_workflow_deleted` (rebuild-flagged SQL).
-- **Conventions**: `baseline` migrations are recorded without executing on databases that already have migration tracking (every v4.2.14 install); `rebuild` migrations get `PRAGMA foreign_keys = OFF` around their transaction plus a pre-commit `PRAGMA foreign_key_check`. Databases without a tracking table must upgrade through v4.2.14 first.
+- **One migration kind**: every migration is a Rust file (`mNNN_<name>.rs`) implementing the `Migration` trait (`name()`, optional `baseline()` / `rebuild()` hooks, `up(&MigrationTx)`). The framework's `MigrationTx` is a small SQL-string API over the runner-owned transaction — `execute_batch(sql)`, `execute(sql, &[SqlValue])`, and `query(sql, &[SqlValue]) -> Vec<Vec<SqlValue>>` — so simple migrations are one SQL constant, and complex migrations (m005/m006, which need shell tokenizing and nested-JSON recursion) mix SQL strings with Rust-level logic.
+- **Registry** (name-ordered): `m000_baseline` (baseline hook), `m003_drop_step_output_summary`, `m004_drop_input_schema`, `m005_shell_claude_to_agent` (SQL + Rust logic), `m006_agent_step_normalize` (SQL + Rust logic), `m007_add_token_columns`, `m008_add_workflow_deleted` (rebuild hook).
+- **Conventions**: migrations whose `baseline()` hook returns true are recorded without executing on databases that already have migration tracking (every v4.2.14 install); migrations whose `rebuild()` hook returns true get `PRAGMA foreign_keys = OFF` around their transaction plus a pre-commit `PRAGMA foreign_key_check`. Databases without a tracking table must upgrade through v4.2.14 first.
 
 See [Storage — Migration System](storage.md#9-migration-system) for full semantics.
 
@@ -639,17 +639,20 @@ v4.2.14 first).
 
 Highlights:
 
-- **Two kinds under one set of rules**: named `.sql` files embedded with
-  `include_str!` (the default), plus code migrations operating on the
-  runner-provided `rusqlite::Transaction` for transforms SQL cannot express
-  (m005/m006 only). Same registry, same ordering, same tracking, same
-  per-migration transaction and fail-stop semantics.
+- **One migration kind**: Rust files implementing the `Migration` trait,
+  with SQL kept in string constants and executed through the framework's
+  `MigrationTx` SQL-string API (`execute_batch` / `execute` / `query` over
+  plain `SqlValue` rows). Complex migrations (m005/m006) mix SQL strings
+  with Rust-level logic that SQL alone cannot express. Same registry, same
+  ordering, same tracking, same per-migration transaction and fail-stop
+  semantics for every migration.
 - **Baseline**: `m000_baseline` creates the pre-m003-era schema on fresh
   installs, then m003–m008 apply on top; on any database that already has
-  migration tracking, the baseline is recorded without executing.
-- **Rebuild convention**: migrations flagged `rebuild` (m008) get
-  `PRAGMA foreign_keys = OFF` around their transaction and a pre-commit
-  `PRAGMA foreign_key_check`.
+  migration tracking, the baseline is recorded without executing (the
+  trait's `baseline()` hook).
+- **Rebuild convention**: migrations opting in via the trait's `rebuild()`
+  hook (m008) get `PRAGMA foreign_keys = OFF` around their transaction and
+  a pre-commit `PRAGMA foreign_key_check`.
 - **Failure semantics**: each migration runs in its own transaction; a
   failure rolls back, records a `failed` row with the error text, and aborts
   startup. Recovery = fix the issue, `DELETE` the row, restart.
@@ -722,4 +725,4 @@ Structured persistence (workflows + run records) lives in `acs.db`, a SQLite dat
 
 ### 11.9 Numbered Migration System
 
-Migrations are forward-only, name-ordered entries in the `acs-migrate` crate's registry — embedded `.sql` files by default, code migrations only where SQL cannot express the transform. Execution state lives in the `schema_migrations` table inside `acs.db` and is recorded after each migration, so progress is preserved on partial failure. Each migration runs in its own transaction; a failure rolls back, records a `failed` row, and blocks startup until an operator deletes the row.
+Migrations are forward-only, name-ordered entries in the `acs-migrate` crate's registry — Rust files whose SQL lives in string constants, executed through the framework's SQL-string API, with Rust-level logic only where SQL cannot express the transform. Execution state lives in the `schema_migrations` table inside `acs.db` and is recorded after each migration, so progress is preserved on partial failure. Each migration runs in its own transaction; a failure rolls back, records a `failed` row, and blocks startup until an operator deletes the row.

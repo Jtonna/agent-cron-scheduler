@@ -2,15 +2,14 @@
 //! `claude -p ...` invocation as proper `agent` steps so the streaming cost
 //! parser captures `cost_usd`.
 //!
-//! # Why this is a code migration
+//! # Why this migration carries Rust logic
 //!
 //! The rewrite needs a shell tokenizer (double/single quotes, backslash
 //! escapes), `-p` prompt extraction across three flag syntaxes, residual-flag
 //! template reconstruction, and recursion into arbitrarily-nested `match`
-//! step branches — none of which SQLite's json1 functions can express. It
-//! therefore ships as a code migration: Rust logic issuing SQL against the
-//! transaction the runner provides, tracked and rolled back exactly like a
-//! `.sql` migration.
+//! step branches — none of which SQL alone can express. The body therefore
+//! mixes SQL strings (via the framework's [`MigrationTx`] API) with
+//! Rust-level JSON transformation.
 //!
 //! The logic is frozen by construction: it operates purely on
 //! `serde_json::Value`, never on live model types.
@@ -39,10 +38,8 @@
 //! omitted (the agent step inherits the default). Otherwise the residual
 //! flags are preserved in a full `command_template`.
 
-use rusqlite::{params, Transaction};
-
 use crate::shell_tokens::{tokenize, truncate};
-use crate::MigrateError;
+use crate::{MigrateError, Migration, MigrationTx, SqlValue};
 
 /// The exact flag tail that follows `-p "<prompt>"` in the default
 /// `claude_code_cli` command template. When the residual flags of a migrated
@@ -52,70 +49,77 @@ const DEFAULT_TAIL: &str = "--output-format stream-json --verbose --dangerously-
 /// Marker substring required for a shell step to be considered shell-claude.
 const STREAM_JSON_MARKER: &str = "--output-format stream-json";
 
-/// Execute the migration against the runner-provided transaction.
-pub(crate) fn up(tx: &Transaction<'_>) -> Result<(), MigrateError> {
-    let rows: Vec<(String, String)> = {
-        let mut stmt = tx
-            .prepare("SELECT id, steps_json FROM workflows")
-            .map_err(|e| MigrateError::Db(format!("Failed to prepare SELECT: {}", e)))?;
-        let mapped = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            .map_err(|e| MigrateError::Db(format!("Failed to execute SELECT: {}", e)))?;
-        let mut out = Vec::new();
-        for r in mapped {
-            out.push(r.map_err(|e| MigrateError::Db(format!("Row read failed: {}", e)))?);
-        }
-        out
-    };
+pub(crate) struct ShellClaudeToAgent;
 
-    let mut workflows_rewritten: usize = 0;
-    let mut steps_rewritten: usize = 0;
-
-    for (workflow_id, steps_json) in rows {
-        let mut value: serde_json::Value = serde_json::from_str(&steps_json).map_err(|e| {
-            MigrateError::Db(format!(
-                "Failed to parse steps_json for workflow {}: {}",
-                workflow_id, e
-            ))
-        })?;
-
-        let rewritten = rewrite_steps_array(&mut value);
-        if rewritten == 0 {
-            continue;
-        }
-
-        let new_json = serde_json::to_string(&value).map_err(|e| {
-            MigrateError::Db(format!(
-                "Failed to re-serialise steps_json for workflow {}: {}",
-                workflow_id, e
-            ))
-        })?;
-
-        let now = chrono::Utc::now().to_rfc3339();
-        tx.execute(
-            "UPDATE workflows
-             SET steps_json = ?1,
-                 version = version + 1,
-                 updated_at = ?2
-             WHERE id = ?3",
-            params![new_json, now, workflow_id],
-        )
-        .map_err(|e| {
-            MigrateError::Db(format!("UPDATE for workflow {} failed: {}", workflow_id, e))
-        })?;
-
-        workflows_rewritten += 1;
-        steps_rewritten += rewritten;
+impl Migration for ShellClaudeToAgent {
+    fn name(&self) -> &'static str {
+        "m005_shell_claude_to_agent"
     }
 
-    if workflows_rewritten > 0 {
-        tracing::info!(
-            "m005_shell_claude_to_agent: rewrote {} shell-claude steps across {} workflows",
-            steps_rewritten,
-            workflows_rewritten
-        );
+    fn up(&self, tx: &MigrationTx<'_>) -> Result<(), MigrateError> {
+        let rows = tx.query("SELECT id, steps_json FROM workflows", &[])?;
+
+        let mut workflows_rewritten: usize = 0;
+        let mut steps_rewritten: usize = 0;
+
+        for row in rows {
+            let workflow_id = row[0]
+                .as_str()
+                .ok_or_else(|| MigrateError::Db("workflows.id is not text".to_string()))?
+                .to_string();
+            let steps_json = row[1].as_str().ok_or_else(|| {
+                MigrateError::Db(format!(
+                    "workflows.steps_json is not text for workflow {}",
+                    workflow_id
+                ))
+            })?;
+
+            let mut value: serde_json::Value = serde_json::from_str(steps_json).map_err(|e| {
+                MigrateError::Db(format!(
+                    "Failed to parse steps_json for workflow {}: {}",
+                    workflow_id, e
+                ))
+            })?;
+
+            let rewritten = rewrite_steps_array(&mut value);
+            if rewritten == 0 {
+                continue;
+            }
+
+            let new_json = serde_json::to_string(&value).map_err(|e| {
+                MigrateError::Db(format!(
+                    "Failed to re-serialise steps_json for workflow {}: {}",
+                    workflow_id, e
+                ))
+            })?;
+
+            let now = chrono::Utc::now().to_rfc3339();
+            tx.execute(
+                "UPDATE workflows
+                 SET steps_json = ?1,
+                     version = version + 1,
+                     updated_at = ?2
+                 WHERE id = ?3",
+                &[
+                    SqlValue::from(new_json),
+                    SqlValue::from(now),
+                    SqlValue::from(workflow_id),
+                ],
+            )?;
+
+            workflows_rewritten += 1;
+            steps_rewritten += rewritten;
+        }
+
+        if workflows_rewritten > 0 {
+            tracing::info!(
+                "m005_shell_claude_to_agent: rewrote {} shell-claude steps across {} workflows",
+                steps_rewritten,
+                workflows_rewritten
+            );
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Walk a `steps_json` array, rewriting any shell-claude steps in place and
@@ -309,7 +313,7 @@ fn parse_shell_claude(command: &str) -> Option<ShellClaudeParts> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
 
     // ── parse_shell_claude unit-level coverage ─────────────────────────────
 
@@ -480,7 +484,9 @@ mod tests {
         insert_workflow(&conn, "wf1", &steps.to_string());
 
         let tx = conn.transaction().expect("tx");
-        up(&tx).expect("migrate");
+        ShellClaudeToAgent
+            .up(&MigrationTx::new(&tx))
+            .expect("migrate");
         tx.commit().expect("commit");
 
         let (version, steps_after) = read_workflow(&conn, "wf1");
@@ -510,7 +516,9 @@ mod tests {
         insert_workflow(&conn, "wf1", &steps.to_string());
 
         let tx = conn.transaction().expect("tx");
-        up(&tx).expect("migrate");
+        ShellClaudeToAgent
+            .up(&MigrationTx::new(&tx))
+            .expect("migrate");
         tx.commit().expect("commit");
 
         let (version, steps_after) = read_workflow(&conn, "wf1");
@@ -534,12 +542,16 @@ mod tests {
         insert_workflow(&conn, "wf1", &steps.to_string());
 
         let tx = conn.transaction().expect("tx");
-        up(&tx).expect("first");
+        ShellClaudeToAgent
+            .up(&MigrationTx::new(&tx))
+            .expect("first");
         tx.commit().expect("commit");
         let (_, after_first) = read_workflow(&conn, "wf1");
 
         let tx = conn.transaction().expect("tx");
-        up(&tx).expect("second");
+        ShellClaudeToAgent
+            .up(&MigrationTx::new(&tx))
+            .expect("second");
         tx.commit().expect("commit");
         let (version, after_second) = read_workflow(&conn, "wf1");
 
@@ -553,7 +565,9 @@ mod tests {
         insert_workflow(&conn, "wf1", "not valid json {{{");
 
         let tx = conn.transaction().expect("tx");
-        let err = up(&tx).expect_err("corrupt JSON must fail the migration");
+        let err = ShellClaudeToAgent
+            .up(&MigrationTx::new(&tx))
+            .expect_err("corrupt JSON must fail the migration");
         assert!(err.to_string().contains("wf1"), "error must name the row");
     }
 }

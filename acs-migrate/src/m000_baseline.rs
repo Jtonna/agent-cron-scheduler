@@ -1,20 +1,23 @@
--- m000_baseline — fresh-install starting point.
---
--- Creates the pre-m003-era database schema so that m003..m008 apply on top,
--- reproducing exactly the schema history an upgraded database went through.
---
--- This migration carries the runner's `baseline` flag: it only EXECUTES on a
--- brand-new database (no schema_migrations table yet). On a database that
--- already has migration tracking (any v4.2.14 install), the runner records a
--- success row for it WITHOUT executing, so the baseline never runs against an
--- existing schema.
---
--- Shape notes (deliberately historical — later migrations transform it):
---   * workflows.name carries an inline UNIQUE          (removed by m008)
---   * workflows.input_schema exists                    (dropped by m004)
---   * workflows has no `deleted` column                (added by m008)
---   * workflow_runs has no token columns               (added by m007)
+//! m000_baseline — fresh-install starting point.
+//!
+//! Creates the pre-m003-era database schema so that m003..m008 apply on top,
+//! reproducing exactly the schema history an upgraded database went through.
+//!
+//! This migration opts into the runner's baseline convention: it only
+//! EXECUTES on a brand-new database (no schema_migrations table yet). On a
+//! database that already has migration tracking (any v4.2.14 install), the
+//! runner records a success row for it WITHOUT executing, so the baseline
+//! never runs against an existing schema.
+//!
+//! Shape notes (deliberately historical — later migrations transform it):
+//!   * workflows.name carries an inline UNIQUE          (removed by m008)
+//!   * workflows.input_schema exists                    (dropped by m004)
+//!   * workflows has no `deleted` column                (added by m008)
+//!   * workflow_runs has no token columns               (added by m007)
 
+use crate::{MigrateError, Migration, MigrationTx};
+
+const SQL: &str = r#"
 CREATE TABLE workflows (
     id                  TEXT PRIMARY KEY,
     name                TEXT NOT NULL UNIQUE,
@@ -64,3 +67,20 @@ CREATE TABLE meta (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
 );
+"#;
+
+pub(crate) struct Baseline;
+
+impl Migration for Baseline {
+    fn name(&self) -> &'static str {
+        "m000_baseline"
+    }
+
+    fn baseline(&self) -> bool {
+        true
+    }
+
+    fn up(&self, tx: &MigrationTx<'_>) -> Result<(), MigrateError> {
+        tx.execute_batch(SQL)
+    }
+}

@@ -482,41 +482,52 @@ On every `write_chunk(data)`:
 
 ## 9. Migration System
 
-**Sources:** `acs-migrate/src/lib.rs`, `acs-migrate/src/sql/*.sql`,
-`acs-migrate/src/m005_shell_claude_to_agent.rs`,
-`acs-migrate/src/m006_agent_step_normalize.rs`,
+**Sources:** `acs-migrate/src/lib.rs`, `acs-migrate/src/m*.rs`,
 `acs-migrate/src/shell_tokens.rs`
 
-### Design (v5.0.0): the `acs-migrate` sub-crate
+### Design (v5.0.0): the `acs-migrate` framework crate
 
 Since v5.0.0 the migration system lives in its own crate, `acs-migrate/`, a
-sibling of `acs/` consumed as a path dependency.  The daemon calls
-`acs_migrate::run_pending(data_dir)` at startup (on a blocking task), before
-the storage layer opens `acs.db`.  Any migration error is fatal: the daemon
-logs it and exits rather than running against a partially-migrated database.
+sibling of `acs/` consumed as a path dependency.  The separation exists for
+maintenance, clarity, and future development: the framework and the shipped
+migrations evolve, get reviewed, and get tested independently of the daemon,
+and nothing in a migration can accidentally reach into the daemon's live
+model types.  The daemon calls `acs_migrate::run_pending(data_dir)` at
+startup (on a blocking task), before the storage layer opens `acs.db`.  Any
+migration error is fatal: the daemon logs it and exits rather than running
+against a partially-migrated database.
 
-The registry holds **two migration kinds** under a single name ordering, a
-single `schema_migrations` tracking table, and identical execution semantics
-(per-migration transaction, success/failed row, fail-stop,
-delete-row-to-re-run):
+**Every migration is a Rust file** (`acs-migrate/src/mNNN_<name>.rs`)
+implementing the framework's `Migration` trait:
 
-* **SQL migrations** — embedded named `.sql` files
-  (`acs-migrate/src/sql/mNNN_<name>.sql`, compiled in via `include_str!`),
-  executed as a script inside a runner-owned transaction.  Scripts must NOT
-  contain `BEGIN`/`COMMIT`.  **This is the default and the convention for
-  all future migrations.**
-* **Code migrations** — Rust logic with the signature
-  `fn(&rusqlite::Transaction) -> Result<(), MigrateError>`: it issues SQL
-  against the runner-provided transaction, reads responses, transforms in
-  Rust, and writes back via SQL.  This is the escape hatch for transforms
-  SQL cannot express — shell tokenization, recursion through nested step
-  JSON — used only when justified and documented as such (currently only
-  m005 and m006).  A code migration runs INSIDE the runner's per-migration
-  transaction and is recorded, skipped, failed, and re-run exactly like a
-  SQL migration.
+```rust
+pub trait Migration: Send + Sync {
+    fn name(&self) -> &'static str;      // stable; PK in schema_migrations
+    fn baseline(&self) -> bool { false } // baseline convention hook
+    fn rebuild(&self) -> bool { false }  // PRAGMA rebuild convention hook
+    fn up(&self, tx: &MigrationTx<'_>) -> Result<(), MigrateError>;
+}
+```
 
-Migrations are **frozen by construction**: SQL text never changes after it
-ships, and the code migrations operate purely on `serde_json::Value` — never
+The framework hands `up()` a `MigrationTx` — a small SQL-string API over the
+runner-owned transaction (no ORM, no derive machinery):
+
+* `execute_batch(sql)` — run one or more `;`-separated statements from a SQL
+  string constant.  No `BEGIN`/`COMMIT`; the runner owns the transaction.
+* `execute(sql, &[SqlValue])` — one statement with positional parameters;
+  returns rows affected.
+* `query(sql, &[SqlValue]) -> Vec<Vec<SqlValue>>` — read query output back
+  as plain Rust values (`SqlValue`: `Null` / `Integer` / `Real` / `Text` /
+  `Blob`, with `as_str()` / `as_i64()` / `as_f64()` accessors).
+
+Simple migrations keep their SQL in a string constant and are a single
+`execute_batch` call.  Complex migrations mix SQL strings with Rust-level
+logic — querying rows, transforming them in Rust (shell tokenization,
+recursion through nested step JSON), and writing back via parameterised SQL
+— in ways plain SQL cannot express (m005 and m006 do exactly this).
+
+Migrations are **frozen by construction**: SQL constants never change after
+they ship, and the Rust logic operates purely on `serde_json::Value` — never
 on the live model structs — so changes to the runtime models can never
 require editing an already-shipped migration.
 
@@ -587,7 +598,8 @@ column present, no token columns, no `deleted` column) so that m003–m008
 apply on top and reproduce exactly the schema history an upgraded database
 went through.
 
-The baseline carries the runner's `baseline` flag, which changes one thing:
+The baseline opts in via the trait's `baseline()` hook, which changes one
+thing:
 on a database that **already has migration tracking** (the
 `schema_migrations` table pre-exists — true of every v4.2.14 install), the
 runner records a `success` row for the baseline WITHOUT executing it.  The
@@ -602,8 +614,8 @@ runner rejects it before creating or running anything.
 
 `PRAGMA foreign_keys` is a no-op inside a transaction, so a migration that
 rebuilds a table participating in a foreign key (drop + rename of a parent
-table) cannot toggle enforcement itself.  A migration flagged `rebuild` in
-the registry gets this treatment from the runner instead:
+table) cannot toggle enforcement itself.  A migration that opts in via the
+trait's `rebuild()` hook gets this treatment from the runner instead:
 
 1. `PRAGMA foreign_keys = OFF` before the transaction opens;
 2. the migration body runs inside the transaction;
@@ -624,14 +636,16 @@ the registry gets this treatment from the runner instead:
 
 ### Adding a migration
 
-1. Create `acs-migrate/src/sql/mNNN_<name>.sql` (increment NNN past the last
-   entry).  No `BEGIN`/`COMMIT` — the runner owns the transaction.
-2. Append `Migration::sql("mNNN_<name>", include_str!("sql/mNNN_<name>.sql"))`
-   to `registry()` in `acs-migrate/src/lib.rs` — names must stay in
-   ascending order.
-3. Only if the transform is impossible in SQL: add a code migration module
-   and register it with `Migration::code`, documenting why SQL could not
-   express it.
+1. Create `acs-migrate/src/mNNN_<name>.rs` (increment NNN past the last
+   entry) with a unit struct implementing `Migration`.  Keep the SQL in
+   string constants; the body is usually a single
+   `tx.execute_batch(SQL)`.  No `BEGIN`/`COMMIT` — the runner owns the
+   transaction.
+2. Declare the module and append `Box::new(mNNN_<name>::YourStruct)` to
+   `registry()` in `acs-migrate/src/lib.rs` — names must stay in ascending
+   order.
+3. Add Rust-level logic (via `query` / `execute`) only where SQL alone
+   cannot express the transform, documenting why.
 
 ---
 
@@ -639,7 +653,8 @@ the registry gets this treatment from the runner instead:
 
 ### m000_baseline (v5.0.0)
 
-SQL, baseline-flagged.  Creates the pre-m003-era schema on fresh installs:
+A single SQL constant; opts into the baseline convention (`baseline()`
+returns `true`).  Creates the pre-m003-era schema on fresh installs:
 `workflows` (with inline `UNIQUE` on `name` and the `input_schema` column,
 without `deleted`), `workflow_runs` (without the token columns), the three
 `workflow_runs` indexes, and `meta`.  Never executes on a database that
@@ -655,7 +670,8 @@ tolerated and left in place on upgraded databases.
 
 ### m003_drop_step_output_summary
 
-SQL (json1).  Strips the legacy `output_summary` key from every persisted
+A single SQL constant (json1).  Strips the legacy `output_summary` key from
+every persisted
 `StepRun` record in `workflow_runs.steps_json` — per-step output lives in
 `{data_dir}/logs/{workflow_id}/{run_id}.log`, framed by each `StepRun`'s
 byte offsets, so the inline copy was redundant.  The `UPDATE` rebuilds each
@@ -666,18 +682,20 @@ key are rewritten.
 
 ### m004_drop_input_schema
 
-SQL.  `ALTER TABLE workflows DROP COLUMN input_schema;` — the column is no
+A single SQL constant: `ALTER TABLE workflows DROP COLUMN input_schema;` —
+the column is no
 longer carried on `Workflow` / `NewWorkflow` / `WorkflowUpdate`.  The column
 is guaranteed present when this runs: fresh installs get it from the
 baseline, and upgraded databases skip via the recorded row.
 
 ### m005_shell_claude_to_agent
 
-**Code migration** — the rewrite needs a shell tokenizer (double/single
-quotes, backslash escapes), `-p` prompt extraction across three flag
-syntaxes, residual-flag template reconstruction, and recursion into
-arbitrarily-nested `match` step branches, none of which SQLite's json1
-functions can express.
+**SQL strings + Rust logic** — the rewrite needs a shell tokenizer
+(double/single quotes, backslash escapes), `-p` prompt extraction across
+three flag syntaxes, residual-flag template reconstruction, and recursion
+into arbitrarily-nested `match` step branches, none of which SQL alone can
+express.  The body queries `workflows` through `MigrationTx`, transforms the
+step JSON in Rust, and writes back via parameterised SQL.
 
 Rewrites legacy `shell` steps that wrap a
 `claude -p ... --output-format stream-json` invocation as proper `agent`
@@ -694,8 +712,8 @@ workflows get `version + 1` and a fresh `updated_at`.
 
 ### m006_agent_step_normalize
 
-**Code migration** — same rationale as m005 (tokenizer + nested-JSON
-recursion).
+**SQL strings + Rust logic** — same rationale and shape as m005 (tokenizer +
+nested-JSON recursion).
 
 Normalizes `agent` steps that still carry a legacy `command_template` string
 into the structured shape: `--model <value>` / `--model=<value>` becomes the
@@ -708,14 +726,15 @@ Recurses into `match` branches.  Templates whose first token is not
 
 ### m007_add_token_columns
 
-SQL.  Adds `total_input_tokens` / `total_output_tokens`
+A single SQL constant.  Adds `total_input_tokens` / `total_output_tokens`
 (`INTEGER NOT NULL DEFAULT 0`) to `workflow_runs`; historical rows backfill
 to `0` ("tokens not tracked").
 
 ### m008_add_workflow_deleted
 
-SQL, **rebuild-flagged** (the runner applies the `PRAGMA foreign_keys`
-rebuild convention above).  Adds the `deleted` soft-delete column to
+A single SQL constant; opts into the rebuild convention (`rebuild()` returns
+`true`, so the runner applies the `PRAGMA foreign_keys` treatment above).
+Adds the `deleted` soft-delete column to
 `workflows` and replaces the inline `UNIQUE` on `name` — which SQLite cannot
 drop in place — with a partial unique index over live rows:
 
@@ -723,7 +742,7 @@ drop in place — with a partial unique index over live rows:
 CREATE UNIQUE INDEX idx_workflows_name_live ON workflows(name) WHERE deleted = 0;
 ```
 
-The script creates `workflows_new` in the final shape, copies all rows
+The SQL creates `workflows_new` in the final shape, copies all rows
 (`deleted` defaults to `0`), drops the old table, renames, and creates the
 index; the runner's `foreign_key_check` guards against orphaning
 `workflow_runs` rows.  `DELETE /api/workflows/{id}` sets `deleted = 1`,
