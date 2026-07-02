@@ -1460,6 +1460,11 @@ mod tests {
     // are acceptable here; what matters is that the step dispatched.
 
     #[tokio::test]
+    #[ignore = "spawns a REAL `claude -p \"do something\" --dangerously-skip-permissions` \
+                session when the CLI is on PATH: slow, costs API spend, and the spawned \
+                agent can run `cargo test` in this repo and fork-bomb more sessions. \
+                Run explicitly with `cargo test -- --ignored` on a machine without the \
+                CLI, or rewrite with an injected mock spawner (see steps::agent tests)."]
     async fn test_executor_agent_step_dispatched() {
         use crate::models::workflow::{AgentStep, AgentType};
 
