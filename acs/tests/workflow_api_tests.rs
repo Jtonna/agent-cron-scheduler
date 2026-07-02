@@ -1947,7 +1947,7 @@ async fn test_cost_summary_cache_evicted_on_workflow_delete() {
     let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
     let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
 
-    let run_id = insert_terminal_run(
+    let _run_id = insert_terminal_run(
         &run_store,
         wf_id,
         &wf,
@@ -1968,12 +1968,8 @@ async fn test_cost_summary_cache_evicted_on_workflow_delete() {
         .unwrap();
     assert_eq!(resp1["cost_summary"]["last_30_days_runs"], 1);
 
-    // Delete the child run first to satisfy the workflow_runs.workflow_id FK,
-    // then DELETE the workflow.
-    run_store
-        .delete_run(run_id)
-        .await
-        .expect("delete child run");
+    // DELETE the workflow directly — since ACS-25 the delete cascades into
+    // workflow_runs, so the child run no longer needs to be removed first.
     let del_resp = client
         .delete(format!("{}/api/workflows/{}", base_url, wf_id_str))
         .send()
@@ -2023,6 +2019,416 @@ async fn test_cost_summary_cache_evicted_on_workflow_delete() {
         resp2["cost_summary"]["last_30_days_runs"], 0,
         "recreated workflow should have zero runs in cost_summary"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Workflow deletion + run purge tests (ACS-25)
+// ---------------------------------------------------------------------------
+
+/// D-1. DELETE /api/workflows/{id} succeeds (204) for a workflow WITH run
+///      history, cascades the runs away, and removes the log directory.
+#[tokio::test]
+async fn test_delete_workflow_with_run_history_cascades() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("del-history-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // Two terminal runs + a fake on-disk log dir.
+    let run_a = insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        Utc::now() - Duration::days(1),
+        Some(0.10),
+    )
+    .await;
+    let run_b = insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Failed,
+        Utc::now() - Duration::hours(1),
+        None,
+    )
+    .await;
+    let log_dir = tmp.path().join("logs").join(wf_id_str);
+    tokio::fs::create_dir_all(&log_dir).await.unwrap();
+    tokio::fs::write(log_dir.join(format!("{}.log", run_a)), b"log-a")
+        .await
+        .unwrap();
+
+    // This is the exact scenario that used to 500 with
+    // "FOREIGN KEY constraint failed".
+    let del_resp = client
+        .delete(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("DELETE workflow");
+    assert_eq!(del_resp.status(), 204);
+
+    // Workflow gone.
+    let get_resp = client
+        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET after delete");
+    assert_eq!(get_resp.status(), 404);
+
+    // Runs gone.
+    for run_id in [run_a, run_b] {
+        let run_resp = client
+            .get(format!("{}/api/runs/{}", base_url, run_id))
+            .send()
+            .await
+            .expect("GET run after delete");
+        assert_eq!(run_resp.status(), 404, "run {} must be gone", run_id);
+    }
+
+    // Log directory removed (best-effort, but expected to work here).
+    assert!(
+        !log_dir.exists(),
+        "log dir should be removed on workflow delete"
+    );
+}
+
+/// D-2. DELETE /api/workflows/{id} with a Running run → 409 Conflict and
+///      nothing is deleted.
+#[tokio::test]
+async fn test_delete_workflow_with_running_run_returns_409() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("del-running-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    let running_id = insert_running_run(&run_store, wf_id, &wf).await;
+
+    let del_resp = client
+        .delete(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("DELETE workflow");
+    assert_eq!(del_resp.status(), 409);
+    let body: serde_json::Value = del_resp.json().await.unwrap();
+    assert_eq!(body["error"], "conflict");
+    assert!(
+        body["message"].as_str().unwrap().contains("running"),
+        "message should explain the active-run conflict: {}",
+        body["message"]
+    );
+
+    // Workflow and run both survive.
+    let get_resp = client
+        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET after refused delete");
+    assert_eq!(get_resp.status(), 200);
+    assert!(run_store.get_run(running_id).await.unwrap().is_some());
+}
+
+/// D-3. DELETE /api/runs/{run_id}: 204 on success (log file removed), then
+///      404 on repeat; 404 for unknown ids.
+#[tokio::test]
+async fn test_delete_run_endpoint() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("del-run-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    let run_id = insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        Utc::now() - Duration::hours(1),
+        Some(0.05),
+    )
+    .await;
+    let log_dir = tmp.path().join("logs").join(wf_id.to_string());
+    tokio::fs::create_dir_all(&log_dir).await.unwrap();
+    let log_path = log_dir.join(format!("{}.log", run_id));
+    tokio::fs::write(&log_path, b"run log").await.unwrap();
+
+    // Delete → 204, run + log file gone.
+    let del_resp = client
+        .delete(format!("{}/api/runs/{}", base_url, run_id))
+        .send()
+        .await
+        .expect("DELETE run");
+    assert_eq!(del_resp.status(), 204);
+    assert!(run_store.get_run(run_id).await.unwrap().is_none());
+    assert!(!log_path.exists(), "run log file should be removed");
+
+    // Repeat delete → 404.
+    let del_again = client
+        .delete(format!("{}/api/runs/{}", base_url, run_id))
+        .send()
+        .await
+        .expect("DELETE run again");
+    assert_eq!(del_again.status(), 404);
+
+    // Unknown id → 404.
+    let unknown = client
+        .delete(format!("{}/api/runs/{}", base_url, uuid::Uuid::now_v7()))
+        .send()
+        .await
+        .expect("DELETE unknown run");
+    assert_eq!(unknown.status(), 404);
+}
+
+/// D-4. DELETE /api/runs/{run_id} for a Running run → 409, run survives.
+#[tokio::test]
+async fn test_delete_running_run_returns_409() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("del-run-running-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = uuid::Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+    let running_id = insert_running_run(&run_store, wf_id, &wf).await;
+
+    let del_resp = client
+        .delete(format!("{}/api/runs/{}", base_url, running_id))
+        .send()
+        .await
+        .expect("DELETE running run");
+    assert_eq!(del_resp.status(), 409);
+    let body: serde_json::Value = del_resp.json().await.unwrap();
+    assert_eq!(body["error"], "conflict");
+    assert!(run_store.get_run(running_id).await.unwrap().is_some());
+}
+
+/// D-5. DELETE /api/workflows/{id}/runs bulk-purges non-Running runs, returns
+///      {"deleted": n}, skips Running runs, and leaves the workflow intact.
+#[tokio::test]
+async fn test_purge_workflow_runs_endpoint() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("purge-runs-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap();
+    let wf_id = uuid::Uuid::parse_str(wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    // 3 terminal runs + 1 running run.
+    for status in [RunStatus::Completed, RunStatus::Failed, RunStatus::Killed] {
+        insert_terminal_run(
+            &run_store,
+            wf_id,
+            &wf,
+            status,
+            Utc::now() - Duration::hours(2),
+            Some(0.01),
+        )
+        .await;
+    }
+    let running_id = insert_running_run(&run_store, wf_id, &wf).await;
+
+    let purge_resp = client
+        .delete(format!("{}/api/workflows/{}/runs", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("DELETE /api/workflows/{id}/runs");
+    assert_eq!(purge_resp.status(), 200);
+    let body: serde_json::Value = purge_resp.json().await.unwrap();
+    assert_eq!(body["deleted"], 3, "three terminal runs purged");
+
+    // The Running run survives; the workflow itself is untouched.
+    assert!(run_store.get_run(running_id).await.unwrap().is_some());
+    assert_eq!(run_store.count_runs(wf_id).await.unwrap(), 1);
+    let get_resp = client
+        .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET workflow after purge");
+    assert_eq!(get_resp.status(), 200);
+
+    // Purging again deletes nothing new.
+    let purge_again: serde_json::Value = client
+        .delete(format!("{}/api/workflows/{}/runs", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("second purge")
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(purge_again["deleted"], 0);
+}
+
+/// D-6. Cost endpoints still include a deleted workflow's spend, served from
+///      the durable cost ledger with the stored workflow name.
+#[tokio::test]
+async fn test_cost_endpoints_include_deleted_workflow_costs() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("cost-survives-delete-wf")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap().to_string();
+    let wf_id = uuid::Uuid::parse_str(&wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        Utc::now() - Duration::days(1),
+        Some(1.25),
+    )
+    .await;
+
+    // Delete the workflow (cascades its runs).
+    let del_resp = client
+        .delete(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("DELETE workflow");
+    assert_eq!(del_resp.status(), 204);
+
+    // The list endpoint still carries an entry for the deleted workflow,
+    // with the ledger's stored name and the historical spend.
+    let list: serde_json::Value = client
+        .get(format!("{}/api/cost/workflows", base_url))
+        .send()
+        .await
+        .expect("GET /api/cost/workflows")
+        .json()
+        .await
+        .unwrap();
+    let entry = list["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["workflow_id"] == wf_id_str.as_str())
+        .expect("deleted workflow must still appear in the cost list");
+    assert_eq!(entry["workflow_name"], "cost-survives-delete-wf");
+    assert_eq!(entry["cost_summary"]["last_30_days_runs"], 1);
+    let entry_total = entry["cost_summary"]["last_30_days_total_usd"]
+        .as_f64()
+        .unwrap();
+    assert!((entry_total - 1.25).abs() < 1e-9);
+
+    // The system aggregate includes the deleted workflow's spend.
+    let sys_total = list["system_cost_summary"]["last_30_days_total_usd"]
+        .as_f64()
+        .unwrap();
+    assert!(
+        sys_total >= 1.25 - 1e-9,
+        "system total should include deleted-workflow costs, got {}",
+        sys_total
+    );
+
+    // The per-workflow cost endpoint also still resolves.
+    let per_wf: serde_json::Value = client
+        .get(format!("{}/api/cost/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET /api/cost/workflows/{id} after delete")
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(per_wf["workflow_name"], "cost-survives-delete-wf");
+    assert_eq!(per_wf["cost_summary"]["last_30_days_runs"], 1);
 }
 
 // ---------------------------------------------------------------------------

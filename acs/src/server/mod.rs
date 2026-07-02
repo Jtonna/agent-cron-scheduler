@@ -70,10 +70,13 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/api/workflows/{id}/runs",
-            get(workflow_routes::list_workflow_runs),
+            get(workflow_routes::list_workflow_runs).delete(workflow_routes::purge_workflow_runs),
         )
         .route("/api/runs/recent", get(workflow_routes::list_recent_runs))
-        .route("/api/runs/{run_id}", get(workflow_routes::get_workflow_run))
+        .route(
+            "/api/runs/{run_id}",
+            get(workflow_routes::get_workflow_run).delete(workflow_routes::delete_workflow_run),
+        )
         .route(
             "/api/runs/{run_id}/kill",
             post(workflow_routes::kill_workflow_run),

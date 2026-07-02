@@ -123,6 +123,27 @@ fn map_store_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
                     message: msg.clone(),
                 }),
             ),
+            // Constraint violations surfaced as raw storage errors (e.g. a
+            // FOREIGN KEY / UNIQUE failure from a code path without an
+            // explicit guard) are conflicts the caller can resolve, not
+            // internal server faults. Code paths that can classify the
+            // conflict precisely should return AcsError::Conflict instead;
+            // this string match is the fallback.
+            AcsError::Storage(msg)
+                if msg.contains("FOREIGN KEY") || msg.to_lowercase().contains("constraint") =>
+            {
+                (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "conflict".to_string(),
+                        message: format!(
+                            "Operation conflicts with existing data: {}. \
+                             If you are deleting a workflow, purge or wait for its runs first.",
+                            msg
+                        ),
+                    }),
+                )
+            }
             _ => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -595,7 +616,26 @@ pub async fn list_workflow_costs(
         }
     };
 
-    let mut entries = Vec::with_capacity(workflows.len());
+    // The list covers live workflows plus workflows that only exist in the
+    // durable cost ledger any more (deleted, but their spend still counts).
+    // For deleted workflows the ledger's stored name is used.
+    let live_ids: std::collections::HashSet<Uuid> = workflows.iter().map(|w| w.id).collect();
+    let mut id_name_pairs: Vec<(Uuid, String)> =
+        workflows.iter().map(|w| (w.id, w.name.clone())).collect();
+    match state.workflow_run_store.list_ledger_workflows().await {
+        Ok(ledger_workflows) => {
+            for (wf_id, wf_name) in ledger_workflows {
+                if !live_ids.contains(&wf_id) {
+                    id_name_pairs.push((wf_id, wf_name));
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("list_ledger_workflows failed: {}", e);
+        }
+    }
+
+    let mut entries = Vec::with_capacity(id_name_pairs.len());
     let mut system_30d_total = 0.0f64;
     let mut system_30d_runs = 0u64;
     let mut system_year_total = 0.0f64;
@@ -605,22 +645,22 @@ pub async fn list_workflow_costs(
     let mut system_year_input_tokens = 0u64;
     let mut system_year_output_tokens = 0u64;
 
-    for wf in &workflows {
-        let mut cost_summary = match state.cost_cache.get(wf.id).await {
+    for (wf_id, wf_name) in id_name_pairs {
+        let mut cost_summary = match state.cost_cache.get(wf_id).await {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(workflow_id = %wf.id, "cost_cache.get failed: {}", e);
+                tracing::warn!(workflow_id = %wf_id, "cost_cache.get failed: {}", e);
                 continue;
             }
         };
         match state
             .cost_cache
-            .get_daily_buckets_for(wf.id, since, until)
+            .get_daily_buckets_for(wf_id, since, until)
             .await
         {
             Ok(buckets) => cost_summary.daily_buckets = buckets,
             Err(e) => {
-                tracing::warn!(workflow_id = %wf.id, "cost_cache.get_daily_buckets_for failed: {}", e);
+                tracing::warn!(workflow_id = %wf_id, "cost_cache.get_daily_buckets_for failed: {}", e);
             }
         }
         system_30d_total += cost_summary.last_30_days_total_usd;
@@ -632,8 +672,8 @@ pub async fn list_workflow_costs(
         system_year_input_tokens += cost_summary.last_year_input_tokens;
         system_year_output_tokens += cost_summary.last_year_output_tokens;
         entries.push(WorkflowCostEntry {
-            workflow_id: wf.id,
-            workflow_name: wf.name.clone(),
+            workflow_id: wf_id,
+            workflow_name: wf_name,
             cost_summary,
         });
     }
@@ -713,15 +753,32 @@ pub async fn get_workflow_costs(
         Err((status, body)) => return (status, body).into_response(),
     };
 
-    let workflow = match state.workflow_store.get_workflow(workflow_id).await {
-        Ok(Some(wf)) => wf,
+    // Live workflows resolve normally; deleted workflows whose spend is still
+    // in the cost ledger stay queryable, served with the ledger's stored name.
+    let workflow_name = match state.workflow_store.get_workflow(workflow_id).await {
+        Ok(Some(wf)) => wf.name,
         Ok(None) => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                &format!("Workflow with id '{}' not found", workflow_id),
-            )
-            .into_response();
+            let ledger_name = match state.workflow_run_store.list_ledger_workflows().await {
+                Ok(pairs) => pairs
+                    .into_iter()
+                    .find(|(id, _)| *id == workflow_id)
+                    .map(|(_, name)| name),
+                Err(e) => {
+                    tracing::warn!("list_ledger_workflows failed: {}", e);
+                    None
+                }
+            };
+            match ledger_name {
+                Some(name) => name,
+                None => {
+                    return error_response(
+                        StatusCode::NOT_FOUND,
+                        "not_found",
+                        &format!("Workflow with id '{}' not found", workflow_id),
+                    )
+                    .into_response();
+                }
+            }
         }
         Err(e) => {
             return error_response(
@@ -761,7 +818,7 @@ pub async fn get_workflow_costs(
         Json(
             serde_json::to_value(CostWorkflowResponse {
                 workflow_id,
-                workflow_name: workflow.name,
+                workflow_name,
                 cost_summary,
             })
             .unwrap(),
@@ -895,7 +952,25 @@ pub async fn delete_workflow(
 
     match state.workflow_store.delete_workflow(workflow_id).await {
         Ok(()) => {
-            // Evict cache entry for the deleted workflow.
+            // Best-effort: remove the workflow's on-disk log directory. A
+            // failure here must not fail the request — the DB state is
+            // already committed.
+            let log_dir = resolve_data_dir_for(&state)
+                .join("logs")
+                .join(workflow_id.to_string());
+            if let Err(e) = tokio::fs::remove_dir_all(&log_dir).await {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        workflow_id = %workflow_id,
+                        "failed to remove log directory {:?} for deleted workflow: {}",
+                        log_dir,
+                        e
+                    );
+                }
+            }
+            // Evict cache entry for the deleted workflow. Its cost history
+            // remains available via the cost ledger and is recomputed on the
+            // next cost query.
             state.cost_cache.forget(workflow_id).await;
             // Broadcast WorkflowChanged{Deleted}
             let _ = state
@@ -913,6 +988,149 @@ pub async fn delete_workflow(
             (status, body).into_response()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/runs/{run_id}
+// ---------------------------------------------------------------------------
+
+pub async fn delete_workflow_run(
+    State(state): State<Arc<AppState>>,
+    Path(run_id_str): Path<String>,
+) -> impl IntoResponse {
+    let run_id = match Uuid::parse_str(&run_id_str) {
+        Ok(id) => id,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                &format!("Invalid run_id '{}'", run_id_str),
+            )
+            .into_response();
+        }
+    };
+
+    let run = match state.workflow_run_store.get_run(run_id).await {
+        Ok(Some(run)) => run,
+        Ok(None) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                &format!("Run '{}' not found", run_id),
+            )
+            .into_response();
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch run {} for delete: {}", run_id, e);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                &format!("Failed to fetch run: {}", e),
+            )
+            .into_response();
+        }
+    };
+
+    if run.status == RunStatus::Running {
+        return error_response(
+            StatusCode::CONFLICT,
+            "conflict",
+            &format!(
+                "Run '{}' is still running. Kill it (POST /api/runs/{}/kill) or wait for it \
+                 to finish before deleting it.",
+                run_id, run_id
+            ),
+        )
+        .into_response();
+    }
+
+    if let Err(e) = state.workflow_run_store.delete_run(run_id).await {
+        tracing::error!("Failed to delete run {}: {}", run_id, e);
+        let (status, body) = map_store_error(e.into());
+        return (status, body).into_response();
+    }
+
+    // Best-effort: remove the run's log file. Cost-ledger rows are untouched.
+    let log_path = resolve_data_dir_for(&state)
+        .join("logs")
+        .join(run.workflow_id.to_string())
+        .join(format!("{}.log", run_id));
+    if let Err(e) = tokio::fs::remove_file(&log_path).await {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                run_id = %run_id,
+                "failed to remove log file {:?} for deleted run: {}",
+                log_path,
+                e
+            );
+        }
+    }
+
+    tracing::info!(run_id = %run_id, workflow_id = %run.workflow_id, "workflow run deleted");
+    StatusCode::NO_CONTENT.into_response()
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/workflows/{id}/runs
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct PurgeRunsResponse {
+    deleted: usize,
+}
+
+/// Bulk-purge every non-Running run for a workflow (rows + log files,
+/// best-effort). The workflow itself and its cost-ledger history are
+/// untouched; Running runs are skipped.
+pub async fn purge_workflow_runs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let workflow = match resolve_workflow(&state, &id).await {
+        Ok(w) => w,
+        Err((status, body)) => return (status, body).into_response(),
+    };
+
+    let deleted_ids = match state.workflow_run_store.purge_runs(workflow.id).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::error!("Failed to purge runs for workflow {}: {}", workflow.id, e);
+            let (status, body) = map_store_error(e.into());
+            return (status, body).into_response();
+        }
+    };
+
+    // Best-effort log-file cleanup for each purged run.
+    let log_dir = resolve_data_dir_for(&state)
+        .join("logs")
+        .join(workflow.id.to_string());
+    for run_id in &deleted_ids {
+        let log_path = log_dir.join(format!("{}.log", run_id));
+        if let Err(e) = tokio::fs::remove_file(&log_path).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    run_id = %run_id,
+                    "failed to remove log file {:?} for purged run: {}",
+                    log_path,
+                    e
+                );
+            }
+        }
+    }
+
+    tracing::info!(
+        workflow_id = %workflow.id,
+        name = %workflow.name,
+        deleted = deleted_ids.len(),
+        "workflow runs purged"
+    );
+    (
+        StatusCode::OK,
+        Json(PurgeRunsResponse {
+            deleted: deleted_ids.len(),
+        }),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -1904,6 +2122,21 @@ mod tests {
         async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError> {
             self.runs.lock().await.remove(&run_id);
             Ok(())
+        }
+        async fn purge_runs(&self, workflow_id: Uuid) -> Result<Vec<Uuid>, AcsError> {
+            let mut map = self.runs.lock().await;
+            let ids: Vec<Uuid> = map
+                .values()
+                .filter(|r| r.workflow_id == workflow_id && r.status != RunStatus::Running)
+                .map(|r| r.run_id)
+                .collect();
+            for id in &ids {
+                map.remove(id);
+            }
+            Ok(ids)
+        }
+        async fn list_ledger_workflows(&self) -> Result<Vec<(Uuid, String)>, AcsError> {
+            Ok(Vec::new())
         }
         async fn cost_summary_for(
             &self,
