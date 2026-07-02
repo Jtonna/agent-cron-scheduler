@@ -37,6 +37,25 @@ impl SqliteWorkflowStore {
     }
 }
 
+// ─── Soft-delete name tombstone (ACS-25) ─────────────────────────────────────
+//
+// The `workflows.name` column carries a UNIQUE constraint. On soft-delete we
+// must free that name so a new workflow can reuse it (§4). Rather than rebuild
+// the table to drop the constraint (explicitly out of scope), we rewrite the
+// deleted row's stored name to `"<name>\u{1}<id>"`. The `\u{1}` (SOH) marker
+// cannot appear in a user-entered name, and appending the row id makes every
+// tombstone globally unique. Readers strip everything from the marker onward so
+// the *displayed* name (e.g. in cost views) stays the original value.
+const NAME_TOMBSTONE_MARKER: char = '\u{1}';
+
+/// Recover the display name from a possibly-tombstoned stored name.
+fn strip_name_tombstone(name: String) -> String {
+    match name.split_once(NAME_TOMBSTONE_MARKER) {
+        Some((base, _)) => base.to_string(),
+        None => name,
+    }
+}
+
 // ─── Row mapping ─────────────────────────────────────────────────────────────
 
 fn row_to_workflow(row: &Row<'_>) -> rusqlite::Result<Workflow> {
@@ -87,16 +106,21 @@ fn row_to_workflow(row: &Row<'_>) -> rusqlite::Result<Workflow> {
     // is_favorited was added in a later schema migration. Tolerate older rows
     // that don't have the column populated by treating a missing column as false.
     let is_favorited = row.get::<_, i64>("is_favorited").unwrap_or(0) != 0;
+    // `deleted` (soft-delete, ACS-25) — tolerate DBs where the column has not
+    // yet been added by migration m008 (treat missing as not-deleted).
+    let deleted = row.get::<_, i64>("deleted").unwrap_or(0) != 0;
 
     Ok(Workflow {
         id,
-        name: row.get("name")?,
+        // Strip the soft-delete tombstone so the display name is the original.
+        name: strip_name_tombstone(row.get("name")?),
         version: row.get::<_, i64>("version")? as u32,
         schedule: row.get("schedule")?,
         timezone,
         schedule_mode,
         enabled: row.get::<_, i64>("enabled")? != 0,
         is_favorited,
+        deleted,
         steps,
         default_input,
         working_dir: row.get("working_dir")?,
@@ -149,6 +173,27 @@ impl WorkflowStore for SqliteWorkflowStore {
         let res = self
             .db
             .with_conn(|c| {
+                // Exclude soft-deleted rows (ACS-25).
+                let mut stmt = c
+                    .prepare("SELECT * FROM workflows WHERE deleted = 0 ORDER BY created_at ASC")
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], row_to_workflow)
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r.map_err(|e| AcsError::Storage(e.to_string()))?);
+                }
+                Ok(out)
+            })
+            .await?;
+        Ok(res)
+    }
+
+    async fn list_workflows_including_deleted(&self) -> Result<Vec<Workflow>> {
+        let res = self
+            .db
+            .with_conn(|c| {
                 let mut stmt = c
                     .prepare("SELECT * FROM workflows ORDER BY created_at ASC")
                     .map_err(|e| AcsError::Storage(e.to_string()))?;
@@ -170,6 +215,24 @@ impl WorkflowStore for SqliteWorkflowStore {
         let res = self
             .db
             .with_conn(move |c| {
+                // Exclude soft-deleted rows (ACS-25): a deleted workflow is
+                // "not found" for the normal endpoints.
+                let mut stmt = c
+                    .prepare("SELECT * FROM workflows WHERE id = ? AND deleted = 0")
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+                stmt.query_row([&id_s], row_to_workflow)
+                    .optional()
+                    .map_err(|e| AcsError::Storage(e.to_string()))
+            })
+            .await?;
+        Ok(res)
+    }
+
+    async fn get_workflow_including_deleted(&self, id: Uuid) -> Result<Option<Workflow>> {
+        let id_s = id.to_string();
+        let res = self
+            .db
+            .with_conn(move |c| {
                 let mut stmt = c
                     .prepare("SELECT * FROM workflows WHERE id = ?")
                     .map_err(|e| AcsError::Storage(e.to_string()))?;
@@ -186,8 +249,10 @@ impl WorkflowStore for SqliteWorkflowStore {
         let res = self
             .db
             .with_conn(move |c| {
+                // Exclude soft-deleted rows so a reused name resolves to the
+                // live workflow (ACS-25).
                 let mut stmt = c
-                    .prepare("SELECT * FROM workflows WHERE name = ?")
+                    .prepare("SELECT * FROM workflows WHERE name = ? AND deleted = 0")
                     .map_err(|e| AcsError::Storage(e.to_string()))?;
                 stmt.query_row([&name], row_to_workflow)
                     .optional()
@@ -210,6 +275,7 @@ impl WorkflowStore for SqliteWorkflowStore {
             schedule_mode: new.schedule_mode,
             enabled: new.enabled,
             is_favorited: false,
+            deleted: false,
             steps: new.steps,
             default_input: new.default_input,
             working_dir: new.working_dir,
@@ -243,8 +309,9 @@ impl WorkflowStore for SqliteWorkflowStore {
             .with_conn(move |c| {
                 // Fetch existing.
                 let mut wf = {
+                    // Soft-deleted workflows are "not found" for updates (ACS-25).
                     let mut stmt = c
-                        .prepare("SELECT * FROM workflows WHERE id = ?")
+                        .prepare("SELECT * FROM workflows WHERE id = ? AND deleted = 0")
                         .map_err(|e| AcsError::Storage(e.to_string()))?;
                     stmt.query_row([&id.to_string()], row_to_workflow)
                         .optional()
@@ -254,11 +321,12 @@ impl WorkflowStore for SqliteWorkflowStore {
                         })?
                 };
 
-                // Duplicate-name check, excluding self.
+                // Duplicate-name check, excluding self and soft-deleted rows.
                 if let Some(ref new_name) = update.name {
                     let count: i64 = c
                         .query_row(
-                            "SELECT COUNT(*) FROM workflows WHERE name = ? AND id != ?",
+                            "SELECT COUNT(*) FROM workflows \
+                             WHERE name = ? AND id != ? AND deleted = 0",
                             params![new_name, id.to_string()],
                             |r| r.get(0),
                         )
@@ -359,17 +427,31 @@ impl WorkflowStore for SqliteWorkflowStore {
     }
 
     async fn delete_workflow(&self, id: Uuid) -> Result<()> {
+        let now_s = Utc::now().to_rfc3339();
         self.db
             .with_conn(move |c| {
-                let n = c
-                    .execute("DELETE FROM workflows WHERE id = ?", [id.to_string()])
+                // Soft delete (ACS-25): keep the row and every workflow_runs
+                // record. Read the current (already display-clean) name so we
+                // can tombstone it and free the UNIQUE slot for reuse.
+                let name: Option<String> = c
+                    .query_row(
+                        "SELECT name FROM workflows WHERE id = ? AND deleted = 0",
+                        [id.to_string()],
+                        |r| r.get(0),
+                    )
+                    .optional()
                     .map_err(|e| AcsError::Storage(e.to_string()))?;
-                if n == 0 {
-                    return Err(AcsError::NotFound(format!(
-                        "Workflow with id '{}' not found",
-                        id
-                    )));
-                }
+                let name = name.ok_or_else(|| {
+                    AcsError::NotFound(format!("Workflow with id '{}' not found", id))
+                })?;
+
+                let tombstoned = format!("{}{}{}", name, NAME_TOMBSTONE_MARKER, id);
+                c.execute(
+                    "UPDATE workflows SET deleted = 1, name = ?1, updated_at = ?2 \
+                     WHERE id = ?3 AND deleted = 0",
+                    params![tombstoned, now_s, id.to_string()],
+                )
+                .map_err(|e| AcsError::Storage(format!("soft-delete UPDATE failed: {}", e)))?;
                 Ok(())
             })
             .await?;
@@ -386,7 +468,8 @@ impl WorkflowStore for SqliteWorkflowStore {
             .with_conn(move |c| {
                 let n = c
                     .execute(
-                        "UPDATE workflows SET is_favorited = ?1, updated_at = ?2 WHERE id = ?3",
+                        "UPDATE workflows SET is_favorited = ?1, updated_at = ?2 \
+                         WHERE id = ?3 AND deleted = 0",
                         params![fav_i, now_s, id_s],
                     )
                     .map_err(|e| AcsError::Storage(format!("UPDATE is_favorited failed: {}", e)))?;
@@ -937,6 +1020,164 @@ mod tests {
             .expect_err("must error");
         let acs = err.downcast_ref::<AcsError>().expect("must be AcsError");
         assert!(matches!(acs, AcsError::NotFound(_)));
+    }
+
+    // ── Soft delete (ACS-25) ────────────────────────────────────────────────
+
+    /// A soft-deleted workflow is excluded from `list_workflows`,
+    /// `find_by_name`, and `get_workflow` — i.e. it is hidden from the UI and,
+    /// because the scheduler enumerates via `list_workflows`, from scheduling.
+    #[tokio::test]
+    async fn test_soft_delete_excluded_from_list_get_find() {
+        let store = SqliteWorkflowStore::in_memory_for_tests();
+        let created = store
+            .create_workflow(minimal_new_workflow("sd-hidden"))
+            .await
+            .expect("create");
+        store.delete_workflow(created.id).await.expect("delete");
+
+        assert!(
+            store.list_workflows().await.expect("list").is_empty(),
+            "soft-deleted workflow must be absent from list_workflows (and thus the scheduler)"
+        );
+        assert!(
+            store.get_workflow(created.id).await.expect("get").is_none(),
+            "get_workflow must treat a soft-deleted workflow as not found"
+        );
+        assert!(
+            store
+                .find_by_name("sd-hidden")
+                .await
+                .expect("find")
+                .is_none(),
+            "find_by_name must not resolve a soft-deleted workflow"
+        );
+    }
+
+    /// The `*_including_deleted` accessors still surface the row, flagged
+    /// `deleted = true`, so the cost endpoints can report its history.
+    #[tokio::test]
+    async fn test_soft_delete_visible_via_including_deleted() {
+        let store = SqliteWorkflowStore::in_memory_for_tests();
+        let created = store
+            .create_workflow(minimal_new_workflow("sd-cost"))
+            .await
+            .expect("create");
+        assert!(!created.deleted, "fresh workflow is not deleted");
+        store.delete_workflow(created.id).await.expect("delete");
+
+        let all = store
+            .list_workflows_including_deleted()
+            .await
+            .expect("list incl deleted");
+        assert_eq!(all.len(), 1);
+        assert!(all[0].deleted, "row must be flagged deleted");
+        assert_eq!(
+            all[0].name, "sd-cost",
+            "display name is preserved (no tombstone leak)"
+        );
+
+        let got = store
+            .get_workflow_including_deleted(created.id)
+            .await
+            .expect("get incl deleted")
+            .expect("present");
+        assert!(got.deleted);
+        assert_eq!(got.name, "sd-cost");
+    }
+
+    /// Deleting an already-deleted workflow returns NotFound (idempotency at
+    /// the API boundary — the row is gone from the "live" set).
+    #[tokio::test]
+    async fn test_soft_delete_twice_returns_not_found() {
+        let store = SqliteWorkflowStore::in_memory_for_tests();
+        let created = store
+            .create_workflow(minimal_new_workflow("sd-twice"))
+            .await
+            .expect("create");
+        store
+            .delete_workflow(created.id)
+            .await
+            .expect("first delete");
+        let err = store
+            .delete_workflow(created.id)
+            .await
+            .expect_err("second delete must fail");
+        let acs = err.downcast_ref::<AcsError>().expect("AcsError");
+        assert!(matches!(acs, AcsError::NotFound(_)));
+    }
+
+    /// A name can be reused after its owner is soft-deleted; the two workflows
+    /// remain distinct rows (distinct ids), so cost views key by id stay
+    /// separate.
+    #[tokio::test]
+    async fn test_soft_delete_frees_name_for_reuse() {
+        let store = SqliteWorkflowStore::in_memory_for_tests();
+        let first = store
+            .create_workflow(minimal_new_workflow("reuse-me"))
+            .await
+            .expect("create first");
+        store.delete_workflow(first.id).await.expect("delete first");
+
+        // Recreating with the same name must succeed (the UNIQUE slot is freed).
+        let second = store
+            .create_workflow(minimal_new_workflow("reuse-me"))
+            .await
+            .expect("recreate same name");
+        assert_ne!(first.id, second.id, "recreated workflow has a new id");
+
+        // find_by_name resolves the live one; list shows only the live one.
+        let found = store
+            .find_by_name("reuse-me")
+            .await
+            .expect("find")
+            .expect("present");
+        assert_eq!(found.id, second.id);
+        let live = store.list_workflows().await.expect("list");
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].id, second.id);
+
+        // Both rows survive for cost purposes, keyed by distinct ids.
+        let all = store
+            .list_workflows_including_deleted()
+            .await
+            .expect("list incl deleted");
+        assert_eq!(all.len(), 2, "deleted + live rows both persist");
+    }
+
+    /// Updating or favoriting a soft-deleted workflow is a NotFound.
+    #[tokio::test]
+    async fn test_update_and_favorite_on_deleted_return_not_found() {
+        let store = SqliteWorkflowStore::in_memory_for_tests();
+        let created = store
+            .create_workflow(minimal_new_workflow("sd-upd"))
+            .await
+            .expect("create");
+        store.delete_workflow(created.id).await.expect("delete");
+
+        let upd_err = store
+            .update_workflow(
+                created.id,
+                WorkflowUpdate {
+                    enabled: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("update must fail");
+        assert!(matches!(
+            upd_err.downcast_ref::<AcsError>().expect("AcsError"),
+            AcsError::NotFound(_)
+        ));
+
+        let fav_err = store
+            .set_favorited(created.id, true)
+            .await
+            .expect_err("favorite must fail");
+        assert!(matches!(
+            fav_err.downcast_ref::<AcsError>().expect("AcsError"),
+            AcsError::NotFound(_)
+        ));
     }
 
     // ── List ──────────────────────────────────────────────────────────────────

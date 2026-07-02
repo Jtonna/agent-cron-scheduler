@@ -397,6 +397,7 @@ fn build_workflow(job: Job, steps: Vec<StepDef>) -> Workflow {
         schedule_mode: job.schedule_mode,
         enabled: job.enabled,
         is_favorited: false,
+        deleted: false,
         steps,
         default_input: None,
         working_dir: job.working_dir,

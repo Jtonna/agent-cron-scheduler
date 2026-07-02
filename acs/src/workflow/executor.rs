@@ -1035,6 +1035,7 @@ mod tests {
             schedule_mode: ScheduleMode::default(),
             enabled: true,
             is_favorited: false,
+            deleted: false,
             steps,
             default_input: None,
             working_dir: None,
