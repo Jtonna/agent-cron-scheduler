@@ -38,7 +38,7 @@ agentcronsystem start
 
 ### Startup Aborts on a Failed Migration
 
-**Symptom:** The daemon exits immediately with an error like `Migration failed: Internal error: migration 'm008_add_workflow_deleted' previously failed and is blocking startup...` (or `migration '<name>' failed: <cause>. Startup aborted...` on the first occurrence).
+**Symptom:** The daemon exits immediately with an error like `Migration failed: migration 'm008_add_workflow_deleted' previously failed and is blocking startup...` (or `migration '<name>' failed: <cause>. Startup aborted...` on the first occurrence).
 
 **Cause:** Database migrations are tracked by name in the `schema_migrations` table inside `acs.db`. When a migration fails, its row is recorded with `status = 'failed'` plus the error text, and every subsequent startup refuses to proceed — silently re-running against a half-migrated database could compound the damage.
 
@@ -54,7 +54,7 @@ agentcronsystem start
    ```
 4. Restart the daemon: `agentcronsystem start`. The migration re-runs from the failed one onward; migrations that never got to run have no row and execute normally.
 
-Deleting a `success` row works the same way and forces that single migration to re-run — safe, because every migration is internally idempotent. See [Storage — Migration System](storage.md#9-migration-system) for the full runner semantics.
+Deleting a `success` row forces that single migration to re-run the same way — but **only do this when the migration's preconditions have been restored**: v5 migrations are not internally idempotent (e.g. re-running a column drop against an already-migrated schema fails). The tracking table, not in-migration guards, is what prevents double execution. See [Storage — Migration System](storage.md#9-migration-system) for the full runner semantics.
 
 ### Port Already in Use
 
@@ -248,7 +248,7 @@ When `pass_stdin: true`, a Shell or Script step receives the stdout of the step 
 `daemon.log` (and the daemon's stderr in foreground mode) carries `INFO`-level lines for the operational lifecycle. Step stdout/stderr is **not** written here — that lives in per-run files under `logs/<workflow_id>/<run_id>.log`.
 
 Lines you will see:
-- **Startup / shutdown**: tracing init, data dir, PID/port file acquisition, migrations applied, graceful shutdown. Each `mNNN` migration logs a `Migration mNNN complete: ...` line here — this is the only place migration outcomes are surfaced; `/health` does not expose migration status (Flyway-style: succeed on startup or abort).
+- **Startup / shutdown**: tracing init, data dir, PID/port file acquisition, migrations applied, graceful shutdown. Each applied migration logs a `migration '<name>' applied in <N>ms` line here, plus a startup summary (`Migrations applied: [...]`) — this is the only place migration outcomes are surfaced; `/health` does not expose migration status (Flyway-style: succeed on startup or abort).
 - **HTTP access log**: one line per inbound request. Format example:
   `INFO http_request{method=POST uri=/api/workflows}: agent_cron_scheduler::server: -> 201 (4ms)`
 - **Workflow CRUD**: emitted on success only. `workflow created`, `workflow updated` (with the list of changed fields), `workflow deleted`, `workflow triggered` (with the new `run_id`), `workflow run killed`.
@@ -306,7 +306,7 @@ SQLite uses a write-ahead log (`acs.db-wal`) and atomic transactions, so a crash
 **Symptom:** The daemon starts but reports it cannot find or create the data directory.
 
 **What happens automatically:**
-ACS creates the data directory and its subdirectories (`logs/`, `scripts/`) on startup if they do not exist. The `acs.db` file is created by the `m002_json_to_sqlite` migration when the daemon first runs against an empty data directory. This includes creating all intermediate parent directories.
+ACS creates the data directory and its subdirectories (`logs/`, `scripts/`) on startup if they do not exist. The `acs.db` file is created by the migration runner (the `m000_baseline` migration) when the daemon first runs against an empty data directory. This includes creating all intermediate parent directories.
 
 **Solution:**
 - If creation fails, check filesystem permissions on the parent directory.

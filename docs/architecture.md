@@ -121,17 +121,6 @@ acs/src/
       mod.rs                       # AgentImpl trait, AgentOutputParser trait,
                                    #   AgentOutput, impl_for()
       claude_code_cli.rs           # ClaudeCodeCli impl + ClaudeStreamParser
-  migration/
-    mod.rs                              # Migration trait, run_pending(), registry,
-                                        #   MigrationRunReport, state file I/O
-    legacy_types.rs                     # Legacy Job/ExecutionType types (migration read only)
-    m001_jobs_to_workflows.rs           # JobsToWorkflows migration
-    m002_json_to_sqlite.rs              # JsonToSqlite migration
-    m003_drop_step_output_summary.rs    # DropStepOutputSummary migration
-    m004_drop_input_schema.rs           # DropInputSchema migration
-    m005_shell_claude_to_agent.rs       # ShellClaudeToAgent migration
-    m006_agent_step_normalize.rs        # AgentStepNormalize migration
-    m007_add_token_columns.rs           # AddTokenColumns migration
   process_kill.rs                  # kill_process_tree(), force_kill_process_tree()
   pty/
     mod.rs                         # PtySpawner trait, PtyProcess trait,
@@ -256,12 +245,17 @@ See [Storage](storage.md) for implementation details.
 
 - **`AcsError`**: `thiserror`-based enum with variants: `NotFound`, `Conflict`, `Validation`, `Storage`, `Internal`, `Cron`, `Pty`, `Timeout`. Implements `From<std::io::Error>`, `From<serde_json::Error>`, `From<uuid::Error>`.
 
-#### `migration` -- Data Migration
+#### `acs-migrate` -- Data Migration (sibling crate)
 
-- **`Migration` trait** (`acs/src/migration/mod.rs`): `fn name() -> &'static str; async fn run(data_dir) -> Result<bool, AcsError>`. `Ok(true)` = work done; `Ok(false)` = nothing to do (idempotent).
-- **`run_pending()`**: Called at daemon startup. Reads `<data_dir>/migrations.json` for already-applied names. For each unapplied migration in the registry, calls `run()`. Writes state atomically after each `Ok(true)`. Stops on first error (partial progress is preserved).
-- **Registry** (ordered): `m001_jobs_to_workflows::JobsToWorkflows`, `m002_json_to_sqlite::JsonToSqlite`, `m003_drop_step_output_summary::DropStepOutputSummary`, `m004_drop_input_schema::DropInputSchema`, `m005_shell_claude_to_agent::ShellClaudeToAgent`, `m006_agent_step_normalize::AgentStepNormalize`, `m007_add_token_columns::AddTokenColumns`.
-- **`legacy_types`** (`acs/src/migration/legacy_types.rs`): Read-only legacy `Job` and `ExecutionType` structs used only by the migration code to deserialize old `jobs.json` files.
+Since v5.0.0, migrations live in the `acs-migrate/` crate (a sibling of
+`acs/`, consumed as a path dependency) rather than in a module of the daemon.
+
+- **`run_pending(data_dir)`** (`acs-migrate/src/lib.rs`): synchronous entry point the daemon calls at startup on a blocking task. Walks the registry in name order; execution is decided solely by the `schema_migrations` tracking table inside `acs.db` (no row = run; `success` = skip; `failed` = abort startup before anything runs). Each migration executes inside its own transaction; failures roll back completely, record a `failed` row with the error text, and abort. Rows for retired migrations (m001/m002 from v4 installs) are tolerated.
+- **Two migration kinds, one set of rules**: SQL migrations (embedded `.sql` files via `include_str!` — the default and the convention for new migrations) and code migrations (`fn(&rusqlite::Transaction) -> Result<(), MigrateError>` — the escape hatch for transforms SQL cannot express; currently only m005/m006, which need shell tokenizing and nested-JSON recursion). Both are tracked identically.
+- **Registry** (name-ordered): `m000_baseline` (baseline-flagged SQL), `m003_drop_step_output_summary` (SQL), `m004_drop_input_schema` (SQL), `m005_shell_claude_to_agent` (code), `m006_agent_step_normalize` (code), `m007_add_token_columns` (SQL), `m008_add_workflow_deleted` (rebuild-flagged SQL).
+- **Conventions**: `baseline` migrations are recorded without executing on databases that already have migration tracking (every v4.2.14 install); `rebuild` migrations get `PRAGMA foreign_keys = OFF` around their transaction plus a pre-commit `PRAGMA foreign_key_check`. Databases without a tracking table must upgrade through v4.2.14 first.
+
+See [Storage — Migration System](storage.md#9-migration-system) for full semantics.
 
 ---
 
@@ -276,16 +270,16 @@ See [Storage](storage.md) for implementation details.
 2.  Apply CLI overrides            — host_override, port_override
 3.  resolve_data_dir()             — Determine data directory
 4.  create_data_dirs()             — Ensure data/, data/logs/, data/scripts/ exist
-5.  migration::run_pending()       — Run any unapplied numbered migrations
-                                     against the data directory. Each
-                                     migration is idempotent; the runner
-                                     stops at the first error and preserves
-                                     partial progress in migrations.json.
-                                     Migration outcomes are written to
-                                     daemon.log only (not /health).
-6.  Set up tracing                 — Truncate daemon.log on startup, then open with
+5.  Set up tracing                 — Truncate daemon.log on startup, then open with
                                      SizeManagedWriter (auto-drops oldest 25% at 1 GB).
                                      Falls back to stderr-only on error.
+6.  acs_migrate::run_pending()     — Run pending migrations against the data
+                                     directory (on a blocking task). Execution
+                                     is tracked in the schema_migrations table;
+                                     each migration runs in its own transaction
+                                     and any failure aborts startup. Outcomes
+                                     are written to daemon.log only (not
+                                     /health).
 7.  PidFile::acquire()             — Exclusive PID file (agentcronsystem.pid)
 8.  sqlite::init_db()              — Open acs.db (apply pragmas + idempotent schema)
 9.  SqliteWorkflowStore::new()     — Wrap the shared SqliteDb handle
@@ -616,7 +610,6 @@ data_dir/
   acs.db                       # SQLite database (workflows + workflow_runs tables)
   acs.db-wal                   # SQLite write-ahead log (managed by SQLite)
   acs.db-shm                   # SQLite shared memory file (managed by SQLite)
-  migrations.json              # Applied migration names: { "applied": [...] }
   logs/
     <workflow_id>/
       <run_id>.log             # Combined step output with ACS marker lines
@@ -638,29 +631,31 @@ Cross-reference: [Storage](storage.md).
 
 ## 9. Migration
 
-The migration system (`acs/src/migration/`) supports forward-only, numbered data migrations.
+Since v5.0.0 the migration system lives in the `acs-migrate/` sibling crate
+and is tracked in the `schema_migrations` table inside `acs.db` (the legacy
+`migrations.json` state file and the v4-era m001/m002 Rust migrations were
+retired; databases that predate the tracking table must upgrade through
+v4.2.14 first).
 
-**State file**: `<data_dir>/migrations.json` stores the set of applied migration names. On corruption, the state is treated as empty (re-running migrations is safe because each implements an idempotent contract).
+Highlights:
 
-**Runner (`run_pending()`)**: Called at every daemon startup before storage initialization. Reads the state file, iterates the registry in order, and for each unapplied migration:
-1. Calls `migration.run(data_dir)`.
-2. If `Ok(true)` (work done): adds name to the applied set, writes state atomically (write-to-tmp, rename).
-3. If `Ok(false)` (nothing to do): skips without writing state.
-4. If `Err`: stops immediately; partial progress is preserved.
+- **Two kinds under one set of rules**: named `.sql` files embedded with
+  `include_str!` (the default), plus code migrations operating on the
+  runner-provided `rusqlite::Transaction` for transforms SQL cannot express
+  (m005/m006 only). Same registry, same ordering, same tracking, same
+  per-migration transaction and fail-stop semantics.
+- **Baseline**: `m000_baseline` creates the pre-m003-era schema on fresh
+  installs, then m003–m008 apply on top; on any database that already has
+  migration tracking, the baseline is recorded without executing.
+- **Rebuild convention**: migrations flagged `rebuild` (m008) get
+  `PRAGMA foreign_keys = OFF` around their transaction and a pre-commit
+  `PRAGMA foreign_key_check`.
+- **Failure semantics**: each migration runs in its own transaction; a
+  failure rolls back, records a `failed` row with the error text, and aborts
+  startup. Recovery = fix the issue, `DELETE` the row, restart.
 
-**Current migrations**:
-
-| Name | File | What it does |
-|---|---|---|
-| `m001_jobs_to_workflows` | `m001_jobs_to_workflows.rs` | Reads `jobs.json` (legacy). For each `Job`: creates a `Workflow` with the same schedule/name/timezone/etc. Synthesizes steps from `pre_hook` (if present and `pre_hook_script_type` is shell/null → `ShellStep("pre_hook", always_run=false)`; if non-shell type → hook body written to `migrated_scripts/{id}_pre_hook.{ext}` and a `ScriptStep` pointing at that file), `execution` → `ShellStep`/`ScriptStep("main")`, `post_hook` (same script_type logic, `always_run=true`). Creates `migrated_scripts/` directory when needed. Preserves the original `Job.allow_concurrent` value. Writes `workflows.json`. Renames `jobs.json` to `jobs.json.migrated.<ts>`. Returns `Ok(false)` on fresh install (no `jobs.json`). |
-| `m002_json_to_sqlite` | `m002_json_to_sqlite.rs` | Populates `<data_dir>/acs.db`. If `acs.db` already exists, returns `Ok(false)`. If neither `workflows.json` nor `runs/` exists, creates an empty `acs.db` with the schema applied and returns `Ok(true)`. Otherwise opens `acs.db`, BEGINs a transaction, INSERTs every workflow from `workflows.json` and every run from `runs/<workflow_id>/<run_id>.json`, verifies row counts match the source, sample-verifies one row of each, COMMITs, then deletes `workflows.json` and the `runs/` directory. On any failure during insert/verify the transaction is rolled back, the partial `acs.db` (and WAL/SHM sidecars) are removed, and the JSON sources are left in place. `runs/index.json` is ignored on read and removed implicitly with the parent directory on success. `migrations.json` is left in place — it remains the canonical migration-state file. |
-| `m003_drop_step_output_summary` | `m003_drop_step_output_summary.rs` | Strips the legacy `output_summary` key from every `StepRun` record in `workflow_runs.steps_json`. Per-step output now lives only in the combined run log, indexed by `log_byte_offset_start` / `log_byte_offset_end`. Skips when `acs.db` is missing or no row carries the key. Runs in a single transaction with rollback on parse/serialise failure. Idempotent. |
-| `m004_drop_input_schema` | `m004_drop_input_schema.rs` | Drops the `workflows.input_schema` column via `ALTER TABLE workflows DROP COLUMN input_schema`. `input_schema` is no longer carried on `Workflow` / `NewWorkflow` / `WorkflowUpdate`, so existing DBs need the column removed to keep INSERT/UPDATE statements valid. Skips when `acs.db` is missing or the column is already absent (PRAGMA `table_info` check). Idempotent. |
-| `m005_shell_claude_to_agent` | `m005_shell_claude_to_agent.rs` | Rewrites legacy `shell` steps wrapping `claude -p ... --output-format stream-json` into `agent` steps of type `claude_code_cli`, so the streaming NDJSON cost parser captures `cost_usd`. Detection requires `kind == "shell"`, the command starting with the `claude` token, and the `--output-format stream-json` marker. The prompt is extracted from the first `-p` flag (quoted, unquoted, or `-p=`); embedded escapes are preserved verbatim. Steps whose prompt is fed via stdin (no `-p` flag) are left as `shell` with a `tracing::warn!` so an operator can rewrite them by hand. Residual flags equal to `--output-format stream-json --verbose --dangerously-skip-permissions` leave `command_template = None`; any other residual flags produce a full `command_template`. Recurses into `MatchStep` `cases.<value>` and `default` branches. Rewritten workflows have `version` bumped and `updated_at` refreshed. Idempotent. |
-| `m006_agent_step_normalize` | `m006_agent_step_normalize.rs` | Normalizes legacy AgentStep records that still carry `command_template`. Parses the template, extracts `--model <val>` if present into the structured `model` field, strips the canonical baseline tokens (`claude`, `-p <value>`, `--output-format stream-json`, `--verbose`, `--dangerously-skip-permissions`), keeps any leftover tokens as `extra_args`, drops the `command_template` key. Recurses into MatchStep `cases.<value>` and `default` branches. Preserves any pre-existing `model` field when the template has no `--model`. Bumps `workflows.version` and refreshes `updated_at`. Leaves non-claude or unparseable templates untouched with a `tracing::warn!`. Idempotent. Single transaction with rollback on parse/UPDATE error. |
-| `m007_add_token_columns` | `m007_add_token_columns.rs` | `ALTER TABLE workflow_runs ADD total_input_tokens INTEGER NOT NULL DEFAULT 0, ADD total_output_tokens INTEGER NOT NULL DEFAULT 0`. Adds the per-run token-count columns surfaced on `WorkflowRun.total_input_tokens` / `total_output_tokens` and via the cost API. Idempotent (skips when both columns already exist; PRAGMA `table_info` check). |
-
-**Adding a new migration**: Create `src/migration/mNNN_<name>.rs`, implement `Migration`, append to `registry()` in `mod.rs`.
+Full documentation, including per-migration history: see
+[Storage — Migration System](storage.md#9-migration-system).
 
 ---
 
@@ -723,8 +718,8 @@ Single-instance enforcement uses `create_new(true)` (`O_EXCL`/`CREATE_NEW`). Sta
 
 ### 11.8 Atomic File Persistence
 
-Structured persistence (workflows + run records) lives in `acs.db`, a SQLite database opened in WAL mode with `synchronous=NORMAL`. Every mutation runs inside a transaction, so a crash mid-write either commits the full change or none of it. `SizeManagedWriter` (daemon.log) and the migration runner's `migrations.json` writer still use write-to-temp-then-rename for the file-based artefacts that remain outside the database.
+Structured persistence (workflows + run records) lives in `acs.db`, a SQLite database opened in WAL mode with `synchronous=NORMAL`. Every mutation runs inside a transaction, so a crash mid-write either commits the full change or none of it. `SizeManagedWriter` (daemon.log) still uses write-to-temp-then-rename for the file-based artefacts that remain outside the database. Migration state lives in the `schema_migrations` table inside `acs.db`, covered by the same transactional guarantees.
 
 ### 11.9 Numbered Migration System
 
-Migrations are forward-only, numbered files (`mNNN_<name>.rs`) with a stable name as their identifier. The state file (`migrations.json`) is written atomically after each applied migration, so progress is preserved on partial failure. Idempotent contract (`Ok(false)` when nothing to do) means re-running migrations on an already-migrated install is safe.
+Migrations are forward-only, name-ordered entries in the `acs-migrate` crate's registry — embedded `.sql` files by default, code migrations only where SQL cannot express the transform. Execution state lives in the `schema_migrations` table inside `acs.db` and is recorded after each migration, so progress is preserved on partial failure. Each migration runs in its own transaction; a failure rolls back, records a `failed` row, and blocks startup until an operator deletes the row.

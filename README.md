@@ -201,10 +201,10 @@ acs/                     # Rust project root
     server/              # Axum router, REST routes, SSE handler, health endpoint
     cli/                 # Clap CLI definitions and subcommand handlers
     workflow/            # Multi-step execution engine: executor, steps, agents, template, log_sink, finalize
-    migration/           # SQLite migrations (m001-m007) + registry
     pty/                 # Process spawning abstraction
   web/                   # Swagger UI + openapi.yaml (embedded via rust-embed)
-  tests/                 # Integration tests (workflow_api_tests, cli_tests)
+  tests/                 # Integration tests (workflow_api_tests, cli_tests, migration_tests)
+acs-migrate/             # Migration runner crate: .sql migrations + code-migration escape hatch
 electron/                # Electron app and frontend
   packages/
     frontend/            # Next.js dashboard (independent)
@@ -226,7 +226,7 @@ Full system documentation lives in [docs/INDEX.md](docs/INDEX.md). Highlights:
 - [API Reference](docs/api-reference.md) -- REST endpoints, SSE events, schemas
 - [Workflow Management](docs/workflow-management.md) -- step kinds, template substitution, failure policies
 - [Configuration](docs/configuration.md) -- config file format and data directories
-- [Storage](docs/storage.md) -- SQLite layout, log sinks, migrations
+- [Storage](docs/storage.md) -- SQLite layout, log sinks, migrations (the `acs-migrate/` crate)
 - [Service Registration](docs/service-registration.md) -- platform-specific service setup
 - [Troubleshooting](docs/troubleshooting.md) -- common problems and fixes
 

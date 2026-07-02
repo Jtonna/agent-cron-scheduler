@@ -29,9 +29,8 @@ The three active store traits are:
 
 Step output is written by `FileLogSink` (not through a store trait) to per-run
 files under `logs/`.  Migration execution is tracked in the
-`schema_migrations` table inside `acs.db`, owned by the migration runner
-(the standalone `migrations.json` file is legacy — see
-[Migration System](#9-migration-system)).
+`schema_migrations` table inside `acs.db`, owned by the `acs-migrate` runner
+(see [Migration System](#9-migration-system)).
 
 ---
 
@@ -46,9 +45,9 @@ files under `logs/`.  Migration execution is tracked in the
 ├── acs.db                      # SQLite database holding workflows + workflow_runs tables
 ├── acs.db-wal                  # SQLite write-ahead log (created at runtime, managed by SQLite)
 ├── acs.db-shm                  # SQLite shared memory file (created at runtime, managed by SQLite)
-├── migrations.json             # Legacy migration state; read once to backfill schema_migrations, then deleted
-├── jobs.json.migrated.<ts>     # Backup of legacy jobs.json after m001 runs (unix timestamp suffix)
-├── migrated_scripts/           # Created on demand by m001 migration when migrating non-shell hooks
+├── migrations.json             # Inert v4-era leftover, ignored by v5 (may exist on upgraded installs)
+├── jobs.json.migrated.<ts>     # Inert v4-era backup of legacy jobs.json (may exist on upgraded installs)
+├── migrated_scripts/           # Inert v4-era migrated hook scripts (may exist on upgraded installs)
 ├── scripts/                    # Reserved directory (created on startup; not currently used)
 └── logs/
     └── {workflow_id}/          # One directory per workflow, named by UUID
@@ -204,13 +203,11 @@ writes from a crash never leave the database structurally inconsistent.
 
 Migration execution is tracked in the `schema_migrations` table inside
 `acs.db`, protected by the same SQLite atomicity guarantees as the data
-tables.  The legacy `migrations.json` file is read exactly once — to backfill
-the tracking table on databases that predate it — and deleted after a
-successful backfill (best-effort; a removal failure is only logged).  If it
-is missing or contains invalid JSON at that moment, the backfill seeds
-nothing and every migration runs normally; each migration's internal
-idempotency makes that safe on an already-migrated database.  A corrupt file
-is left in place for inspection.
+tables.  The table is the sole source of truth; there is no auxiliary state
+file.  (The legacy `migrations.json` backfill shipped by v4.2.x was retired
+in v5.0.0 — databases that still depend on it must upgrade through v4.2.14
+first; see [Migration System](#9-migration-system).)
+
 
 ---
 
@@ -485,83 +482,90 @@ On every `write_chunk(data)`:
 
 ## 9. Migration System
 
-**Sources:** `acs/src/migration/mod.rs`,
-`acs/src/migration/m001_jobs_to_workflows.rs`,
-`acs/src/migration/m002_json_to_sqlite.rs`,
-`acs/src/migration/m003_drop_step_output_summary.rs`,
-`acs/src/migration/m004_drop_input_schema.rs`,
-`acs/src/migration/m005_shell_claude_to_agent.rs`,
-`acs/src/migration/m006_agent_step_normalize.rs`,
-`acs/src/migration/m007_add_token_columns.rs`,
-`acs/src/migration/m008_add_workflow_deleted.rs`,
-`acs/src/migration/legacy_types.rs`
+**Sources:** `acs-migrate/src/lib.rs`, `acs-migrate/src/sql/*.sql`,
+`acs-migrate/src/m005_shell_claude_to_agent.rs`,
+`acs-migrate/src/m006_agent_step_normalize.rs`,
+`acs-migrate/src/shell_tokens.rs`
 
-### Design
+### Design (v5.0.0): the `acs-migrate` sub-crate
 
-Migrations are numbered files: `mNNN_<name>.rs` (the `m` prefix is required
-because Rust module names cannot start with a digit).  Each file contains a
-unit struct implementing the `Migration` trait:
+Since v5.0.0 the migration system lives in its own crate, `acs-migrate/`, a
+sibling of `acs/` consumed as a path dependency.  The daemon calls
+`acs_migrate::run_pending(data_dir)` at startup (on a blocking task), before
+the storage layer opens `acs.db`.  Any migration error is fatal: the daemon
+logs it and exits rather than running against a partially-migrated database.
 
-```rust
-#[async_trait]
-pub trait Migration: Send + Sync {
-    fn name(&self) -> &'static str;
-    async fn run(&self, data_dir: &Path) -> Result<bool, AcsError>;
-}
-```
+The registry holds **two migration kinds** under a single name ordering, a
+single `schema_migrations` tracking table, and identical execution semantics
+(per-migration transaction, success/failed row, fail-stop,
+delete-row-to-re-run):
 
-`run()` must be **idempotent** — re-running on already-migrated data must be a
-no-op.  It returns `Ok(true)` when work was performed, or `Ok(false)` when
-there was nothing to do.  The runner records `success` either way; the return
-value only affects logging.  The internal idempotency checks are a safety
-property (they make the delete-row-and-re-run workflow below harmless) — the
-runner never consults them to decide execution.
+* **SQL migrations** — embedded named `.sql` files
+  (`acs-migrate/src/sql/mNNN_<name>.sql`, compiled in via `include_str!`),
+  executed as a script inside a runner-owned transaction.  Scripts must NOT
+  contain `BEGIN`/`COMMIT`.  **This is the default and the convention for
+  all future migrations.**
+* **Code migrations** — Rust logic with the signature
+  `fn(&rusqlite::Transaction) -> Result<(), MigrateError>`: it issues SQL
+  against the runner-provided transaction, reads responses, transforms in
+  Rust, and writes back via SQL.  This is the escape hatch for transforms
+  SQL cannot express — shell tokenization, recursion through nested step
+  JSON — used only when justified and documented as such (currently only
+  m005 and m006).  A code migration runs INSIDE the runner's per-migration
+  transaction and is recorded, skipped, failed, and re-run exactly like a
+  SQL migration.
 
-Migrations are **frozen**: they carry their own private snapshot types for the
-data shapes they read and write (see the `frozen` modules in m001/m002 and
-`legacy_types.rs`) instead of referencing the live model structs.  Changes to
-the live models must never require editing an already-shipped migration —
-columns and JSON fields introduced after a migration's era are filled in by
-SQL `DEFAULT` clauses and serde defaults downstream.
+Migrations are **frozen by construction**: SQL text never changes after it
+ships, and the code migrations operate purely on `serde_json::Value` — never
+on the live model structs — so changes to the runtime models can never
+require editing an already-shipped migration.
 
 ### Tracking table: `schema_migrations`
 
 Migration execution is tracked by name in a `schema_migrations` table inside
-`{data_dir}/acs.db`.  The table is created by the **runner itself** — not by a
-migration — before any migration logic runs:
+`{data_dir}/acs.db`.  The table is created by the **runner itself** — not by
+a migration — before any migration logic runs:
 
 ```sql
 CREATE TABLE schema_migrations (
     name        TEXT PRIMARY KEY,             -- stable migration name, e.g. "m008_add_workflow_deleted"
     applied_at  TEXT NOT NULL,                -- RFC 3339 timestamp of the recording
     status      TEXT NOT NULL CHECK (status IN ('success','failed')),
-    duration_ms INTEGER,                      -- wall-clock run time; NULL for backfilled rows
+    duration_ms INTEGER,                      -- wall-clock run time; NULL for seeded rows
     error       TEXT                          -- error text for failed rows; NULL otherwise
 );
 ```
 
 Migration status is **not** exposed through `/health`.  The table is the only
 structured surface; per-migration outcomes are also written to `daemon.log`
-via `tracing::info!` lines (e.g.
-`"Migration m003 complete: stripped output_summary from N workflow_runs row(s)"`).
+via `tracing` lines (e.g. `migration 'm007_add_token_columns' applied in 3ms`
+and the startup summary `Migrations applied: [...]`).
 
 ### Runner behaviour
 
-`run_pending()` iterates the registry in order.  The tracking table — and only
-the tracking table — decides what executes:
+`run_pending()` walks the registry in name order.  The tracking table — and
+only the tracking table — decides what executes:
 
 | Row state for a migration | Action |
 |---|---|
-| No row | Run it, then record `success` or `failed` |
-| `status = 'success'` | Skip without invoking the migration |
-| `status = 'failed'` | **Abort daemon startup** with an error naming the migration |
+| No row | Run it inside its own transaction, then record `success` or `failed` |
+| `status = 'success'` | Skip without executing |
+| `status = 'failed'` | **Abort daemon startup** before anything runs, naming the migration and the exact recovery statement |
 
-A migration that runs but finds nothing to do (e.g. legacy format absent)
-still records `success` — the row means "processed", so it never re-runs.  On
-failure the row is recorded with status `failed` and the error text, and the
-runner aborts immediately: later migrations do not run and get no row.
+Failed rows are detected up front: if ANY registry migration has a `failed`
+row, the runner records nothing and aborts immediately — even migrations
+earlier in the order that have no row yet do not run.
 
-**Recovery workflow for a failed migration** (this is the sanctioned dev
+Each migration executes inside its own transaction.  On failure the
+migration is **rolled back completely**, its row is recorded with status
+`failed` plus the error text, and the runner aborts: later migrations never
+run and get no row.
+
+Rows recorded for names the registry does not know — `m001_jobs_to_workflows`
+and `m002_json_to_sqlite` on databases upgraded from v4 — are tolerated: they
+are reported at info level and left in place, never an error.
+
+**Recovery workflow for a failed migration** (this is the sanctioned
 workflow): fix the underlying issue, then delete the tracking row so the next
 startup re-runs it:
 
@@ -569,270 +573,166 @@ startup re-runs it:
 DELETE FROM schema_migrations WHERE name = '<migration name>';
 ```
 
-The same mechanism re-runs any migration whose `success` row is deleted —
-safe, because every migration is internally idempotent.
+**Caution:** unlike the pre-v5 Rust migrations, v5 migrations are not
+internally idempotent — `m004_drop_input_schema` re-run against a migrated
+schema fails, for example.  Delete a row (failed *or* success) only when the
+migration's preconditions have been restored; the tracking table, not
+in-migration guards, is what prevents double execution.
 
-### Backfill from legacy `migrations.json`
+### Baseline convention (fresh install vs. upgrade)
 
-Databases that predate the tracking table recorded applied migrations in
-`{data_dir}/migrations.json`:
+`m000_baseline` is the fresh-install starting point: it creates the
+pre-m003-era schema (inline `UNIQUE` on `workflows.name`, `input_schema`
+column present, no token columns, no `deleted` column) so that m003–m008
+apply on top and reproduce exactly the schema history an upgraded database
+went through.
 
-```json
-{ "applied": ["m001_jobs_to_workflows", "m002_json_to_sqlite"] }
-```
+The baseline carries the runner's `baseline` flag, which changes one thing:
+on a database that **already has migration tracking** (the
+`schema_migrations` table pre-exists — true of every v4.2.14 install), the
+runner records a `success` row for the baseline WITHOUT executing it.  The
+baseline therefore never runs against an existing schema, and a v4.2.14
+database upgrading to v5 executes **nothing**: baseline seeded, m003–m008
+skipped via their recorded rows.
 
-The first time the runner creates the tracking table it seeds a `success` row
-for every registry migration named in that file — those are treated as
-already applied without being invoked.  Every other migration then runs
-normally; on an already-migrated database their internal idempotency makes
-that a safe no-op, recorded as `success`.  After this one-time backfill the
-table is the sole source of truth and `migrations.json` is **deleted**
-(best-effort; a removal failure is only logged and can be cleaned up
-manually).  A corrupt legacy file seeds nothing and is left in place for
-inspection.  A fresh install has no legacy file, so all migrations simply
-run once and end recorded as `success`.
+A database that has a schema but **no** tracking table predates v4.2.14; the
+runner rejects it before creating or running anything.
+
+### Rebuild convention (`PRAGMA foreign_keys`)
+
+`PRAGMA foreign_keys` is a no-op inside a transaction, so a migration that
+rebuilds a table participating in a foreign key (drop + rename of a parent
+table) cannot toggle enforcement itself.  A migration flagged `rebuild` in
+the registry gets this treatment from the runner instead:
+
+1. `PRAGMA foreign_keys = OFF` before the transaction opens;
+2. the migration body runs inside the transaction;
+3. `PRAGMA foreign_key_check` runs inside the transaction before commit —
+   any violation fails (and therefore rolls back) the migration;
+4. `PRAGMA foreign_keys = ON` is restored after commit or rollback.
+
+`m008_add_workflow_deleted` is the concrete case: it rebuilds `workflows`
+(the parent of `workflow_runs.workflow_id`) to drop the inline `UNIQUE`.
+
+### Upgrade paths
+
+| Installed version | Path to v5 |
+|---|---|
+| Fresh install | Baseline + m003–m008 run in order; all recorded `success` |
+| v4.2.14 | Direct.  The runner executes nothing: baseline seeded, m003–m008 skip via recorded rows, m001/m002 rows tolerated |
+| Anything older | **Upgrade through v4.2.14 first.**  v4.2.14 migrates the data and records its migration state in `schema_migrations`; v5 refuses to start against a database without that table |
 
 ### Adding a migration
 
-1. Create `acs/src/migration/mNNN_<name>.rs` (increment NNN).
-2. Implement `Migration` for a unit struct.
-3. Append `Box::new(mNNN_<name>::YourStruct)` to the `registry()` function in
-   `mod.rs`.
+1. Create `acs-migrate/src/sql/mNNN_<name>.sql` (increment NNN past the last
+   entry).  No `BEGIN`/`COMMIT` — the runner owns the transaction.
+2. Append `Migration::sql("mNNN_<name>", include_str!("sql/mNNN_<name>.sql"))`
+   to `registry()` in `acs-migrate/src/lib.rs` — names must stay in
+   ascending order.
+3. Only if the transform is impossible in SQL: add a code migration module
+   and register it with `Migration::code`, documenting why SQL could not
+   express it.
 
 ---
 
 ## 10. Migration history
 
-### m001_jobs_to_workflows
+### m000_baseline (v5.0.0)
 
-`m001_jobs_to_workflows` handles the transition from the pre-ACS-18
-`jobs.json` format.
+SQL, baseline-flagged.  Creates the pre-m003-era schema on fresh installs:
+`workflows` (with inline `UNIQUE` on `name` and the `input_schema` column,
+without `deleted`), `workflow_runs` (without the token columns), the three
+`workflow_runs` indexes, and `meta`.  Never executes on a database that
+already has migration tracking (see the baseline convention above).
 
-| Condition | Action |
-|---|---|
-| `workflows.json` already exists | No-op (return `Ok(false)`) |
-| `jobs.json` does not exist | No-op — fresh install (return `Ok(false)`) |
-| Both conditions false | Read `jobs.json`, synthesise workflows, write `workflows.json`, rename `jobs.json` |
+### m001_jobs_to_workflows / m002_json_to_sqlite (retired)
 
-After a successful migration, the original `jobs.json` is **renamed** (not
-deleted) to `{data_dir}/jobs.json.migrated.<unix_timestamp>`.
-
-For each legacy `Job`, the synthesised `Workflow` preserves the original job's
-UUID so that existing log files (keyed by `job_id` / `workflow_id`) remain
-accessible without path changes.
-
-| Legacy field | Synthesised step |
-|---|---|
-| `pre_hook` (if present) with `pre_hook_script_type = null` or `"shell"` | `ShellStep` with `id="pre_hook"`, `on_failure=Abort`, `always_run=false` |
-| `pre_hook` (if present) with `pre_hook_script_type = "python"`, `"batch"`, or `"powershell"` | Hook body written to `migrated_scripts/{job_id}_pre_hook.{ext}`; `ScriptStep` with `id="pre_hook"`, `script_type` set, `always_run=false` |
-| `execution: ShellCommand(cmd)` | `ShellStep` with `id="main"`, `on_failure=Abort` |
-| `execution: ScriptFile(path)` | `ScriptStep` with `id="main"`, `script_type` inferred from extension |
-| `post_hook` (if present) with `post_hook_script_type = null` or `"shell"` | `ShellStep` with `id="post_hook"`, `on_failure=Abort`, `always_run=true` |
-| `post_hook` (if present) with `post_hook_script_type = "python"`, `"batch"`, or `"powershell"` | Hook body written to `migrated_scripts/{job_id}_post_hook.{ext}`; `ScriptStep` with `id="post_hook"`, `script_type` set, `always_run=true` |
-
-`job.timeout_secs` is copied to `common.timeout_secs` on all synthesised
-steps.  A value of `0` becomes `None` (no timeout).  `job.last_exit_code` is
-mapped to `workflow.last_run_status`: `0` → `Completed`, any other value →
-`Failed`, absent → `None`.  `job.allow_concurrent` is preserved verbatim.
-`script_type` is inferred from the file extension: `.sh`/`.bash` → `"shell"`,
-`.bat`/`.cmd` → `"batch"`, `.py` → `"python"`, `.ps1` → `"powershell"`.
-Unrecognised extensions → `None`.
-
-### m002_json_to_sqlite
-
-`m002_json_to_sqlite` populates `acs.db` from any JSON sources left behind by
-earlier daemon versions.
-
-| Condition | Action |
-|---|---|
-| `acs.db` contains a `workflows` table | No-op (return `Ok(false)`) — conversion or fresh-install schema already in place. Table-based rather than file-based because the migration runner creates `acs.db` up front to host `schema_migrations`. |
-| Neither `workflows.json` nor `runs/` exists | Apply the schema to `acs.db`, return `Ok(true)` |
-| Otherwise | Open `acs.db`, BEGIN transaction, INSERT every workflow from `workflows.json` and every run from `runs/<workflow_id>/<run_id>.json`, verify row counts match, sample-verify one row of each, COMMIT, then delete `workflows.json` and the entire `runs/` directory |
-
-Files inside `runs/` whose name is not a valid UUID `.json` filename (notably
-`runs/index.json`) are ignored on read; they are removed implicitly when the
-parent `runs/` directory is deleted on success.
-
-On any failure during the insert/verify phase the transaction is rolled back
-explicitly, the partial `acs.db` (and any WAL/SHM sidecars) is removed, and
-the JSON sources are left untouched so the migration can be re-run after the
-underlying problem is fixed.  The error is propagated through
-`migration::run_pending()`, which aborts daemon startup.
-
-`migrations.json` is **not** moved into the `meta` table.  It is the legacy
-migration-state file: the runner reads it once to backfill the
-`schema_migrations` tracking table and then deletes it.  This migration
-itself never touches the file.
+The v4-era Rust migrations that converted the pre-ACS-18 `jobs.json` format
+to workflows and moved JSON storage into SQLite were retired in v5.0.0,
+along with the `migrations.json` backfill.  Databases that still need them
+must upgrade through v4.2.14 first.  Their `schema_migrations` rows are
+tolerated and left in place on upgraded databases.
 
 ### m003_drop_step_output_summary
 
-`m003_drop_step_output_summary` walks every row in `workflow_runs` and strips
-the legacy `output_summary` key from each persisted `StepRun` JSON record.
-Per-step output now lives exclusively in
+SQL (json1).  Strips the legacy `output_summary` key from every persisted
+`StepRun` record in `workflow_runs.steps_json` — per-step output lives in
 `{data_dir}/logs/{workflow_id}/{run_id}.log`, framed by each `StepRun`'s
-`log_byte_offset_start` / `log_byte_offset_end` pair, so the inline copy is
-redundant.
-
-| Condition | Action |
-|---|---|
-| `acs.db` does not exist | No-op (return `Ok(false)`) |
-| No row in `workflow_runs` carries an `output_summary` key | No-op (return `Ok(false)`) — drops the read-only transaction without committing |
-| Otherwise | BEGIN transaction → for each row whose `steps_json` contains at least one `output_summary` key: parse, strip, re-serialise, `UPDATE workflow_runs SET steps_json = ? WHERE run_id = ?` → COMMIT |
-
-On any parse / serialise / UPDATE error the transaction is rolled back and the
-error is propagated through `run_pending()`, which aborts daemon startup. The
-migration is idempotent: re-running on a database that already has no
-`output_summary` keys returns `Ok(false)` and the runner does not write it
-into the applied set.
+byte offsets, so the inline copy was redundant.  The `UPDATE` rebuilds each
+`steps_json` array element-by-element with `json_each` + `json_remove`,
+consulting the `json_each.type` column so every element kind round-trips
+exactly; only rows where at least one object element actually carries the
+key are rewritten.
 
 ### m004_drop_input_schema
 
-`m004_drop_input_schema` removes the `input_schema` column from the
-`workflows` table. `input_schema` is no longer carried on `Workflow`,
-`NewWorkflow`, or `WorkflowUpdate` and is not consumed by the runtime; the
-column must be dropped so that INSERT/UPDATE statements that no longer
-reference it succeed.
-
-| Condition | Action |
-|---|---|
-| `acs.db` does not exist | No-op (return `Ok(false)`) |
-| `workflows.input_schema` column is absent (fresh install or already migrated) | No-op (return `Ok(false)`) |
-| Column is present | `ALTER TABLE workflows DROP COLUMN input_schema` |
-
-Column existence is checked via `PRAGMA table_info(workflows)`. The migration
-is idempotent: a second run sees the column is absent and returns `Ok(false)`.
+SQL.  `ALTER TABLE workflows DROP COLUMN input_schema;` — the column is no
+longer carried on `Workflow` / `NewWorkflow` / `WorkflowUpdate`.  The column
+is guaranteed present when this runs: fresh installs get it from the
+baseline, and upgraded databases skip via the recorded row.
 
 ### m005_shell_claude_to_agent
 
-`m005_shell_claude_to_agent` rewrites legacy `shell` steps that wrap a
-`claude -p ... --output-format stream-json` invocation as proper `agent` steps
-of type `claude_code_cli`, so that the streaming NDJSON cost parser captures
-`cost_usd`. The cost parser only runs on `AgentStep` — shell-wrapped calls
-were correct functionally but always produced a `null` `cost_usd`.
+**Code migration** — the rewrite needs a shell tokenizer (double/single
+quotes, backslash escapes), `-p` prompt extraction across three flag
+syntaxes, residual-flag template reconstruction, and recursion into
+arbitrarily-nested `match` step branches, none of which SQLite's json1
+functions can express.
 
-A step is rewritten when **all** of the following hold:
-
-* `kind == "shell"`
-* The command, trimmed of leading whitespace, starts with the literal token
-  `claude` (`"claude"` exactly, `"claude "`, or `"claude\t"`).
-* The command contains the substring `--output-format stream-json`.
-
-The prompt is extracted from the first `-p` flag's value. Supported syntaxes
-are `-p "double-quoted"`, `-p 'single-quoted'`, `-p=value`, `-p="value"`, and
-`-p='value'`. Embedded `\n`, `\t`, escaped quotes, and `\\` sequences inside
-the quoted prompt are preserved verbatim (de-quoted without de-escaping).
-
-If the residual flags (after removing `-p <value>`) exactly match
-`--output-format stream-json --verbose --dangerously-skip-permissions` —
-the default `claude_code_cli` tail — the rewritten step has
-`command_template = None` (it inherits the default). Otherwise the residual
-flags are preserved by emitting a full `command_template` so callers retain
-custom flags like `--model`, `--session-id`, or `-c`.
-
-**Skip case:** if the command matches the detection criterion but has no
-`-p` flag, the prompt is being fed via stdin. Automatically migrating that
-case would lose the stdin source, so the migration emits a `tracing::warn!`
-and leaves the step as `shell`.
-
-| Condition | Action |
-|---|---|
-| `acs.db` does not exist | No-op (return `Ok(false)`) |
-| No workflow contains a shell-claude step matching the criterion | No-op (return `Ok(false)`) |
-| Otherwise | BEGIN transaction → for each workflow whose `steps_json` carries at least one rewritten step: walk the step array (including recursion into every `MatchStep` `cases.<value>` array and `default` array), rewrite each shell-claude step in place, bump `workflows.version`, set `updated_at`, UPDATE → COMMIT |
-
-Rollback on error mirrors m003. The migration is idempotent: after rewriting,
-the step's `kind` is `agent` and the detection criterion no longer matches.
+Rewrites legacy `shell` steps that wrap a
+`claude -p ... --output-format stream-json` invocation as proper `agent`
+steps of type `claude_code_cli`, so the streaming NDJSON cost parser
+captures `cost_usd`.  A step is rewritten when `kind == "shell"`, the
+command starts with the literal token `claude`, and it contains
+`--output-format stream-json`.  The prompt comes from the first `-p` flag
+(`-p "..."`, `-p '...'`, or `-p=...`; escape sequences preserved verbatim).
+If the residual flags exactly match the default `claude_code_cli` tail the
+step inherits the default template; otherwise a full `command_template` is
+emitted so custom flags survive.  Commands matching the criterion without a
+`-p` flag (stdin-fed prompt) are left unchanged with a warning.  Rewritten
+workflows get `version + 1` and a fresh `updated_at`.
 
 ### m006_agent_step_normalize
 
-`m006_agent_step_normalize` walks every row in `workflows`, finds `agent` steps that
-still carry a legacy `command_template` field, and rewrites them into the structured
-v4.2.7 shape (`model` + `extra_args`). The `command_template` field was removed in
-v4.2.7 because the agent runner now builds argv directly without going through a shell,
-eliminating a whole class of escaping bugs.
+**Code migration** — same rationale as m005 (tokenizer + nested-JSON
+recursion).
 
-Detection criteria for rewriting a step:
-
-* `kind == "agent"`
-* `command_template` key is present on the step JSON
-
-For each match the migration:
-
-1. Tokenizes `command_template` (handles quoted values, `--flag=value` and `--flag value`
-   forms, single/double quotes, escaped quotes).
-2. Extracts `--model <value>` (or `--model=<value>`) if present and sets the `model`
-   field. If `--model` is absent, any pre-existing `model` value on the step is
-   preserved untouched.
-3. Strips the canonical baseline tokens: `claude` (first token), `-p <value>`,
-   `--output-format stream-json`, `--verbose`, `--dangerously-skip-permissions`.
-4. Whatever tokens remain become `extra_args` (an array of strings, defaulting to `[]`).
-5. Removes the `command_template` key entirely.
-6. Recurses into `MatchStep` `cases.<value>` and `default` arrays so rewrites apply
-   throughout branching workflows.
-
-Templates whose first token is not `claude`, or whose quoting is malformed, are left
-unchanged with a `tracing::warn!`. Operators can rewrite those by hand.
-
-| Condition | Action |
-|---|---|
-| `acs.db` does not exist | No-op (return `Ok(false)`) |
-| No workflow has an AgentStep with `command_template` | No-op (return `Ok(false)`) |
-| Otherwise | BEGIN transaction → for each workflow whose `steps_json` is rewritten: bump `version`, refresh `updated_at`, UPDATE → COMMIT |
-
-Rollback on parse/UPDATE error. Idempotent: after rewriting, no `command_template` keys
-remain, so a second run sees no candidates and returns `Ok(false)`.
+Normalizes `agent` steps that still carry a legacy `command_template` string
+into the structured shape: `--model <value>` / `--model=<value>` becomes the
+`model` field, the canonical baseline tokens (`claude`, `-p` + value,
+`--output-format stream-json`, `--verbose`,
+`--dangerously-skip-permissions`) are stripped, whatever remains becomes
+`extra_args` (defaulting to `[]`), and `command_template` is removed.
+Recurses into `match` branches.  Templates whose first token is not
+`claude`, or whose quoting is malformed, are left unchanged with a warning.
 
 ### m007_add_token_columns
 
-`m007_add_token_columns` adds the `total_input_tokens` and `total_output_tokens`
-columns to the `workflow_runs` table introduced in v4.2.11. Both columns are
-`INTEGER NOT NULL DEFAULT 0`, so historical rows transparently backfill to `0`
-("tokens not tracked"). Fresh installs receive the columns directly via
-`schema.rs` and this migration short-circuits.
-
-| Condition | Action |
-|---|---|
-| `acs.db` does not exist | No-op (return `Ok(false)`) — fresh install |
-| `total_input_tokens` column already present on `workflow_runs` | No-op (return `Ok(false)`) — idempotent |
-| Otherwise | BEGIN transaction → `ALTER TABLE workflow_runs ADD COLUMN total_input_tokens INTEGER NOT NULL DEFAULT 0;` and `ALTER TABLE workflow_runs ADD COLUMN total_output_tokens INTEGER NOT NULL DEFAULT 0;` → COMMIT |
-
----
+SQL.  Adds `total_input_tokens` / `total_output_tokens`
+(`INTEGER NOT NULL DEFAULT 0`) to `workflow_runs`; historical rows backfill
+to `0` ("tokens not tracked").
 
 ### m008_add_workflow_deleted
 
-`m008_add_workflow_deleted` (v4.2.14) adds the `deleted` soft-delete
-column to the `workflows` table and replaces the inline `UNIQUE` constraint on
-`name` with a **partial unique index** covering live rows only:
+SQL, **rebuild-flagged** (the runner applies the `PRAGMA foreign_keys`
+rebuild convention above).  Adds the `deleted` soft-delete column to
+`workflows` and replaces the inline `UNIQUE` on `name` — which SQLite cannot
+drop in place — with a partial unique index over live rows:
 
 ```sql
 CREATE UNIQUE INDEX idx_workflows_name_live ON workflows(name) WHERE deleted = 0;
 ```
 
-SQLite cannot drop an inline column constraint in place, so the migration
-performs a standard table rebuild inside a single transaction (with
-`PRAGMA foreign_keys = OFF` for its duration, toggled outside the transaction
-where the pragma actually takes effect): create `workflows_new` without the
-inline `UNIQUE`, copy all rows, drop the old table, rename, create the partial
-index, then run `PRAGMA foreign_key_check` and roll back if the rebuild would
-orphan any `workflow_runs` rows.
-
-`DELETE /api/workflows/{id}` sets `deleted = 1`, keeping the row (name stored
-verbatim) and every `workflow_runs` record so cost/token history survives.
-Because the unique index only covers `deleted = 0` rows, the name is
-immediately reusable by a new workflow while name resolution among live
-workflows stays unambiguous.
-
-Existing workflows backfill to `deleted = 0`. Fresh installs receive the new
-table shape and index directly via `schema.rs` and this migration
-short-circuits.
-
-| Condition | Action |
-|---|---|
-| `acs.db` does not exist | No-op (return `Ok(false)`) — fresh install |
-| `workflows` DDL no longer contains `UNIQUE` | No-op (return `Ok(false)`) — idempotent (already rebuilt or created fresh) |
-| Otherwise | Table rebuild: additively ensure `is_favorited`/`deleted` columns → `CREATE TABLE workflows_new` (no inline `UNIQUE`) → copy rows → `DROP`/`RENAME` → `CREATE UNIQUE INDEX idx_workflows_name_live ...` → `foreign_key_check` → COMMIT |
+The script creates `workflows_new` in the final shape, copies all rows
+(`deleted` defaults to `0`), drops the old table, renames, and creates the
+index; the runner's `foreign_key_check` guards against orphaning
+`workflow_runs` rows.  `DELETE /api/workflows/{id}` sets `deleted = 1`,
+keeping the row (name stored verbatim) and every `workflow_runs` record so
+cost/token history survives; the partial index makes the name immediately
+reusable by a new live workflow.
 
 ---
+
 
 ## 11. Daemon Log Management (`SizeManagedWriter`)
 
