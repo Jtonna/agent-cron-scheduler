@@ -30,15 +30,15 @@
 //! is returned; `migration::run_pending` propagates it, which aborts daemon
 //! startup with a non-zero exit code.
 //!
-//! # `migrations.json` is intentionally left in place
+//! # `migrations.json` is not this migration's concern
 //!
 //! Migration execution is tracked in the `schema_migrations` table inside
 //! `acs.db` (owned by the migration runner, see `migration::mod`).
 //! `migrations.json` is the legacy tracking file: the runner reads it one
-//! time to backfill the tracking table on databases that predate it, and
-//! never writes it again. This migration leaves the file untouched. The
-//! `meta` table exists in the schema for future SQLite-only metadata but is
-//! unused by this migration.
+//! time to backfill the tracking table on databases that predate it, then
+//! deletes it. This migration leaves the file untouched. The `meta` table
+//! exists in the schema for future SQLite-only metadata but is unused by
+//! this migration.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -49,8 +49,88 @@ use uuid::Uuid;
 
 use crate::errors::AcsError;
 use crate::migration::Migration;
-use crate::models::workflow::{Workflow, WorkflowRun};
 use crate::storage::sqlite;
+
+use frozen::{RunRecord, WorkflowRecord};
+
+/// Frozen snapshot of the legacy JSON shapes this migration converts.
+/// Intentionally decoupled from the live model types: do NOT update this
+/// module when live models change — a frozen migration must keep reading and
+/// writing exactly the shapes it shipped with. Structured fields exist only
+/// where the conversion needs a typed value (ids, timestamps, SQL columns);
+/// everything else is carried as opaque JSON and written through verbatim.
+mod frozen {
+    use chrono::{DateTime, Utc};
+    use serde::Deserialize;
+    use serde_json::Value;
+    use uuid::Uuid;
+
+    fn default_schedule_mode() -> String {
+        "Cron".to_string()
+    }
+
+    fn default_on_failure() -> Value {
+        Value::String("abort".to_string())
+    }
+
+    fn default_true() -> bool {
+        true
+    }
+
+    /// One entry of `workflows.json`, at the shape this migration converts.
+    #[derive(Debug, Clone, Deserialize)]
+    pub(super) struct WorkflowRecord {
+        pub id: Uuid,
+        pub name: String,
+        pub version: u32,
+        pub schedule: String,
+        #[serde(default)]
+        pub timezone: Option<String>,
+        #[serde(default = "default_schedule_mode")]
+        pub schedule_mode: String,
+        pub enabled: bool,
+        pub steps: Value,
+        #[serde(default)]
+        pub default_input: Option<Value>,
+        #[serde(default)]
+        pub working_dir: Option<String>,
+        #[serde(default)]
+        pub env_vars: Option<Value>,
+        #[serde(default = "default_true")]
+        pub allow_concurrent: bool,
+        #[serde(default = "default_on_failure")]
+        pub on_failure: Value,
+        #[serde(default)]
+        pub last_run_at: Option<DateTime<Utc>>,
+        #[serde(default)]
+        pub last_run_status: Option<String>,
+        #[serde(default)]
+        pub last_run_id: Option<Uuid>,
+        pub created_at: DateTime<Utc>,
+        pub updated_at: DateTime<Utc>,
+    }
+
+    /// One `runs/<workflow_id>/<run_id>.json` file, at the shape this
+    /// migration converts.
+    #[derive(Debug, Clone, Deserialize)]
+    pub(super) struct RunRecord {
+        pub run_id: Uuid,
+        pub workflow_id: Uuid,
+        pub workflow_version: u32,
+        pub workflow_snapshot: Value,
+        pub started_at: DateTime<Utc>,
+        #[serde(default)]
+        pub finished_at: Option<DateTime<Utc>>,
+        pub status: String,
+        #[serde(default)]
+        pub trigger_input: Option<Value>,
+        pub steps: Value,
+        #[serde(default)]
+        pub total_cost_usd: Option<f64>,
+        #[serde(default)]
+        pub total_duration_ms: Option<u64>,
+    }
+}
 
 // ─── Migration impl ───────────────────────────────────────────────────────────
 
@@ -117,7 +197,7 @@ impl Migration for JsonToSqlite {
         // run files for some out-of-band reason.
         let valid_workflow_ids: HashSet<Uuid> = workflows.iter().map(|w| w.id).collect();
         let total_run_files = all_runs.len();
-        let mut runs: Vec<WorkflowRun> = Vec::with_capacity(total_run_files);
+        let mut runs: Vec<RunRecord> = Vec::with_capacity(total_run_files);
         let mut orphan_count: usize = 0;
         for run in all_runs {
             if valid_workflow_ids.contains(&run.workflow_id) {
@@ -217,21 +297,21 @@ fn workflows_table_exists(path: &Path) -> Result<bool, AcsError> {
 
 // ─── JSON readers ─────────────────────────────────────────────────────────────
 
-async fn read_workflows_json(path: &Path) -> Result<Vec<Workflow>, AcsError> {
+async fn read_workflows_json(path: &Path) -> Result<Vec<WorkflowRecord>, AcsError> {
     if !path.exists() {
         return Ok(Vec::new());
     }
     let content = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| AcsError::Storage(format!("Failed to read {}: {}", path.display(), e)))?;
-    serde_json::from_str::<Vec<Workflow>>(&content)
+    serde_json::from_str::<Vec<WorkflowRecord>>(&content)
         .map_err(|e| AcsError::Storage(format!("Failed to parse {}: {}", path.display(), e)))
 }
 
 /// Walk `<runs_dir>/<workflow_uuid>/<run_uuid>.json` and parse every run file.
 /// Files at the top level (notably `index.json`) are skipped — the index is
 /// derived metadata, not a primary source.
-async fn read_run_files(runs_dir: &Path) -> Result<Vec<WorkflowRun>, AcsError> {
+async fn read_run_files(runs_dir: &Path) -> Result<Vec<RunRecord>, AcsError> {
     if !runs_dir.exists() {
         return Ok(Vec::new());
     }
@@ -286,7 +366,7 @@ async fn read_run_files(runs_dir: &Path) -> Result<Vec<WorkflowRun>, AcsError> {
             let content = tokio::fs::read_to_string(&run_path).await.map_err(|e| {
                 AcsError::Storage(format!("Failed to read {}: {}", run_path.display(), e))
             })?;
-            let run: WorkflowRun = serde_json::from_str(&content).map_err(|e| {
+            let run: RunRecord = serde_json::from_str(&content).map_err(|e| {
                 AcsError::Storage(format!("Failed to parse {}: {}", run_path.display(), e))
             })?;
             runs.push(run);
@@ -303,8 +383,8 @@ async fn read_run_files(runs_dir: &Path) -> Result<Vec<WorkflowRun>, AcsError> {
 /// transaction, verifies, and commits.
 fn migrate_blocking(
     db_path: &Path,
-    workflows: Vec<Workflow>,
-    runs: Vec<WorkflowRun>,
+    workflows: Vec<WorkflowRecord>,
+    runs: Vec<RunRecord>,
 ) -> Result<(), AcsError> {
     let mut conn = sqlite::open_with_schema(db_path)?;
 
@@ -371,54 +451,14 @@ fn migrate_blocking(
     Ok(())
 }
 
-/// Insert a single workflow row. Mirrors the column layout the
-/// `SqliteWorkflowStore` writes so the runtime can read these rows back
-/// unchanged after the migration.
-fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
-    let steps_json =
-        serde_json::to_string(&wf.steps).map_err(|e| AcsError::Storage(e.to_string()))?;
-    let default_input = wf
-        .default_input
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|e| AcsError::Storage(e.to_string()))?;
-    let env_vars = wf
-        .env_vars
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|e| AcsError::Storage(e.to_string()))?;
-
-    let schedule_mode = match serde_json::to_value(&wf.schedule_mode)
-        .map_err(|e| AcsError::Storage(e.to_string()))?
-    {
-        serde_json::Value::String(s) => s,
-        other => {
-            return Err(AcsError::Storage(format!(
-                "ScheduleMode did not serialize to a string: {}",
-                other
-            )));
-        }
-    };
-
-    let on_failure =
-        serde_json::to_string(&wf.on_failure).map_err(|e| AcsError::Storage(e.to_string()))?;
-
-    let last_run_status = match wf.last_run_status {
-        None => None,
-        Some(ref s) => {
-            match serde_json::to_value(s).map_err(|e| AcsError::Storage(e.to_string()))? {
-                serde_json::Value::String(s) => Some(s),
-                other => {
-                    return Err(AcsError::Storage(format!(
-                        "RunStatus did not serialize to a string: {}",
-                        other
-                    )));
-                }
-            }
-        }
-    };
+/// Insert a single workflow row. Lists exactly the columns that existed at
+/// this migration's schema level; columns added by later migrations (for
+/// example `is_favorited` and `deleted`) are filled by their SQL `DEFAULT`
+/// clauses. JSON-shaped values are written through verbatim from the frozen
+/// record.
+fn insert_workflow(conn: &Connection, wf: &WorkflowRecord) -> Result<(), AcsError> {
+    let default_input = wf.default_input.as_ref().map(|v| v.to_string());
+    let env_vars = wf.env_vars.as_ref().map(|v| v.to_string());
 
     conn.execute(
         "INSERT INTO workflows (
@@ -438,16 +478,16 @@ fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
             wf.version as i64,
             wf.schedule,
             wf.timezone,
-            schedule_mode,
+            wf.schedule_mode,
             wf.enabled as i64,
-            steps_json,
+            wf.steps.to_string(),
             default_input,
             wf.working_dir,
             env_vars,
             wf.allow_concurrent as i64,
-            on_failure,
+            wf.on_failure.to_string(),
             wf.last_run_at.map(|d| d.to_rfc3339()),
-            last_run_status,
+            wf.last_run_status,
             wf.last_run_id.map(|u| u.to_string()),
             wf.created_at.to_rfc3339(),
             wf.updated_at.to_rfc3339(),
@@ -463,29 +503,11 @@ fn insert_workflow(conn: &Connection, wf: &Workflow) -> Result<(), AcsError> {
     Ok(())
 }
 
-/// Insert a single workflow_run row.
-fn insert_run(conn: &Connection, run: &WorkflowRun) -> Result<(), AcsError> {
-    let snapshot_json = serde_json::to_string(&run.workflow_snapshot)
-        .map_err(|e| AcsError::Storage(e.to_string()))?;
-    let steps_json =
-        serde_json::to_string(&run.steps).map_err(|e| AcsError::Storage(e.to_string()))?;
-    let trigger_input = run
-        .trigger_input
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|e| AcsError::Storage(e.to_string()))?;
-
-    let status =
-        match serde_json::to_value(run.status).map_err(|e| AcsError::Storage(e.to_string()))? {
-            serde_json::Value::String(s) => s,
-            other => {
-                return Err(AcsError::Storage(format!(
-                    "RunStatus did not serialize to a string: {}",
-                    other
-                )));
-            }
-        };
+/// Insert a single workflow_run row. Same frozen-columns principle as
+/// [`insert_workflow`]: token-count columns added later are filled by their
+/// SQL `DEFAULT` clauses.
+fn insert_run(conn: &Connection, run: &RunRecord) -> Result<(), AcsError> {
+    let trigger_input = run.trigger_input.as_ref().map(|v| v.to_string());
 
     conn.execute(
         "INSERT INTO workflow_runs (
@@ -497,12 +519,12 @@ fn insert_run(conn: &Connection, run: &WorkflowRun) -> Result<(), AcsError> {
             run.run_id.to_string(),
             run.workflow_id.to_string(),
             run.workflow_version as i64,
-            snapshot_json,
+            run.workflow_snapshot.to_string(),
             run.started_at.to_rfc3339(),
             run.finished_at.map(|d| d.to_rfc3339()),
-            status,
+            run.status,
             trigger_input,
-            steps_json,
+            run.steps.to_string(),
             run.total_cost_usd,
             run.total_duration_ms.map(|n| n as i64),
         ],
@@ -517,14 +539,13 @@ fn insert_run(conn: &Connection, run: &WorkflowRun) -> Result<(), AcsError> {
     Ok(())
 }
 
-/// Re-read the just-inserted workflow row as JSON-shaped fields, deserialise
-/// it back into a `Workflow`, and confirm structural equality with the
-/// source. Verifies the round-trip without coupling to the runtime row
-/// mapper (which is private to the SQLite store module).
-fn verify_workflow_round_trip(conn: &Connection, source: &Workflow) -> Result<(), AcsError> {
+/// Re-read the just-inserted workflow row and confirm the JSON-shaped columns
+/// parse back to values structurally equal to the frozen source. Verifies the
+/// round-trip without coupling to any live model or the runtime row mapper.
+fn verify_workflow_round_trip(conn: &Connection, source: &WorkflowRecord) -> Result<(), AcsError> {
     let id_s = source.id.to_string();
 
-    let (steps_json, on_failure_json, snapshot_name): (String, String, String) = conn
+    let (steps_json, on_failure_json, stored_name): (String, String, String) = conn
         .query_row(
             "SELECT steps_json, on_failure, name FROM workflows WHERE id = ?1",
             [&id_s],
@@ -537,14 +558,14 @@ fn verify_workflow_round_trip(conn: &Connection, source: &Workflow) -> Result<()
             ))
         })?;
 
-    if snapshot_name != source.name {
+    if stored_name != source.name {
         return Err(AcsError::Storage(format!(
             "Workflow {} verification mismatch: name {:?} != {:?}",
-            source.id, snapshot_name, source.name
+            source.id, stored_name, source.name
         )));
     }
 
-    let round_tripped_steps: Vec<crate::models::workflow::StepDef> =
+    let round_tripped_steps: serde_json::Value =
         serde_json::from_str(&steps_json).map_err(|e| {
             AcsError::Storage(format!(
                 "Verification: round-trip parse of steps for {} failed: {}",
@@ -558,7 +579,7 @@ fn verify_workflow_round_trip(conn: &Connection, source: &Workflow) -> Result<()
         )));
     }
 
-    let round_tripped_failure: crate::models::workflow::FailurePolicy =
+    let round_tripped_failure: serde_json::Value =
         serde_json::from_str(&on_failure_json).map_err(|e| {
             AcsError::Storage(format!(
                 "Verification: round-trip parse of on_failure for {} failed: {}",
@@ -575,10 +596,10 @@ fn verify_workflow_round_trip(conn: &Connection, source: &Workflow) -> Result<()
     Ok(())
 }
 
-/// Re-read the just-inserted workflow_run row, deserialise the `steps_json`
-/// blob, and confirm it matches the source. Lightweight smoke check that the
-/// transaction wrote what we expected.
-fn verify_run_round_trip(conn: &Connection, source: &WorkflowRun) -> Result<(), AcsError> {
+/// Re-read the just-inserted workflow_run row and confirm the status and the
+/// `steps_json` blob match the frozen source. Lightweight smoke check that
+/// the transaction wrote what we expected.
+fn verify_run_round_trip(conn: &Connection, source: &RunRecord) -> Result<(), AcsError> {
     let id_s = source.run_id.to_string();
     let (status_s, steps_json): (String, String) = conn
         .query_row(
@@ -593,24 +614,14 @@ fn verify_run_round_trip(conn: &Connection, source: &WorkflowRun) -> Result<(), 
             ))
         })?;
 
-    let expected_status =
-        match serde_json::to_value(source.status).map_err(|e| AcsError::Storage(e.to_string()))? {
-            serde_json::Value::String(s) => s,
-            other => {
-                return Err(AcsError::Storage(format!(
-                    "RunStatus did not serialize to a string: {}",
-                    other
-                )));
-            }
-        };
-    if status_s != expected_status {
+    if status_s != source.status {
         return Err(AcsError::Storage(format!(
             "Run {} verification mismatch: status {:?} != {:?}",
-            source.run_id, status_s, expected_status
+            source.run_id, status_s, source.status
         )));
     }
 
-    let round_tripped_steps: Vec<crate::models::workflow::StepRun> =
+    let round_tripped_steps: serde_json::Value =
         serde_json::from_str(&steps_json).map_err(|e| {
             AcsError::Storage(format!(
                 "Verification: round-trip parse of steps for run {} failed: {}",
@@ -633,11 +644,10 @@ fn verify_run_round_trip(conn: &Connection, source: &WorkflowRun) -> Result<(), 
 mod tests {
     use super::*;
     use crate::models::workflow::{
-        CaptureSpec, FailurePolicy, NewWorkflow, RunStatus, ScheduleMode, ShellStep, StepDef,
-        StepDefCommon, Workflow, WorkflowRun,
+        CaptureSpec, FailurePolicy, NewWorkflow, ScheduleMode, ShellStep, StepDef, StepDefCommon,
+        Workflow, WorkflowRun,
     };
     use chrono::Utc;
-    use std::collections::HashMap;
     use tempfile::TempDir;
 
     fn make_shell_step(id: &str) -> StepDef {
@@ -656,51 +666,44 @@ mod tests {
         })
     }
 
+    /// Build a live [`Workflow`] fixture from a frozen JSON literal at the
+    /// legacy shape this migration converts. Going through `from_value` (not
+    /// a struct literal) keeps this helper immune to live-model field
+    /// additions: new fields simply fill in via their serde defaults.
     fn make_workflow(name: &str) -> Workflow {
         let now = Utc::now();
-        let mut env = HashMap::new();
-        env.insert("FOO".to_string(), "bar".to_string());
-        Workflow {
-            id: Uuid::now_v7(),
-            name: name.to_string(),
-            version: 1,
-            schedule: "*/5 * * * *".to_string(),
-            timezone: Some("America/New_York".to_string()),
-            schedule_mode: ScheduleMode::default(),
-            enabled: true,
-            is_favorited: false,
-            deleted: false,
-            steps: vec![make_shell_step("step-1")],
-            default_input: Some(serde_json::json!({"k": 1})),
-            working_dir: Some("/tmp".to_string()),
-            env_vars: Some(env),
-            allow_concurrent: true,
-            on_failure: FailurePolicy::default(),
-            last_run_at: None,
-            last_run_status: None,
-            last_run_id: None,
-            next_run_at: None,
-            created_at: now,
-            updated_at: now,
-        }
+        serde_json::from_value(serde_json::json!({
+            "id": Uuid::now_v7(),
+            "name": name,
+            "version": 1,
+            "schedule": "*/5 * * * *",
+            "timezone": "America/New_York",
+            "schedule_mode": "Cron",
+            "enabled": true,
+            "steps": [serde_json::to_value(make_shell_step("step-1")).unwrap()],
+            "default_input": {"k": 1},
+            "working_dir": "/tmp",
+            "env_vars": {"FOO": "bar"},
+            "allow_concurrent": true,
+            "on_failure": "abort",
+            "created_at": now,
+            "updated_at": now,
+        }))
+        .expect("fixture must parse into the live model")
     }
 
+    /// Same `from_value` principle as [`make_workflow`], for run fixtures.
     fn make_run(parent: &Workflow) -> WorkflowRun {
-        WorkflowRun {
-            run_id: Uuid::now_v7(),
-            workflow_id: parent.id,
-            workflow_version: parent.version,
-            workflow_snapshot: parent.clone(),
-            started_at: Utc::now(),
-            finished_at: None,
-            status: RunStatus::Running,
-            trigger_input: None,
-            steps: vec![],
-            total_cost_usd: None,
-            total_duration_ms: None,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-        }
+        serde_json::from_value(serde_json::json!({
+            "run_id": Uuid::now_v7(),
+            "workflow_id": parent.id,
+            "workflow_version": parent.version,
+            "workflow_snapshot": parent,
+            "started_at": Utc::now(),
+            "status": "Running",
+            "steps": [],
+        }))
+        .expect("fixture must parse into the live model")
     }
 
     async fn write_workflows_json(dir: &Path, workflows: &[Workflow]) {
