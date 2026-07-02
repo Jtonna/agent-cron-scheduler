@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     total_duration_ms      INTEGER,
     total_input_tokens     INTEGER NOT NULL DEFAULT 0,
     total_output_tokens    INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (workflow_id) REFERENCES workflows(id)
+    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_id_finished_at
@@ -71,6 +71,27 @@ CREATE TABLE IF NOT EXISTS meta (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
 );
+
+-- Durable cost ledger (v4.2.14). One append-only row per terminal run
+-- (Completed / Failed / Killed). Deliberately has NO foreign keys so rows
+-- survive deletion of both the parent workflow and the run record itself —
+-- cost analytics aggregate from this table so deleted history still counts.
+CREATE TABLE IF NOT EXISTS cost_ledger (
+    run_id                 TEXT PRIMARY KEY,
+    workflow_id            TEXT NOT NULL,
+    workflow_name          TEXT NOT NULL,
+    started_at             TEXT NOT NULL,
+    finished_at            TEXT,
+    status                 TEXT NOT NULL,
+    total_cost_usd         REAL,
+    total_input_tokens     INTEGER NOT NULL DEFAULT 0,
+    total_output_tokens    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_cost_ledger_workflow_id_finished_at
+    ON cost_ledger(workflow_id, finished_at);
+CREATE INDEX IF NOT EXISTS idx_cost_ledger_finished_at
+    ON cost_ledger(finished_at);
 "#;
 
 /// Apply pragmas (WAL, foreign_keys, synchronous) to a freshly-opened

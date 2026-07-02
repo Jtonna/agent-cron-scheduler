@@ -42,8 +42,18 @@ pub trait WorkflowRunStore: Send + Sync {
     /// Total count of runs across all workflows.
     async fn count_all_runs(&self) -> Result<usize, AcsError>;
 
-    /// Delete a run record. Best-effort.
+    /// Delete a run record. Best-effort. Cost-ledger rows are untouched.
     async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError>;
+
+    /// Delete every non-Running run for the workflow in one transaction and
+    /// return the deleted run ids. Running runs are skipped. Cost-ledger rows
+    /// are untouched.
+    async fn purge_runs(&self, workflow_id: Uuid) -> Result<Vec<Uuid>, AcsError>;
+
+    /// Distinct `(workflow_id, workflow_name)` pairs present in the durable
+    /// cost ledger, using the name recorded on each workflow's most recent
+    /// terminal run. Includes workflows that have since been deleted.
+    async fn list_ledger_workflows(&self) -> Result<Vec<(Uuid, String)>, AcsError>;
 
     /// Compute cost aggregates for a workflow over the last 30 days and last
     /// year, using calendar-day boundaries in `display_tz`.

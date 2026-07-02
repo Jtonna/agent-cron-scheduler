@@ -153,6 +153,51 @@ fn upsert_run(conn: &Connection, run: &WorkflowRun) -> Result<(), AcsError> {
         ],
     )
     .map_err(|e| AcsError::Storage(format!("INSERT/UPDATE workflow_run failed: {}", e)))?;
+
+    // Mirror every terminal run into the durable cost ledger. The ledger has
+    // no foreign keys, so cost/token history survives deletion of both the
+    // workflow and the run record itself.
+    upsert_ledger_row(conn, run)?;
+    Ok(())
+}
+
+/// Insert (or refresh) the cost-ledger row for a terminal run. Non-terminal
+/// (`Running`) runs are skipped — the ledger only records finished work.
+///
+/// Upsert semantics keep this idempotent: the kill route may persist a
+/// `Killed` status moments before the executor's finalize path writes the
+/// authoritative terminal state; the last write wins in both tables.
+fn upsert_ledger_row(conn: &Connection, run: &WorkflowRun) -> Result<(), AcsError> {
+    if run.status == RunStatus::Running {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO cost_ledger (
+            run_id, workflow_id, workflow_name, started_at, finished_at,
+            status, total_cost_usd, total_input_tokens, total_output_tokens
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(run_id) DO UPDATE SET
+            workflow_id          = excluded.workflow_id,
+            workflow_name        = excluded.workflow_name,
+            started_at           = excluded.started_at,
+            finished_at          = excluded.finished_at,
+            status               = excluded.status,
+            total_cost_usd       = excluded.total_cost_usd,
+            total_input_tokens   = excluded.total_input_tokens,
+            total_output_tokens  = excluded.total_output_tokens",
+        params![
+            run.run_id.to_string(),
+            run.workflow_id.to_string(),
+            run.workflow_snapshot.name,
+            run.started_at.to_rfc3339(),
+            run.finished_at.map(|d| d.to_rfc3339()),
+            run_status_str(&run.status)?,
+            run.total_cost_usd,
+            run.total_input_tokens as i64,
+            run.total_output_tokens as i64,
+        ],
+    )
+    .map_err(|e| AcsError::Storage(format!("INSERT/UPDATE cost_ledger failed: {}", e)))?;
     Ok(())
 }
 
@@ -298,12 +343,89 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
 
     async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError> {
         // Best-effort: deleting a row that isn't present is not an error.
+        // Cost-ledger rows are intentionally NOT touched — cost history
+        // survives run deletion.
         let id_s = run_id.to_string();
         self.db
             .with_conn(move |c| {
                 c.execute("DELETE FROM workflow_runs WHERE run_id = ?", [id_s])
                     .map_err(|e| AcsError::Storage(e.to_string()))?;
                 Ok(())
+            })
+            .await
+    }
+
+    async fn purge_runs(&self, workflow_id: Uuid) -> Result<Vec<Uuid>, AcsError> {
+        // Delete every non-Running run for the workflow in one transaction and
+        // return the deleted run ids (so the caller can clean up log files).
+        // Running runs are skipped. Cost-ledger rows are NOT touched.
+        let wf_s = workflow_id.to_string();
+        self.db
+            .with_conn(move |c| {
+                let tx = c.transaction().map_err(|e| {
+                    AcsError::Storage(format!("Failed to start transaction: {}", e))
+                })?;
+
+                let deleted: Vec<Uuid> = {
+                    let mut stmt = tx
+                        .prepare(
+                            "SELECT run_id FROM workflow_runs \
+                             WHERE workflow_id = ?1 AND status != 'Running'",
+                        )
+                        .map_err(|e| AcsError::Storage(e.to_string()))?;
+                    let rows = stmt
+                        .query_map([&wf_s], |r| r.get::<_, String>(0))
+                        .map_err(|e| AcsError::Storage(e.to_string()))?;
+                    let mut ids = Vec::new();
+                    for r in rows {
+                        let id_s = r.map_err(|e| AcsError::Storage(e.to_string()))?;
+                        ids.push(Uuid::parse_str(&id_s).map_err(|e| {
+                            AcsError::Storage(format!("invalid run_id '{}': {}", id_s, e))
+                        })?);
+                    }
+                    ids
+                };
+
+                tx.execute(
+                    "DELETE FROM workflow_runs WHERE workflow_id = ?1 AND status != 'Running'",
+                    [&wf_s],
+                )
+                .map_err(|e| {
+                    AcsError::Storage(format!("bulk DELETE workflow_runs failed: {}", e))
+                })?;
+
+                tx.commit()
+                    .map_err(|e| AcsError::Storage(format!("COMMIT failed: {}", e)))?;
+                Ok(deleted)
+            })
+            .await
+    }
+
+    async fn list_ledger_workflows(&self) -> Result<Vec<(Uuid, String)>, AcsError> {
+        // Distinct workflow ids present in the cost ledger, each paired with
+        // the workflow name recorded on its most recent run (run_ids are
+        // UUIDv7, so MAX(run_id) is the latest).
+        self.db
+            .with_conn(move |c| {
+                let mut stmt = c
+                    .prepare(
+                        "SELECT workflow_id, workflow_name FROM cost_ledger \
+                         WHERE run_id IN \
+                            (SELECT MAX(run_id) FROM cost_ledger GROUP BY workflow_id)",
+                    )
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+                let mut out = Vec::new();
+                for r in rows {
+                    let (id_s, name) = r.map_err(|e| AcsError::Storage(e.to_string()))?;
+                    let id = Uuid::parse_str(&id_s).map_err(|e| {
+                        AcsError::Storage(format!("invalid workflow_id '{}': {}", id_s, e))
+                    })?;
+                    out.push((id, name));
+                }
+                Ok(out)
             })
             .await
     }
@@ -363,7 +485,7 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                           COALESCE(SUM(CASE WHEN finished_at >= ?2 THEN 1 END), 0)                      AS last_year_runs,
                           COALESCE(SUM(CASE WHEN finished_at >= ?2 THEN total_input_tokens END), 0)     AS last_year_input_tokens,
                           COALESCE(SUM(CASE WHEN finished_at >= ?2 THEN total_output_tokens END), 0)    AS last_year_output_tokens
-                        FROM workflow_runs
+                        FROM cost_ledger
                         WHERE workflow_id = ?3
                           AND status IN ('Completed', 'Failed', 'Killed')
                           AND finished_at IS NOT NULL
@@ -429,7 +551,7 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                 let sql = if wf_id_s.is_some() {
                     "SELECT finished_at, status, total_cost_usd, \
                             total_input_tokens, total_output_tokens \
-                     FROM workflow_runs \
+                     FROM cost_ledger \
                      WHERE status IN ('Completed', 'Failed', 'Killed') \
                        AND finished_at IS NOT NULL \
                        AND finished_at >= ?1 \
@@ -439,7 +561,7 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
                 } else {
                     "SELECT finished_at, status, total_cost_usd, \
                             total_input_tokens, total_output_tokens \
-                     FROM workflow_runs \
+                     FROM cost_ledger \
                      WHERE status IN ('Completed', 'Failed', 'Killed') \
                        AND finished_at IS NOT NULL \
                        AND finished_at >= ?1 \
@@ -889,6 +1011,7 @@ mod tests {
         let status = status.to_string();
         let finished_at = finished_at.map(|s| s.to_string());
 
+        let wf_name = workflow.name.clone();
         db_conn
             .with_conn(move |c| {
                 c.execute(
@@ -911,6 +1034,29 @@ mod tests {
                     ],
                 )
                 .map_err(|e| AcsError::Storage(e.to_string()))?;
+                // Mirror the production invariant: every terminal run also has
+                // a cost-ledger row (cost queries aggregate from cost_ledger).
+                if status != "Running" {
+                    c.execute(
+                        "INSERT INTO cost_ledger (
+                            run_id, workflow_id, workflow_name, started_at,
+                            finished_at, status, total_cost_usd,
+                            total_input_tokens, total_output_tokens
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        params![
+                            run_id,
+                            wf_id,
+                            wf_name,
+                            started_at,
+                            finished_at,
+                            status,
+                            cost_usd,
+                            input_tokens,
+                            output_tokens,
+                        ],
+                    )
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+                }
                 Ok(())
             })
             .await
@@ -965,11 +1111,11 @@ mod tests {
         let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
         let wf = seed_workflow(&wf_store, "cost-null-mix").await;
         let tz: Tz = "UTC".parse().unwrap();
-        let recent = "2026-05-09T12:00:00+00:00";
+        let recent = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
         // run with cost 0.5
-        seed_raw_run(&run_store, &wf, "Completed", Some(recent), Some(0.5)).await;
+        seed_raw_run(&run_store, &wf, "Completed", Some(&recent), Some(0.5)).await;
         // run with null cost — counted but not summed
-        seed_raw_run(&run_store, &wf, "Completed", Some(recent), None).await;
+        seed_raw_run(&run_store, &wf, "Completed", Some(&recent), None).await;
         let summary = run_store
             .cost_summary_for(wf.id, &tz)
             .await
@@ -985,10 +1131,10 @@ mod tests {
         let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
         let wf = seed_workflow(&wf_store, "cost-statuses").await;
         let tz: Tz = "UTC".parse().unwrap();
-        let recent = "2026-05-09T12:00:00+00:00";
-        seed_raw_run(&run_store, &wf, "Failed", Some(recent), Some(0.1)).await;
-        seed_raw_run(&run_store, &wf, "Killed", Some(recent), Some(0.2)).await;
-        seed_raw_run(&run_store, &wf, "Completed", Some(recent), Some(0.3)).await;
+        let recent = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        seed_raw_run(&run_store, &wf, "Failed", Some(&recent), Some(0.1)).await;
+        seed_raw_run(&run_store, &wf, "Killed", Some(&recent), Some(0.2)).await;
+        seed_raw_run(&run_store, &wf, "Completed", Some(&recent), Some(0.3)).await;
         let summary = run_store
             .cost_summary_for(wf.id, &tz)
             .await
@@ -1142,8 +1288,8 @@ mod tests {
         let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
         let wf = seed_workflow(&wf_store, "cost-utc").await;
         let utc_tz: Tz = "UTC".parse().unwrap();
-        let recent = "2026-05-09T00:00:00+00:00";
-        seed_raw_run(&run_store, &wf, "Completed", Some(recent), Some(1.5)).await;
+        let recent = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        seed_raw_run(&run_store, &wf, "Completed", Some(&recent), Some(1.5)).await;
         let summary = run_store
             .cost_summary_for(wf.id, &utc_tz)
             .await
@@ -1452,7 +1598,7 @@ mod tests {
         let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
         let wf = seed_workflow(&wf_store, "tok-summary").await;
         let tz: Tz = "UTC".parse().unwrap();
-        let recent = "2026-05-09T12:00:00+00:00";
+        let recent = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
 
         // Seed three runs: Completed (100 in / 50 out), Failed (200 in / 80 out),
         // Killed (300 in / 120 out).
@@ -1460,15 +1606,24 @@ mod tests {
             &run_store,
             &wf,
             "Completed",
-            Some(recent),
+            Some(&recent),
             Some(0.1),
             100,
             50,
         )
         .await;
-        seed_raw_run_with_tokens(&run_store, &wf, "Failed", Some(recent), Some(0.2), 200, 80).await;
-        seed_raw_run_with_tokens(&run_store, &wf, "Killed", Some(recent), Some(0.3), 300, 120)
+        seed_raw_run_with_tokens(&run_store, &wf, "Failed", Some(&recent), Some(0.2), 200, 80)
             .await;
+        seed_raw_run_with_tokens(
+            &run_store,
+            &wf,
+            "Killed",
+            Some(&recent),
+            Some(0.3),
+            300,
+            120,
+        )
+        .await;
 
         let summary = run_store
             .cost_summary_for(wf.id, &tz)
@@ -1674,5 +1829,229 @@ mod tests {
         // Aggregation correct.
         assert_eq!(buckets[0].runs_completed, 2);
         assert_eq!(buckets[2].runs_completed, 2);
+    }
+
+    // ── Cost ledger (ACS-25) ─────────────────────────────────────────────────
+
+    /// Count ledger rows for a run id directly via SQL.
+    async fn ledger_row_count(store: &SqliteWorkflowRunStore, run_id: Uuid) -> i64 {
+        let id_s = run_id.to_string();
+        store
+            .db
+            .clone()
+            .with_conn(move |c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM cost_ledger WHERE run_id = ?",
+                    [&id_s],
+                    |r| r.get(0),
+                )
+                .map_err(|e| AcsError::Storage(e.to_string()))
+            })
+            .await
+            .expect("count ledger rows")
+    }
+
+    #[tokio::test]
+    async fn test_terminal_run_writes_ledger_row() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let parent = seed_workflow(&wf_store, "ledger-write").await;
+        let run = make_completed_run(&parent);
+        let run_id = run.run_id;
+        run_store.create_run(run).await.expect("create");
+        assert_eq!(
+            ledger_row_count(&run_store, run_id).await,
+            1,
+            "terminal run must produce a cost_ledger row"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_running_run_does_not_write_ledger_row() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let parent = seed_workflow(&wf_store, "ledger-running").await;
+        let run = make_run(&parent); // status = Running
+        let run_id = run.run_id;
+        run_store.create_run(run.clone()).await.expect("create");
+        assert_eq!(
+            ledger_row_count(&run_store, run_id).await,
+            0,
+            "Running runs must not appear in the ledger"
+        );
+
+        // Finalizing the same run (Running → Completed) writes the row.
+        let mut finished = run;
+        finished.status = RunStatus::Completed;
+        finished.finished_at = Some(Utc::now());
+        finished.total_cost_usd = Some(0.42);
+        run_store.update_run(&finished).await.expect("finalize");
+        assert_eq!(
+            ledger_row_count(&run_store, run_id).await,
+            1,
+            "finalized run must produce a cost_ledger row"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ledger_rows_survive_run_deletion() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "ledger-survives-run-del").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let run = make_completed_run(&wf);
+        let run_id = run.run_id;
+        run_store.create_run(run).await.expect("create");
+
+        run_store.delete_run(run_id).await.expect("delete run");
+        assert!(run_store.get_run(run_id).await.expect("get").is_none());
+
+        // Ledger row is untouched, so cost analytics still count the run.
+        assert_eq!(ledger_row_count(&run_store, run_id).await, 1);
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+        assert_eq!(summary.last_30_days_runs, 1);
+        assert!((summary.last_30_days_total_usd - 0.001).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn test_ledger_rows_survive_workflow_deletion() {
+        use crate::storage::workflows::WorkflowStore;
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "ledger-survives-wf-del").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        let run = make_completed_run(&wf);
+        run_store.create_run(run).await.expect("create");
+
+        wf_store
+            .delete_workflow(wf.id)
+            .await
+            .expect("cascade delete workflow with run history");
+        assert!(wf_store.get_workflow(wf.id).await.expect("get").is_none());
+        assert_eq!(
+            run_store.count_runs(wf.id).await.expect("count"),
+            0,
+            "runs must be cascaded away"
+        );
+
+        // The deleted workflow's cost history still aggregates from the ledger.
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+        assert_eq!(summary.last_30_days_runs, 1);
+        assert!((summary.last_30_days_total_usd - 0.001).abs() < 1e-9);
+
+        // ...and the ledger still knows the workflow's name.
+        let ledger = run_store
+            .list_ledger_workflows()
+            .await
+            .expect("list_ledger_workflows");
+        assert!(ledger.contains(&(wf.id, "ledger-survives-wf-del".to_string())));
+    }
+
+    // ── purge_runs (ACS-25) ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_purge_runs_deletes_non_running_and_returns_ids() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "purge-basic").await;
+
+        let mut terminal_ids = Vec::new();
+        for _ in 0..3 {
+            let run = make_completed_run(&wf);
+            terminal_ids.push(run.run_id);
+            run_store.create_run(run).await.expect("create");
+        }
+
+        let deleted = run_store.purge_runs(wf.id).await.expect("purge");
+        assert_eq!(deleted.len(), 3);
+        let mut deleted_sorted = deleted.clone();
+        deleted_sorted.sort();
+        terminal_ids.sort();
+        assert_eq!(deleted_sorted, terminal_ids);
+        assert_eq!(run_store.count_runs(wf.id).await.expect("count"), 0);
+    }
+
+    #[tokio::test]
+    async fn test_purge_runs_skips_running_runs() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "purge-skips-running").await;
+
+        let running = make_run(&wf); // status = Running
+        let running_id = running.run_id;
+        run_store.create_run(running).await.expect("create running");
+        run_store
+            .create_run(make_completed_run(&wf))
+            .await
+            .expect("create completed");
+
+        let deleted = run_store.purge_runs(wf.id).await.expect("purge");
+        assert_eq!(deleted.len(), 1, "only the terminal run is purged");
+        assert!(!deleted.contains(&running_id));
+        assert!(
+            run_store.get_run(running_id).await.expect("get").is_some(),
+            "the Running run must survive the purge"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_purge_runs_no_runs_returns_empty() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "purge-empty").await;
+        let deleted = run_store.purge_runs(wf.id).await.expect("purge");
+        assert!(deleted.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_purge_runs_leaves_ledger_intact() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "purge-keeps-ledger").await;
+        let tz: Tz = "UTC".parse().unwrap();
+        run_store
+            .create_run(make_completed_run(&wf))
+            .await
+            .expect("create");
+
+        run_store.purge_runs(wf.id).await.expect("purge");
+
+        let summary = run_store
+            .cost_summary_for(wf.id, &tz)
+            .await
+            .expect("cost_summary");
+        assert_eq!(
+            summary.last_30_days_runs, 1,
+            "purged runs must still count in cost analytics via the ledger"
+        );
+    }
+
+    // ── list_ledger_workflows ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_list_ledger_workflows_uses_latest_name() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let wf = seed_workflow(&wf_store, "ledger-name-v1").await;
+
+        // First terminal run under the original name.
+        run_store
+            .create_run(make_completed_run(&wf))
+            .await
+            .expect("create 1");
+
+        // Rename the workflow, then record a later terminal run whose snapshot
+        // carries the new name.
+        let mut renamed = wf.clone();
+        renamed.name = "ledger-name-v2".to_string();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        run_store
+            .create_run(make_completed_run(&renamed))
+            .await
+            .expect("create 2");
+
+        let ledger = run_store
+            .list_ledger_workflows()
+            .await
+            .expect("list_ledger_workflows");
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0], (wf.id, "ledger-name-v2".to_string()));
     }
 }

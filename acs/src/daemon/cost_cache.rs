@@ -394,6 +394,12 @@ mod tests {
         async fn delete_run(&self, _run_id: Uuid) -> Result<(), AcsError> {
             unimplemented!()
         }
+        async fn purge_runs(&self, _workflow_id: Uuid) -> Result<Vec<Uuid>, AcsError> {
+            unimplemented!()
+        }
+        async fn list_ledger_workflows(&self) -> Result<Vec<(Uuid, String)>, AcsError> {
+            Ok(Vec::new())
+        }
         async fn cost_summary_for(
             &self,
             _workflow_id: Uuid,

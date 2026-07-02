@@ -359,17 +359,54 @@ impl WorkflowStore for SqliteWorkflowStore {
     }
 
     async fn delete_workflow(&self, id: Uuid) -> Result<()> {
+        // Transactional cascade: refuse when the workflow has an active run,
+        // otherwise delete the run history and the workflow row atomically.
+        // Cost-ledger rows are intentionally left behind — cost analytics must
+        // survive workflow deletion.
         self.db
             .with_conn(move |c| {
-                let n = c
-                    .execute("DELETE FROM workflows WHERE id = ?", [id.to_string()])
+                let id_s = id.to_string();
+                let tx = c.transaction().map_err(|e| {
+                    AcsError::Storage(format!("Failed to start transaction: {}", e))
+                })?;
+
+                let running: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM workflow_runs \
+                         WHERE workflow_id = ?1 AND status = 'Running'",
+                        [&id_s],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| AcsError::Storage(e.to_string()))?;
+                if running > 0 {
+                    return Err(AcsError::Conflict(format!(
+                        "Workflow '{}' has {} running run(s). Kill them (POST /api/runs/{{run_id}}/kill) \
+                         or wait for them to finish before deleting the workflow.",
+                        id, running
+                    )));
+                }
+
+                // Explicit cascade (the FK's ON DELETE CASCADE is defense in
+                // depth on top of this).
+                tx.execute(
+                    "DELETE FROM workflow_runs WHERE workflow_id = ?",
+                    [&id_s],
+                )
+                .map_err(|e| AcsError::Storage(format!("DELETE workflow_runs failed: {}", e)))?;
+
+                let n = tx
+                    .execute("DELETE FROM workflows WHERE id = ?", [&id_s])
                     .map_err(|e| AcsError::Storage(e.to_string()))?;
                 if n == 0 {
+                    // Dropping the transaction rolls back the run deletion.
                     return Err(AcsError::NotFound(format!(
                         "Workflow with id '{}' not found",
                         id
                     )));
                 }
+
+                tx.commit()
+                    .map_err(|e| AcsError::Storage(format!("COMMIT failed: {}", e)))?;
                 Ok(())
             })
             .await?;
@@ -916,6 +953,43 @@ mod tests {
 
     // ── Delete ────────────────────────────────────────────────────────────────
 
+    /// Build a paired workflow store + run store sharing one in-memory DB, for
+    /// deletion tests that need run history.
+    fn paired_stores() -> (
+        SqliteWorkflowStore,
+        crate::storage::sqlite::SqliteWorkflowRunStore,
+    ) {
+        let db = crate::storage::sqlite::init_in_memory_db().expect("init in-memory db");
+        (
+            SqliteWorkflowStore::new(&db),
+            crate::storage::sqlite::SqliteWorkflowRunStore::new(&db),
+        )
+    }
+
+    /// Build a run for `parent` with the given status.
+    fn make_run_with_status(
+        parent: &Workflow,
+        status: RunStatus,
+    ) -> crate::models::workflow::WorkflowRun {
+        let now = Utc::now();
+        let terminal = status != RunStatus::Running;
+        crate::models::workflow::WorkflowRun {
+            run_id: Uuid::now_v7(),
+            workflow_id: parent.id,
+            workflow_version: parent.version,
+            workflow_snapshot: parent.clone(),
+            started_at: now,
+            finished_at: if terminal { Some(now) } else { None },
+            status,
+            trigger_input: None,
+            steps: vec![],
+            total_cost_usd: if terminal { Some(0.01) } else { None },
+            total_duration_ms: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+        }
+    }
+
     #[tokio::test]
     async fn test_delete_then_get_returns_none() {
         let store = SqliteWorkflowStore::in_memory_for_tests();
@@ -937,6 +1011,62 @@ mod tests {
             .expect_err("must error");
         let acs = err.downcast_ref::<AcsError>().expect("must be AcsError");
         assert!(matches!(acs, AcsError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_delete_workflow_with_terminal_runs_cascades() {
+        use crate::storage::workflow_runs::WorkflowRunStore;
+        let (store, run_store) = paired_stores();
+        let created = store
+            .create_workflow(minimal_new_workflow("del-cascade"))
+            .await
+            .expect("create");
+        for status in [RunStatus::Completed, RunStatus::Failed, RunStatus::Killed] {
+            run_store
+                .create_run(make_run_with_status(&created, status))
+                .await
+                .expect("create run");
+        }
+
+        store
+            .delete_workflow(created.id)
+            .await
+            .expect("delete must succeed despite run history");
+
+        assert!(store.get_workflow(created.id).await.expect("get").is_none());
+        assert_eq!(
+            run_store.count_runs(created.id).await.expect("count"),
+            0,
+            "run history must be deleted with the workflow"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_workflow_with_running_run_returns_conflict() {
+        use crate::storage::workflow_runs::WorkflowRunStore;
+        let (store, run_store) = paired_stores();
+        let created = store
+            .create_workflow(minimal_new_workflow("del-running-guard"))
+            .await
+            .expect("create");
+        let running = make_run_with_status(&created, RunStatus::Running);
+        let running_id = running.run_id;
+        run_store.create_run(running).await.expect("create run");
+
+        let err = store
+            .delete_workflow(created.id)
+            .await
+            .expect_err("delete must be refused while a run is active");
+        let acs = err.downcast_ref::<AcsError>().expect("must be AcsError");
+        assert!(matches!(acs, AcsError::Conflict(_)), "got: {:?}", acs);
+
+        // Nothing was deleted.
+        assert!(store.get_workflow(created.id).await.expect("get").is_some());
+        assert!(run_store
+            .get_run(running_id)
+            .await
+            .expect("get run")
+            .is_some());
     }
 
     // ── List ──────────────────────────────────────────────────────────────────
