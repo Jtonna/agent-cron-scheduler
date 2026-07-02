@@ -5000,3 +5000,405 @@ async fn test_cost_summary_avg_equals_total_over_runs() {
         sruns_30
     );
 }
+
+// ---------------------------------------------------------------------------
+// Soft-delete tests (ACS-25)
+// ---------------------------------------------------------------------------
+
+/// SD-1. Soft-deleting a workflow that has run history returns 204, hides the
+///       workflow from GET/list, keeps the runs queryable, and keeps its cost
+///       history visible (flagged `workflow_deleted: true`).
+#[tokio::test]
+async fn test_soft_delete_preserves_runs_and_cost() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("sd-preserve")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap().to_string();
+    let wf_id = Uuid::parse_str(&wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    let run_id = insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        Utc::now() - Duration::days(1),
+        Some(0.42),
+    )
+    .await;
+
+    // DELETE → 204 even though run history exists (regression: used to 500 on
+    // the FOREIGN KEY constraint).
+    let del = client
+        .delete(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("DELETE");
+    assert_eq!(
+        del.status(),
+        204,
+        "soft delete with run history must be 204"
+    );
+
+    // GET by id → 404; absent from list.
+    assert_eq!(
+        client
+            .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+            .send()
+            .await
+            .expect("GET")
+            .status(),
+        404
+    );
+    let list: serde_json::Value = client
+        .get(format!("{}/api/workflows", base_url))
+        .send()
+        .await
+        .expect("GET list")
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        list.as_array().unwrap().is_empty(),
+        "deleted workflow must be absent from the list"
+    );
+
+    // The run is still queryable.
+    let run_resp = client
+        .get(format!("{}/api/runs/{}", base_url, run_id))
+        .send()
+        .await
+        .expect("GET run");
+    assert_eq!(
+        run_resp.status(),
+        200,
+        "runs must survive workflow deletion"
+    );
+
+    // Per-id cost endpoint → 200 with workflow_deleted: true and the run's cost.
+    let cost: serde_json::Value = client
+        .get(format!("{}/api/cost/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("GET cost by id")
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cost["workflow_deleted"], true, "flag must be true");
+    assert_eq!(cost["cost_summary"]["last_30_days_runs"], 1);
+
+    // Cost list includes the deleted workflow, flagged.
+    let cost_list: serde_json::Value = client
+        .get(format!("{}/api/cost/workflows", base_url))
+        .send()
+        .await
+        .expect("GET cost list")
+        .json()
+        .await
+        .unwrap();
+    let entry = cost_list["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["workflow_id"] == serde_json::json!(wf_id_str))
+        .expect("deleted workflow present in cost list");
+    assert_eq!(entry["workflow_deleted"], true);
+}
+
+/// SD-2. Deleting a workflow with an active (Running) run is rejected with 409
+///       and the workflow is left intact.
+#[tokio::test]
+async fn test_delete_workflow_with_active_run_returns_409() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("sd-active")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap().to_string();
+    let wf_id = Uuid::parse_str(&wf_id_str).unwrap();
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+
+    insert_running_run(&run_store, wf_id, &wf).await;
+
+    let del = client
+        .delete(format!("{}/api/workflows/{}", base_url, wf_id_str))
+        .send()
+        .await
+        .expect("DELETE");
+    assert_eq!(del.status(), 409, "active run must block delete");
+    let body: serde_json::Value = del.json().await.unwrap();
+    assert_eq!(body["error"], "workflow_run_active");
+
+    // Workflow still exists.
+    assert_eq!(
+        client
+            .get(format!("{}/api/workflows/{}", base_url, wf_id_str))
+            .send()
+            .await
+            .expect("GET")
+            .status(),
+        200,
+        "workflow must remain after a blocked delete"
+    );
+}
+
+/// SD-3. A name can be reused after soft-delete, and the cost list then shows
+///       two separate entries (deleted + live) that key by distinct ids.
+#[tokio::test]
+async fn test_name_reuse_after_soft_delete_shows_two_cost_entries() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Create → run → delete.
+    let first: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("reuse-name")).unwrap())
+        .send()
+        .await
+        .expect("POST 1")
+        .json()
+        .await
+        .unwrap();
+    let first_id = first["id"].as_str().unwrap().to_string();
+    let first_uuid = Uuid::parse_str(&first_id).unwrap();
+    let first_wf = wf_store.get_workflow(first_uuid).await.unwrap().unwrap();
+    insert_terminal_run(
+        &run_store,
+        first_uuid,
+        &first_wf,
+        RunStatus::Completed,
+        Utc::now() - Duration::days(1),
+        Some(0.10),
+    )
+    .await;
+    assert_eq!(
+        client
+            .delete(format!("{}/api/workflows/{}", base_url, first_id))
+            .send()
+            .await
+            .expect("DELETE")
+            .status(),
+        204
+    );
+
+    // Recreate the same name — must succeed with a new id.
+    let second: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("reuse-name")).unwrap())
+        .send()
+        .await
+        .expect("POST 2")
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second.get("error"), None, "recreate must not conflict");
+    let second_id = second["id"].as_str().unwrap().to_string();
+    assert_ne!(second_id, first_id, "reused name gets a new id");
+    let second_uuid = Uuid::parse_str(&second_id).unwrap();
+    let second_wf = wf_store.get_workflow(second_uuid).await.unwrap().unwrap();
+    insert_terminal_run(
+        &run_store,
+        second_uuid,
+        &second_wf,
+        RunStatus::Completed,
+        Utc::now() - Duration::days(1),
+        Some(0.20),
+    )
+    .await;
+
+    // Cost list shows two separate entries with the same name.
+    let cost_list: serde_json::Value = client
+        .get(format!("{}/api/cost/workflows", base_url))
+        .send()
+        .await
+        .expect("GET cost list")
+        .json()
+        .await
+        .unwrap();
+    let entries: Vec<&serde_json::Value> = cost_list["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["workflow_name"] == serde_json::json!("reuse-name"))
+        .collect();
+    assert_eq!(entries.len(), 2, "expected a deleted + a live entry");
+    let deleted_entry = entries
+        .iter()
+        .find(|e| e["workflow_id"] == serde_json::json!(first_id))
+        .expect("deleted entry");
+    let live_entry = entries
+        .iter()
+        .find(|e| e["workflow_id"] == serde_json::json!(second_id))
+        .expect("live entry");
+    assert_eq!(deleted_entry["workflow_deleted"], true);
+    assert_eq!(live_entry["workflow_deleted"], false);
+}
+
+/// SD-4. On soft-delete, the run-log directory and the ACS-managed default
+///       operating folder are removed, and the run-log endpoint no longer 500s.
+#[tokio::test]
+async fn test_soft_delete_removes_default_working_dir_and_log_dir() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let data_dir = tmp.path().to_path_buf();
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        data_dir.clone(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("sd-wd-default")).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap().to_string();
+    let wf_id = Uuid::parse_str(&wf_id_str).unwrap();
+
+    // The default working_dir was created on disk under the test's workflow_dirs.
+    let working_dir = created["working_dir"].as_str().unwrap().to_string();
+    let working_dir_path = std::path::PathBuf::from(&working_dir);
+    assert!(
+        working_dir_path.exists(),
+        "default working_dir should exist after create"
+    );
+
+    // Fabricate a run-log directory as the trigger path would.
+    let log_dir = data_dir.join("logs").join(&wf_id_str);
+    std::fs::create_dir_all(&log_dir).expect("create log dir");
+    std::fs::write(log_dir.join("some.log"), b"log data").expect("write log file");
+
+    // Seed a terminal run so there is a run row (its log file is gone below).
+    let wf = wf_store.get_workflow(wf_id).await.unwrap().unwrap();
+    let run_id = insert_terminal_run(
+        &run_store,
+        wf_id,
+        &wf,
+        RunStatus::Completed,
+        Utc::now() - Duration::days(1),
+        Some(0.05),
+    )
+    .await;
+
+    assert_eq!(
+        client
+            .delete(format!("{}/api/workflows/{}", base_url, wf_id_str))
+            .send()
+            .await
+            .expect("DELETE")
+            .status(),
+        204
+    );
+
+    assert!(
+        !working_dir_path.exists(),
+        "ACS-managed default working_dir must be removed on delete"
+    );
+    assert!(
+        !log_dir.exists(),
+        "run-log directory must be removed on delete"
+    );
+
+    // The run-log endpoint must not 500 now that the file is gone (404 is ok).
+    let log_resp = client
+        .get(format!("{}/api/runs/{}/log", base_url, run_id))
+        .send()
+        .await
+        .expect("GET run log");
+    assert_eq!(
+        log_resp.status(),
+        404,
+        "missing log after delete should be 404, never 500"
+    );
+}
+
+/// SD-5. A custom (user-specified) working_dir is NEVER touched on delete.
+#[tokio::test]
+async fn test_soft_delete_preserves_custom_working_dir() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // A custom directory that is NOT the ACS-managed default.
+    let custom_dir = tmp.path().join("my-custom-dir");
+    std::fs::create_dir_all(&custom_dir).expect("create custom dir");
+
+    let mut body = make_new_workflow("sd-wd-custom");
+    body.working_dir = Some(custom_dir.to_string_lossy().into_owned());
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).unwrap())
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .unwrap();
+    let wf_id_str = created["id"].as_str().unwrap().to_string();
+
+    assert_eq!(
+        client
+            .delete(format!("{}/api/workflows/{}", base_url, wf_id_str))
+            .send()
+            .await
+            .expect("DELETE")
+            .status(),
+        204
+    );
+
+    assert!(
+        custom_dir.exists(),
+        "a custom working_dir must never be deleted on soft-delete"
+    );
+}
