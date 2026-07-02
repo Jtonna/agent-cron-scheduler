@@ -36,6 +36,26 @@ agentcronsystem stop --force
 agentcronsystem start
 ```
 
+### Startup Aborts on a Failed Migration
+
+**Symptom:** The daemon exits immediately with an error like `Migration failed: Internal error: migration 'm008_add_workflow_deleted' previously failed and is blocking startup...` (or `migration '<name>' failed: <cause>. Startup aborted...` on the first occurrence).
+
+**Cause:** Database migrations are tracked by name in the `schema_migrations` table inside `acs.db`. When a migration fails, its row is recorded with `status = 'failed'` plus the error text, and every subsequent startup refuses to proceed — silently re-running against a half-migrated database could compound the damage.
+
+**Solution:**
+1. Read the recorded error to find the root cause:
+   ```
+   sqlite3 "{data_dir}/acs.db" "SELECT name, applied_at, error FROM schema_migrations WHERE status = 'failed';"
+   ```
+2. Fix the underlying issue (disk space, file permissions, corrupted source data, etc.). Back up `acs.db` first if the data matters.
+3. Delete the failed row so the next startup re-runs that migration:
+   ```
+   sqlite3 "{data_dir}/acs.db" "DELETE FROM schema_migrations WHERE name = '<migration name>';"
+   ```
+4. Restart the daemon: `agentcronsystem start`. The migration re-runs from the failed one onward; migrations that never got to run have no row and execute normally.
+
+Deleting a `success` row works the same way and forces that single migration to re-run — safe, because every migration is internally idempotent. See [Storage — Migration System](storage.md#9-migration-system) for the full runner semantics.
+
 ### Port Already in Use
 
 **Symptom:** Error message `Failed to bind to 127.0.0.1:8377` when starting the daemon.
