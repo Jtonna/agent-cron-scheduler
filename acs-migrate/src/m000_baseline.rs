@@ -3,11 +3,12 @@
 //! Creates the pre-m003-era database schema so that m003..m008 apply on top,
 //! reproducing exactly the schema history an upgraded database went through.
 //!
-//! This migration opts into the runner's baseline convention: it only
-//! EXECUTES on a brand-new database (no schema_migrations table yet). On a
-//! database that already has migration tracking (any v4.2.14 install), the
-//! runner records a success row for it WITHOUT executing, so the baseline
-//! never runs against an existing schema.
+//! This migration opts into the runner's baseline convention: on a database
+//! that already has both migration tracking and a schema, the runner records
+//! a success row for it WITHOUT executing, so the baseline never runs
+//! against an existing schema. It executes only when the schema is absent —
+//! a brand-new database, or one where a previous startup died right after
+//! the tracking table was created.
 //!
 //! Shape notes (deliberately historical — later migrations transform it):
 //!   * workflows.name carries an inline UNIQUE          (removed by m008)

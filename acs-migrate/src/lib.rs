@@ -55,8 +55,8 @@
 //! get no row.
 //!
 //! Rows recorded for names the registry does not know (e.g. `m001`/`m002`
-//! from pre-v5 installs) are tolerated: reported and logged at info level,
-//! never an error.
+//! recorded by earlier releases) are tolerated: reported and logged at info
+//! level, never an error.
 //!
 //! # Rebuild convention (PRAGMA foreign_keys)
 //!
@@ -75,12 +75,14 @@
 //!
 //! A migration whose [`Migration::baseline`] hook returns `true` creates the
 //! schema starting point for fresh installs. On a database that already has
-//! migration tracking (the `schema_migrations` table pre-exists — every
-//! v4.2.14 install), the runner records a `success` row for it WITHOUT
-//! executing, so the baseline never runs against an existing schema.
-//! Databases with a schema but no tracking table predate v4.2.14 and are
-//! rejected with an "upgrade through v4.2.14 first" error before anything
-//! runs.
+//! both migration tracking (the `schema_migrations` table) and a schema (the
+//! `workflows` table), the runner records a `success` row for it WITHOUT
+//! executing, so the baseline never runs against an existing schema. If the
+//! tracking table exists but the schema does not — a previous startup died
+//! after the runner created the tracking table but before the baseline ever
+//! ran — the baseline executes normally. Databases with a schema but no
+//! tracking table predate migration tracking entirely and are rejected with
+//! upgrade guidance before anything runs.
 //!
 //! # Adding a new migration
 //!
@@ -128,7 +130,8 @@ pub enum MigrateError {
     Blocked(String),
 
     /// The database has a schema but no migration tracking table — it
-    /// predates v4.2.14 and must be upgraded through v4.2.14 first.
+    /// predates migration tracking and must first be upgraded through the
+    /// intermediate release named in the error text.
     #[error("{0}")]
     UnsupportedUpgrade(String),
 }
@@ -167,6 +170,14 @@ impl SqlValue {
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             SqlValue::Real(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    /// The blob content, if this value is `Blob`.
+    pub fn as_blob(&self) -> Option<&[u8]> {
+        match self {
+            SqlValue::Blob(b) => Some(b),
             _ => None,
         }
     }
@@ -320,7 +331,7 @@ pub trait Migration: Send + Sync {
 
 /// All available migrations, ordered by name (which is also execution
 /// order). Append new migrations at the end with a higher number.
-pub fn registry() -> Vec<Box<dyn Migration>> {
+pub(crate) fn registry() -> Vec<Box<dyn Migration>> {
     vec![
         Box::new(m000_baseline::Baseline),
         Box::new(m003_drop_step_output_summary::DropStepOutputSummary),
@@ -344,8 +355,8 @@ pub struct MigrationRunReport {
     pub skipped: Vec<String>,
     /// Executed and recorded as `success`.
     pub ran: Vec<String>,
-    /// Recorded rows whose names the registry does not know (e.g. retired
-    /// pre-v5 migrations). Tolerated, never an error.
+    /// Recorded rows whose names the registry does not know (e.g.
+    /// migrations retired from the registry). Tolerated, never an error.
     pub unknown: Vec<String>,
 }
 
@@ -422,7 +433,8 @@ fn run_with_registry(
 
     // Detect the database's provenance BEFORE creating anything.
     let tracking_present = table_exists(&db_path, "schema_migrations")?;
-    if !tracking_present && table_exists(&db_path, "workflows")? {
+    let schema_present = table_exists(&db_path, "workflows")?;
+    if !tracking_present && schema_present {
         return Err(MigrateError::UnsupportedUpgrade(format!(
             "database {} has a schema but no schema_migrations tracking table, which means \
              it predates v4.2.14. Direct upgrades are supported from v4.2.14 only: install \
@@ -454,8 +466,8 @@ fn run_with_registry(
         map
     };
 
-    // Recorded rows the registry does not know about (retired pre-v5
-    // migrations such as m001/m002) are tolerated and reported.
+    // Recorded rows the registry does not know about (migrations retired
+    // from the registry, such as m001/m002) are tolerated and reported.
     let known: Vec<&str> = migrations.iter().map(|m| m.name()).collect();
     report.unknown = recorded
         .keys()
@@ -494,10 +506,14 @@ fn run_with_registry(
             continue;
         }
 
-        if migration.baseline() && tracking_present {
+        if migration.baseline() && tracking_present && schema_present {
             // Existing database: the schema the baseline would create is
             // already there in some (possibly newer) form. Record it as
-            // applied without executing.
+            // applied without executing. Both conditions matter: a tracking
+            // table WITHOUT a schema means a previous startup died after
+            // creating the tracking table but before the baseline executed
+            // — seeding then would leave the database schemaless and wedge
+            // every later migration, so the baseline must run instead.
             record(&conn, migration.name(), "success", None, None)?;
             report.seeded.push(migration.name().to_string());
             tracing::info!(
@@ -518,6 +534,8 @@ fn run_with_registry(
 /// storage layer applies, so migrations execute under the same rules
 /// (foreign keys enforced, WAL journaling) as production queries.
 fn apply_runner_pragmas(conn: &Connection) -> Result<(), MigrateError> {
+    // journal_mode is a query-style pragma (it returns the resulting mode
+    // as a row), so query_row is required where execute would error.
     conn.query_row("PRAGMA journal_mode = WAL;", [], |_row| Ok(()))
         .map_err(|e| MigrateError::Db(format!("Failed to set journal_mode=WAL: {}", e)))?;
     conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")
@@ -765,6 +783,7 @@ mod tests {
         assert_eq!(row[2].as_str(), Some("hello"));
         assert!(row[3].is_null());
         assert_eq!(row[4], SqlValue::Blob(vec![1, 2, 3]));
+        assert_eq!(row[4].as_blob(), Some(&[1u8, 2, 3][..]));
     }
 
     // ── Registry invariants ─────────────────────────────────────────────────
@@ -1094,17 +1113,17 @@ mod tests {
     #[test]
     fn baseline_is_seeded_without_executing_on_tracked_database() {
         let tmp = TempDir::new().unwrap();
-        // Simulate an existing tracked database (e.g. v4.2.14): tracking table
-        // with recorded rows, plus its own schema.
+        // Simulate an existing tracked database: tracking table with
+        // recorded rows, plus its own schema (workflows table present).
         insert_row(tmp.path(), "m001_next", "success");
         open(tmp.path())
-            .execute_batch("CREATE TABLE existing_data (x INTEGER);")
+            .execute_batch("CREATE TABLE workflows (id TEXT PRIMARY KEY);")
             .unwrap();
 
         let registry = vec![
             // Would fail if executed (duplicate table) — proving it doesn't run.
-            sql_baseline("m000_base", "CREATE TABLE existing_data (x INTEGER);"),
-            sql("m001_next", "INSERT INTO existing_data VALUES (1);"),
+            sql_baseline("m000_base", "CREATE TABLE workflows (id TEXT PRIMARY KEY);"),
+            sql("m001_next", "INSERT INTO workflows VALUES ('wf-1');"),
         ];
         let report = run_with_registry(tmp.path(), &registry).unwrap();
         assert_eq!(report.seeded, vec!["m000_base"]);
@@ -1117,9 +1136,40 @@ mod tests {
     }
 
     #[test]
+    fn baseline_executes_when_tracking_table_exists_but_schema_is_missing() {
+        // Crash window: a previous startup created schema_migrations but
+        // died before the baseline executed or recorded anything. The next
+        // startup must EXECUTE the baseline — seeding it here would leave
+        // the database schemaless and wedge every later migration.
+        let tmp = TempDir::new().unwrap();
+        let conn = open(tmp.path());
+        conn.execute(TRACKING_TABLE_SQL, [])
+            .expect("tracking table");
+        drop(conn);
+
+        let registry = vec![
+            sql_baseline("m000_base", "CREATE TABLE workflows (id TEXT PRIMARY KEY);"),
+            sql("m001_next", "INSERT INTO workflows VALUES ('wf-1');"),
+        ];
+        let report = run_with_registry(tmp.path(), &registry).unwrap();
+        assert_eq!(
+            report.ran,
+            vec!["m000_base", "m001_next"],
+            "baseline must execute, not seed, when the schema is absent"
+        );
+        assert!(report.seeded.is_empty());
+        assert_eq!(
+            count(&open(tmp.path()), "SELECT COUNT(*) FROM workflows"),
+            1,
+            "the full chain must have run against the freshly-created schema"
+        );
+    }
+
+    #[test]
     fn pre_tracking_database_is_rejected_with_upgrade_guidance() {
         let tmp = TempDir::new().unwrap();
-        // A pre-v4.2.14 database: has a workflows table, no tracking table.
+        // A database that predates migration tracking: workflows table
+        // present, no schema_migrations table.
         open(tmp.path())
             .execute_batch("CREATE TABLE workflows (id TEXT PRIMARY KEY);")
             .unwrap();
@@ -1321,7 +1371,8 @@ mod tests {
     #[test]
     fn real_registry_v4_database_runs_nothing() {
         let tmp = TempDir::new().unwrap();
-        // Simulate a v4.2.14 database: tracking rows m001..m008 all success.
+        // Simulate a fully-migrated database from the previous release
+        // line: tracking rows m001..m008 all success.
         for name in [
             "m001_jobs_to_workflows",
             "m002_json_to_sqlite",
@@ -1334,7 +1385,7 @@ mod tests {
         ] {
             insert_row(tmp.path(), name, "success");
         }
-        // A stand-in for the existing v4 schema + data.
+        // A stand-in for the pre-existing schema + data.
         open(tmp.path())
             .execute_batch(
                 "CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL);

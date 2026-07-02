@@ -57,8 +57,9 @@ files under `logs/`.  Migration execution is tracked in the
 On daemon startup, `create_data_dirs()` ensures the top-level directory and
 the `logs/` and `scripts/` subdirectories exist.  The `acs.db` file is created
 by the migration runner (to host its `schema_migrations` tracking table)
-before any migration runs; the `m002_json_to_sqlite` migration then applies
-the full data schema when the daemon first runs.  The `acs.db-wal` and
+before any migration runs; the baseline and subsequent migrations then bring
+it to the current schema, and `init_db` re-applies the idempotent schema
+statements when the daemon opens it.  The `acs.db-wal` and
 `acs.db-shm` sidecar files are created by SQLite the first time the database
 is opened in WAL mode and persist alongside the DB.
 
@@ -357,7 +358,7 @@ has three:
 | `idx_workflow_runs_finished_at` | `(finished_at)` | Cross-workflow recency queries. |
 | `idx_workflow_runs_status` | `(status)` | Filters that pick out e.g. all currently-running rows. |
 
-The cost-analytics aggregation query — `SUM(CASE WHEN finished_at >= ? THEN total_cost_usd END)` plus `COUNT(...)` over two windows — runs once per workflow per `GET /api/cost/workflows[/{id}]` cache miss. The `idx_workflow_runs_workflow_id_finished_at` composite index established in m002 covers this access pattern: the WHERE clause filters by `workflow_id`, `status IN (...)`, and `finished_at >= ?`, with the conditional SUMs evaluated over the filtered rows.
+The cost-analytics aggregation query — `SUM(CASE WHEN finished_at >= ? THEN total_cost_usd END)` plus `COUNT(...)` over two windows — runs once per workflow per `GET /api/cost/workflows[/{id}]` cache miss. The `idx_workflow_runs_workflow_id_finished_at` composite index established in the baseline schema covers this access pattern: the WHERE clause filters by `workflow_id`, `status IN (...)`, and `finished_at >= ?`, with the conditional SUMs evaluated over the filtered rows.
 
 The daily-bucket query fetches `(finished_at, status, total_cost_usd, total_input_tokens, total_output_tokens)` over the window for the requested workflow (or all workflows for the system aggregate). Per-day grouping happens in Rust using `chrono_tz` to convert each UTC `finished_at` to the daemon's `display_timezone` local date — this avoids fighting SQLite's `localtime` / `strftime` for cross-platform consistency. The same `idx_workflow_runs_workflow_id_finished_at` composite index covers both per-workflow and system-wide queries. Both query paths are invoked exclusively by the cost endpoint handlers at `GET /api/cost/workflows[/{id}]`. The `total_input_tokens` / `total_output_tokens` columns were added in v4.2.11 (migration m007).
 
@@ -599,13 +600,17 @@ apply on top and reproduce exactly the schema history an upgraded database
 went through.
 
 The baseline opts in via the trait's `baseline()` hook, which changes one
-thing:
-on a database that **already has migration tracking** (the
-`schema_migrations` table pre-exists — true of every v4.2.14 install), the
-runner records a `success` row for the baseline WITHOUT executing it.  The
-baseline therefore never runs against an existing schema, and a v4.2.14
-database upgrading to v5 executes **nothing**: baseline seeded, m003–m008
-skipped via their recorded rows.
+thing: on a database that **already has both migration tracking and a
+schema** (the `schema_migrations` and `workflows` tables both pre-exist —
+true of every v4.2.14 install), the runner records a `success` row for the
+baseline WITHOUT executing it.  The baseline therefore never runs against an
+existing schema, and a v4.2.14 database upgrading to v5 executes
+**nothing**: baseline seeded, m003–m008 skipped via their recorded rows.
+
+If the tracking table exists but the schema does not — a previous startup
+died after the runner created the tracking table but before the baseline
+ever executed — the baseline runs normally instead of being seeded, so the
+crash window cannot wedge the database.
 
 A database that has a schema but **no** tracking table predates v4.2.14; the
 runner rejects it before creating or running anything.
