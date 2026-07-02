@@ -1,10 +1,10 @@
-//! Migration 008 — soft-delete support on the `workflows` table (ACS-25,
-//! v4.2.14): add the `deleted` column and replace the inline `UNIQUE`
+//! Migration 008 — soft-delete support on the `workflows` table:
+//! add the `deleted` column and replace the inline `UNIQUE`
 //! constraint on `name` with a **partial unique index** over live rows.
 //!
 //! # Background
 //!
-//! v4.2.14 switches `DELETE /api/workflows/{id}` from a hard delete (which
+//! `DELETE /api/workflows/{id}` switched from a hard delete (which
 //! failed with a FOREIGN KEY constraint error whenever the workflow had run
 //! history) to a **soft delete**. The workflow row and all of its
 //! `workflow_runs` are kept — the run rows *are* the cost/token record — and

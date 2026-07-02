@@ -125,7 +125,7 @@ fn map_store_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
             ),
             // A database constraint / foreign-key violation is a conflict with
             // existing data, not an unexpected internal fault — surface it as a
-            // structured 409 instead of a bare 500 (ACS-25 §6).
+            // structured 409 instead of a bare 500.
             AcsError::Storage(msg)
                 if {
                     let lower = msg.to_lowercase();
@@ -419,7 +419,7 @@ struct DefaultWorkingDirError {
 /// This is the single source of truth for "is this working_dir one we created
 /// and therefore safe to delete on soft-delete". It is used both when filling
 /// in the default on create and when deciding whether to remove the operating
-/// folder on delete (ACS-25).
+/// folder on delete.
 fn derive_default_working_dir(
     config: &crate::models::DaemonConfig,
     name: &str,
@@ -614,7 +614,7 @@ pub async fn list_workflow_costs(
     };
 
     // Include soft-deleted workflows so their persisted cost/token history
-    // remains visible (flagged via `workflow_deleted`) — ACS-25 §5.
+    // remains visible (flagged via `workflow_deleted`).
     let workflows = match state
         .workflow_store
         .list_workflows_including_deleted()
@@ -752,7 +752,7 @@ pub async fn get_workflow_costs(
     };
 
     // Include soft-deleted workflows: their cost history persists and this
-    // endpoint returns 200 with `workflow_deleted: true` (ACS-25 §5).
+    // endpoint returns 200 with `workflow_deleted: true`.
     let workflow = match state
         .workflow_store
         .get_workflow_including_deleted(workflow_id)
@@ -938,7 +938,7 @@ pub async fn delete_workflow(
     let version = wf.version;
     let workflow_name = wf.name.clone();
 
-    // Active-run guard (ACS-25 §2): refuse to soft-delete a workflow that still
+    // Active-run guard: refuse to soft-delete a workflow that still
     // has a run in progress. `list_runs(id, 0, 0)` returns all runs (limit 0 ==
     // no limit).
     match state.workflow_run_store.list_runs(workflow_id, 0, 0).await {
@@ -976,7 +976,7 @@ pub async fn delete_workflow(
     match state.workflow_store.delete_workflow(workflow_id).await {
         Ok(()) => {
             // Best-effort on-disk cleanup AFTER the DB update succeeds. Never
-            // fails the request (ACS-25 §2).
+            // fails the request.
             cleanup_workflow_artifacts(&state, &wf).await;
             // Evict cache entry; cost data recomputes from the persisted runs.
             state.cost_cache.forget(workflow_id).await;
@@ -1000,7 +1000,7 @@ pub async fn delete_workflow(
 
 /// Best-effort removal of on-disk artifacts for a soft-deleted workflow.
 /// Every failure is logged as a warning and swallowed — cleanup must never
-/// fail the delete request (ACS-25 §2).
+/// fail the delete request.
 ///
 ///   a) the run-log directory `<data_dir>/logs/<workflow_id>/`
 ///   b) the operating folder — **only** when the stored `working_dir` equals
@@ -1934,7 +1934,7 @@ mod tests {
             Ok(wf.clone())
         }
         async fn delete_workflow(&self, id: Uuid) -> anyhow::Result<()> {
-            // Soft delete (ACS-25): flag the row instead of removing it so its
+            // Soft delete: flag the row instead of removing it so its
             // cost history persists and its name is freed for reuse.
             let mut wfs = self.workflows.write().await;
             let wf = wfs

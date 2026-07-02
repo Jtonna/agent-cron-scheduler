@@ -87,7 +87,7 @@ fn row_to_workflow(row: &Row<'_>) -> rusqlite::Result<Workflow> {
     // is_favorited was added in a later schema migration. Tolerate older rows
     // that don't have the column populated by treating a missing column as false.
     let is_favorited = row.get::<_, i64>("is_favorited").unwrap_or(0) != 0;
-    // `deleted` (soft-delete, ACS-25) — tolerate DBs where the column has not
+    // `deleted` (soft-delete flag) — tolerate DBs where the column has not
     // yet been added by migration m008 (treat missing as not-deleted).
     let deleted = row.get::<_, i64>("deleted").unwrap_or(0) != 0;
 
@@ -155,7 +155,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         let res = self
             .db
             .with_conn(|c| {
-                // Exclude soft-deleted rows (ACS-25).
+                // Exclude soft-deleted rows.
                 let mut stmt = c
                     .prepare("SELECT * FROM workflows WHERE deleted = 0 ORDER BY created_at ASC")
                     .map_err(|e| AcsError::Storage(e.to_string()))?;
@@ -197,7 +197,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         let res = self
             .db
             .with_conn(move |c| {
-                // Exclude soft-deleted rows (ACS-25): a deleted workflow is
+                // Exclude soft-deleted rows: a deleted workflow is
                 // "not found" for the normal endpoints.
                 let mut stmt = c
                     .prepare("SELECT * FROM workflows WHERE id = ? AND deleted = 0")
@@ -232,7 +232,7 @@ impl WorkflowStore for SqliteWorkflowStore {
             .db
             .with_conn(move |c| {
                 // Exclude soft-deleted rows so a reused name resolves to the
-                // live workflow (ACS-25).
+                // live workflow.
                 let mut stmt = c
                     .prepare("SELECT * FROM workflows WHERE name = ? AND deleted = 0")
                     .map_err(|e| AcsError::Storage(e.to_string()))?;
@@ -291,7 +291,7 @@ impl WorkflowStore for SqliteWorkflowStore {
             .with_conn(move |c| {
                 // Fetch existing.
                 let mut wf = {
-                    // Soft-deleted workflows are "not found" for updates (ACS-25).
+                    // Soft-deleted workflows are "not found" for updates.
                     let mut stmt = c
                         .prepare("SELECT * FROM workflows WHERE id = ? AND deleted = 0")
                         .map_err(|e| AcsError::Storage(e.to_string()))?;
@@ -412,7 +412,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         let now_s = Utc::now().to_rfc3339();
         self.db
             .with_conn(move |c| {
-                // Soft delete (ACS-25): flag the row, keep it and every
+                // Soft delete: flag the row, keep it and every
                 // workflow_runs record, and keep the name verbatim — the
                 // partial unique index `idx_workflows_name_live` only covers
                 // rows with deleted = 0, so the name is freed for reuse.
@@ -999,7 +999,7 @@ mod tests {
         assert!(matches!(acs, AcsError::NotFound(_)));
     }
 
-    // ── Soft delete (ACS-25) ────────────────────────────────────────────────
+    // ── Soft delete ─────────────────────────────────────────────────────────
 
     /// A soft-deleted workflow is excluded from `list_workflows`,
     /// `find_by_name`, and `get_workflow` — i.e. it is hidden from the UI and,

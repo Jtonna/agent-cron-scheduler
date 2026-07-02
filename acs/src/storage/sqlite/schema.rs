@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS meta (
 "#;
 
 /// Partial unique index enforcing name uniqueness among **live** workflows
-/// only (ACS-25, v4.2.14). Soft-deleted rows are exempt, so a name becomes
+/// only. Soft-deleted rows are exempt, so a name becomes
 /// reusable after its owner is deleted while name resolution stays
 /// unambiguous. Applied *after* [`apply_additive_migrations`] because the
 /// index references the `deleted` column, which older databases only gain
@@ -117,9 +117,9 @@ fn apply_additive_migrations(conn: &Connection) -> Result<(), AcsError> {
     let stmts = [
         // is_favorited added in v4.2.x — pin favorited workflows to the top.
         "ALTER TABLE workflows ADD COLUMN is_favorited INTEGER NOT NULL DEFAULT 0",
-        // deleted added in v4.2.14 (ACS-25) — soft-delete flag. Also added by
-        // the m008 table rebuild; this additive path covers connections that
-        // apply the schema before m008 has run.
+        // deleted — soft-delete flag. Also added by the m008 table rebuild;
+        // this additive path covers connections that apply the schema before
+        // m008 has run.
         "ALTER TABLE workflows ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
     ];
     for sql in stmts {
@@ -216,7 +216,7 @@ mod tests {
         apply_schema(&conn).expect("schema");
 
         // A soft-deleted row does not reserve its name: a live row with the
-        // same name can coexist (ACS-25 name reuse).
+        // same name can coexist (name reuse after soft-delete).
         let stmt = "INSERT INTO workflows (id, name, version, schedule, schedule_mode, \
                     enabled, steps_json, allow_concurrent, on_failure, created_at, updated_at, deleted) \
                     VALUES (?, ?, 1, '* * * * *', 'cron', 1, '[]', 1, 'abort', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', ?)";

@@ -91,7 +91,7 @@ pub fn avg_cost_per_run(total_usd: f64, runs: u64) -> f64 {
 pub struct WorkflowCostEntry {
     pub workflow_id: Uuid,
     pub workflow_name: String,
-    /// `true` when the parent workflow has been soft-deleted (ACS-25, v4.2.14).
+    /// `true` when the parent workflow has been soft-deleted.
     /// Cost/token history is aggregated from the persisted `workflow_runs`
     /// rows, so it is still returned here even after the workflow is deleted.
     #[serde(default)]
@@ -112,7 +112,7 @@ pub struct CostWorkflowsListResponse {
 pub struct CostWorkflowResponse {
     pub workflow_id: Uuid,
     pub workflow_name: String,
-    /// `true` when the workflow has been soft-deleted (ACS-25, v4.2.14). The
+    /// `true` when the workflow has been soft-deleted. The
     /// per-id cost endpoint still returns 200 with the persisted cost history.
     #[serde(default)]
     pub workflow_deleted: bool,
@@ -150,7 +150,7 @@ pub struct Workflow {
     /// (or via PATCH). Does NOT bump `version` when changed.
     #[serde(default)]
     pub is_favorited: bool,
-    /// Soft-delete flag (ACS-25, v4.2.14). When `true` the workflow is hidden
+    /// Soft-delete flag. When `true` the workflow is hidden
     /// from list / name-resolution / scheduling / triggering and behaves as
     /// "not found" for the normal workflow endpoints, but its row and all of
     /// its `workflow_runs` persist so cost/token history survives deletion.

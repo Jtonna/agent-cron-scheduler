@@ -5002,7 +5002,7 @@ async fn test_cost_summary_avg_equals_total_over_runs() {
 }
 
 // ---------------------------------------------------------------------------
-// Soft-delete tests (ACS-25)
+// Soft-delete tests
 // ---------------------------------------------------------------------------
 
 /// SD-1. Soft-deleting a workflow that has run history returns 204, hides the

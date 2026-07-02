@@ -10,7 +10,7 @@ use crate::models::workflow::{NewWorkflow, RunStatus, Workflow, WorkflowUpdate};
 #[async_trait]
 pub trait WorkflowStore: Send + Sync {
     /// List all **live** (non-deleted) workflows. Soft-deleted workflows
-    /// (ACS-25) are excluded so they disappear from the UI, scheduler, and
+    /// are excluded so they disappear from the UI, scheduler, and
     /// name resolution.
     async fn list_workflows(&self) -> Result<Vec<Workflow>>;
 
@@ -32,7 +32,7 @@ pub trait WorkflowStore: Send + Sync {
     async fn create_workflow(&self, new: NewWorkflow) -> Result<Workflow>;
     async fn update_workflow(&self, id: Uuid, update: WorkflowUpdate) -> Result<Workflow>;
 
-    /// Soft-delete a workflow (ACS-25): flag the row `deleted = 1` and release
+    /// Soft-delete a workflow: flag the row `deleted = 1` and release
     /// its unique name so the name can be reused, while keeping the row and all
     /// of its `workflow_runs` so cost history survives. Returns
     /// `AcsError::NotFound` if the id does not match a live workflow.
