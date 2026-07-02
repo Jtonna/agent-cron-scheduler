@@ -238,7 +238,12 @@ impl Step for AgentStep {
     }
 
     async fn execute(&self, ctx: &mut StepContext) -> Result<StepOutput, StepError> {
-        execute_with_spawner(self, ctx, &NoPtySpawner).await
+        // Use the context's spawner override when present (tests inject a
+        // mock that replays a captured stream); otherwise spawn for real.
+        match ctx.agent_spawner.clone() {
+            Some(spawner) => execute_with_spawner(self, ctx, spawner.as_ref()).await,
+            None => execute_with_spawner(self, ctx, &NoPtySpawner).await,
+        }
     }
 }
 
@@ -317,6 +322,7 @@ mod tests {
             target_step: None,
             current_step_log_offset_start: None,
             current_step_log_offset_end: None,
+            agent_spawner: None,
         }
     }
 

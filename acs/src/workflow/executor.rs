@@ -736,6 +736,32 @@ pub async fn run_workflow(
     event_tx: Option<broadcast::Sender<WorkflowEvent>>,
     kill_signals: Option<Arc<RwLock<HashMap<Uuid, KillSender>>>>,
 ) -> WorkflowRun {
+    run_workflow_with_spawner(
+        workflow,
+        run_id,
+        trigger,
+        log_sink,
+        event_tx,
+        kill_signals,
+        None,
+    )
+    .await
+}
+
+/// [`run_workflow`] with an optional spawner override for agent steps.
+///
+/// `agent_spawner` is `None` in production (agent steps spawn real
+/// processes); tests pass a mock spawner that replays a captured output
+/// stream so no process is launched.
+pub async fn run_workflow_with_spawner(
+    workflow: &Workflow,
+    run_id: Uuid,
+    trigger: TriggerParams,
+    log_sink: Arc<dyn LogSink>,
+    event_tx: Option<broadcast::Sender<WorkflowEvent>>,
+    kill_signals: Option<Arc<RwLock<HashMap<Uuid, KillSender>>>>,
+    agent_spawner: Option<Arc<dyn crate::pty::PtySpawner>>,
+) -> WorkflowRun {
     let snapshot = workflow.clone();
     let started_at = Utc::now();
 
@@ -799,6 +825,7 @@ pub async fn run_workflow(
         target_step: trigger.target_step.clone(),
         current_step_log_offset_start: None,
         current_step_log_offset_end: None,
+        agent_spawner,
     };
 
     let mut step_runs: Vec<StepRun> = Vec::new();
@@ -961,7 +988,7 @@ mod tests {
     };
     use crate::workflow::step::LogSink;
 
-    use super::run_workflow;
+    use super::{run_workflow, run_workflow_with_spawner};
 
     // ── Mock LogSink ──────────────────────────────────────────────────────────
 
@@ -1454,15 +1481,22 @@ mod tests {
         );
     }
 
-    // ── Test 10: AgentStep is now dispatched (phase 4) ────────────────────────
-    // Verifies the agent step is actually invoked (not stubbed out with a
-    // "not implemented" error). The terminal status depends on whether the
-    // `claude` CLI happens to be on the test runner's PATH — both outcomes
-    // are acceptable here; what matters is that the step dispatched.
+    // ── Test 10: AgentStep dispatch via injected mock spawner ─────────────────
+    // Replays a captured NDJSON stream from a real completed `claude` run
+    // (testdata/agent_run.ndjson) through a mock spawner and asserts the full
+    // pipeline: dispatch → argv build → NDJSON parse → cost/token extraction
+    // → totals persisted on the StepRun / WorkflowRun. No process is spawned,
+    // regardless of whether the `claude` CLI is on PATH.
 
     #[tokio::test]
     async fn test_executor_agent_step_dispatched() {
         use crate::models::workflow::{AgentStep, AgentType};
+        use crate::pty::{MockPtySpawner, PtySpawner};
+
+        // Captured from a real run; its result event reports
+        // total_cost_usd 0.12343 and usage.iterations with 2956 input /
+        // 22 output tokens.
+        const AGENT_RUN_FIXTURE: &str = include_str!("testdata/agent_run.ndjson");
 
         let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
 
@@ -1485,23 +1519,57 @@ mod tests {
             })],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let mock = Arc::new(MockPtySpawner::with_output_and_exit(
+            vec![AGENT_RUN_FIXTURE.as_bytes().to_vec()],
+            0,
+        ));
+        let run = run_workflow_with_spawner(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(mock.clone() as Arc<dyn PtySpawner>),
+        )
+        .await;
 
-        // Step ran (was dispatched), so there should be exactly 1 step run.
-        assert_eq!(run.steps.len(), 1);
-        // Whatever the outcome, it must NOT be the old "not implemented" stub.
-        if let Some(err) = run.steps[0].error.as_ref() {
-            assert!(
-                !err.contains("not implemented in phase 3"),
-                "AgentStep should no longer return a phase-3 not-implemented error, got: {}",
-                err
-            );
-        }
+        // Dispatch proof: the executor built a real claude argv and handed
+        // it to the spawner.
+        let argv = mock.recorded_argv().expect("spawner must be invoked");
+        assert_eq!(argv[0], "claude", "argv={:?}", argv);
         assert!(
-            matches!(run.status, RunStatus::Completed | RunStatus::Failed),
-            "expected Completed or Failed, got {:?}",
-            run.status
+            argv.contains(&"do something".to_string()),
+            "prompt must be in the argv; argv={:?}",
+            argv
         );
+
+        // The replayed stream parses as a successful run.
+        assert_eq!(run.status, RunStatus::Completed);
+        assert_eq!(run.steps.len(), 1);
+        let step = &run.steps[0];
+        assert_eq!(step.status, RunStatus::Completed);
+        assert_eq!(step.error, None);
+        assert_eq!(step.exit_code, Some(0));
+
+        // Cost extraction from the fixture's result event, persisted on both
+        // the StepRun and the WorkflowRun.
+        let step_cost = step.cost_usd.expect("step cost must be extracted");
+        assert!(
+            (step_cost - 0.12343).abs() < 1e-9,
+            "step cost_usd must match the fixture, got {}",
+            step_cost
+        );
+        let run_cost = run.total_cost_usd.expect("run cost must be aggregated");
+        assert!(
+            (run_cost - 0.12343).abs() < 1e-9,
+            "run total_cost_usd must match the fixture, got {}",
+            run_cost
+        );
+
+        // Token extraction from the result event's usage.iterations[].
+        assert_eq!(run.total_input_tokens, 2956);
+        assert_eq!(run.total_output_tokens, 22);
     }
 
     // ── Test 11: workflow.default_input applied when trigger.input is Null ────

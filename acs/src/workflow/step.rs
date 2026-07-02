@@ -138,6 +138,12 @@ pub struct StepContext {
     /// step impl never reached `write_step_end` (e.g. spawn failure before
     /// execution), in which case the slice endpoint treats end as EOF.
     pub current_step_log_offset_end: Option<u64>,
+    /// Optional spawner override for agent steps.
+    ///
+    /// `None` in production: agent steps spawn their process via the default
+    /// `NoPtySpawner`. Tests inject a mock spawner here to replay a captured
+    /// output stream without launching a real process.
+    pub agent_spawner: Option<Arc<dyn crate::pty::PtySpawner>>,
 }
 
 /// A future that resolves when the kill receiver is signalled with `true`.
