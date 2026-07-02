@@ -58,7 +58,7 @@ Sending `null` for `timezone`, `working_dir`, or `default_input` in a PATCH body
 
 ### Deletion (soft delete)
 
-`DELETE /api/workflows/{id}` performs a **soft delete** (v4.2.14, ACS-25): the
+`DELETE /api/workflows/{id}` performs a **soft delete** (v4.2.14): the
 workflow row and **all** of its runs are kept — the `workflow_runs` rows are the
 cost/token record and must survive — and the workflow is flagged `deleted`.
 

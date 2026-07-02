@@ -317,7 +317,7 @@ Partially update an existing workflow. Only the fields you include in the reques
 
 ### DELETE /api/workflows/{id}
 
-Soft-delete a workflow (v4.2.14, ACS-25).
+Soft-delete a workflow (v4.2.14).
 
 The workflow row and **all** of its runs are kept — the `workflow_runs` rows are
 the cost/token record — and the workflow is flagged as deleted. It then

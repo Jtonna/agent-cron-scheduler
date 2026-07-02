@@ -113,7 +113,7 @@ CREATE TABLE workflows (
     deleted             INTEGER NOT NULL DEFAULT 0   -- soft-delete flag; added by m008 (v4.2.14)
 );
 
--- Name uniqueness among LIVE workflows only (ACS-25, v4.2.14): soft-deleted
+-- Name uniqueness among LIVE workflows only (v4.2.14): soft-deleted
 -- rows are exempt, so a name becomes reusable after its owner is deleted
 -- while name resolution stays unambiguous.
 CREATE UNIQUE INDEX idx_workflows_name_live
@@ -750,7 +750,7 @@ columns to the `workflow_runs` table introduced in v4.2.11. Both columns are
 
 ### m008_add_workflow_deleted
 
-`m008_add_workflow_deleted` (v4.2.14, ACS-25) adds the `deleted` soft-delete
+`m008_add_workflow_deleted` (v4.2.14) adds the `deleted` soft-delete
 column to the `workflows` table and replaces the inline `UNIQUE` constraint on
 `name` with a **partial unique index** covering live rows only:
 
