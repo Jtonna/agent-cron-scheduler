@@ -51,8 +51,9 @@
 //! already applied without being invoked. Every other migration then runs
 //! normally; on an already-migrated database their internal idempotency makes
 //! that a safe no-op, which is recorded as `success`. After this one-time
-//! backfill the table is the sole source of truth; `migrations.json` is left
-//! on disk but never written again.
+//! backfill the table is the sole source of truth and the legacy file is
+//! deleted (best-effort; a removal failure is only logged). A corrupt legacy
+//! file seeds nothing and is left in place for inspection.
 //!
 //! # Adding a new migration
 //!
@@ -286,8 +287,7 @@ async fn run_with_registry(
     with_tracking_db(&db_path, |_| Ok(())).await?;
 
     if !had_tracking_table {
-        let legacy_applied = read_legacy_state(data_dir).await?;
-        if !legacy_applied.is_empty() {
+        if let Some(legacy_applied) = read_legacy_state(data_dir).await? {
             let seed: Vec<String> = migrations
                 .iter()
                 .map(|m| m.name().to_string())
@@ -296,6 +296,27 @@ async fn run_with_registry(
             if !seed.is_empty() {
                 seed_success_rows(&db_path, seed.clone()).await?;
                 report.seeded = seed;
+            }
+            // The legacy state file has been fully consumed by the backfill —
+            // retire it. Best-effort: a removal failure is only logged; the
+            // tracking table already holds the authoritative state.
+            let legacy_path = data_dir.join("migrations.json");
+            match tokio::fs::remove_file(&legacy_path).await {
+                Ok(()) => {
+                    tracing::info!(
+                        "Removed legacy migration state file {} after backfilling \
+                         schema_migrations",
+                        legacy_path.display()
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Backfill complete but failed to remove legacy {}: {}. \
+                         Manual cleanup recommended.",
+                        legacy_path.display(),
+                        e
+                    );
+                }
             }
         }
     }
@@ -370,17 +391,20 @@ struct LegacyMigrationState {
 
 /// Read the applied-migration names from the legacy `<data_dir>/migrations.json`.
 /// Used only to backfill the `schema_migrations` table the first time the
-/// tracked runner sees a data dir; the file is never written again.
+/// tracked runner sees a data dir; on a successful read the caller deletes
+/// the file afterwards.
 ///
-/// - If the file does not exist, returns an empty set (fresh install).
-/// - If the file is corrupt (invalid JSON), logs a warning and returns an
-///   empty set — every migration then runs normally, and their internal
-///   idempotency keeps that safe on an already-migrated database.
-async fn read_legacy_state(data_dir: &Path) -> Result<HashSet<String>, AcsError> {
+/// Returns `Ok(Some(names))` when the file was parsed successfully (the
+/// caller then also retires the file), and `Ok(None)` when there is nothing
+/// usable: the file is missing, unreadable, or corrupt. Unreadable/corrupt
+/// files are logged and **left in place** for inspection; every migration
+/// then runs normally, and their internal idempotency keeps that safe on an
+/// already-migrated database.
+async fn read_legacy_state(data_dir: &Path) -> Result<Option<HashSet<String>>, AcsError> {
     let path = data_dir.join("migrations.json");
 
     if !path.exists() {
-        return Ok(HashSet::new());
+        return Ok(None);
     }
 
     match tokio::fs::read_to_string(&path).await {
@@ -390,17 +414,17 @@ async fn read_legacy_state(data_dir: &Path) -> Result<HashSet<String>, AcsError>
                 path.display(),
                 e
             );
-            Ok(HashSet::new())
+            Ok(None)
         }
         Ok(content) => match serde_json::from_str::<LegacyMigrationState>(&content) {
-            Ok(state) => Ok(state.applied.into_iter().collect()),
+            Ok(state) => Ok(Some(state.applied.into_iter().collect())),
             Err(e) => {
                 tracing::warn!(
                     "migrations.json is corrupt ({}): {}. Treating as empty.",
                     path.display(),
                     e
                 );
-                Ok(HashSet::new())
+                Ok(None)
             }
         },
     }
@@ -498,22 +522,46 @@ mod tests {
     // ── Legacy state file reading ──────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_legacy_state_read_empty_when_no_file() {
+    async fn test_legacy_state_read_none_when_no_file() {
         let tmp = TempDir::new().unwrap();
         let state = read_legacy_state(tmp.path()).await.unwrap();
-        assert!(state.is_empty());
+        assert!(state.is_none());
     }
 
     #[tokio::test]
-    async fn test_legacy_state_corruption_treated_as_empty() {
+    async fn test_legacy_state_corruption_treated_as_unusable() {
         let tmp = TempDir::new().unwrap();
         tokio::fs::write(tmp.path().join("migrations.json"), b"not valid json {{{{")
             .await
             .unwrap();
         let state = read_legacy_state(tmp.path()).await.unwrap();
         assert!(
-            state.is_empty(),
-            "corrupt state file should be treated as empty"
+            state.is_none(),
+            "corrupt state file should be treated as unusable"
+        );
+    }
+
+    /// A corrupt legacy file seeds nothing, is left in place for inspection,
+    /// and every migration runs normally.
+    #[tokio::test]
+    async fn test_corrupt_legacy_file_left_in_place_and_all_migrations_run() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("migrations.json"), b"not valid json {{{{")
+            .await
+            .unwrap();
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let report = run_with_registry(
+            tmp.path(),
+            vec![scripted("m001_a", Behavior::DidWork, &log)],
+        )
+        .await
+        .unwrap();
+        assert!(report.seeded.is_empty());
+        assert_eq!(report.ran, vec!["m001_a"]);
+        assert!(
+            tmp.path().join("migrations.json").exists(),
+            "corrupt legacy file must be left in place for inspection"
         );
     }
 
@@ -593,6 +641,27 @@ mod tests {
         let rows = tracking_rows(tmp.path());
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().all(|(_, status, _)| status == "success"));
+
+        // The legacy file is retired after a successful backfill.
+        assert!(
+            !tmp.path().join("migrations.json").exists(),
+            "migrations.json must be deleted after the backfill"
+        );
+
+        // A second pass works fine without it: everything skips via the table.
+        let log2 = Arc::new(Mutex::new(Vec::new()));
+        let report2 = run_with_registry(
+            tmp.path(),
+            vec![
+                scripted("m001_a", Behavior::DidWork, &log2),
+                scripted("m002_b", Behavior::DidWork, &log2),
+                scripted("m003_c", Behavior::DidWork, &log2),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(report2.skipped, vec!["m001_a", "m002_b", "m003_c"]);
+        assert!(log2.lock().unwrap().is_empty(), "nothing re-runs");
     }
 
     #[tokio::test]
@@ -624,6 +693,10 @@ mod tests {
             "no re-seeding once the tracking table exists"
         );
         assert_eq!(report.ran, vec!["m002_b"], "m002_b must actually run");
+        assert!(
+            tmp.path().join("migrations.json").exists(),
+            "a legacy file appearing after the table exists is not consumed"
+        );
     }
 
     #[tokio::test]
@@ -868,6 +941,10 @@ mod tests {
             report.ran,
             vec!["m008_add_workflow_deleted"],
             "only the migration missing from the legacy state runs"
+        );
+        assert!(
+            !tmp.path().join("migrations.json").exists(),
+            "the legacy state file must be deleted after the backfill"
         );
 
         // m008 really executed: the inline UNIQUE is gone and the data survived.

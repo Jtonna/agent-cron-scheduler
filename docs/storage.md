@@ -46,7 +46,7 @@ files under `logs/`.  Migration execution is tracked in the
 ├── acs.db                      # SQLite database holding workflows + workflow_runs tables
 ├── acs.db-wal                  # SQLite write-ahead log (created at runtime, managed by SQLite)
 ├── acs.db-shm                  # SQLite shared memory file (created at runtime, managed by SQLite)
-├── migrations.json             # Legacy migration state; read once to backfill schema_migrations, never written again
+├── migrations.json             # Legacy migration state; read once to backfill schema_migrations, then deleted
 ├── jobs.json.migrated.<ts>     # Backup of legacy jobs.json after m001 runs (unix timestamp suffix)
 ├── migrated_scripts/           # Created on demand by m001 migration when migrating non-shell hooks
 ├── scripts/                    # Reserved directory (created on startup; not currently used)
@@ -205,10 +205,12 @@ writes from a crash never leave the database structurally inconsistent.
 Migration execution is tracked in the `schema_migrations` table inside
 `acs.db`, protected by the same SQLite atomicity guarantees as the data
 tables.  The legacy `migrations.json` file is read exactly once — to backfill
-the tracking table on databases that predate it.  If it is missing or
-contains invalid JSON at that moment, the backfill seeds nothing and every
-migration runs normally; each migration's internal idempotency makes that
-safe on an already-migrated database.
+the tracking table on databases that predate it — and deleted after a
+successful backfill (best-effort; a removal failure is only logged).  If it
+is missing or contains invalid JSON at that moment, the backfill seeds
+nothing and every migration runs normally; each migration's internal
+idempotency makes that safe on an already-migrated database.  A corrupt file
+is left in place for inspection.
 
 ---
 
@@ -515,6 +517,13 @@ value only affects logging.  The internal idempotency checks are a safety
 property (they make the delete-row-and-re-run workflow below harmless) — the
 runner never consults them to decide execution.
 
+Migrations are **frozen**: they carry their own private snapshot types for the
+data shapes they read and write (see the `frozen` modules in m001/m002 and
+`legacy_types.rs`) instead of referencing the live model structs.  Changes to
+the live models must never require editing an already-shipped migration —
+columns and JSON fields introduced after a migration's era are filled in by
+SQL `DEFAULT` clauses and serde defaults downstream.
+
 ### Tracking table: `schema_migrations`
 
 Migration execution is tracked by name in a `schema_migrations` table inside
@@ -577,9 +586,11 @@ for every registry migration named in that file — those are treated as
 already applied without being invoked.  Every other migration then runs
 normally; on an already-migrated database their internal idempotency makes
 that a safe no-op, recorded as `success`.  After this one-time backfill the
-table is the sole source of truth: `migrations.json` is left on disk but
-never written (or read) again.  A fresh install has no legacy file, so all
-migrations simply run once and end recorded as `success`.
+table is the sole source of truth and `migrations.json` is **deleted**
+(best-effort; a removal failure is only logged and can be cleaned up
+manually).  A corrupt legacy file seeds nothing and is left in place for
+inspection.  A fresh install has no legacy file, so all migrations simply
+run once and end recorded as `success`.
 
 ### Adding a migration
 
@@ -648,9 +659,10 @@ the JSON sources are left untouched so the migration can be re-run after the
 underlying problem is fixed.  The error is propagated through
 `migration::run_pending()`, which aborts daemon startup.
 
-`migrations.json` is **not** moved into the `meta` table.  It remains on disk
-as the legacy migration-state file: the runner reads it once to backfill the
-`schema_migrations` tracking table and never touches it again.
+`migrations.json` is **not** moved into the `meta` table.  It is the legacy
+migration-state file: the runner reads it once to backfill the
+`schema_migrations` tracking table and then deletes it.  This migration
+itself never touches the file.
 
 ### m003_drop_step_output_summary
 
