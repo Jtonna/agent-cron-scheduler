@@ -29,7 +29,7 @@ The three active store traits are:
 
 Step output is written by `FileLogSink` (not through a store trait) to per-run
 files under `logs/`.  Migration execution is tracked in the
-`schema_migrations` table inside `acs.db`, owned by the `acs-migrate` runner
+`schema_migrations` table inside `acs.db`, owned by the migration runner
 (see [Migration System](#9-migration-system)).
 
 ---
@@ -483,22 +483,42 @@ On every `write_chunk(data)`:
 
 ## 9. Migration System
 
-**Sources:** `acs-migrate/src/lib.rs`, `acs-migrate/src/m*.rs`,
-`acs-migrate/src/shell_tokens.rs`
+**Sources:** `milepost/src/lib.rs` (framework),
+`acs/src/migrations/mod.rs` (registry + runner configuration),
+`acs/src/migrations/m*.rs`, `acs/src/migrations/shell_tokens.rs`
 
-### Design (v5.0.0): the `acs-migrate` framework crate
+### Design (v5.0.0): the `milepost` framework + ACS-owned migrations
 
-Since v5.0.0 the migration system lives in its own crate, `acs-migrate/`, a
-sibling of `acs/` consumed as a path dependency.  The separation exists for
-maintenance, clarity, and future development: the framework and the shipped
-migrations evolve, get reviewed, and get tested independently of the daemon,
-and nothing in a migration can accidentally reach into the daemon's live
-model types.  The daemon calls `acs_migrate::run_pending(data_dir)` at
-startup (on a blocking task), before the storage layer opens `acs.db`.  Any
-migration error is fatal: the daemon logs it and exits rather than running
-against a partially-migrated database.
+Since v5.0.0 the migration system is split like a package and its consumer:
 
-**Every migration is a Rust file** (`acs-migrate/src/mNNN_<name>.rs`)
+* **`milepost/`** is a generic, reusable migration framework — a sibling
+  crate consumed as a path dependency, versioned independently (0.1.0). It
+  contains ONLY framework functionality (the `Migration` trait, the
+  `MigrationTx` SQL-string API, the runner, tracking-table management) and
+  knows nothing about ACS.
+* **`acs/src/migrations/`** owns everything ACS-specific: the migration
+  files, the registry, and the runner configuration — which database file
+  to migrate, the schema probe (an ACS database is recognised by its
+  `workflows` table), and the upgrade guidance for pre-tracking databases.
+
+The separation exists for maintenance, clarity, and future development: the
+framework and the shipped migrations evolve, get reviewed, and get tested
+independently, and nothing in the framework can reach into ACS's live model
+types.  The daemon calls `acs::migrations::run_pending(data_dir)` at startup
+(on a blocking task), which configures a `milepost::Runner` and executes it
+before the storage layer opens `acs.db`.  Any migration error is fatal: the
+daemon logs it and exits rather than running against a partially-migrated
+database.
+
+```rust
+// acs/src/migrations/mod.rs — the entire ACS-side configuration:
+Runner::new(data_dir.join("acs.db"))
+    .migrations(registry())                       // ACS's Vec<Box<dyn Migration>>
+    .schema_probe(|tx| tx.table_exists("workflows"), upgrade_guidance)
+    .run()
+```
+
+**Every migration is a Rust file** (`acs/src/migrations/mNNN_<name>.rs`)
 implementing the framework's `Migration` trait:
 
 ```rust
@@ -601,9 +621,9 @@ went through.
 
 The baseline opts in via the trait's `baseline()` hook, which changes one
 thing: on a database that **already has both migration tracking and a
-schema** (the `schema_migrations` and `workflows` tables both pre-exist —
-true of every v4.2.14 install), the runner records a `success` row for the
-baseline WITHOUT executing it.  The baseline therefore never runs against an
+schema** (the `schema_migrations` table pre-exists and ACS's configured
+schema probe finds the `workflows` table — true of every v4.2.14 install),
+the runner records a `success` row for the baseline WITHOUT executing it.  The baseline therefore never runs against an
 existing schema, and a v4.2.14 database upgrading to v5 executes
 **nothing**: baseline seeded, m003–m008 skipped via their recorded rows.
 
@@ -641,14 +661,14 @@ trait's `rebuild()` hook gets this treatment from the runner instead:
 
 ### Adding a migration
 
-1. Create `acs-migrate/src/mNNN_<name>.rs` (increment NNN past the last
-   entry) with a unit struct implementing `Migration`.  Keep the SQL in
-   string constants; the body is usually a single
+1. Create `acs/src/migrations/mNNN_<name>.rs` (increment NNN past the last
+   entry) with a unit struct implementing `milepost::Migration`.  Keep the
+   SQL in string constants; the body is usually a single
    `tx.execute_batch(SQL)`.  No `BEGIN`/`COMMIT` — the runner owns the
    transaction.
 2. Declare the module and append `Box::new(mNNN_<name>::YourStruct)` to
-   `registry()` in `acs-migrate/src/lib.rs` — names must stay in ascending
-   order.
+   `registry()` in `acs/src/migrations/mod.rs` — names must stay in
+   ascending order.
 3. Add Rust-level logic (via `query` / `execute`) only where SQL alone
    cannot express the transform, documenting why.
 

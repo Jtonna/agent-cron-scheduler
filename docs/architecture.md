@@ -245,12 +245,15 @@ See [Storage](storage.md) for implementation details.
 
 - **`AcsError`**: `thiserror`-based enum with variants: `NotFound`, `Conflict`, `Validation`, `Storage`, `Internal`, `Cron`, `Pty`, `Timeout`. Implements `From<std::io::Error>`, `From<serde_json::Error>`, `From<uuid::Error>`.
 
-#### `acs-migrate` -- Data Migration (sibling crate)
+#### `milepost` + `migrations` -- Data Migration (framework crate + ACS registry)
 
-Since v5.0.0, migrations live in the `acs-migrate/` crate (a sibling of
-`acs/`, consumed as a path dependency) rather than in a module of the daemon.
+Since v5.0.0 the migration system is split like a package and its consumer:
+`milepost/` (a sibling crate, consumed as a path dependency, versioned
+independently) is a generic migration framework that knows nothing about
+ACS; `acs/src/migrations/` owns the ACS migrations, the registry, and the
+runner configuration.
 
-- **`run_pending(data_dir)`** (`acs-migrate/src/lib.rs`): synchronous entry point the daemon calls at startup on a blocking task. Walks the registry in name order; execution is decided solely by the `schema_migrations` tracking table inside `acs.db` (no row = run; `success` = skip; `failed` = abort startup before anything runs). Each migration executes inside its own transaction; failures roll back completely, record a `failed` row with the error text, and abort. Rows for retired migrations (m001/m002 from v4 installs) are tolerated.
+- **`migrations::run_pending(data_dir)`** (`acs/src/migrations/mod.rs`): synchronous entry point the daemon calls at startup on a blocking task. Configures a `milepost::Runner` with ACS's registry, the `acs.db` path, a schema probe (`workflows` table exists), and the upgrade guidance for pre-tracking databases, then runs it. Execution is decided solely by the `schema_migrations` tracking table (no row = run; `success` = skip; `failed` = abort startup before anything runs). Each migration executes inside its own transaction; failures roll back completely, record a `failed` row with the error text, and abort. Rows for retired migrations (m001/m002 from v4 installs) are tolerated.
 - **One migration kind**: every migration is a Rust file (`mNNN_<name>.rs`) implementing the `Migration` trait (`name()`, optional `baseline()` / `rebuild()` hooks, `up(&MigrationTx)`). The framework's `MigrationTx` is a small SQL-string API over the runner-owned transaction — `execute_batch(sql)`, `execute(sql, &[SqlValue])`, and `query(sql, &[SqlValue]) -> Vec<Vec<SqlValue>>` — so simple migrations are one SQL constant, and complex migrations (m005/m006, which need shell tokenizing and nested-JSON recursion) mix SQL strings with Rust-level logic.
 - **Registry** (name-ordered): `m000_baseline` (baseline hook), `m003_drop_step_output_summary`, `m004_drop_input_schema`, `m005_shell_claude_to_agent` (SQL + Rust logic), `m006_agent_step_normalize` (SQL + Rust logic), `m007_add_token_columns`, `m008_add_workflow_deleted` (rebuild hook).
 - **Conventions**: migrations whose `baseline()` hook returns true are recorded without executing on databases that already have migration tracking (every v4.2.14 install); migrations whose `rebuild()` hook returns true get `PRAGMA foreign_keys = OFF` around their transaction plus a pre-commit `PRAGMA foreign_key_check`. Databases without a tracking table must upgrade through v4.2.14 first.
@@ -273,7 +276,7 @@ See [Storage — Migration System](storage.md#9-migration-system) for full seman
 5.  Set up tracing                 — Truncate daemon.log on startup, then open with
                                      SizeManagedWriter (auto-drops oldest 25% at 1 GB).
                                      Falls back to stderr-only on error.
-6.  acs_migrate::run_pending()     — Run pending migrations against the data
+6.  migrations::run_pending()      — Run pending migrations against the data
                                      directory (on a blocking task). Execution
                                      is tracked in the schema_migrations table;
                                      each migration runs in its own transaction
@@ -631,8 +634,10 @@ Cross-reference: [Storage](storage.md).
 
 ## 9. Migration
 
-Since v5.0.0 the migration system lives in the `acs-migrate/` sibling crate
-and is tracked in the `schema_migrations` table inside `acs.db` (the legacy
+Since v5.0.0 the migration framework lives in the `milepost/` sibling crate
+(a generic library that knows nothing about ACS), the migrations themselves
+live in `acs/src/migrations/`, and execution is tracked in the
+`schema_migrations` table inside `acs.db` (the legacy
 `migrations.json` state file and the v4-era m001/m002 Rust migrations were
 retired; databases that predate the tracking table must upgrade through
 v4.2.14 first).
@@ -725,4 +730,4 @@ Structured persistence (workflows + run records) lives in `acs.db`, a SQLite dat
 
 ### 11.9 Numbered Migration System
 
-Migrations are forward-only, name-ordered entries in the `acs-migrate` crate's registry — Rust files whose SQL lives in string constants, executed through the framework's SQL-string API, with Rust-level logic only where SQL cannot express the transform. Execution state lives in the `schema_migrations` table inside `acs.db` and is recorded after each migration, so progress is preserved on partial failure. Each migration runs in its own transaction; a failure rolls back, records a `failed` row, and blocks startup until an operator deletes the row.
+Migrations are forward-only, name-ordered entries in ACS's registry (`acs/src/migrations/`), run through the generic `milepost` framework crate — Rust files whose SQL lives in string constants, executed through the framework's SQL-string API, with Rust-level logic only where SQL cannot express the transform. Execution state lives in the `schema_migrations` table inside `acs.db` and is recorded after each migration, so progress is preserved on partial failure. Each migration runs in its own transaction; a failure rolls back, records a `failed` row, and blocks startup until an operator deletes the row.

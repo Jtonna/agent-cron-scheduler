@@ -196,6 +196,7 @@ acs/                     # Rust project root
     models/
       workflow.rs        # Workflow, NewWorkflow, StepDef, WorkflowRun, TriggerParams, etc.
       config.rs          # DaemonConfig
+    migrations/          # ACS's migrations + registry (run via the milepost framework)
     storage/             # WorkflowStore + WorkflowRunStore (SQLite) + log sinks
     daemon/              # Daemon bootstrap, scheduler, workflow executor, events, service registration
     server/              # Axum router, REST routes, SSE handler, health endpoint
@@ -204,7 +205,7 @@ acs/                     # Rust project root
     pty/                 # Process spawning abstraction
   web/                   # Swagger UI + openapi.yaml (embedded via rust-embed)
   tests/                 # Integration tests (workflow_api_tests, cli_tests, migration_tests)
-acs-migrate/             # Migration framework crate: .rs migrations (SQL strings + Rust logic)
+milepost/                # Generic SQLite migration framework (library; knows nothing about ACS)
 electron/                # Electron app and frontend
   packages/
     frontend/            # Next.js dashboard (independent)
@@ -226,7 +227,7 @@ Full system documentation lives in [docs/INDEX.md](docs/INDEX.md). Highlights:
 - [API Reference](docs/api-reference.md) -- REST endpoints, SSE events, schemas
 - [Workflow Management](docs/workflow-management.md) -- step kinds, template substitution, failure policies
 - [Configuration](docs/configuration.md) -- config file format and data directories
-- [Storage](docs/storage.md) -- SQLite layout, log sinks, migrations (the `acs-migrate/` crate)
+- [Storage](docs/storage.md) -- SQLite layout, log sinks, migrations (`milepost` framework + `acs/src/migrations/`)
 - [Service Registration](docs/service-registration.md) -- platform-specific service setup
 - [Troubleshooting](docs/troubleshooting.md) -- common problems and fixes
 

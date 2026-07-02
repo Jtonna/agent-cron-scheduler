@@ -1,6 +1,6 @@
 //! v5 migration acceptance tests.
 //!
-//! - Fresh install: the acs-migrate runner applies every migration and the
+//! - Fresh install: the migration runner applies every migration and the
 //!   resulting schema is structurally identical to a real v4.2.14-migrated
 //!   database.
 //! - v4.2.14 upgrade: a database with the v4.2.14 schema and recorded
@@ -282,7 +282,7 @@ fn fresh_v5_schema_is_identical_to_migrated_v4_2_14_schema() {
     // Fresh v5 install: migration runner, then the storage layer's
     // idempotent schema application (the daemon startup order).
     let fresh = TempDir::new().expect("tmp fresh");
-    let report = acs_migrate::run_pending(fresh.path()).expect("fresh run");
+    let report = agent_cron_scheduler::migrations::run_pending(fresh.path()).expect("fresh run");
     assert_eq!(report.ran.len(), 7, "all v5 migrations must run fresh");
     let _db = agent_cron_scheduler::storage::sqlite::init_db(&fresh.path().join("acs.db"))
         .expect("init_db fresh");
@@ -290,7 +290,8 @@ fn fresh_v5_schema_is_identical_to_migrated_v4_2_14_schema() {
     // v4.2.14 upgrade: snapshot database through the same v5 startup path.
     let upgraded = TempDir::new().expect("tmp v4");
     build_v4_database(upgraded.path());
-    let report = acs_migrate::run_pending(upgraded.path()).expect("upgrade run");
+    let report =
+        agent_cron_scheduler::migrations::run_pending(upgraded.path()).expect("upgrade run");
     assert!(report.ran.is_empty(), "upgrade must execute nothing");
     let _db = agent_cron_scheduler::storage::sqlite::init_db(&upgraded.path().join("acs.db"))
         .expect("init_db upgraded");
@@ -323,7 +324,8 @@ fn v4_2_14_upgrade_runs_nothing_and_preserves_data() {
     let tmp = TempDir::new().expect("tmp");
     build_v4_database(tmp.path());
 
-    let report = acs_migrate::run_pending(tmp.path()).expect("upgrade must succeed");
+    let report =
+        agent_cron_scheduler::migrations::run_pending(tmp.path()).expect("upgrade must succeed");
     assert!(
         report.ran.is_empty(),
         "a v4.2.14 database must not execute any migration, got {:?}",
@@ -346,7 +348,7 @@ fn v4_2_14_upgrade_runs_nothing_and_preserves_data() {
     );
 
     // Second startup: same result, still nothing to do.
-    let report2 = acs_migrate::run_pending(tmp.path()).expect("second run");
+    let report2 = agent_cron_scheduler::migrations::run_pending(tmp.path()).expect("second run");
     assert!(report2.ran.is_empty());
     assert!(report2.seeded.is_empty(), "baseline row already present");
 
@@ -379,7 +381,8 @@ fn v4_2_14_upgrade_runs_nothing_and_preserves_data() {
 // ─── A3 (integration slice): failed row blocks daemon-visible startup path ───
 //
 // The full failure-semantics matrix (rollback proof, failed-row recording,
-// delete-to-rerun) is covered by acs-migrate's own unit tests; this slice
+// delete-to-rerun) is covered by the milepost framework's own unit tests
+// and the migrations module tests; this slice
 // proves the failure surface reaches callers of the public run_pending API.
 
 #[test]
@@ -397,7 +400,8 @@ fn failed_migration_row_blocks_run_pending_until_deleted() {
     .expect("mark failed");
     drop(conn);
 
-    let err = acs_migrate::run_pending(tmp.path()).expect_err("failed row must block startup");
+    let err = agent_cron_scheduler::migrations::run_pending(tmp.path())
+        .expect_err("failed row must block startup");
     let msg = err.to_string();
     assert!(msg.contains("m007_add_token_columns"));
     assert!(
@@ -418,6 +422,7 @@ fn failed_migration_row_blocks_run_pending_until_deleted() {
     .expect("recover");
     drop(conn);
 
-    let report = acs_migrate::run_pending(tmp.path()).expect("must succeed after recovery");
+    let report = agent_cron_scheduler::migrations::run_pending(tmp.path())
+        .expect("must succeed after recovery");
     assert_eq!(report.ran, vec!["m007_add_token_columns"]);
 }

@@ -35,8 +35,9 @@
 //!      - Whatever tokens remain → `extra_args` array (empty `[]` if none)
 //!      - Drop `command_template`.
 
-use crate::shell_tokens::{tokenize, truncate};
-use crate::{MigrateError, Migration, MigrationTx, SqlValue};
+use milepost::{MigrateError, Migration, MigrationTx, SqlValue};
+
+use super::shell_tokens::{tokenize, truncate};
 
 pub(crate) struct AgentStepNormalize;
 

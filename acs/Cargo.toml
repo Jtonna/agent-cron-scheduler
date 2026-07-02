@@ -9,7 +9,7 @@ name = "agentcronsystem"
 path = "src/main.rs"
 
 [dependencies]
-acs-migrate = { path = "../acs-migrate" }
+milepost = { path = "../milepost" }
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 tower = "0.5"

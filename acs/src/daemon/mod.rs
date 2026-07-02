@@ -643,13 +643,13 @@ pub async fn start_daemon(
         }
     }
 
-    // Run pending migrations (acs-migrate runner, tracked in the
-    // schema_migrations table). Must run AFTER tracing init so migration
-    // logs are visible. Any migration error is fatal: the daemon must not
-    // start against a partially-migrated database.
+    // Run pending migrations (ACS's registry through the milepost runner,
+    // tracked in the schema_migrations table). Must run AFTER tracing init
+    // so migration logs are visible. Any migration error is fatal: the
+    // daemon must not start against a partially-migrated database.
     let migration_data_dir = data_dir.clone();
     let migration_outcome =
-        tokio::task::spawn_blocking(move || acs_migrate::run_pending(&migration_data_dir))
+        tokio::task::spawn_blocking(move || crate::migrations::run_pending(&migration_data_dir))
             .await
             .map_err(|e| anyhow::anyhow!("Migration task failed: {}", e))?;
     match migration_outcome {

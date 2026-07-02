@@ -38,8 +38,9 @@
 //! omitted (the agent step inherits the default). Otherwise the residual
 //! flags are preserved in a full `command_template`.
 
-use crate::shell_tokens::{tokenize, truncate};
-use crate::{MigrateError, Migration, MigrationTx, SqlValue};
+use milepost::{MigrateError, Migration, MigrationTx, SqlValue};
+
+use super::shell_tokens::{tokenize, truncate};
 
 /// The exact flag tail that follows `-p "<prompt>"` in the default
 /// `claude_code_cli` command template. When the residual flags of a migrated

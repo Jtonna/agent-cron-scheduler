@@ -17,7 +17,7 @@
 //! Existing rows keep their names verbatim and get deleted = 0 via the
 //! column default.
 
-use crate::{MigrateError, Migration, MigrationTx};
+use milepost::{MigrateError, Migration, MigrationTx};
 
 const SQL: &str = r#"
 CREATE TABLE workflows_new (

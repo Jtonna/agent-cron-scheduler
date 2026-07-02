@@ -13,7 +13,7 @@
 //! through as native SQL values). Only rows where at least one object
 //! element actually carries the key are rewritten.
 
-use crate::{MigrateError, Migration, MigrationTx};
+use milepost::{MigrateError, Migration, MigrationTx};
 
 const SQL: &str = r#"
 UPDATE workflow_runs

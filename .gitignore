@@ -1,11 +1,11 @@
 # Rust build output
 /target
 /acs/target
-/acs-migrate/target
+/milepost/target
 
-# acs-migrate is a library crate; its standalone lockfile is not tracked
+# milepost is a library crate; its standalone lockfile is not tracked
 # (acs/Cargo.lock pins its dependencies for the shipped binary)
-/acs-migrate/Cargo.lock
+/milepost/Cargo.lock
 
 # Electron / Node
 node_modules/

@@ -6,7 +6,7 @@
 //! across all agent steps. Historical rows carry 0 for both fields, the
 //! sentinel for "tokens not tracked".
 
-use crate::{MigrateError, Migration, MigrationTx};
+use milepost::{MigrateError, Migration, MigrationTx};
 
 const SQL: &str = "
 ALTER TABLE workflow_runs ADD COLUMN total_input_tokens  INTEGER NOT NULL DEFAULT 0;

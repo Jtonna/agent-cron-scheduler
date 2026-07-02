@@ -51,22 +51,22 @@ jobs:
         run: cargo fmt -- --check
         working-directory: acs
 
-      - name: Check formatting (acs-migrate)
+      - name: Check formatting (milepost)
         run: cargo fmt -- --check
-        working-directory: acs-migrate
+        working-directory: milepost
 
       - name: Run clippy
         run: cargo clippy -- -D warnings
         working-directory: acs
 
-      - name: Run clippy (acs-migrate)
+      - name: Run clippy (milepost)
         run: cargo clippy --all-targets -- -D warnings
-        working-directory: acs-migrate
+        working-directory: milepost
 
       - name: Run tests
         run: cargo test
         working-directory: acs
 
-      - name: Run tests (acs-migrate)
+      - name: Run tests (milepost)
         run: cargo test
-        working-directory: acs-migrate
+        working-directory: milepost

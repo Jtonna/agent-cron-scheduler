@@ -7,7 +7,7 @@
 //! creates it, and on upgraded databases this migration is skipped via its
 //! recorded schema_migrations row.
 
-use crate::{MigrateError, Migration, MigrationTx};
+use milepost::{MigrateError, Migration, MigrationTx};
 
 const SQL: &str = "ALTER TABLE workflows DROP COLUMN input_schema;";
 

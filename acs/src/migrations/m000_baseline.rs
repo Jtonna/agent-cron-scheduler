@@ -16,7 +16,7 @@
 //!   * workflows has no `deleted` column                (added by m008)
 //!   * workflow_runs has no token columns               (added by m007)
 
-use crate::{MigrateError, Migration, MigrationTx};
+use milepost::{MigrateError, Migration, MigrationTx};
 
 const SQL: &str = r#"
 CREATE TABLE workflows (
