@@ -7,7 +7,7 @@ info:
     ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
     Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "4.2.13"
+  version: "4.2.14"
   license:
     name: MIT
 
@@ -49,7 +49,7 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "4.2.13"
+                version: "4.2.14"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
                 service:
                   registered: true
@@ -268,22 +268,39 @@ paths:
 
     delete:
       operationId: deleteWorkflow
-      summary: Delete a workflow
+      summary: Delete a workflow and its run history
       description: |
-        Deletes a workflow by ID or name. If the workflow has an active run it
-        will be killed before deletion. Returns 204 on success with no body.
+        Deletes a workflow by ID or name **together with its entire run
+        history** in one transaction (v4.2.14), then removes the workflow's
+        log directory best-effort. Refused with 409 Conflict while the
+        workflow has any Running run — kill the run(s) via
+        `POST /api/runs/{run_id}/kill` or wait for them to finish.
+
+        Cost/token history is retained: terminal runs are mirrored into the
+        durable `cost_ledger` table, so the deleted workflow's spend still
+        appears in the cost analytics endpoints. Returns 204 on success with
+        no body.
       tags: [Workflows]
       parameters:
         - $ref: "#/components/parameters/WorkflowId"
       responses:
         "204":
-          description: Workflow deleted (no content)
+          description: Workflow and its runs deleted (no content)
         "404":
           description: Workflow not found
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The workflow has at least one Running run.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: conflict
+                message: "Workflow '0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5678' has 1 running run(s). Kill them (POST /api/runs/{run_id}/kill) or wait for them to finish before deleting the workflow."
         "500":
           description: Internal server error
           content:
@@ -485,6 +502,46 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+    delete:
+      operationId: purgeWorkflowRuns
+      summary: Bulk-purge a workflow's run history
+      description: |
+        Deletes every **non-Running** run record for the workflow along with
+        each run's on-disk log file (best-effort). Running runs are skipped
+        and survive the purge; the workflow definition itself is untouched.
+        Cost/token history is retained in the durable `cost_ledger`, so cost
+        analytics are unaffected. Works whether or not the workflow currently
+        has Running runs (v4.2.14).
+      tags: [WorkflowRuns]
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "200":
+          description: Purge complete.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted:
+                    type: integer
+                    description: Number of run records deleted (skipped Running runs are not counted).
+              example:
+                deleted: 42
+        "404":
+          description: Workflow not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   # -------------------------------------------------------------------------
   # Workflow Runs
   # -------------------------------------------------------------------------
@@ -584,6 +641,55 @@ paths:
               example:
                 error: not_found
                 message: "Run with id '0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678' not found"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: deleteWorkflowRun
+      summary: Delete a workflow run
+      description: |
+        Deletes a single run record and removes its on-disk log file
+        (best-effort). Refused with 409 Conflict while the run is Running —
+        kill it via `POST /api/runs/{run_id}/kill` or wait for it to finish.
+        Cost/token history is retained in the durable `cost_ledger`, so cost
+        analytics are unaffected (v4.2.14).
+      tags: [WorkflowRuns]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          description: UUID of the workflow run to delete.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Run deleted (no content)
+        "400":
+          description: run_id is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The run is still Running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: conflict
+                message: "Run '0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678' is still running. Kill it (POST /api/runs/0192a3b4-dddd-7e8f-9a0b-1c2d3e4f5678/kill) or wait for it to finish before deleting it."
         "500":
           description: Internal server error
           content:
@@ -775,6 +881,11 @@ paths:
         Returns cost summaries for all workflows plus a system-wide aggregate.
         Supports optional `days`, `since`, and `until` query parameters to
         control the daily-buckets window (default last 30 days).
+
+        Since v4.2.14 aggregates are computed from the durable `cost_ledger`,
+        so deleted workflows with historical spend are included (named via the
+        ledger's stored `workflow_name`) and count toward
+        `system_cost_summary`.
       tags: [Cost]
       parameters:
         - name: days
@@ -851,6 +962,11 @@ paths:
         Returns the cost summary for a specific workflow by UUID. Supports
         optional `days`, `since`, and `until` query parameters to control the
         daily-buckets window (default last 30 days).
+
+        Since v4.2.14 deleted workflows remain queryable while they have
+        spend in the durable `cost_ledger`; their `workflow_name` is served
+        from the ledger. 404 is returned only when the UUID matches neither a
+        live workflow nor any ledger history.
       tags: [Cost]
       parameters:
         - name: id
@@ -1060,7 +1176,7 @@ components:
         version:
           type: string
           description: Daemon version string.
-          example: "4.2.13"
+          example: "4.2.14"
         data_dir:
           type: string
           description: Filesystem path to the data directory.

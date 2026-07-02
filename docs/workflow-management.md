@@ -666,6 +666,29 @@ Each step's output is wrapped in marker lines:
 
 The daemon version is embedded in markers (`ACS-<VERSION>`) to allow log parsers to handle format evolution.
 
+### Deleting workflows and runs (v4.2.14)
+
+Deletion semantics changed in v4.2.14 (ACS-25):
+
+- **`DELETE /api/workflows/{id}`** deletes the workflow **and its entire run
+  history** in one transaction, then removes the workflow's log directory
+  `<data_dir>/logs/<workflow_id>/` best-effort. If the workflow has any
+  `Running` run the request is refused with `409 Conflict` — kill the run(s)
+  via `POST /api/runs/{run_id}/kill` or wait for them to finish. (Before
+  v4.2.14 this endpoint returned a 500 `FOREIGN KEY constraint failed` for
+  any workflow that had ever run.)
+- **`DELETE /api/runs/{run_id}`** deletes a single run record and its log
+  file. Refused with `409 Conflict` while the run is `Running`.
+- **`DELETE /api/workflows/{id}/runs`** bulk-purges all **non-Running** runs
+  for a workflow (rows + log files) and returns `{"deleted": <count>}`.
+  `Running` runs are skipped; the workflow definition is untouched.
+
+In all three cases the run's cost/token bookkeeping is **retained**: terminal
+runs are mirrored into the durable `cost_ledger` table (no foreign keys) at
+finalization, and the cost analytics endpoints aggregate from that ledger, so
+deleted workflows and runs keep counting toward historical spend. See
+[`storage.md`](./storage.md) and [`api-reference.md`](./api-reference.md).
+
 ---
 
 ## Cron Expressions

@@ -26,8 +26,10 @@ All request and response bodies use JSON (`Content-Type: application/json`) unle
   - [DELETE /api/workflows/{id}/favorite](#delete-apiworkflowsidfavorite)
   - [POST /api/workflows/{id}/trigger](#post-apiworkflowsidtrigger)
   - [GET /api/workflows/{id}/runs](#get-apiworkflowsidruns)
+  - [DELETE /api/workflows/{id}/runs](#delete-apiworkflowsidruns)
   - [GET /api/runs/recent](#get-apirunsrecent)
   - [GET /api/runs/{run_id}](#get-apirunsrun_id)
+  - [DELETE /api/runs/{run_id}](#delete-apirunsrun_id)
   - [POST /api/runs/{run_id}/kill](#post-apirunsrun_idkill)
   - [GET /api/runs/{run_id}/log](#get-apirunsrun_idlog)
   - [GET /api/events/workflows](#get-apieventsworkflows)
@@ -124,7 +126,7 @@ Returns daemon health status, including uptime, workflow counts, version, and pl
   "uptime_seconds": 3600,
   "active_jobs": 5,
   "total_jobs": 8,
-  "version": "4.2.13",
+  "version": "4.2.14",
   "data_dir": "/home/user/.local/share/agent-cron-scheduler",
   "service": {
     "registered": true,
@@ -317,7 +319,7 @@ Partially update an existing workflow. Only the fields you include in the reques
 
 ### DELETE /api/workflows/{id}
 
-Delete a workflow.
+Delete a workflow **and its entire run history** in one transaction (v4.2.14). Deletion is refused with `409 Conflict` while the workflow has any `Running` run — kill the run(s) or wait for them to finish first.
 
 **Path Parameters:**
 
@@ -331,11 +333,17 @@ Delete a workflow.
 
 | Status | Description |
 |--------|-------------|
-| 204 No Content | Workflow deleted. No response body. |
+| 204 No Content | Workflow and its runs deleted. No response body. |
 | 404 Not Found | Workflow not found. |
+| 409 Conflict | The workflow has at least one `Running` run. The message names the number of active runs and how to resolve the conflict. |
 | 500 Internal Server Error | Storage failure. |
 
-**Side effects:** Broadcasts a `WorkflowChanged` SSE event with `change_kind: "deleted"`.
+**Side effects:**
+
+- All `workflow_runs` rows for the workflow are deleted in the same transaction (before v4.2.14 this request failed with a 500 `FOREIGN KEY constraint failed` once the workflow had run history).
+- The workflow's on-disk log directory `<data_dir>/logs/<workflow_id>/` is removed best-effort (a failure is logged as a warning and does not fail the request).
+- Cost/token history is **retained**: the durable `cost_ledger` rows survive deletion, so the workflow's historical spend still appears in the [cost analytics endpoints](#cost-analytics-endpoints).
+- Broadcasts a `WorkflowChanged` SSE event with `change_kind: "deleted"`.
 
 ---
 
@@ -533,6 +541,40 @@ List execution runs for a specific workflow, with pagination. Returns latest-fir
 
 ---
 
+### DELETE /api/workflows/{id}/runs
+
+Bulk-purge the workflow's run history (v4.2.14). Deletes every **non-Running** run record for the workflow along with each run's on-disk log file (best-effort); `Running` runs are skipped and survive the purge. The workflow itself is untouched, and its cost/token history is retained in the durable `cost_ledger`, so cost analytics are unaffected.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description             |
+|-----------|--------|-------------------------|
+| `id`      | string | Workflow UUID or name.  |
+
+**Request:** No body.
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 200 OK | Purge complete. Returns the number of deleted runs. |
+| 404 Not Found | Workflow not found. |
+| 500 Internal Server Error | Storage failure. |
+
+```json
+{
+  "deleted": 42
+}
+```
+
+| Field     | Type    | Description                                        |
+|-----------|---------|----------------------------------------------------|
+| `deleted` | integer | Number of run records deleted (Running runs are not counted — they are skipped). |
+
+The endpoint works whether or not the workflow currently has `Running` runs; purging a workflow with no terminal runs returns `{"deleted": 0}`.
+
+---
+
 ### GET /api/runs/recent
 
 List recent execution runs across **all** workflows in a single chronologically-merged feed, latest-first. Each entry carries the same fields as a per-workflow run — including the embedded `workflow_snapshot` (which contains the workflow's `name`) — so consumers can render a mixed activity feed without additional lookups.
@@ -598,6 +640,30 @@ Retrieve a single run record with full step-level detail.
 | 500 Internal Server Error | Storage failure. |
 
 The response body is a [WorkflowRun](#workflowrun) object including the full `workflow_snapshot` (the complete workflow definition as it was at trigger time).
+
+---
+
+### DELETE /api/runs/{run_id}
+
+Delete a single run record (v4.2.14). Refused with `409 Conflict` while the run is `Running` — kill it first or wait for it to finish. On success the run's on-disk log file `<data_dir>/logs/<workflow_id>/<run_id>.log` is removed best-effort. The run's cost/token history is retained in the durable `cost_ledger`, so cost analytics are unaffected.
+
+**Path Parameters:**
+
+| Parameter | Type   | Description                            |
+|-----------|--------|----------------------------------------|
+| `run_id`  | string | The run UUID. Must be a valid UUID.    |
+
+**Request:** No body.
+
+**Response:**
+
+| Status | Description |
+|--------|-------------|
+| 204 No Content | Run deleted. No response body. |
+| 400 Bad Request | `run_id` is not a valid UUID. |
+| 404 Not Found | No run found for the given UUID. |
+| 409 Conflict | The run is still `Running`. Kill it (`POST /api/runs/{run_id}/kill`) or wait for it to finish. |
+| 500 Internal Server Error | Storage failure. |
 
 ---
 
@@ -795,6 +861,8 @@ No daemon logs available yet.
 
 All cost analytics are served from the `/api/cost/` namespace. These endpoints support the same query parameters for controlling the `daily_buckets` window.
 
+Since v4.2.14 all cost aggregates are computed from the durable `cost_ledger` table (see [docs/storage.md](storage.md)) instead of the raw `workflow_runs` rows. Because ledger rows have no foreign keys, cost and token history **survives deletion** of both workflows and individual runs: deleted workflows keep appearing in `GET /api/cost/workflows` (and stay queryable via `GET /api/cost/workflows/{id}`) with the workflow name stored in the ledger, and their spend remains part of `system_cost_summary`.
+
 ### Query Parameters (Cost Endpoints)
 
 | Parameter | Type    | Required | Default | Description |
@@ -815,7 +883,7 @@ All cost analytics are served from the `/api/cost/` namespace. These endpoints s
 
 ### GET /api/cost/workflows
 
-List cost analytics for all workflows.
+List cost analytics for all workflows — every live workflow plus any deleted workflow that still has spend recorded in the cost ledger (deleted entries use the ledger's stored `workflow_name`).
 
 **Request:** No body.
 
@@ -917,7 +985,7 @@ curl "http://127.0.0.1:8377/api/cost/workflows?since=2026-04-01&until=2026-05-01
 
 ### GET /api/cost/workflows/{id}
 
-Retrieve cost analytics for a single workflow.
+Retrieve cost analytics for a single workflow. Deleted workflows remain queryable as long as they have spend in the cost ledger; their `workflow_name` is served from the ledger (v4.2.14).
 
 **Path Parameters:**
 
@@ -935,7 +1003,7 @@ Retrieve cost analytics for a single workflow.
 |--------|-------------|
 | 200 OK | Returns a [CostWorkflowResponse](#costworkflowresponse) object. |
 | 400 Bad Request | Invalid path (non-UUID `{id}` rejected by Axum extraction) or invalid query parameter combination. |
-| 404 Not Found | UUID is well-formed but no workflow exists with that ID. |
+| 404 Not Found | UUID is well-formed but no workflow exists with that ID and the cost ledger has no history for it. |
 | 500 Internal Server Error | Storage failure. |
 
 ```json

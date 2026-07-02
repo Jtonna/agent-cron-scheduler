@@ -125,7 +125,7 @@ CREATE TABLE workflow_runs (
     total_duration_ms   INTEGER,
     total_input_tokens  INTEGER NOT NULL DEFAULT 0,  -- added by m007 (v4.2.11)
     total_output_tokens INTEGER NOT NULL DEFAULT 0,  -- added by m007 (v4.2.11)
-    FOREIGN KEY (workflow_id) REFERENCES workflows(id)
+    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE  -- CASCADE added by m008 (v4.2.14)
 );
 
 CREATE INDEX idx_workflow_runs_workflow_id_finished_at
@@ -139,7 +139,54 @@ CREATE TABLE meta (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
 );
+
+-- Durable cost ledger — added by m008 (v4.2.14)
+CREATE TABLE cost_ledger (
+    run_id              TEXT PRIMARY KEY,
+    workflow_id         TEXT NOT NULL,
+    workflow_name       TEXT NOT NULL,
+    started_at          TEXT NOT NULL,
+    finished_at         TEXT,
+    status              TEXT NOT NULL,
+    total_cost_usd      REAL,
+    total_input_tokens  INTEGER NOT NULL DEFAULT 0,
+    total_output_tokens INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_cost_ledger_workflow_id_finished_at
+    ON cost_ledger(workflow_id, finished_at);
+CREATE INDEX idx_cost_ledger_finished_at
+    ON cost_ledger(finished_at);
 ```
+
+### Cost ledger (`cost_ledger`)
+
+Added in v4.2.14 (ACS-25). An append-only "skinny" table with one row per
+**terminal** run (`Completed` / `Failed` / `Killed`) recording the run's
+cost and token bookkeeping plus the workflow name at the time of the run.
+
+Key properties:
+
+- **No foreign keys.** Rows deliberately do not reference `workflows` or
+  `workflow_runs`, so they survive deletion of both parents. Deleting a
+  workflow (which now cascades into `workflow_runs`), deleting a single run
+  (`DELETE /api/runs/{run_id}`), or bulk-purging runs
+  (`DELETE /api/workflows/{id}/runs`) never touches the ledger.
+- **Written at run persistence.** `upsert_ledger_row()` in
+  `storage/sqlite/workflow_runs.rs` runs alongside every run upsert
+  (`create_run` / `update_run`) and writes the ledger row as soon as the run
+  reaches a terminal status — this covers the normal finalize path, the kill
+  route, ghost recovery, and the shutdown fallback. `Running` runs are
+  skipped; a `NULL` `total_cost_usd` is allowed. The upsert is idempotent
+  (last write wins by `run_id`).
+- **Read path for all cost analytics.** `cost_summary_for()` and
+  `daily_buckets_for()` aggregate from `cost_ledger` (not `workflow_runs`),
+  so `/api/cost/workflows` and `/api/cost/workflows/{id}` keep counting the
+  spend of deleted workflows/runs. `list_ledger_workflows()` exposes the
+  distinct `(workflow_id, workflow_name)` pairs (latest name wins) so the
+  cost list endpoint can name deleted workflows.
+- **Backfilled by m008.** Existing terminal `workflow_runs` rows are copied
+  into the ledger when the migration runs (see below).
 
 ### Encoding rules
 
@@ -230,7 +277,7 @@ pub trait WorkflowStore: Send + Sync {
 | `find_by_name` | Looks up a single workflow by name; returns `None` if not found. |
 | `create_workflow` | Validates, assigns a UUIDv7 ID, sets `version: 1`, INSERTs, and returns the new workflow. |
 | `update_workflow` | Partial update; bumps `version` when any definition-affecting field changes. Returns `NotFound` or `Conflict` as appropriate. |
-| `delete_workflow` | DELETEs a workflow by UUID; returns `NotFound` if it does not exist. |
+| `delete_workflow` | Transactional cascade delete (v4.2.14): returns `Conflict` if the workflow has any `Running` run, otherwise deletes the run history and the workflow row in one transaction. Returns `NotFound` if the workflow does not exist. Cost-ledger rows are retained. |
 | `record_run_outcome` | Records a terminal run outcome on the parent workflow (updates `last_run_id`, `last_run_status`, `last_run_at`; bumps `updated_at`; does NOT bump `version`). Returns `Result<()>` (anyhow); note this differs from the `WorkflowRunStore` trait which uses `Result<_, AcsError>`. |
 
 ### SqliteWorkflowStore
@@ -290,6 +337,8 @@ pub trait WorkflowRunStore: Send + Sync {
     ) -> Result<Vec<WorkflowRun>, AcsError>;
     async fn count_runs(&self, workflow_id: Uuid) -> Result<usize, AcsError>;
     async fn delete_run(&self, run_id: Uuid) -> Result<(), AcsError>;
+    async fn purge_runs(&self, workflow_id: Uuid) -> Result<Vec<Uuid>, AcsError>;
+    async fn list_ledger_workflows(&self) -> Result<Vec<(Uuid, String)>, AcsError>;
     async fn list_recent_runs(&self, limit: usize, offset: usize) -> Result<Vec<WorkflowRun>, AcsError>;
     async fn count_all_runs(&self) -> Result<usize, AcsError>;
     async fn cost_summary_for(&self, workflow_id: Uuid, display_tz: &Tz) -> Result<CostSummary, AcsError>;
@@ -304,7 +353,9 @@ pub trait WorkflowRunStore: Send + Sync {
 | `get_run` | Single-row SELECT by primary key; returns `None` if the row is absent. |
 | `list_runs` | `SELECT … WHERE workflow_id = ? ORDER BY run_id DESC LIMIT ? OFFSET ?`. `limit=0` is translated to `-1` (SQLite "no limit"). |
 | `count_runs` | `SELECT COUNT(*) … WHERE workflow_id = ?`. |
-| `delete_run` | `DELETE FROM workflow_runs WHERE run_id = ?` (best-effort; absent rows are not an error). Log files are not removed by `delete_run`. |
+| `delete_run` | `DELETE FROM workflow_runs WHERE run_id = ?` (best-effort; absent rows are not an error). Log files are not removed by `delete_run` (the HTTP handler removes them best-effort). Cost-ledger rows are untouched. |
+| `purge_runs` | Deletes every **non-Running** run for the workflow in one transaction and returns the deleted run ids so the caller can clean up log files. `Running` runs are skipped. Cost-ledger rows are untouched. Backs `DELETE /api/workflows/{id}/runs`. |
+| `list_ledger_workflows` | Distinct `(workflow_id, workflow_name)` pairs present in `cost_ledger`, using the name recorded on each workflow's most recent terminal run. Includes deleted workflows; used by `GET /api/cost/workflows[/{id}]` to name them. |
 | `list_recent_runs` | Cross-workflow recent-runs feed: `SELECT … ORDER BY run_id DESC LIMIT ? OFFSET ?` (no `workflow_id` filter). Backs `GET /api/runs/recent`. |
 | `count_all_runs` | `SELECT COUNT(*) FROM workflow_runs` across all workflows. Pairs with `list_recent_runs` for paginated totals. |
 | `cost_summary_for` | Computes the per-workflow `CostSummary` (30-day + 1-year totals) windowed against `display_tz` calendar-day boundaries. Entry point used by `CostCache`. |
@@ -341,9 +392,9 @@ The `workflow_runs` table has three secondary indexes:
 | `idx_workflow_runs_finished_at` | `(finished_at)` | Cross-workflow recency queries. |
 | `idx_workflow_runs_status` | `(status)` | Filters that pick out e.g. all currently-running rows. |
 
-The cost-analytics aggregation query — `SUM(CASE WHEN finished_at >= ? THEN total_cost_usd END)` plus `COUNT(...)` over two windows — runs once per workflow per `GET /api/cost/workflows[/{id}]` cache miss. The `idx_workflow_runs_workflow_id_finished_at` composite index established in m002 covers this access pattern: the WHERE clause filters by `workflow_id`, `status IN (...)`, and `finished_at >= ?`, with the conditional SUMs evaluated over the filtered rows.
+The cost-analytics aggregation query — `SUM(CASE WHEN finished_at >= ? THEN total_cost_usd END)` plus `COUNT(...)` over two windows — runs once per workflow per `GET /api/cost/workflows[/{id}]` cache miss. Since v4.2.14 it reads from `cost_ledger` (not `workflow_runs`) so deleted history still counts; the `idx_cost_ledger_workflow_id_finished_at` composite index covers this access pattern: the WHERE clause filters by `workflow_id`, `status IN (...)`, and `finished_at >= ?`, with the conditional SUMs evaluated over the filtered rows.
 
-The daily-bucket query fetches `(finished_at, status, total_cost_usd, total_input_tokens, total_output_tokens)` over the window for the requested workflow (or all workflows for the system aggregate). Per-day grouping happens in Rust using `chrono_tz` to convert each UTC `finished_at` to the daemon's `display_timezone` local date — this avoids fighting SQLite's `localtime` / `strftime` for cross-platform consistency. The same `idx_workflow_runs_workflow_id_finished_at` composite index covers both per-workflow and system-wide queries. Both query paths are invoked exclusively by the cost endpoint handlers at `GET /api/cost/workflows[/{id}]`. The `total_input_tokens` / `total_output_tokens` columns were added in v4.2.11 (migration m007).
+The daily-bucket query fetches `(finished_at, status, total_cost_usd, total_input_tokens, total_output_tokens)` from `cost_ledger` over the window for the requested workflow (or all workflows for the system aggregate). Per-day grouping happens in Rust using `chrono_tz` to convert each UTC `finished_at` to the daemon's `display_timezone` local date — this avoids fighting SQLite's `localtime` / `strftime` for cross-platform consistency. The `idx_cost_ledger_workflow_id_finished_at` composite index covers both per-workflow and system-wide queries. Both query paths are invoked exclusively by the cost endpoint handlers at `GET /api/cost/workflows[/{id}]`. The `total_input_tokens` / `total_output_tokens` columns were added in v4.2.11 (migration m007); the switch to `cost_ledger` landed in v4.2.14 (migration m008).
 
 ---
 
@@ -734,6 +785,33 @@ columns to the `workflow_runs` table introduced in v4.2.11. Both columns are
 | `acs.db` does not exist | No-op (return `Ok(false)`) — fresh install |
 | `total_input_tokens` column already present on `workflow_runs` | No-op (return `Ok(false)`) — idempotent |
 | Otherwise | BEGIN transaction → `ALTER TABLE workflow_runs ADD COLUMN total_input_tokens INTEGER NOT NULL DEFAULT 0;` and `ALTER TABLE workflow_runs ADD COLUMN total_output_tokens INTEGER NOT NULL DEFAULT 0;` → COMMIT |
+
+### m008_cost_ledger_cascade
+
+`m008_cost_ledger_cascade` (v4.2.14, ACS-25) introduces the durable
+`cost_ledger` table and adds `ON DELETE CASCADE` to the
+`workflow_runs.workflow_id` foreign key so `DELETE /api/workflows/{id}` no
+longer fails with `FOREIGN KEY constraint failed` once a workflow has run
+history.
+
+The `cost_ledger` table itself is created by `schema.rs` on every open; the
+migration is responsible for backfilling it and rebuilding `workflow_runs`.
+SQLite cannot alter an existing foreign key, so the CASCADE is installed via
+the standard table rebuild (create new table → copy rows → drop old →
+rename → recreate the three indexes), executed with `PRAGMA foreign_keys =
+OFF` around a single transaction.
+
+| Condition | Action |
+|---|---|
+| `acs.db` does not exist | No-op (return `Ok(false)`) — fresh install (schema.rs ships CASCADE + `cost_ledger` from the start) |
+| `workflow_runs.workflow_id` FK already `ON DELETE CASCADE` | No-op (return `Ok(false)`) — idempotent |
+| Otherwise | `PRAGMA foreign_keys = OFF` → BEGIN transaction → `INSERT OR IGNORE INTO cost_ledger … SELECT … FROM workflow_runs WHERE status IN ('Completed','Failed','Killed')` (workflow_name extracted from the stored `workflow_snapshot` JSON) → rebuild `workflow_runs` with CASCADE → COMMIT → `PRAGMA foreign_keys = ON` |
+
+Note that although the FK now cascades, `SqliteWorkflowStore::delete_workflow`
+also deletes the run rows explicitly inside its own transaction (after
+refusing with `Conflict` when any run is `Running`) — the CASCADE clause is
+defense in depth. Workflow deletion additionally removes the workflow's log
+directory `{data_dir}/logs/{workflow_id}/` best-effort from the HTTP handler.
 
 ---
 
