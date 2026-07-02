@@ -92,7 +92,7 @@ Created idempotently by `apply_schema()` (every `CREATE TABLE` /
 ```sql
 CREATE TABLE workflows (
     id                  TEXT PRIMARY KEY,
-    name                TEXT NOT NULL UNIQUE,
+    name                TEXT NOT NULL,  -- uniqueness via idx_workflows_name_live (live rows only, v4.2.14)
     version             INTEGER NOT NULL,
     schedule            TEXT NOT NULL,
     timezone            TEXT,
@@ -112,6 +112,12 @@ CREATE TABLE workflows (
     is_favorited        INTEGER NOT NULL DEFAULT 0,
     deleted             INTEGER NOT NULL DEFAULT 0   -- soft-delete flag; added by m008 (v4.2.14)
 );
+
+-- Name uniqueness among LIVE workflows only (ACS-25, v4.2.14): soft-deleted
+-- rows are exempt, so a name becomes reusable after its owner is deleted
+-- while name resolution stays unambiguous.
+CREATE UNIQUE INDEX idx_workflows_name_live
+    ON workflows(name) WHERE deleted = 0;
 
 CREATE TABLE workflow_runs (
     run_id              TEXT PRIMARY KEY,
@@ -335,10 +341,12 @@ secondary sort.
 
 ### Indexes
 
-The `workflow_runs` table has three secondary indexes:
+The `workflows` table has one secondary index and the `workflow_runs` table
+has three:
 
 | Index | Columns | Purpose |
 |---|---|---|
+| `idx_workflows_name_live` | `(name) WHERE deleted = 0` (partial, unique) | Name uniqueness among **live** workflows only; soft-deleted rows are exempt so names are reusable after deletion (v4.2.14). |
 | `idx_workflow_runs_workflow_id_finished_at` | `(workflow_id, finished_at)` | Per-workflow listings ordered by completion time. |
 | `idx_workflow_runs_finished_at` | `(finished_at)` | Cross-workflow recency queries. |
 | `idx_workflow_runs_status` | `(status)` | Filters that pick out e.g. all currently-running rows. |
@@ -742,24 +750,37 @@ columns to the `workflow_runs` table introduced in v4.2.11. Both columns are
 
 ### m008_add_workflow_deleted
 
-`m008_add_workflow_deleted` adds the `deleted` soft-delete column to the
-`workflows` table (v4.2.14, ACS-25). It is `INTEGER NOT NULL DEFAULT 0`, so
-existing workflows backfill to `0` ("not deleted"). Fresh installs receive the
-column directly via `schema.rs` and this migration short-circuits. No table
-rebuild, no new tables, no foreign-key changes.
+`m008_add_workflow_deleted` (v4.2.14, ACS-25) adds the `deleted` soft-delete
+column to the `workflows` table and replaces the inline `UNIQUE` constraint on
+`name` with a **partial unique index** covering live rows only:
 
-`DELETE /api/workflows/{id}` sets `deleted = 1` (keeping the row and every
-`workflow_runs` record so cost/token history survives) and rewrites the row's
-`name` to a tombstone (`"<name>\u{1}<id>"`) so the `UNIQUE` constraint on
-`workflows.name` no longer reserves the original name — this frees the name for
-reuse without dropping the constraint. Readers strip the tombstone so the
-displayed name stays the original.
+```sql
+CREATE UNIQUE INDEX idx_workflows_name_live ON workflows(name) WHERE deleted = 0;
+```
+
+SQLite cannot drop an inline column constraint in place, so the migration
+performs a standard table rebuild inside a single transaction (with
+`PRAGMA foreign_keys = OFF` for its duration, toggled outside the transaction
+where the pragma actually takes effect): create `workflows_new` without the
+inline `UNIQUE`, copy all rows, drop the old table, rename, create the partial
+index, then run `PRAGMA foreign_key_check` and roll back if the rebuild would
+orphan any `workflow_runs` rows.
+
+`DELETE /api/workflows/{id}` sets `deleted = 1`, keeping the row (name stored
+verbatim) and every `workflow_runs` record so cost/token history survives.
+Because the unique index only covers `deleted = 0` rows, the name is
+immediately reusable by a new workflow while name resolution among live
+workflows stays unambiguous.
+
+Existing workflows backfill to `deleted = 0`. Fresh installs receive the new
+table shape and index directly via `schema.rs` and this migration
+short-circuits.
 
 | Condition | Action |
 |---|---|
 | `acs.db` does not exist | No-op (return `Ok(false)`) — fresh install |
-| `deleted` column already present on `workflows` | No-op (return `Ok(false)`) — idempotent |
-| Otherwise | `ALTER TABLE workflows ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;` |
+| `workflows` DDL no longer contains `UNIQUE` | No-op (return `Ok(false)`) — idempotent (already rebuilt or created fresh) |
+| Otherwise | Table rebuild: additively ensure `is_favorited`/`deleted` columns → `CREATE TABLE workflows_new` (no inline `UNIQUE`) → copy rows → `DROP`/`RENAME` → `CREATE UNIQUE INDEX idx_workflows_name_live ...` → `foreign_key_check` → COMMIT |
 
 ---
 

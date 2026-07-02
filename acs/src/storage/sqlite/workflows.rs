@@ -37,25 +37,6 @@ impl SqliteWorkflowStore {
     }
 }
 
-// ─── Soft-delete name tombstone (ACS-25) ─────────────────────────────────────
-//
-// The `workflows.name` column carries a UNIQUE constraint. On soft-delete we
-// must free that name so a new workflow can reuse it (§4). Rather than rebuild
-// the table to drop the constraint (explicitly out of scope), we rewrite the
-// deleted row's stored name to `"<name>\u{1}<id>"`. The `\u{1}` (SOH) marker
-// cannot appear in a user-entered name, and appending the row id makes every
-// tombstone globally unique. Readers strip everything from the marker onward so
-// the *displayed* name (e.g. in cost views) stays the original value.
-const NAME_TOMBSTONE_MARKER: char = '\u{1}';
-
-/// Recover the display name from a possibly-tombstoned stored name.
-fn strip_name_tombstone(name: String) -> String {
-    match name.split_once(NAME_TOMBSTONE_MARKER) {
-        Some((base, _)) => base.to_string(),
-        None => name,
-    }
-}
-
 // ─── Row mapping ─────────────────────────────────────────────────────────────
 
 fn row_to_workflow(row: &Row<'_>) -> rusqlite::Result<Workflow> {
@@ -112,8 +93,7 @@ fn row_to_workflow(row: &Row<'_>) -> rusqlite::Result<Workflow> {
 
     Ok(Workflow {
         id,
-        // Strip the soft-delete tombstone so the display name is the original.
-        name: strip_name_tombstone(row.get("name")?),
+        name: row.get("name")?,
         version: row.get::<_, i64>("version")? as u32,
         schedule: row.get("schedule")?,
         timezone,
@@ -154,8 +134,10 @@ fn on_failure_blob(p: &FailurePolicy) -> Result<String, AcsError> {
     serde_json::to_string(p).map_err(|e| AcsError::Storage(e.to_string()))
 }
 
-/// Map a rusqlite error during INSERT to an `AcsError`. Specifically detect
-/// the UNIQUE constraint on `workflows.name` and translate to `Conflict`.
+/// Map a rusqlite error during INSERT to an `AcsError`. Specifically detect a
+/// constraint violation — in practice the partial unique index
+/// `idx_workflows_name_live` on `workflows(name) WHERE deleted = 0` — and
+/// translate it to `Conflict` (surfaced as HTTP 409).
 fn map_insert_err(name: &str, e: rusqlite::Error) -> AcsError {
     if let rusqlite::Error::SqliteFailure(ref err, _) = e {
         if err.code == rusqlite::ErrorCode::ConstraintViolation {
@@ -430,28 +412,23 @@ impl WorkflowStore for SqliteWorkflowStore {
         let now_s = Utc::now().to_rfc3339();
         self.db
             .with_conn(move |c| {
-                // Soft delete (ACS-25): keep the row and every workflow_runs
-                // record. Read the current (already display-clean) name so we
-                // can tombstone it and free the UNIQUE slot for reuse.
-                let name: Option<String> = c
-                    .query_row(
-                        "SELECT name FROM workflows WHERE id = ? AND deleted = 0",
-                        [id.to_string()],
-                        |r| r.get(0),
+                // Soft delete (ACS-25): flag the row, keep it and every
+                // workflow_runs record, and keep the name verbatim — the
+                // partial unique index `idx_workflows_name_live` only covers
+                // rows with deleted = 0, so the name is freed for reuse.
+                let n = c
+                    .execute(
+                        "UPDATE workflows SET deleted = 1, updated_at = ?1 \
+                         WHERE id = ?2 AND deleted = 0",
+                        params![now_s, id.to_string()],
                     )
-                    .optional()
-                    .map_err(|e| AcsError::Storage(e.to_string()))?;
-                let name = name.ok_or_else(|| {
-                    AcsError::NotFound(format!("Workflow with id '{}' not found", id))
-                })?;
-
-                let tombstoned = format!("{}{}{}", name, NAME_TOMBSTONE_MARKER, id);
-                c.execute(
-                    "UPDATE workflows SET deleted = 1, name = ?1, updated_at = ?2 \
-                     WHERE id = ?3 AND deleted = 0",
-                    params![tombstoned, now_s, id.to_string()],
-                )
-                .map_err(|e| AcsError::Storage(format!("soft-delete UPDATE failed: {}", e)))?;
+                    .map_err(|e| AcsError::Storage(format!("soft-delete UPDATE failed: {}", e)))?;
+                if n == 0 {
+                    return Err(AcsError::NotFound(format!(
+                        "Workflow with id '{}' not found",
+                        id
+                    )));
+                }
                 Ok(())
             })
             .await?;
@@ -1074,7 +1051,7 @@ mod tests {
         assert!(all[0].deleted, "row must be flagged deleted");
         assert_eq!(
             all[0].name, "sd-cost",
-            "display name is preserved (no tombstone leak)"
+            "deleted rows keep their name verbatim"
         );
 
         let got = store
