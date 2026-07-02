@@ -64,10 +64,8 @@ impl SqliteDb {
 /// Open (or create) the SQLite database at `path`, apply pragmas, and apply
 /// the schema. Returns the raw [`Connection`].
 ///
-/// Used by callers that need direct ownership of the connection — notably
-/// `migration::m002_json_to_sqlite`, which drives a single transaction and
-/// needs `&mut Connection` to call `.transaction()`. The parent directory of
-/// `path` must already exist; this helper does not create it.
+/// The parent directory of `path` must already exist; this helper does not
+/// create it.
 pub(crate) fn open_with_schema(path: &Path) -> Result<Connection, AcsError> {
     let conn = Connection::open(path)
         .map_err(|e| AcsError::Storage(format!("Failed to open SQLite at {:?}: {}", path, e)))?;

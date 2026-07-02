@@ -1,6 +1,6 @@
 [package]
 name = "agent-cron-scheduler"
-version = "4.2.14"
+version = "5.0.0"
 edition = "2021"
 license = "MIT"
 
@@ -9,6 +9,7 @@ name = "agentcronsystem"
 path = "src/main.rs"
 
 [dependencies]
+acs-migrate = { path = "../acs-migrate" }
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 tower = "0.5"

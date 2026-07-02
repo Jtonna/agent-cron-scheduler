@@ -1,7 +1,6 @@
 pub mod cli;
 pub mod daemon;
 pub mod errors;
-pub mod migration;
 pub mod models;
 pub mod process_kill;
 pub mod pty;
