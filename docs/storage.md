@@ -515,6 +515,7 @@ database.
 Runner::new(data_dir.join("acs.db"))
     .migrations(registry())                       // ACS's Vec<Box<dyn Migration>>
     .schema_probe(|tx| tx.table_exists("workflows"), upgrade_guidance)
+    .empty_history_error(empty_history_guidance)  // lost-history rejection text
     .run()
 ```
 
@@ -539,7 +540,7 @@ runner-owned transaction (no ORM, no derive machinery):
   returns rows affected.
 * `query(sql, &[SqlValue]) -> Vec<Vec<SqlValue>>` — read query output back
   as plain Rust values (`SqlValue`: `Null` / `Integer` / `Real` / `Text` /
-  `Blob`, with `as_str()` / `as_i64()` / `as_f64()` accessors).
+  `Blob`, with `as_str()` / `as_i64()` / `as_f64()` / `as_blob()` accessors).
 
 Simple migrations keep their SQL in a string constant and are a single
 `execute_batch` call.  Complex migrations mix SQL strings with Rust-level
@@ -762,8 +763,11 @@ to `0` ("tokens not tracked").
 
 ### m008_add_workflow_deleted
 
-A single SQL constant; opts into the rebuild convention (`rebuild()` returns
-`true`, so the runner applies the `PRAGMA foreign_keys` treatment above).
+A SQL constant behind an already-applied guard (if the `deleted` column
+already exists — the tracking row was lost — it fails loud with the exact
+restore-the-row statement instead of silently resetting soft-delete state);
+opts into the rebuild convention (`rebuild()` returns `true`, so the runner
+applies the `PRAGMA foreign_keys` treatment above).
 Adds the `deleted` soft-delete column to
 `workflows` and replaces the inline `UNIQUE` on `name` — which SQLite cannot
 drop in place — with a partial unique index over live rows:

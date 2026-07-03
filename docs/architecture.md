@@ -276,14 +276,16 @@ See [Storage — Migration System](storage.md#9-migration-system) for full seman
 5.  Set up tracing                 — Truncate daemon.log on startup, then open with
                                      SizeManagedWriter (auto-drops oldest 25% at 1 GB).
                                      Falls back to stderr-only on error.
-6.  migrations::run_pending()      — Run pending migrations against the data
+6.  PidFile::acquire()             — Exclusive PID file (agentcronsystem.pid),
+                                     taken BEFORE migrations so simultaneous
+                                     starts cannot race them.
+7.  migrations::run_pending()      — Run pending migrations against the data
                                      directory (on a blocking task). Execution
                                      is tracked in the schema_migrations table;
                                      each migration runs in its own transaction
-                                     and any failure aborts startup. Outcomes
-                                     are written to daemon.log only (not
-                                     /health).
-7.  PidFile::acquire()             — Exclusive PID file (agentcronsystem.pid)
+                                     and any failure aborts startup (releasing
+                                     the PID file). Outcomes are written to
+                                     daemon.log only (not /health).
 8.  sqlite::init_db()              — Open acs.db (apply pragmas + idempotent schema)
 9.  SqliteWorkflowStore::new()     — Wrap the shared SqliteDb handle
 9b. SqliteWorkflowRunStore::new()  — Same SqliteDb, run-store façade
@@ -682,13 +684,13 @@ Full documentation, including per-migration history: see
 - **`storage/sqlite/workflows.rs`**: CRUD round-trips, `find_by_name`, not-found, conflict (UNIQUE on name), version-bump rules, partial updates.
 - **`storage/sqlite/workflow_runs.rs`**: create/update/get/list/count/delete via the FK-enforced `workflow_runs` table, latest-first ordering by `run_id DESC`, pagination, FK to `workflows.id`.
 - **`storage/sqlite/schema.rs`**: pragma + schema idempotency, UNIQUE constraint enforcement.
-- **`migration/mod.rs`**: State read/write round-trip, corruption tolerance, all-migrations run on fresh install, already-applied skipped, not-needed goes to `skipped_not_needed`, stops at first failure, idempotent, atomic write (no `.tmp` leftover), real-registry smoke test.
+- **`migrations/mod.rs`** (+ per-migration files): registry order invariant, real-registry fresh install, v4-upgrade runs nothing, pre-tracking and empty-history rejection states, m008 already-applied guard, m003/m005/m006 transform units, tokenizer UTF-8 round-trips. The `milepost` framework crate carries its own runner-semantics suite (tracking/skip/re-run, rollback, fail-stop, baseline/probe states, rebuild convention).
 - **`errors.rs`**: Display formatting for all `AcsError` variants, `From<>` impls.
 - **`process_kill.rs`**: Kill of dead PID does not panic (both `kill_process_tree` and `force_kill_process_tree`).
 
 ### Integration Tests (`cargo test --tests`)
 
-Integration tests in `acs/tests/workflow_api_tests.rs` (~70 cases) and `acs/tests/cli_tests.rs` (~9 cases). Run `cargo test` for the authoritative count.
+Integration tests in `acs/tests/workflow_api_tests.rs` (~70 cases), `acs/tests/cli_tests.rs` (~9 cases), and `acs/tests/migration_tests.rs` (schema-identity fingerprint, v4-upgrade no-op, failed-row recovery). Run `cargo test` for the authoritative count.
 
 ---
 

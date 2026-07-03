@@ -38,7 +38,7 @@ agentcronsystem start
 
 ### Startup Aborts on a Failed Migration
 
-**Symptom:** The daemon exits immediately with an error like `Migration failed: migration 'm008_add_workflow_deleted' previously failed and is blocking startup...` (or `migration '<name>' failed: <cause>. Startup aborted...` on the first occurrence).
+**Symptom:** The daemon exits immediately with an error like `Migration failed: migration 'm008_add_workflow_deleted' previously failed and is blocking the run...` (or `migration '<name>' failed: <cause>. Run aborted...` on the first occurrence).
 
 **Cause:** Database migrations are tracked by name in the `schema_migrations` table inside `acs.db`. When a migration fails, its row is recorded with `status = 'failed'` plus the error text, and every subsequent startup refuses to proceed — silently re-running against a half-migrated database could compound the damage.
 
