@@ -150,7 +150,6 @@ mod tests {
             target_step: None,
             current_step_log_offset_start: None,
             current_step_log_offset_end: None,
-            agent_spawner: None,
         }
     }
 
