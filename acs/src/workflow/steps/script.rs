@@ -682,7 +682,7 @@ mod tests {
     #[tokio::test]
     async fn test_script_step_templated_path_and_args() {
         let dir = TempDir::new().expect("tmpdir");
-        let path = write_script(&dir, "greet.sh", "#!/bin/sh\necho \"greet:$1\"\n");
+        let _path = write_script(&dir, "greet.sh", "#!/bin/sh\necho \"greet:$1\"\n");
         let dir_str = dir.path().to_str().unwrap().to_string();
 
         let sink = Arc::new(MockLogSink::default());

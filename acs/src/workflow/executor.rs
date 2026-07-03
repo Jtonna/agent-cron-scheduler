@@ -1614,7 +1614,11 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_executor_trigger_env_overlays_workflow_env() {
-        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        // Keep the concrete handle so the mock's captured chunks stay
+        // accessible after the erased clone is handed to the executor
+        // (downcasting the trait object back would rely on trait-object
+        // upcasting, which is rustc-version-sensitive).
+        let sink = Arc::new(MockLogSink::default());
 
         let mut workflow = make_workflow(
             "env_overlay",
@@ -1646,20 +1650,18 @@ mod tests {
         .await;
 
         assert_eq!(run.status, RunStatus::Completed);
-        // Verify through the mock log sink chunks that FOO=b and BAR=c appear
-        if let Some(sink_inner) = Arc::downcast::<MockLogSink>(sink).ok() {
-            let output = String::from_utf8_lossy(&sink_inner.chunks.lock().unwrap()).to_string();
-            assert!(
-                output.contains("FOO=b"),
-                "expected FOO=b in output: {}",
-                output
-            );
-            assert!(
-                output.contains("BAR=c"),
-                "expected BAR=c in output: {}",
-                output
-            );
-        }
+        // Verify through the mock log sink chunks that FOO=b and BAR=c appear.
+        let output = String::from_utf8_lossy(&sink.chunks.lock().unwrap()).to_string();
+        assert!(
+            output.contains("FOO=b"),
+            "expected FOO=b in output: {}",
+            output
+        );
+        assert!(
+            output.contains("BAR=c"),
+            "expected BAR=c in output: {}",
+            output
+        );
     }
 
     #[cfg(windows)]
