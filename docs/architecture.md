@@ -253,10 +253,10 @@ independently) is a generic migration framework that knows nothing about
 ACS; `acs/src/migrations/` owns the ACS migrations, the registry, and the
 runner configuration.
 
-- **`migrations::run_pending(data_dir)`** (`acs/src/migrations/mod.rs`): synchronous entry point the daemon calls at startup on a blocking task. Configures a `milepost::Runner` with ACS's registry, the `acs.db` path, a schema probe (`workflows` table exists), and the upgrade guidance for pre-tracking databases, then runs it. Execution is decided solely by the `schema_migrations` tracking table (no row = run; `success` = skip; `failed` = abort startup before anything runs). Each migration executes inside its own transaction; failures roll back completely, record a `failed` row with the error text, and abort. Rows for retired migrations (m001/m002 from v4 installs) are tolerated.
+- **`migrations::run_pending(data_dir)`** (`acs/src/migrations/mod.rs`): synchronous entry point the daemon calls at startup on a blocking task. Configures a `milepost::Runner` with ACS's registry, the `acs.db` path, and a schema probe (`workflows` table exists), then runs it. Execution is decided solely by the `schema_migrations` tracking table (no row = run; `success` = skip; `failed` = abort startup before anything runs). Each migration executes inside its own transaction; failures roll back completely, record a `failed` row with the error text, and abort. Rows for retired migrations (m001/m002 from v4 installs) are tolerated.
 - **One migration kind**: every migration is a Rust file (`mNNN_<name>.rs`) implementing the `Migration` trait (`name()`, optional `baseline()` / `rebuild()` hooks, `up(&MigrationTx)`). The framework's `MigrationTx` is a small SQL-string API over the runner-owned transaction — `execute_batch(sql)`, `execute(sql, &[SqlValue])`, and `query(sql, &[SqlValue]) -> Vec<Vec<SqlValue>>` — so simple migrations are one SQL constant, and complex migrations (m005/m006, which need shell tokenizing and nested-JSON recursion) mix SQL strings with Rust-level logic.
 - **Registry** (name-ordered): `m000_baseline` (baseline hook), `m003_drop_step_output_summary`, `m004_drop_input_schema`, `m005_shell_claude_to_agent` (SQL + Rust logic), `m006_agent_step_normalize` (SQL + Rust logic), `m007_add_token_columns`, `m008_add_workflow_deleted` (rebuild hook).
-- **Conventions**: migrations whose `baseline()` hook returns true are recorded without executing on databases that already have migration tracking (every v4.2.14 install); migrations whose `rebuild()` hook returns true get `PRAGMA foreign_keys = OFF` around their transaction plus a pre-commit `PRAGMA foreign_key_check`. Databases without a tracking table must upgrade through v4.2.14 first.
+- **Conventions**: migrations whose `baseline()` hook returns true are recorded without executing on databases that already have migration tracking (every v4.2.14 install); migrations whose `rebuild()` hook returns true get `PRAGMA foreign_keys = OFF` around their transaction plus a pre-commit `PRAGMA foreign_key_check`. Databases whose schema has no recorded migration history are rejected by the framework with its default guidance.
 
 See [Storage — Migration System](storage.md#9-migration-system) for full semantics.
 
@@ -641,8 +641,8 @@ Since v5.0.0 the migration framework lives in the `milepost/` sibling crate
 live in `acs/src/migrations/`, and execution is tracked in the
 `schema_migrations` table inside `acs.db` (the legacy
 `migrations.json` state file and the v4-era m001/m002 Rust migrations were
-retired; databases that predate the tracking table must upgrade through
-v4.2.14 first).
+retired; databases whose schema has no recorded migration history are
+rejected by the framework).
 
 Highlights:
 

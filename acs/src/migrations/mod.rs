@@ -2,9 +2,8 @@
 //!
 //! The framework is a generic library (see the `milepost` crate docs); this
 //! module owns everything ACS-specific: the migration files themselves, the
-//! registry, and the runner configuration — which database file to migrate,
-//! how to detect an existing ACS schema (the `workflows` table), and the
-//! upgrade guidance shown when a database predates migration tracking.
+//! registry, and the runner configuration — which database file to migrate
+//! and how to detect an existing ACS schema (the `workflows` table).
 //!
 //! # Migration inventory (name-ordered)
 //!
@@ -18,10 +17,13 @@
 //! | `m007_add_token_columns` | Add per-run token-count columns |
 //! | `m008_add_workflow_deleted` | Soft-delete column + live-name partial index (rebuild hook) |
 //!
-//! The v4-era `m001`/`m002` migrations are retired; their tracking rows on
-//! upgraded databases are tolerated by the runner. Databases without a
-//! tracking table at all predate v4.2.14 and are rejected with the guidance
-//! configured below.
+//! The legacy `m001`/`m002` migrations are retired; their tracking rows on
+//! upgraded databases are tolerated by the runner. The schema probe exists
+//! so the framework can decide whether the baseline should execute or be
+//! seeded (including healing the crash window where the tracking table was
+//! created but the baseline never ran); databases whose schema has no
+//! recorded migration history are rejected by the framework with its
+//! default guidance.
 //!
 //! # Adding a migration
 //!
@@ -60,29 +62,13 @@ fn registry() -> Vec<Box<dyn Migration>> {
 
 /// Run all pending ACS migrations against `<data_dir>/acs.db`.
 ///
-/// Configures the `milepost` runner with ACS policy: the registry above, a
-/// schema probe that recognises an ACS database by its `workflows` table,
-/// and the upgrade guidance for databases that predate migration tracking.
+/// Configures the `milepost` runner with ACS policy: the registry above and
+/// a schema probe that recognises an ACS database by its `workflows` table.
 /// Synchronous — the daemon wraps this in a blocking task.
 pub fn run_pending(data_dir: &Path) -> Result<MigrationRunReport, MigrateError> {
-    let db_path = data_dir.join("acs.db");
-    let upgrade_guidance = format!(
-        "database {} has a schema but no schema_migrations tracking table, which means \
-         it predates v4.2.14. Direct upgrades are supported from v4.2.14 only: install \
-         v4.2.14, run it once so it records its migration state, then upgrade to v5.",
-        db_path.display()
-    );
-    let empty_history_guidance = format!(
-        "database {} has an ACS schema and a schema_migrations table, but no recorded \
-         migration history. Run v4.2.14 once so it records its migration state, or \
-         manually seed schema_migrations rows for the migrations that are already \
-         applied, then upgrade to v5.",
-        db_path.display()
-    );
-    Runner::new(db_path)
+    Runner::new(data_dir.join("acs.db"))
         .migrations(registry())
-        .schema_probe(|tx| tx.table_exists("workflows"), upgrade_guidance)
-        .empty_history_error(empty_history_guidance)
+        .schema_probe(|tx| tx.table_exists("workflows"))
         .run()
 }
 
@@ -318,10 +304,11 @@ mod tests {
     }
 
     #[test]
-    fn tracked_schema_with_empty_history_gets_acs_guidance() {
-        // Tracking table present but empty, plus an ACS schema. Must
-        // reject with the ACS-specific guidance rather than seeding the
-        // baseline and then looping on unrecoverable migration failures.
+    fn tracked_schema_with_empty_history_is_rejected() {
+        // Tracking table present but empty, plus an ACS schema. The
+        // framework must reject the state (with its default guidance)
+        // rather than seeding the baseline and then looping on
+        // unrecoverable migration failures.
         let tmp = TempDir::new().unwrap();
         let conn = open(tmp.path());
         conn.execute_batch(
@@ -338,13 +325,11 @@ mod tests {
         drop(conn);
 
         let err = run_pending(tmp.path()).expect_err("must reject");
-        let msg = err.to_string();
         assert!(
-            msg.contains("no recorded migration history"),
-            "got: {}",
-            msg
+            matches!(err, MigrateError::TrackedSchemaWithoutHistory(_)),
+            "expected TrackedSchemaWithoutHistory, got: {}",
+            err
         );
-        assert!(msg.contains("v4.2.14"), "guidance must name the fix path");
 
         // Nothing recorded, nothing executed.
         assert_eq!(
@@ -354,16 +339,21 @@ mod tests {
     }
 
     #[test]
-    fn pre_tracking_database_is_rejected_with_upgrade_guidance() {
+    fn untracked_schema_database_is_rejected() {
         let tmp = TempDir::new().unwrap();
         // A database that predates migration tracking: workflows table
-        // present, no schema_migrations table.
+        // present, no schema_migrations table. The framework rejects it
+        // with its default guidance.
         open(tmp.path())
             .execute_batch("CREATE TABLE workflows (id TEXT PRIMARY KEY);")
             .unwrap();
 
         let err = run_pending(tmp.path()).expect_err("must reject");
-        assert!(err.to_string().contains("v4.2.14"));
+        assert!(
+            matches!(err, MigrateError::UntrackedSchema(_)),
+            "expected UntrackedSchema, got: {}",
+            err
+        );
         // Nothing recorded, nothing executed.
         let conn = open(tmp.path());
         let n = count(

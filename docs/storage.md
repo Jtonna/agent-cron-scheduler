@@ -206,8 +206,8 @@ Migration execution is tracked in the `schema_migrations` table inside
 `acs.db`, protected by the same SQLite atomicity guarantees as the data
 tables.  The table is the sole source of truth; there is no auxiliary state
 file.  (The legacy `migrations.json` backfill shipped by v4.2.x was retired
-in v5.0.0 — databases that still depend on it must upgrade through v4.2.14
-first; see [Migration System](#9-migration-system).)
+in v5.0.0; databases whose schema has no recorded migration history are
+rejected — see [Migration System](#9-migration-system).)
 
 
 ---
@@ -498,8 +498,8 @@ Since v5.0.0 the migration system is split like a package and its consumer:
   knows nothing about ACS.
 * **`acs/src/migrations/`** owns everything ACS-specific: the migration
   files, the registry, and the runner configuration — which database file
-  to migrate, the schema probe (an ACS database is recognised by its
-  `workflows` table), and the upgrade guidance for pre-tracking databases.
+  to migrate and the schema probe (an ACS database is recognised by its
+  `workflows` table).
 
 The separation exists for maintenance, clarity, and future development: the
 framework and the shipped migrations evolve, get reviewed, and get tested
@@ -513,9 +513,8 @@ database.
 ```rust
 // acs/src/migrations/mod.rs — the entire ACS-side configuration:
 Runner::new(data_dir.join("acs.db"))
-    .migrations(registry())                       // ACS's Vec<Box<dyn Migration>>
-    .schema_probe(|tx| tx.table_exists("workflows"), upgrade_guidance)
-    .empty_history_error(empty_history_guidance)  // lost-history rejection text
+    .migrations(registry())                    // ACS's Vec<Box<dyn Migration>>
+    .schema_probe(|tx| tx.table_exists("workflows"))
     .run()
 ```
 
@@ -633,13 +632,17 @@ died after the runner created the tracking table but before the baseline
 ever executed — the baseline runs normally instead of being seeded, so the
 crash window cannot wedge the database.
 
-A database that has a schema but **no** tracking table predates v4.2.14; the
-runner rejects it before creating or running anything.  A database that has
-a schema and a tracking table with **zero recorded rows** (lost history) is
-likewise rejected with guidance — run v4.2.14 once so it records its
-migration state, or seed `schema_migrations` rows manually — instead of
-seeding the baseline and then failing on migrations built for the
-fresh-install chain.
+A database that has a schema but **no** tracking table predates migration
+tracking; the framework rejects it before creating or running anything,
+with its default guidance ("… has a schema but no schema_migrations
+tracking table. Refusing to run migrations against it: seed
+schema_migrations rows for the migrations that are already applied, or
+start from a database with recorded history.").  A database that has a
+schema and a tracking table with **zero recorded rows** (lost history) is
+likewise rejected ("… has a schema and a schema_migrations table, but no
+recorded migration history. Refusing to run migrations against it: …")
+instead of seeding the baseline and then failing on migrations built for
+the fresh-install chain.
 
 ### Rebuild convention (`PRAGMA foreign_keys`)
 
@@ -663,7 +666,7 @@ trait's `rebuild()` hook gets this treatment from the runner instead:
 |---|---|
 | Fresh install | Baseline + m003–m008 run in order; all recorded `success` |
 | v4.2.14 | Direct.  The runner executes nothing: baseline seeded, m003–m008 skip via recorded rows, m001/m002 rows tolerated |
-| Anything older | **Upgrade through v4.2.14 first.**  v4.2.14 migrates the data and records its migration state in `schema_migrations`; v5 refuses to start against a database without that table |
+| Pre-tracking databases | Not supported for direct upgrade: the framework rejects a schema without recorded migration history before running anything |
 
 ### Adding a migration
 
@@ -696,7 +699,8 @@ already has migration tracking (see the baseline convention above).
 The v4-era Rust migrations that converted the pre-ACS-18 `jobs.json` format
 to workflows and moved JSON storage into SQLite were retired in v5.0.0,
 along with the `migrations.json` backfill.  Databases that still need them
-must upgrade through v4.2.14 first.  Their `schema_migrations` rows are
+are not supported for direct upgrade (the framework rejects a schema
+without recorded migration history).  Their `schema_migrations` rows are
 tolerated and left in place on upgraded databases.
 
 ### m003_drop_step_output_summary

@@ -113,8 +113,8 @@
 //!   baseline executes normally instead of being seeded.
 //! - **Untracked-schema guard**: if the probe reports a schema but there is
 //!   no tracking table, the database predates migration tracking entirely;
-//!   the runner rejects it with the caller-supplied message before creating
-//!   or recording anything.
+//!   the runner rejects it before creating or recording anything, with
+//!   default guidance overridable via [`Runner::untracked_schema_error`].
 //!
 //! A third state is also rejected when a probe is configured: the probe
 //! reports a schema and the tracking table exists but holds **zero rows**.
@@ -122,8 +122,8 @@
 //! history describing the schema was lost, and running anything (seeding
 //! the baseline, then executing migrations built for the fresh-install
 //! chain) would fail or corrupt. The runner returns
-//! [`MigrateError::TrackedSchemaWithoutHistory`] with actionable guidance —
-//! customisable via [`Runner::empty_history_error`].
+//! [`MigrateError::TrackedSchemaWithoutHistory`] with default guidance
+//! overridable via [`Runner::empty_history_error`].
 //!
 //! Without a probe, the runner assumes a tracked database already has its
 //! schema (baselines seed whenever the tracking table pre-exists) and both
@@ -157,8 +157,8 @@ pub enum MigrateError {
     Blocked(String),
 
     /// The schema probe found a schema but the database has no migration
-    /// tracking table — it predates migration tracking and was rejected
-    /// with the caller-supplied guard message.
+    /// tracking table — it predates migration tracking. Nothing was
+    /// executed or recorded.
     #[error("{0}")]
     UntrackedSchema(String),
 
@@ -435,22 +435,30 @@ impl Runner {
         self
     }
 
-    /// Supply the application's schema probe together with the error
-    /// message returned when the probe finds a schema on a database that
-    /// has no migration tracking table (see the crate docs for both roles
-    /// the probe plays).
-    pub fn schema_probe<F>(mut self, probe: F, untracked_schema_error: impl Into<String>) -> Self
+    /// Supply the application's schema probe (see the crate docs for the
+    /// roles the probe plays). The guard states it detects are rejected
+    /// with the framework's default messages unless overridden via
+    /// [`Runner::untracked_schema_error`] / [`Runner::empty_history_error`].
+    pub fn schema_probe<F>(mut self, probe: F) -> Self
     where
         F: Fn(&MigrationTx<'_>) -> Result<bool, MigrateError> + Send + Sync + 'static,
     {
         self.schema_probe = Some(Box::new(probe));
-        self.untracked_schema_error = Some(untracked_schema_error.into());
+        self
+    }
+
+    /// Override the error message returned when the probe finds a schema
+    /// on a database with no migration tracking table. A default message
+    /// is used when not set. Only meaningful together with
+    /// [`Runner::schema_probe`].
+    pub fn untracked_schema_error(mut self, message: impl Into<String>) -> Self {
+        self.untracked_schema_error = Some(message.into());
         self
     }
 
     /// Override the error message returned when the probe finds a schema
     /// and the tracking table exists but holds no rows (see the crate docs
-    /// for this state). A generic message is used when not set. Only
+    /// for this state). A default message is used when not set. Only
     /// meaningful together with [`Runner::schema_probe`].
     pub fn empty_history_error(mut self, message: impl Into<String>) -> Self {
         self.empty_history_error = Some(message.into());
@@ -681,24 +689,25 @@ impl Runner {
     }
 }
 
-/// Fallback guard message when a probe is configured without one (not
-/// reachable through the public builder, which requires both together).
+/// Default guard message for the untracked-schema state, used when the
+/// caller has not supplied one via [`Runner::untracked_schema_error`].
 fn default_untracked_schema_error(db_path: &Path) -> String {
     format!(
-        "database {} has a schema but no schema_migrations tracking table; \
-         refusing to run migrations against it",
+        "database {} has a schema but no schema_migrations tracking table. Refusing to \
+         run migrations against it: seed schema_migrations rows for the migrations that \
+         are already applied, or start from a database with recorded history.",
         db_path.display()
     )
 }
 
-/// Guard message for the tracked-schema-without-history state when the
-/// caller has not supplied one via [`Runner::empty_history_error`].
+/// Default guard message for the tracked-schema-without-history state, used
+/// when the caller has not supplied one via [`Runner::empty_history_error`].
 fn default_empty_history_error(db_path: &Path) -> String {
     format!(
         "database {} has a schema and a schema_migrations table, but no recorded \
-         migration history. Running migrations against it could fail or corrupt the \
-         schema. Seed schema_migrations rows for the migrations that are already \
-         applied, then retry.",
+         migration history. Refusing to run migrations against it: seed \
+         schema_migrations rows for the migrations that are already applied, or start \
+         from a database with recorded history.",
         db_path.display()
     )
 }
@@ -867,10 +876,7 @@ mod tests {
     /// A runner configured with the standard test probe: the schema is
     /// present when the `app_data` table exists.
     fn probed_runner(dir: &TempDir, migrations: Vec<Box<dyn Migration>>) -> Runner {
-        runner(dir, migrations).schema_probe(
-            |tx| tx.table_exists("app_data"),
-            "untracked schema detected; refusing to run",
-        )
+        runner(dir, migrations).schema_probe(|tx| tx.table_exists("app_data"))
     }
 
     fn open(dir: &TempDir) -> Connection {
@@ -1342,25 +1348,47 @@ mod tests {
     }
 
     #[test]
-    fn untracked_schema_is_rejected_with_the_configured_message() {
+    fn untracked_schema_is_rejected_with_default_guidance() {
         let tmp = TempDir::new().unwrap();
         // A database with a schema but no tracking table.
         open(&tmp)
             .execute_batch("CREATE TABLE app_data (x INTEGER);")
             .unwrap();
 
-        let migrations = vec![sql_baseline(
-            "m000_base",
-            "CREATE TABLE app_data (x INTEGER);",
-        )];
-        let err = probed_runner(&tmp, migrations)
+        let make = || {
+            vec![sql_baseline(
+                "m000_base",
+                "CREATE TABLE app_data (x INTEGER);",
+            )]
+        };
+
+        // Default message fires when no override is set.
+        let err = probed_runner(&tmp, make()).run().expect_err("must reject");
+        assert!(matches!(err, MigrateError::UntrackedSchema(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no schema_migrations tracking table"),
+            "default must name the state, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("seed schema_migrations rows"),
+            "default must be actionable, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("app.db"),
+            "default must include the database path, got: {}",
+            msg
+        );
+
+        // Caller-supplied override is returned verbatim.
+        let err2 = probed_runner(&tmp, make())
+            .untracked_schema_error("custom untracked guidance")
             .run()
             .expect_err("must reject");
-        assert_eq!(
-            err.to_string(),
-            "untracked schema detected; refusing to run",
-            "the caller-supplied guard message must be returned verbatim"
-        );
+        assert_eq!(err2.to_string(), "custom untracked guidance");
+
         // Nothing recorded, nothing executed.
         let conn = open(&tmp);
         let n = count(
