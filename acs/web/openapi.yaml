@@ -7,7 +7,7 @@ info:
     ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
     Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "4.2.14"
+  version: "5.0.0"
   license:
     name: MIT
 
@@ -49,7 +49,7 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "4.2.14"
+                version: "5.0.0"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
                 service:
                   registered: true
@@ -1084,7 +1084,7 @@ components:
         version:
           type: string
           description: Daemon version string.
-          example: "4.2.14"
+          example: "5.0.0"
         data_dir:
           type: string
           description: Filesystem path to the data directory.

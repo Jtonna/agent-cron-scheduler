@@ -643,24 +643,45 @@ pub async fn start_daemon(
         }
     }
 
-    // Run pending migrations (numbered migration system, tracked in the
-    // schema_migrations table). Must run AFTER tracing init so migration
-    // logs are visible.
-    match crate::migration::run_pending(&data_dir).await {
+    // Acquire the PID file BEFORE running migrations: two daemons starting
+    // simultaneously must not race the (non-idempotent) migrations. The
+    // loser blocks or exits here instead of reaching the runner.
+    let pid_file_path = data_dir.join("agentcronsystem.pid");
+    let pid_file = PidFile::new(pid_file_path);
+    pid_file.acquire()?;
+
+    // Run pending migrations (ACS's registry through the milepost runner,
+    // tracked in the schema_migrations table). Must run AFTER tracing init
+    // so migration logs are visible. Any migration error is fatal: the
+    // daemon must not start against a partially-migrated database. The PID
+    // file is released on the failure paths so the exit is clean.
+    let migration_data_dir = data_dir.clone();
+    let migration_outcome = match tokio::task::spawn_blocking(move || {
+        crate::migrations::run_pending(&migration_data_dir)
+    })
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            let _ = pid_file.release();
+            return Err(anyhow::anyhow!("Migration task failed: {}", e));
+        }
+    };
+    match migration_outcome {
         Ok(report) => {
             if !report.seeded.is_empty() {
                 tracing::info!(
-                    "Migration tracking backfilled from legacy migrations.json: {:?}",
+                    "Migrations recorded without executing (baseline on existing database): {:?}",
                     report.seeded
                 );
             }
             if !report.ran.is_empty() {
                 tracing::info!("Migrations applied: {:?}", report.ran);
             }
-            if !report.ran_no_op.is_empty() {
-                tracing::debug!(
-                    "Migrations processed with nothing to do: {:?}",
-                    report.ran_no_op
+            if !report.unknown.is_empty() {
+                tracing::info!(
+                    "Migration rows recorded by older versions (tolerated): {:?}",
+                    report.unknown
                 );
             }
             if !report.skipped.is_empty() {
@@ -668,20 +689,16 @@ pub async fn start_daemon(
             }
         }
         Err(e) => {
+            let _ = pid_file.release();
             return Err(anyhow::anyhow!("Migration failed: {}", e));
         }
     }
 
-    // Acquire PID file
-    let pid_file_path = data_dir.join("agentcronsystem.pid");
-    let pid_file = PidFile::new(pid_file_path);
-    pid_file.acquire()?;
-
-    // Initialize SQLite-backed stores. The m002 migration is responsible for
-    // creating `acs.db` with the correct schema before this point; here we
-    // just open the existing file. Both stores share the same `SqliteDb`
-    // handle so they read/write the same connection-mutex-guarded
-    // `Connection`.
+    // Initialize SQLite-backed stores. The migration runner above has
+    // already brought `acs.db` to the current schema; `init_db` re-applies
+    // the idempotent schema statements and opens the file. Both stores share
+    // the same `SqliteDb` handle so they read/write the same
+    // connection-mutex-guarded `Connection`.
     let db_path = data_dir.join("acs.db");
     let sqlite_db = crate::storage::sqlite::init_db(&db_path)
         .map_err(|e| anyhow::anyhow!("Failed to open SQLite database at {:?}: {}", db_path, e))?;

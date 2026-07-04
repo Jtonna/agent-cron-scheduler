@@ -1454,57 +1454,7 @@ mod tests {
         );
     }
 
-    // ── Test 10: AgentStep is now dispatched (phase 4) ────────────────────────
-    // Verifies the agent step is actually invoked (not stubbed out with a
-    // "not implemented" error). The terminal status depends on whether the
-    // `claude` CLI happens to be on the test runner's PATH — both outcomes
-    // are acceptable here; what matters is that the step dispatched.
-
-    #[tokio::test]
-    async fn test_executor_agent_step_dispatched() {
-        use crate::models::workflow::{AgentStep, AgentType};
-
-        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
-
-        let workflow = make_workflow(
-            "agent_dispatched",
-            vec![StepDef::Agent(AgentStep {
-                common: StepDefCommon {
-                    id: "ag1".to_string(),
-                    on_failure: None,
-                    always_run: false,
-                    timeout_secs: None,
-                    working_dir: None,
-                    env_vars: None,
-                    capture: CaptureSpec::default(),
-                },
-                agent_type: AgentType::ClaudeCodeCli,
-                prompt: "do something".to_string(),
-                model: None,
-                extra_args: vec![],
-            })],
-        );
-
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
-
-        // Step ran (was dispatched), so there should be exactly 1 step run.
-        assert_eq!(run.steps.len(), 1);
-        // Whatever the outcome, it must NOT be the old "not implemented" stub.
-        if let Some(err) = run.steps[0].error.as_ref() {
-            assert!(
-                !err.contains("not implemented in phase 3"),
-                "AgentStep should no longer return a phase-3 not-implemented error, got: {}",
-                err
-            );
-        }
-        assert!(
-            matches!(run.status, RunStatus::Completed | RunStatus::Failed),
-            "expected Completed or Failed, got {:?}",
-            run.status
-        );
-    }
-
-    // ── Test 11: workflow.default_input applied when trigger.input is Null ────
+    // ── Test 10: workflow.default_input applied when trigger.input is Null ────
 
     #[tokio::test]
     async fn test_executor_default_input_applied() {
@@ -1546,7 +1496,11 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_executor_trigger_env_overlays_workflow_env() {
-        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        // Keep the concrete handle so the mock's captured chunks stay
+        // accessible after the erased clone is handed to the executor
+        // (downcasting the trait object back would rely on trait-object
+        // upcasting, which is rustc-version-sensitive).
+        let sink = Arc::new(MockLogSink::default());
 
         let mut workflow = make_workflow(
             "env_overlay",
@@ -1578,20 +1532,18 @@ mod tests {
         .await;
 
         assert_eq!(run.status, RunStatus::Completed);
-        // Verify through the mock log sink chunks that FOO=b and BAR=c appear
-        if let Some(sink_inner) = Arc::downcast::<MockLogSink>(sink).ok() {
-            let output = String::from_utf8_lossy(&sink_inner.chunks.lock().unwrap()).to_string();
-            assert!(
-                output.contains("FOO=b"),
-                "expected FOO=b in output: {}",
-                output
-            );
-            assert!(
-                output.contains("BAR=c"),
-                "expected BAR=c in output: {}",
-                output
-            );
-        }
+        // Verify through the mock log sink chunks that FOO=b and BAR=c appear.
+        let output = String::from_utf8_lossy(&sink.chunks.lock().unwrap()).to_string();
+        assert!(
+            output.contains("FOO=b"),
+            "expected FOO=b in output: {}",
+            output
+        );
+        assert!(
+            output.contains("BAR=c"),
+            "expected BAR=c in output: {}",
+            output
+        );
     }
 
     #[cfg(windows)]

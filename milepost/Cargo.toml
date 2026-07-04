@@ -1,0 +1,15 @@
+[package]
+name = "milepost"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A small, table-driven SQLite migration framework: name-ordered Rust migrations with SQL kept in string constants"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = "0.4"
+tracing = "0.1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

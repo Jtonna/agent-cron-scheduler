@@ -11,6 +11,12 @@ use crate::workflow::template;
 
 pub use crate::models::workflow::AgentStep;
 
+/// Build the command argv for invoking the agent.
+fn build_agent_command(step: &AgentStep, resolved_prompt: &str) -> Vec<String> {
+    let agent = impl_for(&step.agent_type);
+    agent.build_argv(resolved_prompt, step.model.as_deref(), &step.extra_args)
+}
+
 /// Parse raw captured bytes into a `serde_json::Value` based on the parser spec.
 /// Mirrors the same logic in shell.rs.
 fn parse_output(buf: &[u8], parser: Option<&str>, step_id: &str) -> Value {
@@ -36,72 +42,24 @@ fn parse_output(buf: &[u8], parser: Option<&str>, step_id: &str) -> Value {
     }
 }
 
-/// Core execution logic, parameterized over a spawner for testability.
-async fn execute_with_spawner(
+/// Process an agent output stream: consume chunks, parse NDJSON, handle timeouts/kills.
+///
+/// Takes a receiver yielding chunks of output bytes, plus timeout and kill-signal setup.
+/// Handles the select! loop for timeout, kill signals, and output processing.
+/// Returns StepOutput with parsed cost/result or an appropriate StepError.
+async fn process_agent_stream(
     step: &AgentStep,
     ctx: &mut StepContext,
-    spawner: &dyn PtySpawner,
+    output_rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+    read_handle: tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>,
+    child_pid: Option<u32>,
+    timeout_secs: Option<u64>,
+    log_byte_offset_start: u64,
 ) -> Result<StepOutput, StepError> {
     let agent = impl_for(&step.agent_type);
-
-    // Step 1: Resolve the prompt — substitute ${input.*} and ${steps.*} references.
-    let prompt_sub = template::substitute(&step.prompt, &ctx.input, &ctx.steps);
-    for warn in &prompt_sub.warnings {
-        tracing::warn!(step_id = %step.common.id, "prompt template warning: {}", warn);
-    }
-    let resolved_prompt = prompt_sub.output;
-
-    // Step 2: Build argv via the agent runner — no shell wrapper, no escaping.
-    let argv = agent.build_argv(&resolved_prompt, step.model.as_deref(), &step.extra_args);
-
-    // Step 3: Write START marker.
-    let log_byte_offset_start = ctx
-        .log_sink
-        .write_step_start(&step.common.id, Utc::now())
-        .await
-        .map_err(StepError::Io)?;
-    ctx.current_step_log_offset_start = Some(log_byte_offset_start);
-
-    // Step 4: Spawn the process via argv-array (no shell).
-    let mut process = spawner
-        .spawn_argv(&argv, ctx.working_dir.as_deref(), &ctx.env, 24, 80)
-        .map_err(|e| StepError::Spawn(e.to_string()))?;
-
-    // No stdin for agent steps.
-    process.close_stdin();
-
-    // Step 5: Stream output with timeout.
     let max_bytes = step.common.capture.stdout_max_bytes;
     let mut capture_buf: Vec<u8> = Vec::with_capacity(std::cmp::min(max_bytes, 65536));
-
-    let child_pid = process.pid();
-    let timeout_secs = step.common.timeout_secs.filter(|&s| s > 0);
-
-    // Build a streaming parser for cost/final_message extraction.
     let mut parser = agent.output_parser();
-
-    // Move process into spawn_blocking to drive the read loop.
-    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
-
-    let read_handle = tokio::task::spawn_blocking(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match process.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let data = buf[..n].to_vec();
-                    if output_tx.blocking_send(data).is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!("read error (may be expected at EOF): {}", e);
-                    break;
-                }
-            }
-        }
-        process.wait()
-    });
 
     // Build the timeout future.
     let timeout_fut = match timeout_secs {
@@ -112,7 +70,6 @@ async fn execute_with_spawner(
 
     let mut timed_out = false;
     let mut killed = false;
-
     let kill_rx = ctx.kill_rx.clone();
 
     loop {
@@ -121,16 +78,14 @@ async fn execute_with_spawner(
                 match chunk {
                     Some(data) => {
                         ctx.log_sink.write_chunk(&data).await.map_err(StepError::Io)?;
-                        // Feed to streaming parser.
                         parser.parse_chunk(&data);
-                        // Bounded capture for fallback raw output.
                         let remaining = max_bytes.saturating_sub(capture_buf.len());
                         if remaining > 0 {
                             let to_copy = std::cmp::min(data.len(), remaining);
                             capture_buf.extend_from_slice(&data[..to_copy]);
                         }
                     }
-                    None => break, // read loop ended
+                    None => break,
                 }
             }
             _ = &mut timeout_fut => {
@@ -162,7 +117,6 @@ async fn execute_with_spawner(
     let exit_result = tokio::time::timeout(std::time::Duration::from_secs(10), read_handle).await;
 
     let exit_code: Option<i32> = if timed_out || killed {
-        drop(output_rx);
         None
     } else {
         match exit_result {
@@ -182,15 +136,12 @@ async fn execute_with_spawner(
         }
     };
 
-    // Step 7: Write END marker.
+    // Write END marker.
     let log_byte_offset_end = ctx
         .log_sink
         .write_step_end(&step.common.id, exit_code, Utc::now())
         .await
         .map_err(StepError::Io)?;
-    // Record the end offset on the context so the executor can stamp it onto
-    // the StepRun if this step subsequently surfaces a Killed / Timeout error
-    // after the END marker has already been written.
     ctx.current_step_log_offset_end = Some(log_byte_offset_end);
 
     if killed {
@@ -201,11 +152,7 @@ async fn execute_with_spawner(
         return Err(StepError::Timeout(timeout_secs.unwrap_or(0)));
     }
 
-    // Step 8: Finalize the parser and build output.
     let agent_output = parser.finalize();
-
-    // Prefer the structured final_message from the parser.
-    // Fall back to raw capture buffer parsed per capture spec.
     let stdout = if let Some(msg) = agent_output.final_message {
         Some(Value::String(msg))
     } else {
@@ -214,7 +161,6 @@ async fn execute_with_spawner(
             step.common.capture.parser.as_deref(),
             &step.common.id,
         );
-        // Only include if non-empty.
         match &raw {
             Value::String(s) if s.is_empty() => None,
             _ => Some(raw),
@@ -229,6 +175,77 @@ async fn execute_with_spawner(
         log_byte_offset_start: Some(log_byte_offset_start),
         log_byte_offset_end: Some(log_byte_offset_end),
     })
+}
+
+/// Core execution logic: resolve prompt, build command, spawn, process stream.
+async fn execute_with_spawner(
+    step: &AgentStep,
+    ctx: &mut StepContext,
+    spawner: &dyn PtySpawner,
+) -> Result<StepOutput, StepError> {
+    // Step 1: Resolve the prompt — substitute ${input.*} and ${steps.*} references.
+    let prompt_sub = template::substitute(&step.prompt, &ctx.input, &ctx.steps);
+    for warn in &prompt_sub.warnings {
+        tracing::warn!(step_id = %step.common.id, "prompt template warning: {}", warn);
+    }
+    let resolved_prompt = prompt_sub.output;
+
+    // Step 2: Build argv (pure function).
+    let argv = build_agent_command(step, &resolved_prompt);
+
+    // Step 3: Write START marker.
+    let log_byte_offset_start = ctx
+        .log_sink
+        .write_step_start(&step.common.id, Utc::now())
+        .await
+        .map_err(StepError::Io)?;
+    ctx.current_step_log_offset_start = Some(log_byte_offset_start);
+
+    // Step 4: Spawn the process via argv-array (no shell).
+    let mut process = spawner
+        .spawn_argv(&argv, ctx.working_dir.as_deref(), &ctx.env, 24, 80)
+        .map_err(|e| StepError::Spawn(e.to_string()))?;
+
+    // No stdin for agent steps.
+    process.close_stdin();
+
+    let child_pid = process.pid();
+    let timeout_secs = step.common.timeout_secs.filter(|&s| s > 0);
+
+    // Move process into spawn_blocking to drive the read loop.
+    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+
+    let read_handle = tokio::task::spawn_blocking(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match process.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let data = buf[..n].to_vec();
+                    if output_tx.blocking_send(data).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("read error (may be expected at EOF): {}", e);
+                    break;
+                }
+            }
+        }
+        process.wait()
+    });
+
+    // Step 5: Process the stream (protocol handling).
+    process_agent_stream(
+        step,
+        ctx,
+        &mut output_rx,
+        read_handle,
+        child_pid,
+        timeout_secs,
+        log_byte_offset_start,
+    )
+    .await
 }
 
 #[async_trait]
@@ -589,5 +606,151 @@ mod tests {
     fn test_agent_step_kind() {
         let step = make_agent_step("k", "hello");
         assert_eq!(step.kind(), "agent");
+    }
+
+    // ── Test: build_agent_command with literal prompt ────────────────────────
+
+    #[test]
+    fn test_build_agent_command_literal() {
+        let step = make_agent_step("cmd1", "hello world");
+        let argv = super::build_agent_command(&step, "hello world");
+
+        assert_eq!(argv[0], "claude");
+        assert_eq!(argv[1], "-p");
+        assert_eq!(argv[2], "hello world");
+        assert!(argv.contains(&"--output-format".to_string()));
+        assert!(argv.contains(&"stream-json".to_string()));
+        assert!(argv.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    // ── Test: build_agent_command with model override ───────────────────────
+
+    #[test]
+    fn test_build_agent_command_model_override() {
+        let step = AgentStep {
+            common: StepDefCommon {
+                id: "cmd2".to_string(),
+                on_failure: None,
+                always_run: false,
+                timeout_secs: None,
+                working_dir: None,
+                env_vars: None,
+                capture: CaptureSpec::default(),
+            },
+            agent_type: AgentType::ClaudeCodeCli,
+            prompt: "test".to_string(),
+            model: Some("claude-opus-4-5".to_string()),
+            extra_args: vec![],
+        };
+
+        let argv = super::build_agent_command(&step, "test");
+
+        let model_pos = argv
+            .iter()
+            .position(|a| a == "--model")
+            .expect("--model flag should be present");
+        assert_eq!(argv[model_pos + 1], "claude-opus-4-5");
+    }
+
+    // ── Test: build_agent_command with extra_args ──────────────────────────
+
+    #[test]
+    fn test_build_agent_command_extra_args() {
+        let step = AgentStep {
+            common: StepDefCommon {
+                id: "cmd3".to_string(),
+                on_failure: None,
+                always_run: false,
+                timeout_secs: None,
+                working_dir: None,
+                env_vars: None,
+                capture: CaptureSpec::default(),
+            },
+            agent_type: AgentType::ClaudeCodeCli,
+            prompt: "go".to_string(),
+            model: None,
+            extra_args: vec!["--flag".to_string(), "value".to_string()],
+        };
+
+        let argv = super::build_agent_command(&step, "go");
+
+        // Extra args should appear at the end
+        assert_eq!(argv[argv.len() - 2], "--flag");
+        assert_eq!(argv[argv.len() - 1], "value");
+    }
+
+    // ── Test: process_agent_stream with fixture NDJSON (no spawner needed) ────
+
+    #[tokio::test]
+    async fn test_process_agent_stream_with_fixture() {
+        const AGENT_RUN_FIXTURE: &str = include_str!("../testdata/agent_run.ndjson");
+
+        let sink = Arc::new(MockLogSink::default());
+        let mut ctx = make_ctx(Arc::clone(&sink) as Arc<dyn LogSink>);
+
+        let step = make_agent_step("stream_test", "test prompt");
+
+        // Create a channel and feed fixture lines into it
+        let (output_tx, output_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+        let mut output_rx = output_rx;
+
+        // Spawn a task to feed fixture bytes into the channel (simulating read loop)
+        tokio::spawn(async move {
+            let bytes = AGENT_RUN_FIXTURE.as_bytes();
+            output_tx.send(bytes.to_vec()).await.ok();
+        });
+
+        // Create a dummy read_handle that completes immediately
+        let read_handle = tokio::task::spawn_blocking(|| {
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::ExitStatusExt;
+                Ok(std::process::ExitStatus::from_raw(0))
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                Ok(std::process::ExitStatus::from_raw(0))
+            }
+        });
+
+        let output = super::process_agent_stream(
+            &step,
+            &mut ctx,
+            &mut output_rx,
+            read_handle,
+            None,
+            None,
+            0,
+        )
+        .await
+        .expect("process_agent_stream should succeed");
+
+        // Verify success
+        assert_eq!(output.exit_code, Some(0));
+
+        // Verify cost extraction from fixture
+        let cost = output.cost.expect("should have cost fragment");
+        assert!(
+            (cost.total_cost_usd.unwrap() - 0.12343).abs() < 1e-9,
+            "cost should match fixture: 0.12343"
+        );
+
+        // Verify token extraction from fixture
+        assert_eq!(
+            cost.input_tokens, 2956,
+            "input_tokens should match fixture: 2956"
+        );
+        assert_eq!(
+            cost.output_tokens, 22,
+            "output_tokens should match fixture: 22"
+        );
+
+        // Verify result text from fixture
+        assert_eq!(
+            output.stdout,
+            Some(Value::String("hello from fixture capture".to_string())),
+            "result should match fixture final_message"
+        );
     }
 }

@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, 'EPIC/**']
+    branches: [main, 'EPIC/**', 'ACS-**']
 
 env:
   CARGO_TERM_COLOR: always
@@ -51,10 +51,22 @@ jobs:
         run: cargo fmt -- --check
         working-directory: acs
 
+      - name: Check formatting (milepost)
+        run: cargo fmt -- --check
+        working-directory: milepost
+
       - name: Run clippy
         run: cargo clippy -- -D warnings
         working-directory: acs
 
+      - name: Run clippy (milepost)
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: milepost
+
       - name: Run tests
         run: cargo test
         working-directory: acs
+
+      - name: Run tests (milepost)
+        run: cargo test
+        working-directory: milepost

@@ -12,6 +12,7 @@ Documentation for the Agent Cron Scheduler (ACS) -- a cross-platform cron schedu
 | [API Reference](api-reference.md) | REST API endpoints: routes, request/response formats, status codes, SSE events, data models. |
 | [Workflow Management](workflow-management.md) | Workflow definitions, step kinds (Shell/Script/Http/Match/SetVar/Agent), template substitution, run lifecycle, failure policies, cron expressions. |
 | [Service Registration](service-registration.md) | Platform-specific service setup: Windows Registry Run key, macOS launchd, Linux systemd. |
-| [Storage](storage.md) | On-disk persistence: WorkflowStore, WorkflowRunStore, FileLogSink, EventEmittingLogSink, atomic writes, corruption handling, migration system, daemon log management. |
+| [Storage](storage.md) | On-disk persistence: WorkflowStore, WorkflowRunStore, FileLogSink, EventEmittingLogSink, atomic writes, corruption handling, daemon log management. |
+| [Migration System](migration-system.md) | The milepost migration framework and ACS's migrations: schema_migrations tracking, baseline/rebuild conventions, migration inventory, upgrade path, adding a migration. |
 | [Troubleshooting](troubleshooting.md) | Common problems and solutions: startup issues, workflow execution, logs, data corruption, CLI errors. |
 | [Known Issues](KNOWN_ISSUES.md) | Remaining documentation issues identified during Round 3 audits; minor items that do not affect core accuracy. |

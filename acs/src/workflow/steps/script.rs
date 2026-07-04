@@ -222,23 +222,18 @@ impl Step for ScriptStep {
     }
 }
 
-/// Check whether a command is available on the system PATH.
-///
-/// On Windows uses `where`; on Unix uses `which`. Returns `false` on error.
+/// Check whether a command is available on the system PATH (via `where`).
+/// Returns `false` on error. Only the Windows interpreter-resolution path
+/// consults this; on Unix the interpreters are invoked by fixed name.
+#[cfg(windows)]
 fn is_command_available(cmd: &str) -> bool {
-    #[cfg(windows)]
-    let check = std::process::Command::new("where")
+    std::process::Command::new("where")
         .arg(cmd)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
-    #[cfg(not(windows))]
-    let check = std::process::Command::new("which")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    check.map(|s| s.success()).unwrap_or(false)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Build a `portable_pty::CommandBuilder` for a script file with the given interpreter.
@@ -686,7 +681,7 @@ mod tests {
     #[tokio::test]
     async fn test_script_step_templated_path_and_args() {
         let dir = TempDir::new().expect("tmpdir");
-        let path = write_script(&dir, "greet.sh", "#!/bin/sh\necho \"greet:$1\"\n");
+        let _path = write_script(&dir, "greet.sh", "#!/bin/sh\necho \"greet:$1\"\n");
         let dir_str = dir.path().to_str().unwrap().to_string();
 
         let sink = Arc::new(MockLogSink::default());
