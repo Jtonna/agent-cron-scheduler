@@ -179,6 +179,7 @@ cargo test daemon::scheduler::
 # Integration tests
 cargo test --test workflow_api_tests
 cargo test --test cli_tests
+cargo test --test migration_tests
 
 # Lint and format checks
 cargo clippy -- -D warnings

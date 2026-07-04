@@ -245,7 +245,7 @@ pub trait WorkflowStore: Send + Sync {
 | `find_by_name` | Looks up a single workflow by name; returns `None` if not found. |
 | `create_workflow` | Validates, assigns a UUIDv7 ID, sets `version: 1`, INSERTs, and returns the new workflow. |
 | `update_workflow` | Partial update; bumps `version` when any definition-affecting field changes. Returns `NotFound` or `Conflict` as appropriate. |
-| `delete_workflow` | DELETEs a workflow by UUID; returns `NotFound` if it does not exist. |
+| `delete_workflow` | Soft-deletes: sets `deleted = 1` and bumps `updated_at` (only when currently live, `WHERE deleted = 0`), keeping the row and its run history; returns `NotFound` if the workflow doesn't exist or is already deleted. |
 | `record_run_outcome` | Records a terminal run outcome on the parent workflow (updates `last_run_id`, `last_run_status`, `last_run_at`; bumps `updated_at`; does NOT bump `version`). Returns `Result<()>` (anyhow); note this differs from the `WorkflowRunStore` trait which uses `Result<_, AcsError>`. |
 
 ### SqliteWorkflowStore

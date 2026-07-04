@@ -49,9 +49,14 @@ impl Migration for CreateUsers {
     }
 }
 
-let report = Runner::new("/path/to/app.db")
-    .migrations(vec![Box::new(CreateUsers)])
-    .run()?;
+fn migrate(db_path: &str) -> Result<(), MigrateError> {
+    // The parent directory of `db_path` must already exist.
+    let report = Runner::new(db_path)
+        .migrations(vec![Box::new(CreateUsers)])
+        .run()?;
+    println!("applied: {:?}", report.ran);
+    Ok(())
+}
 ```
 
 See the crate-level documentation for the full semantics, including the
