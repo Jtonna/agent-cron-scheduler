@@ -40,6 +40,41 @@ pub fn service_name() -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
+// Test-only hermetic state override.
+//
+// Service registration lives in global, machine-wide state (a systemd unit
+// file, a launchd plist, or an HKCU registry value). Because cargo runs tests
+// in parallel, tests touching that shared state would race with one another and
+// pollute the real machine. Each test instead redirects the state location to a
+// private temp directory through this thread-local: cargo runs every test on
+// its own thread, so an override set inside one test is invisible to all others
+// — no mutex, no env-var collision, no cross-test TOCTOU. The whole mechanism is
+// gated to `cfg(test)`, so production path resolvers compile down to exactly the
+// code they had before the override existed.
+#[cfg(test)]
+thread_local! {
+    static SERVICE_STATE_DIR_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn test_state_override() -> Option<std::path::PathBuf> {
+    SERVICE_STATE_DIR_OVERRIDE.with(|slot| slot.borrow().clone())
+}
+
+/// Derive a throwaway HKCU subkey for a test's private registry state from its
+/// temp-dir path, so Windows tests read and write a disposable key instead of
+/// the real `...\CurrentVersion\Run`.
+#[cfg(all(test, target_os = "windows"))]
+fn windows_test_run_subkey(base: &std::path::Path) -> String {
+    let leaf = base
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("acs_service_test");
+    format!(r"Software\AgentCronScheduler\ServiceTest\{}", leaf)
+}
+
+// ---------------------------------------------------------------------------
 // Windows implementation — uses Registry Run key
 // (HKCU\Software\Microsoft\Windows\CurrentVersion\Run) so the daemon starts
 // automatically at user logon without requiring elevation.
@@ -51,13 +86,23 @@ mod platform {
     const RUN_KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const RUN_VALUE_NAME: &str = "AgentCronScheduler";
 
+    /// Resolve the HKCU subkey that stores the Run value. Production always uses
+    /// the real Run key; tests redirect it to a private throwaway subkey.
+    fn run_key_path() -> std::borrow::Cow<'static, str> {
+        #[cfg(test)]
+        if let Some(base) = super::test_state_override() {
+            return std::borrow::Cow::Owned(super::windows_test_run_subkey(&base));
+        }
+        std::borrow::Cow::Borrowed(RUN_KEY_PATH)
+    }
+
     /// Check if the Run key value is present in the registry.
     pub fn is_service_registered() -> bool {
         use winreg::enums::*;
         use winreg::RegKey;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        match hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_READ) {
+        match hkcu.open_subkey_with_flags(run_key_path().as_ref(), KEY_READ) {
             Ok(key) => key.get_value::<String, _>(RUN_VALUE_NAME).is_ok(),
             Err(_) => false,
         }
@@ -69,7 +114,7 @@ mod platform {
         use winreg::RegKey;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let key = hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_SET_VALUE)?;
+        let key = hkcu.open_subkey_with_flags(run_key_path().as_ref(), KEY_SET_VALUE)?;
 
         let value = format!("\"{}\" start", exe_path.display());
         key.set_value(RUN_VALUE_NAME, &value)?;
@@ -84,7 +129,7 @@ mod platform {
         use winreg::RegKey;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let key = match hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_SET_VALUE) {
+        let key = match hkcu.open_subkey_with_flags(run_key_path().as_ref(), KEY_SET_VALUE) {
             Ok(k) => k,
             Err(_) if !is_service_registered() => return Ok(()),
             Err(e) => return Err(anyhow::anyhow!(e)),
@@ -218,6 +263,10 @@ mod platform {
     use std::path::PathBuf;
 
     fn plist_path() -> PathBuf {
+        #[cfg(test)]
+        if let Some(base) = super::test_state_override() {
+            return base.join("com.agentcronsystem.scheduler.plist");
+        }
         let home = dirs::home_dir().expect("Could not determine home directory");
         home.join("Library")
             .join("LaunchAgents")
@@ -388,6 +437,10 @@ mod platform {
     use std::path::PathBuf;
 
     fn unit_path() -> PathBuf {
+        #[cfg(test)]
+        if let Some(base) = super::test_state_override() {
+            return base.join("agentcronsystem.service");
+        }
         let home = dirs::home_dir().expect("Could not determine home directory");
         home.join(".config")
             .join("systemd")
@@ -671,69 +724,149 @@ mod tests {
         let _registered = is_service_registered();
     }
 
+    /// RAII guard that redirects every service-state read and write to a
+    /// private temp location for the lifetime of a test, then restores and
+    /// cleans up on drop. See the module-level note on the thread-local for why
+    /// this is parallel-safe. On Windows it also provisions (and later deletes)
+    /// the throwaway registry subkey that stands in for the real Run key.
+    struct ServiceStateGuard {
+        _dir: tempfile::TempDir,
+    }
+
+    impl ServiceStateGuard {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("create temp service-state dir");
+            let path = dir.path().to_path_buf();
+
+            #[cfg(target_os = "windows")]
+            {
+                use winreg::enums::*;
+                use winreg::RegKey;
+
+                let subkey = super::windows_test_run_subkey(&path);
+                let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+                hkcu.create_subkey(&subkey)
+                    .expect("create throwaway run subkey");
+            }
+
+            super::SERVICE_STATE_DIR_OVERRIDE.with(|slot| {
+                *slot.borrow_mut() = Some(path);
+            });
+
+            Self { _dir: dir }
+        }
+    }
+
+    impl Drop for ServiceStateGuard {
+        fn drop(&mut self) {
+            #[cfg(target_os = "windows")]
+            {
+                use winreg::enums::*;
+                use winreg::RegKey;
+
+                if let Some(base) = super::test_state_override() {
+                    let subkey = super::windows_test_run_subkey(&base);
+                    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+                    let _ = hkcu.delete_subkey_all(&subkey);
+                }
+            }
+
+            super::SERVICE_STATE_DIR_OVERRIDE.with(|slot| {
+                *slot.borrow_mut() = None;
+            });
+        }
+    }
+
+    /// A syntactically valid (but non-existent) executable path for install
+    /// tests. install_service never checks the path exists — it only records
+    /// it — so this is enough to exercise the real registration logic.
+    fn sample_exe() -> std::path::PathBuf {
+        std::path::PathBuf::from(if cfg!(target_os = "windows") {
+            r"C:\Program Files\ACS\acs.exe"
+        } else {
+            "/opt/acs/bin/acs"
+        })
+    }
+
     #[test]
     fn test_start_service_fails_when_not_registered() {
-        // If service is not registered, start_service should fail
-        if !is_service_registered() {
-            let result = start_service();
-            assert!(
-                result.is_err(),
-                "start_service should fail when service is not registered"
-            );
-        }
-        // If service IS registered, we skip this test to avoid side effects
+        // Isolated empty state → deterministically not registered, so the real
+        // registration logic under test is exercised on a known-clean slate.
+        let _guard = ServiceStateGuard::new();
+        assert!(
+            !is_service_registered(),
+            "isolated state should start unregistered"
+        );
+
+        // With no unit/plist and no Run value, start_service must report an
+        // error (systemctl/launchctl fail on the missing service; Windows'
+        // registry-based auto-start returns Err unconditionally).
+        let result = start_service();
+        assert!(
+            result.is_err(),
+            "start_service should fail when the service is not registered"
+        );
     }
 
     #[test]
     fn test_stop_service_fails_when_not_registered() {
-        // If service is not registered, stop_service should fail
-        if !is_service_registered() {
-            let result = stop_service();
-            assert!(
-                result.is_err(),
-                "stop_service should fail when service is not registered"
-            );
-        }
-        // If service IS registered, we skip this test to avoid side effects
+        let _guard = ServiceStateGuard::new();
+        assert!(
+            !is_service_registered(),
+            "isolated state should start unregistered"
+        );
+
+        let result = stop_service();
+        assert!(
+            result.is_err(),
+            "stop_service should fail when the service is not registered"
+        );
     }
 
     #[test]
-    fn test_install_service_requires_valid_path() {
-        use std::path::PathBuf;
+    fn test_install_service_registers_service() {
+        let _guard = ServiceStateGuard::new();
+        assert!(
+            !is_service_registered(),
+            "isolated state should start unregistered"
+        );
 
-        // Note: This test may fail with permission errors, which is expected
-        // on systems that require elevated privileges for service installation.
-        // We're mainly testing that the function exists and handles the path correctly.
-        let fake_exe = PathBuf::from("/nonexistent/path/to/exe");
+        install_service(sample_exe().as_path())
+            .expect("install into isolated state should succeed");
 
-        // We don't assert on the result because:
-        // - On Windows, it will fail due to service manager access
-        // - On Unix, it will fail due to permissions or directory issues
-        // The important thing is it doesn't panic
-        let _result = install_service(&fake_exe);
+        assert!(
+            is_service_registered(),
+            "service should report registered after install"
+        );
+        assert!(
+            service_status().service_path.is_some(),
+            "service_status should expose a registration path after install"
+        );
     }
 
     #[test]
-    fn test_uninstall_service_when_not_registered() {
-        // If service is not registered, uninstall should behave gracefully.
-        if !is_service_registered() {
-            let result = uninstall_service();
-            // On Windows the registry-based implementation is idempotent —
-            // deleting an absent value returns Ok(()).
-            #[cfg(target_os = "windows")]
-            assert!(
-                result.is_ok(),
-                "uninstall_service should succeed (idempotent) when not registered on Windows"
-            );
-            // On macOS / Linux the plist / unit file simply doesn't exist,
-            // so the function returns Ok(()) as well (early return when path missing).
-            #[cfg(not(target_os = "windows"))]
-            assert!(
-                result.is_ok(),
-                "uninstall_service should return Ok(()) when not registered: {:?}",
-                result
-            );
-        }
+    fn test_uninstall_service_removes_and_is_idempotent() {
+        let _guard = ServiceStateGuard::new();
+
+        // Uninstall is a graceful no-op when nothing is installed.
+        assert!(!is_service_registered());
+        uninstall_service().expect("uninstall when absent should be Ok");
+
+        // Install, then confirm uninstall actually removes the registration.
+        install_service(sample_exe().as_path()).expect("install should succeed");
+        assert!(
+            is_service_registered(),
+            "should be registered after install"
+        );
+
+        uninstall_service().expect("uninstall should succeed");
+        assert!(
+            !is_service_registered(),
+            "should be unregistered after uninstall"
+        );
+
+        // A second uninstall on already-clean state is still Ok (idempotent).
+        uninstall_service().expect("second uninstall should also be Ok");
     }
 
     /// Tests for the PATH detection logic used by ensure_path_entry on Windows.
