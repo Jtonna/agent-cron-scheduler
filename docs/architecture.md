@@ -258,7 +258,7 @@ runner configuration.
 - **Registry** (name-ordered): `m000_baseline` (baseline hook), `m003_drop_step_output_summary`, `m004_drop_input_schema`, `m005_shell_claude_to_agent` (SQL + Rust logic), `m006_agent_step_normalize` (SQL + Rust logic), `m007_add_token_columns`, `m008_add_workflow_deleted` (rebuild hook).
 - **Conventions**: migrations whose `baseline()` hook returns true are recorded without executing on databases that already have migration tracking (every v4.2.14 install); migrations whose `rebuild()` hook returns true get `PRAGMA foreign_keys = OFF` around their transaction plus a pre-commit `PRAGMA foreign_key_check`. Databases whose schema has no recorded migration history are rejected by the framework with its default guidance.
 
-See [Storage — Migration System](storage.md#9-migration-system) for full semantics.
+See [Migration System](migration-system.md) for full semantics.
 
 ---
 
@@ -665,7 +665,7 @@ Highlights:
   startup. Recovery = fix the issue, `DELETE` the row, restart.
 
 Full documentation, including per-migration history: see
-[Storage — Migration System](storage.md#9-migration-system).
+[Migration System](migration-system.md).
 
 ---
 

@@ -54,7 +54,7 @@ agentcronsystem start
    ```
 4. Restart the daemon: `agentcronsystem start`. The migration re-runs from the failed one onward; migrations that never got to run have no row and execute normally.
 
-Deleting a `success` row forces that single migration to re-run the same way — but **only do this when the migration's preconditions have been restored**: v5 migrations are not internally idempotent (e.g. re-running a column drop against an already-migrated schema fails). The tracking table, not in-migration guards, is what prevents double execution. See [Storage — Migration System](storage.md#9-migration-system) for the full runner semantics.
+Deleting a `success` row forces that single migration to re-run the same way — but **only do this when the migration's preconditions have been restored**: v5 migrations are not internally idempotent (e.g. re-running a column drop against an already-migrated schema fails). The tracking table, not in-migration guards, is what prevents double execution. See [Migration System](migration-system.md) for the full runner semantics.
 
 ### Port Already in Use
 

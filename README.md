@@ -228,7 +228,8 @@ Full system documentation lives in [docs/INDEX.md](docs/INDEX.md). Highlights:
 - [API Reference](docs/api-reference.md) -- REST endpoints, SSE events, schemas
 - [Workflow Management](docs/workflow-management.md) -- step kinds, template substitution, failure policies
 - [Configuration](docs/configuration.md) -- config file format and data directories
-- [Storage](docs/storage.md) -- SQLite layout, log sinks, migrations (`milepost` framework + `acs/src/migrations/`)
+- [Storage](docs/storage.md) -- SQLite layout, log sinks, atomic writes, corruption handling
+- [Migration System](docs/migration-system.md) -- the `milepost` framework + `acs/src/migrations/`, schema_migrations tracking, upgrade path
 - [Service Registration](docs/service-registration.md) -- platform-specific service setup
 - [Troubleshooting](docs/troubleshooting.md) -- common problems and fixes
 
