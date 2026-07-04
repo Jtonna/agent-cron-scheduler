@@ -61,11 +61,6 @@ impl SqliteDb {
     }
 }
 
-/// Open (or create) the SQLite database at `path`, apply pragmas, and apply
-/// the schema. Returns the raw [`Connection`].
-///
-/// The parent directory of `path` must already exist; this helper does not
-/// create it.
 pub(crate) fn open_with_schema(path: &Path) -> Result<Connection, AcsError> {
     let conn = Connection::open(path)
         .map_err(|e| AcsError::Storage(format!("Failed to open SQLite at {:?}: {}", path, e)))?;
