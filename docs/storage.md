@@ -504,7 +504,7 @@ the upgrade path, see [Migration System](migration-system.md).
 
 ---
 
-## 11. Daemon Log Management (`SizeManagedWriter`)
+## 10. Daemon Log Management (`SizeManagedWriter`)
 
 **Source:** `acs/src/daemon/mod.rs`
 
