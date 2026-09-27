@@ -88,7 +88,7 @@ describe("api.deleteWorkflow", () => {
 
   it("rejects with ApiError on a 409 with workflow_run_active code", async () => {
     const errorMessage = "Cannot delete workflow 'x' while run y is still running. Kill the run or wait for it to finish, then retry.";
-    mockFetch.mockResolvedValueOnce(
+    const makeResponse = () =>
       new Response(
         JSON.stringify({
           error: "workflow_run_active",
@@ -99,19 +99,17 @@ describe("api.deleteWorkflow", () => {
           statusText: "Conflict",
           headers: { "content-type": "application/json" },
         }
-      )
-    );
+      );
 
-    await expect(api.deleteWorkflow("test-id")).rejects.toThrow(ApiError);
-    try {
-      await api.deleteWorkflow("test-id");
-    } catch (err) {
-      if (err instanceof ApiError) {
-        expect(err.status).toBe(409);
-        expect(err.code).toBe("workflow_run_active");
-        expect(err.message).toBe(errorMessage);
-      }
-    }
+    mockFetch.mockResolvedValueOnce(makeResponse());
+    await expect(api.deleteWorkflow("test-id")).rejects.toBeInstanceOf(ApiError);
+
+    mockFetch.mockResolvedValueOnce(makeResponse());
+    await expect(api.deleteWorkflow("test-id")).rejects.toMatchObject({
+      status: 409,
+      code: "workflow_run_active",
+      message: errorMessage,
+    });
   });
 
   it("uses code when both code and error are present", async () => {
@@ -130,12 +128,8 @@ describe("api.deleteWorkflow", () => {
       )
     );
 
-    try {
-      await api.deleteWorkflow("test-id");
-    } catch (err) {
-      if (err instanceof ApiError) {
-        expect(err.code).toBe("PREFERRED_CODE");
-      }
-    }
+    await expect(api.deleteWorkflow("test-id")).rejects.toMatchObject({
+      code: "PREFERRED_CODE",
+    });
   });
 });

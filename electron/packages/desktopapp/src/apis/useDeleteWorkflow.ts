@@ -20,9 +20,14 @@ import { api, ApiError } from "@/apis/client";
  *   deleted workflow
  * - `["cost/workflows"]` (the global cost summary) is invalidated
  *
- * The backend also emits a `workflow_changed`/`deleted` SSE event that
- * SSEQueryBridge picks up and uses to invalidate `["jobs"]` — harmless
- * here since the caller has already navigated away by the time it lands.
+ * Race note: the backend broadcasts the `workflow_changed`/`deleted` SSE
+ * event *before* it returns the 204 (see workflow_routes.rs), so
+ * SSEQueryBridge can invalidate `["jobs"]` while the detail page for the
+ * workflow being deleted is still mounted, triggering a refetch of
+ * `["jobs", id]` that 404s. This is not actually a problem here: React
+ * Query's default `retry: 1` (with backoff, see providers.tsx) delays that
+ * refetch's failure long enough for `onSuccess` below to remove the query
+ * and for `onDeleted`'s `router.replace` to navigate away first.
  */
 export function useDeleteWorkflow(options?: { onDeleted?: (id: string) => void }) {
   const queryClient = useQueryClient();
