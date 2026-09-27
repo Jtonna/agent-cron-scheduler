@@ -10,6 +10,7 @@ use crate::daemon::events::WorkflowEvent;
 use crate::models::workflow::{
     FailurePolicy, RunStatus, StepDef, StepRun, TriggerParams, Workflow, WorkflowRun,
 };
+use crate::workflow::persist::StepPersister;
 use crate::workflow::step::{KillSender, LogSink, Step, StepContext, StepError, StepOutput};
 use crate::workflow::template;
 
@@ -52,6 +53,15 @@ fn step_common(def: &StepDef) -> &crate::models::workflow::StepDefCommon {
     }
 }
 
+/// Persist the current `step_runs` list through `persister`, if any.
+///
+/// No-op when `persister` is `None` (tests, contexts without a store).
+async fn persist(persister: Option<&dyn StepPersister>, run_id: Uuid, step_runs: &[StepRun]) {
+    if let Some(p) = persister {
+        p.persist_steps(run_id, step_runs).await;
+    }
+}
+
 // ── Core step-sequence runner ─────────────────────────────────────────────────
 
 /// Walk `steps` in order, executing each or skipping based on `aborted`.
@@ -62,6 +72,13 @@ fn step_common(def: &StepDef) -> &crate::models::workflow::StepDefCommon {
 /// On Abort policy failure, `*aborted` is set to true and the loop continues
 /// so that `always_run` cleanup steps can still execute.
 ///
+/// When `persister` is `Some`, the full `step_runs` list is persisted at every
+/// step boundary: once when a step starts (with a `Running` row) and once
+/// when it finishes (with the final row replacing the `Running` one).
+/// Ordering rule: persist BEFORE emitting the corresponding `StepStarted` /
+/// `StepCompleted` event, so a client that refetches the run on the event
+/// sees the new row.
+///
 /// Returns `true` if a `StepError::Killed` was encountered (the caller should
 /// set the final `RunStatus` to `Killed`).
 async fn execute_steps(
@@ -71,6 +88,7 @@ async fn execute_steps(
     step_runs: &mut Vec<StepRun>,
     aborted: &mut bool,
     killed: &mut bool,
+    persister: Option<&dyn StepPersister>,
 ) {
     for step_def in steps {
         let common = step_common(step_def);
@@ -84,7 +102,8 @@ async fn execute_steps(
 
         if !should_run {
             // Skipped steps are omitted from step_runs.
-            // Skipped steps do NOT emit StepStarted / StepCompleted events.
+            // Skipped steps do NOT emit StepStarted / StepCompleted events
+            // and are not persisted.
             continue;
         }
 
@@ -101,26 +120,6 @@ async fn execute_steps(
         if let StepDef::Match(m) = step_def {
             let run_id = ctx.run_id;
             let workflow_id = ctx.workflow_id;
-
-            // Emit StepStarted for the synthetic match step.
-            emit(
-                ctx.event_tx.as_ref(),
-                WorkflowEvent::StepStarted {
-                    run_id,
-                    workflow_id,
-                    step_index,
-                    step_id: m.common.id.clone(),
-                    kind: "match".to_string(),
-                    started_at: Utc::now(),
-                },
-            );
-            tracing::info!(
-                run_id = %run_id,
-                step_index = step_index,
-                step_id = %m.common.id,
-                kind = "match",
-                "step started"
-            );
 
             let sub = template::substitute(&m.expr, &ctx.input, &ctx.steps);
             for warn in &sub.warnings {
@@ -153,21 +152,16 @@ async fn execute_steps(
                 "match step decision"
             );
             // The match step itself does NOT write to the log, but the child
-            // steps in the chosen branch do. Record offsets that span the
-            // first-child-START through last-child-END so a slice query on
-            // the match step returns the branch's bytes.
+            // steps in the chosen branch do. The recorded range spans the
+            // branch's bytes: `log_byte_offset_start` is the log sink's
+            // current offset when the match row is pushed (i.e. where the
+            // first child's START marker will land), and `log_byte_offset_end`
+            // is patched AFTER the branch finishes to the last child's end
+            // offset.
             //
-            // We push the synthetic match_run BEFORE the branch executes (so
-            // step_runs is in execution order), then patch its
-            // `log_byte_offset_start` / `_end` AFTER the branch finishes by
-            // tracking the first / last child step that was pushed during
-            // the recursion.
-            // `log_byte_offset_start` is initialised to `u64::MAX` as an
-            // obvious sentinel: if a branch executes, the patch below
-            // overwrites it with the first child's start offset. If no
-            // children run, the patch below replaces the sentinel with 0 so
-            // the slice endpoint returns the whole file (the match step
-            // itself emits no log bytes, so this is the best we can do).
+            // The row is pushed BEFORE the branch executes (so step_runs is
+            // in execution order) with status Completed, matching the
+            // StepStarted + StepCompleted pair emitted for the match step.
             let match_run = StepRun {
                 step_index,
                 step_id: m.common.id.clone(),
@@ -176,13 +170,35 @@ async fn execute_steps(
                 started_at,
                 finished_at: Some(Utc::now()),
                 exit_code: Some(0),
-                log_byte_offset_start: u64::MAX,
+                log_byte_offset_start: ctx.log_sink.current_offset().await.unwrap_or(0),
                 log_byte_offset_end: None,
                 cost_usd: None,
                 error: None,
             };
 
-            // Emit StepCompleted for the match step.
+            let match_run_idx = step_runs.len();
+            step_runs.push(match_run);
+            persist(persister, run_id, step_runs).await;
+
+            // Emit StepStarted + StepCompleted for the synthetic match step.
+            emit(
+                ctx.event_tx.as_ref(),
+                WorkflowEvent::StepStarted {
+                    run_id,
+                    workflow_id,
+                    step_index,
+                    step_id: m.common.id.clone(),
+                    kind: "match".to_string(),
+                    started_at,
+                },
+            );
+            tracing::info!(
+                run_id = %run_id,
+                step_index = step_index,
+                step_id = %m.common.id,
+                kind = "match",
+                "step started"
+            );
             emit(
                 ctx.event_tx.as_ref(),
                 WorkflowEvent::StepCompleted {
@@ -204,9 +220,6 @@ async fn execute_steps(
                 "step completed"
             );
 
-            let match_run_idx = step_runs.len();
-            step_runs.push(match_run);
-
             // Insert a placeholder so ${steps.<id>.*} can resolve.
             ctx.steps.insert(
                 m.common.id.clone(),
@@ -221,6 +234,9 @@ async fn execute_steps(
             );
 
             // Recurse into branch steps if a branch was matched.
+            // `last_child_end` is Some(end) when at least one child row was
+            // pushed during the recursion.
+            let mut last_child_end: Option<Option<u64>> = None;
             if let Some(branch) = branch_steps {
                 // We need to clone to avoid borrow issues since execute_steps is recursive
                 let branch_owned: Vec<StepDef> = branch.clone();
@@ -232,33 +248,26 @@ async fn execute_steps(
                     step_runs,
                     aborted,
                     killed,
+                    persister,
                 ))
                 .await;
                 let post_len = step_runs.len();
-
-                // Patch the match_run's byte offsets to span the children that
-                // were just pushed. The first child's _start becomes the match
-                // step's _start; the last child's _end (or None if it never
-                // finished) becomes the match step's _end.
                 if post_len > pre_len {
-                    let first_start = step_runs[pre_len].log_byte_offset_start;
-                    let last_end = step_runs[post_len - 1].log_byte_offset_end;
-                    if let Some(slot) = step_runs.get_mut(match_run_idx) {
-                        slot.log_byte_offset_start = first_start;
-                        slot.log_byte_offset_end = last_end;
-                    }
-                } else if let Some(slot) = step_runs.get_mut(match_run_idx) {
-                    // No children ran (branch_steps was empty or all skipped):
-                    // replace the `u64::MAX` sentinel with 0 so the slice
-                    // endpoint returns the whole file rather than treating
-                    // the sentinel as a real offset.
-                    slot.log_byte_offset_start = 0;
+                    last_child_end = Some(step_runs[post_len - 1].log_byte_offset_end);
                 }
-            } else if let Some(slot) = step_runs.get_mut(match_run_idx) {
-                // No branch was matched (no `cases` hit and no `default`):
-                // replace the sentinel with 0 for the same reason.
-                slot.log_byte_offset_start = 0;
             }
+
+            // Patch ONLY the match row's `log_byte_offset_end`; the start was
+            // fixed when the row was pushed. If children ran, the last
+            // child's end (or None if it never wrote an END marker) becomes
+            // the match step's end. If no children ran (no branch matched, or
+            // the branch was empty / fully skipped), the match step covers an
+            // empty range: end = start.
+            if let Some(slot) = step_runs.get_mut(match_run_idx) {
+                slot.log_byte_offset_end =
+                    last_child_end.unwrap_or(Some(slot.log_byte_offset_start));
+            }
+            persist(persister, run_id, step_runs).await;
 
             continue;
         }
@@ -269,25 +278,9 @@ async fn execute_steps(
         let workflow_id = ctx.workflow_id;
         let step_kind = step_kind_str(step_def);
 
-        // Emit StepStarted before executing the step.
-        emit(
-            ctx.event_tx.as_ref(),
-            WorkflowEvent::StepStarted {
-                run_id,
-                workflow_id,
-                step_index,
-                step_id: common.id.clone(),
-                kind: step_kind.to_string(),
-                started_at: Utc::now(),
-            },
-        );
-        tracing::info!(
-            run_id = %run_id,
-            step_index = step_index,
-            step_id = %common.id,
-            kind = %step_kind,
-            "step started"
-        );
+        // Taken once and reused for the StepStarted event, the Running row
+        // and the final row built by `run_step_with_policy`.
+        let started_at = Utc::now();
 
         // Inform the log sink which step is active so that chunk events carry
         // the correct step_index and step_id.  Errors are logged but do not
@@ -300,7 +293,6 @@ async fn execute_steps(
             );
         }
 
-        let started_at = Utc::now();
         let effective_policy = common
             .on_failure
             .clone()
@@ -309,140 +301,115 @@ async fn execute_steps(
         // Clear the per-step log offset slots before dispatching. Step impls
         // populate these after their `write_step_start` / `write_step_end`
         // succeed; if the step returns Err before that, the slot remains None
-        // and the executor falls back to `log_byte_offset_start = 0` /
-        // `log_byte_offset_end = None` for the failed StepRun.
+        // and the executor falls back to `log_byte_offset_start = start_offset`
+        // / `log_byte_offset_end = None` for the failed StepRun.
         ctx.current_step_log_offset_start = None;
         ctx.current_step_log_offset_end = None;
 
-        let result = run_step_with_policy(step_def, ctx, effective_policy, started_at).await;
+        // Predicted offset of this step's START marker. Sinks that don't
+        // track a position report None; fall back to 0.
+        let start_offset = ctx.log_sink.current_offset().await.unwrap_or(0);
 
-        match result {
-            StepRunResult::Completed(mut run, output) => {
-                run.step_index = step_index;
-                run.kind = step_kind.to_string();
-                // Emit StepCompleted after successful execution.
-                emit(
-                    ctx.event_tx.as_ref(),
-                    WorkflowEvent::StepCompleted {
-                        run_id,
-                        workflow_id,
-                        step_index,
-                        step_id: common.id.clone(),
-                        exit_code: run.exit_code,
-                        cost_usd: run.cost_usd,
-                        finished_at: Utc::now(),
-                    },
-                );
-                let duration_ms = run
-                    .finished_at
-                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
-                tracing::info!(
-                    run_id = %run_id,
-                    step_index = step_index,
-                    step_id = %common.id,
-                    status = ?run.status,
-                    exit_code = ?run.exit_code,
-                    duration_ms = ?duration_ms,
-                    "step completed"
-                );
-                ctx.steps.insert(common.id.clone(), output);
-                step_runs.push(run);
-            }
-            StepRunResult::Failed(mut run) => {
-                run.step_index = step_index;
-                run.kind = step_kind.to_string();
-                // Emit StepCompleted with non-zero exit code or None.
-                emit(
-                    ctx.event_tx.as_ref(),
-                    WorkflowEvent::StepCompleted {
-                        run_id,
-                        workflow_id,
-                        step_index,
-                        step_id: common.id.clone(),
-                        exit_code: run.exit_code,
-                        cost_usd: run.cost_usd,
-                        finished_at: Utc::now(),
-                    },
-                );
-                let duration_ms = run
-                    .finished_at
-                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
-                tracing::info!(
-                    run_id = %run_id,
-                    step_index = step_index,
-                    step_id = %common.id,
-                    status = ?run.status,
-                    exit_code = ?run.exit_code,
-                    duration_ms = ?duration_ms,
-                    "step completed"
-                );
-                step_runs.push(run);
-                *aborted = true;
-            }
-            StepRunResult::FailedContinue(mut run, output) => {
-                run.step_index = step_index;
-                run.kind = step_kind.to_string();
-                // Insert the actual output (even though the step failed) so that
-                // downstream template references like ${steps.<id>.exit_code} resolve.
-                emit(
-                    ctx.event_tx.as_ref(),
-                    WorkflowEvent::StepCompleted {
-                        run_id,
-                        workflow_id,
-                        step_index,
-                        step_id: common.id.clone(),
-                        exit_code: run.exit_code,
-                        cost_usd: run.cost_usd,
-                        finished_at: Utc::now(),
-                    },
-                );
-                let duration_ms = run
-                    .finished_at
-                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
-                tracing::info!(
-                    run_id = %run_id,
-                    step_index = step_index,
-                    step_id = %common.id,
-                    status = ?run.status,
-                    exit_code = ?run.exit_code,
-                    duration_ms = ?duration_ms,
-                    "step completed"
-                );
-                ctx.steps.insert(common.id.clone(), output);
-                step_runs.push(run);
-                // Do NOT set aborted — continue policy means keep going.
-            }
-            StepRunResult::Killed(mut run) => {
-                run.step_index = step_index;
-                run.kind = step_kind.to_string();
-                emit(
-                    ctx.event_tx.as_ref(),
-                    WorkflowEvent::StepCompleted {
-                        run_id,
-                        workflow_id,
-                        step_index,
-                        step_id: common.id.clone(),
-                        exit_code: run.exit_code,
-                        cost_usd: run.cost_usd,
-                        finished_at: Utc::now(),
-                    },
-                );
-                let duration_ms = run
-                    .finished_at
-                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
-                tracing::info!(
-                    run_id = %run_id,
-                    step_index = step_index,
-                    step_id = %common.id,
-                    status = ?run.status,
-                    exit_code = ?run.exit_code,
-                    duration_ms = ?duration_ms,
-                    "step completed"
-                );
-                step_runs.push(run);
-                *killed = true;
-                *aborted = true; // stop further steps
-            }
+        // Push a Running row for this step and persist it, then announce the
+        // step. The row at `slot` is replaced by the final row when the step
+        // finishes.
+        let running = StepRun {
+            step_index,
+            step_id: common.id.clone(),
+            kind: step_kind.to_string(),
+            status: RunStatus::Running,
+            started_at,
+            finished_at: None,
+            exit_code: None,
+            log_byte_offset_start: start_offset,
+            log_byte_offset_end: None,
+            cost_usd: None,
+            error: None,
+        };
+        let slot = step_runs.len();
+        step_runs.push(running);
+        persist(persister, run_id, step_runs).await;
+
+        emit(
+            ctx.event_tx.as_ref(),
+            WorkflowEvent::StepStarted {
+                run_id,
+                workflow_id,
+                step_index,
+                step_id: common.id.clone(),
+                kind: step_kind.to_string(),
+                started_at,
+            },
+        );
+        tracing::info!(
+            run_id = %run_id,
+            step_index = step_index,
+            step_id = %common.id,
+            kind = %step_kind,
+            "step started"
+        );
+
+        let result =
+            run_step_with_policy(step_def, ctx, effective_policy, started_at, start_offset).await;
+
+        // Unpack the outcome: the final row, the output to expose to
+        // downstream templates (if any), and the flags to set afterwards.
+        let (mut run, output, set_aborted, set_killed) = match result {
+            StepRunResult::Completed(run, output) => (run, Some(output), false, false),
+            // Abort policy (or retries exhausted): stop further steps.
+            StepRunResult::Failed(run) => (run, None, true, false),
+            // Continue policy: insert the actual output (even though the step
+            // failed) so that downstream template references like
+            // ${steps.<id>.exit_code} resolve. Do NOT set aborted.
+            StepRunResult::FailedContinue(run, output) => (run, Some(output), false, false),
+            // Killed: stop further steps.
+            StepRunResult::Killed(run) => (run, None, true, true),
+        };
+        run.step_index = step_index;
+        run.kind = step_kind.to_string();
+
+        let exit_code = run.exit_code;
+        let cost_usd = run.cost_usd;
+        let status = run.status;
+        let duration_ms = run
+            .finished_at
+            .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
+
+        if let Some(output) = output {
+            ctx.steps.insert(common.id.clone(), output);
+        }
+
+        // Replace the Running row with the final row, persist, then emit.
+        step_runs[slot] = run;
+        persist(persister, run_id, step_runs).await;
+
+        emit(
+            ctx.event_tx.as_ref(),
+            WorkflowEvent::StepCompleted {
+                run_id,
+                workflow_id,
+                step_index,
+                step_id: common.id.clone(),
+                exit_code,
+                cost_usd,
+                finished_at: Utc::now(),
+            },
+        );
+        tracing::info!(
+            run_id = %run_id,
+            step_index = step_index,
+            step_id = %common.id,
+            status = ?status,
+            exit_code = ?exit_code,
+            duration_ms = ?duration_ms,
+            "step completed"
+        );
+
+        if set_killed {
+            *killed = true;
+        }
+        if set_aborted {
+            *aborted = true;
         }
     }
 }
@@ -477,6 +444,7 @@ async fn run_step_with_policy(
     ctx: &mut StepContext,
     policy: FailurePolicy,
     started_at: chrono::DateTime<Utc>,
+    fallback_log_offset_start: u64,
 ) -> StepRunResult {
     let common = step_common(step_def);
 
@@ -492,6 +460,7 @@ async fn run_step_with_policy(
                 started_at,
                 partial_offset_start,
                 partial_offset_end,
+                fallback_log_offset_start,
             )
         }
         FailurePolicy::Retry {
@@ -542,6 +511,7 @@ async fn run_step_with_policy(
                             "kill requested",
                             ctx.current_step_log_offset_start,
                             ctx.current_step_log_offset_end,
+                            fallback_log_offset_start,
                         );
                         return StepRunResult::Killed(run);
                     }
@@ -561,6 +531,7 @@ async fn run_step_with_policy(
                 &err_msg,
                 ctx.current_step_log_offset_start,
                 ctx.current_step_log_offset_end,
+                fallback_log_offset_start,
             );
             StepRunResult::Failed(run)
         }
@@ -574,6 +545,7 @@ fn build_step_run_result(
     started_at: chrono::DateTime<Utc>,
     partial_log_offset_start: Option<u64>,
     partial_log_offset_end: Option<u64>,
+    fallback_log_offset_start: u64,
 ) -> StepRunResult {
     match result {
         Ok(output) => {
@@ -611,6 +583,7 @@ fn build_step_run_result(
                 "kill requested",
                 partial_log_offset_start,
                 partial_log_offset_end,
+                fallback_log_offset_start,
             );
             StepRunResult::Killed(run)
         }
@@ -622,6 +595,7 @@ fn build_step_run_result(
                 &err_msg,
                 partial_log_offset_start,
                 partial_log_offset_end,
+                fallback_log_offset_start,
             );
             match policy {
                 FailurePolicy::Continue => {
@@ -670,6 +644,7 @@ fn make_failed_step_run(
     error: &str,
     partial_log_offset_start: Option<u64>,
     partial_log_offset_end: Option<u64>,
+    fallback_log_offset_start: u64,
 ) -> StepRun {
     // `partial_log_offset_start` is the offset returned by
     // `LogSink::write_step_start` for this step, captured on the
@@ -678,8 +653,10 @@ fn make_failed_step_run(
     // marker landed (timeout, kill mid-execution, IO error in the read loop,
     // non-zero exit). It is `None` when the step erred before
     // `write_step_start` ran (e.g. a template-substitution or template-fed
-    // spawn failure), in which case we fall back to 0 so the slice endpoint
-    // serves bytes from the beginning of the file.
+    // spawn failure), in which case we fall back to
+    // `fallback_log_offset_start`: the log sink's current offset read by the
+    // executor just before dispatching the step (0 for sinks that don't
+    // track a position). This matches the offset on the step's Running row.
     //
     // `partial_log_offset_end` is the offset returned by
     // `LogSink::write_step_end`, captured the same way after the END marker
@@ -697,7 +674,7 @@ fn make_failed_step_run(
         started_at,
         finished_at: Some(Utc::now()),
         exit_code: None,
-        log_byte_offset_start: partial_log_offset_start.unwrap_or(0),
+        log_byte_offset_start: partial_log_offset_start.unwrap_or(fallback_log_offset_start),
         log_byte_offset_end: partial_log_offset_end,
         cost_usd: None,
         error: Some(error.to_string()),
@@ -725,6 +702,11 @@ fn kind_from_common(_common: &crate::models::workflow::StepDefCommon) -> String 
 ///   When provided, a new `watch::channel(false)` is inserted at the start and
 ///   removed when the run completes.  Pass `None` in tests or contexts that
 ///   don't require kill support.
+/// `step_persister` is an optional best-effort sink for the in-progress
+///   `StepRun` list, called at every step start and end (the persist happens
+///   before the matching `StepStarted` / `StepCompleted` event is emitted).
+///   Pass `None` in tests or contexts without a run store. The returned
+///   `WorkflowRun` (written by `finalize_run`) remains authoritative.
 ///
 /// Note: `StepOutput` chunk events (`WorkflowEvent::StepOutput`) are deferred to
 /// phase 6, where they will be wired into the log sink's streaming path.
@@ -735,6 +717,7 @@ pub async fn run_workflow(
     log_sink: Arc<dyn LogSink>,
     event_tx: Option<broadcast::Sender<WorkflowEvent>>,
     kill_signals: Option<Arc<RwLock<HashMap<Uuid, KillSender>>>>,
+    step_persister: Option<Arc<dyn StepPersister>>,
 ) -> WorkflowRun {
     let snapshot = workflow.clone();
     let started_at = Utc::now();
@@ -814,6 +797,7 @@ pub async fn run_workflow(
         &mut step_runs,
         &mut aborted,
         &mut killed,
+        step_persister.as_deref(),
     )
     .await;
 
@@ -1012,6 +996,10 @@ mod tests {
             *pos += 32; // sentinel marker size
             Ok(*pos)
         }
+
+        async fn current_offset(&self) -> Option<u64> {
+            Some(*self.pos.lock().unwrap())
+        }
     }
 
     // ── Workflow builder helpers ───────────────────────────────────────────────
@@ -1156,7 +1144,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed, "expected Completed");
         assert_eq!(run.steps.len(), 3, "expected 3 step runs");
@@ -1184,7 +1181,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Failed, "expected Failed");
         // The failing step is recorded; the skipped step is NOT recorded.
@@ -1210,7 +1216,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         // Overall status is Failed (aborted=true), but cleanup ran.
         assert_eq!(run.status, RunStatus::Failed);
@@ -1233,7 +1248,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         // No abort happened, so overall Completed.
         assert_eq!(
@@ -1289,7 +1313,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
         // Expected step_runs: set_choice, m1 (synthetic), branch_a
@@ -1346,7 +1379,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
 
@@ -1396,7 +1438,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
 
@@ -1440,7 +1491,16 @@ mod tests {
             })],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Failed);
         let step = &run.steps[0];
@@ -1464,7 +1524,16 @@ mod tests {
             make_workflow("default_input", vec![shell_step("s1", "echo ${input.x}")]);
         workflow.default_input = Some(json!({"x": 42}));
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
         // The step should have run with x=42
@@ -1485,7 +1554,7 @@ mod tests {
         workflow.default_input = Some(json!({"x": 42}));
 
         let trigger = input_trigger(json!({"x": 99}));
-        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.trigger_input, Some(json!({"x": 99})));
@@ -1526,6 +1595,7 @@ mod tests {
             Uuid::now_v7(),
             trigger,
             Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
             None,
             None,
         )
@@ -1570,7 +1640,7 @@ mod tests {
             target_step: None,
         };
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
     }
@@ -1583,7 +1653,7 @@ mod tests {
         let workflow = make_workflow("meta", vec![shell_step("s1", "echo hi")]);
         let run_id = Uuid::now_v7();
 
-        let run = run_workflow(&workflow, run_id, empty_trigger(), sink, None, None).await;
+        let run = run_workflow(&workflow, run_id, empty_trigger(), sink, None, None, None).await;
 
         assert_eq!(run.run_id, run_id);
         assert_eq!(run.workflow_id, workflow.id);
@@ -1599,7 +1669,16 @@ mod tests {
         let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
         let workflow = make_workflow("cost_none", vec![shell_step("s1", "echo hi")]);
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert!(
             run.total_cost_usd.is_none(),
@@ -1649,6 +1728,7 @@ mod tests {
             empty_trigger(),
             wrapped_sink,
             Some(event_tx),
+            None,
             None,
         )
         .await;
@@ -1767,6 +1847,7 @@ mod tests {
             sink,
             None,
             Some(registry),
+            None,
         )
         .await;
         let elapsed = start.elapsed();
@@ -1826,6 +1907,7 @@ mod tests {
                 sink_a,
                 None,
                 Some(registry_a),
+                None,
             ),
             run_workflow(
                 &workflow_b,
@@ -1834,6 +1916,7 @@ mod tests {
                 sink_b,
                 None,
                 Some(registry_b),
+                None,
             ),
         );
 
@@ -1859,7 +1942,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.steps.len(), 3);
@@ -1893,7 +1985,16 @@ mod tests {
             )],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Failed);
         assert_eq!(run.steps.len(), 1);
@@ -1919,7 +2020,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.steps.len(), 3);
@@ -1950,7 +2060,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.steps.len(), 2);
@@ -2005,6 +2124,7 @@ mod tests {
             sink,
             None,
             Some(Arc::clone(&registry)),
+            None,
         )
         .await;
 
@@ -2060,6 +2180,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn LogSink>,
             None,
             None,
+            None,
         )
         .await;
 
@@ -2085,6 +2206,7 @@ mod tests {
             Uuid::now_v7(),
             trigger,
             Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
             None,
             None,
         )
@@ -2119,6 +2241,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn LogSink>,
             None,
             None,
+            None,
         )
         .await;
 
@@ -2144,6 +2267,7 @@ mod tests {
             Uuid::now_v7(),
             trigger,
             Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
             None,
             None,
         )
@@ -2196,6 +2320,7 @@ mod tests {
             Uuid::now_v7(),
             trigger,
             Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
             None,
             None,
         )
