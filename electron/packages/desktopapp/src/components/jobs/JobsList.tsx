@@ -71,6 +71,15 @@ function compareJobs(
   return bT - aT;
 }
 
+function buildOrderSnapshot(
+  list: Job[],
+  sortKey: SortKey,
+  runsByJob: Map<string, RecentRunEntry[]>,
+): Map<string, number> {
+  const sortedOnce = [...list].sort((a, b) => compareJobs(a, b, sortKey, runsByJob));
+  return new Map(sortedOnce.map((j, i) => [j.id, i]));
+}
+
 export function JobsList({ jobs, loading }: JobsListProps) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name");
@@ -105,15 +114,23 @@ export function JobsList({ jobs, loading }: JobsListProps) {
   // The snapshot intentionally resets whenever the user changes the sort
   // key or the search query — those are explicit re-sort requests, so
   // honouring them is the correct UX.
-  const orderRef = useRef<Map<string, number> | null>(null);
-  const orderKeyRef = useRef<string>("");
+  //
+  // This is stored in state (not a ref) and re-derived synchronously during
+  // render when `currentKey` changes — the React-documented pattern for
+  // "adjusting state when a prop/derived value changes" (see
+  // https://react.dev/learn/you-might-not-need-an-effect). Reading/writing
+  // a ref's `.current` during render is disallowed by the rules of React;
+  // calling a state setter during render is fine as long as it's inside a
+  // condition guarding against an infinite loop, which this is.
   const currentKey = `${sortKey}|${needle}`;
-  if (orderRef.current === null || orderKeyRef.current !== currentKey) {
-    const sortedOnce = [...list].sort((a, b) => compareJobs(a, b, sortKey, runsByJob));
-    orderRef.current = new Map(sortedOnce.map((j, i) => [j.id, i]));
-    orderKeyRef.current = currentKey;
+  const [order, setOrder] = useState(() => ({
+    key: currentKey,
+    snapshot: buildOrderSnapshot(list, sortKey, runsByJob),
+  }));
+  if (order.key !== currentKey) {
+    setOrder({ key: currentKey, snapshot: buildOrderSnapshot(list, sortKey, runsByJob) });
   }
-  const snapshot = orderRef.current;
+  const snapshot = order.snapshot;
   const known: Job[] = [];
   const fresh: Job[] = [];
   for (const j of list) {

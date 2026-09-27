@@ -43,11 +43,16 @@ interface SystemHeroCarouselProps {
 }
 
 function usePrefersReducedMotion(): boolean {
-  const [prefers, setPrefers] = useState(false);
+  // Lazy-initialize from the current media query state so the first render
+  // already reflects reality — no synchronous setState-in-effect needed for
+  // the initial value. The effect below only subscribes to *changes*.
+  const [prefers, setPrefers] = useState(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  });
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setPrefers(mql.matches);
     const handler = (e: MediaQueryListEvent) => setPrefers(e.matches);
     mql.addEventListener("change", handler);
     return () => mql.removeEventListener("change", handler);
