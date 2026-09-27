@@ -223,9 +223,11 @@ Exceptions: `useSystemLogs` uses SSE to **append** chunks (not invalidate) into 
 
 A `workflow_changed` event with `change_kind: "deleted"` invalidates only the exact `["jobs"]` list and `["cost/workflows"]`, never the `["jobs"]` prefix. The daemon emits it before the DELETE returns, so a prefix invalidation would refetch the still-mounted detail queries into 404s.
 
+A `step_started` event invalidates `["runs", runId]` with `exact: true`, so the run detail refetches without touching `["runs", runId, "log"]` — the live log buffer stays managed by `useRunLog`.
+
 ### API client
 
-`src/apis/client.ts` exposes a single `api` object with one method per endpoint, fully typed with request/response shapes from `types.ts`. Errors throw `ApiError` (with `status` + `code` + message). The base URL resolves from `window.__ACS_API_URL__` → `NEXT_PUBLIC_API_URL` → `http://127.0.0.1:8377`.
+`src/apis/client.ts` exposes a single `api` object with one method per endpoint, fully typed with request/response shapes from `types.ts`. Errors throw `ApiError` (with `status` + `code` + message + optional `details` — the parsed error response body). The base URL resolves from `window.__ACS_API_URL__` → `NEXT_PUBLIC_API_URL` → `http://127.0.0.1:8377`.
 
 ---
 
@@ -258,7 +260,7 @@ export const Empty: Story = { args: { ... } };
 
 ## Testing
 
-- Test files are co-located: `format.test.ts`, `jobStatus.test.ts`, `client.test.ts`, `useJobs.test.tsx`, `useDeleteWorkflow.test.tsx`, `sseInvalidator.test.tsx`, `JobStateIndicator.test.tsx`.
+- Test files are co-located: `format.test.ts`, `jobStatus.test.ts`, `client.test.ts`, `useJobs.test.tsx`, `useDeleteWorkflow.test.tsx`, `sseInvalidator.test.tsx`, `JobStateIndicator.test.tsx`, `useRunWorkflowAndOpen.test.tsx`.
 - Run with `npm test` (watch) or `npm run test:run` (single).
 - `vitest.config.ts` provides `jsdom` + the `@/` alias + the `vitest.setup.ts` setup file.
 - Use `vi.useFakeTimers()` + `vi.setSystemTime()` for any time-relative assertion.
