@@ -13,13 +13,34 @@ export function getBaseUrl(): string {
 export class ApiError extends Error {
   status: number;
   code: string;
+  readonly details?: Record<string, unknown>;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, details?: Record<string, unknown>) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.details = details;
   }
+}
+
+/**
+ * Extract active_run_id from a concurrent_run_active 409 error.
+ * Backend 409 body is `{ error: "concurrent_run_active", message, active_run_id }`.
+ * Returns the active_run_id string if the error is a 409 ApiError with code
+ * "concurrent_run_active" and the field is a string; otherwise null.
+ */
+export function getActiveRunId(e: unknown): string | null {
+  if (
+    e instanceof ApiError &&
+    e.status === 409 &&
+    e.code === "concurrent_run_active" &&
+    e.details &&
+    typeof e.details.active_run_id === "string"
+  ) {
+    return e.details.active_run_id;
+  }
+  return null;
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -35,14 +56,18 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     let code = "UNKNOWN";
     let message = `Request failed with status ${res.status}`;
+    let details: Record<string, unknown> | undefined;
     try {
       const body = await res.json();
-      code = body.code || body.error || code;
-      message = body.message || body.error || message;
+      if (body && typeof body === "object" && !Array.isArray(body)) {
+        code = body.code || body.error || code;
+        message = body.message || body.error || message;
+        details = body;
+      }
     } catch {
       // ignore parse errors
     }
-    throw new ApiError(res.status, code, message);
+    throw new ApiError(res.status, code, message, details);
   }
 
   const contentType = res.headers.get("content-type");
@@ -59,14 +84,18 @@ async function requestText(path: string, options: RequestInit = {}): Promise<str
   if (!res.ok) {
     let code = "UNKNOWN";
     let message = `Request failed with status ${res.status}`;
+    let details: Record<string, unknown> | undefined;
     try {
       const body = await res.json();
-      code = body.code || body.error || code;
-      message = body.message || body.error || message;
+      if (body && typeof body === "object" && !Array.isArray(body)) {
+        code = body.code || body.error || code;
+        message = body.message || body.error || message;
+        details = body;
+      }
     } catch {
       // ignore parse errors
     }
-    throw new ApiError(res.status, code, message);
+    throw new ApiError(res.status, code, message, details);
   }
 
   return res.text();
