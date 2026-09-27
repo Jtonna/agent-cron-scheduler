@@ -214,4 +214,20 @@ pub trait LogSink: Send + Sync {
         exit_code: Option<i32>,
         finished_at: DateTime<Utc>,
     ) -> std::io::Result<u64>;
+
+    /// Byte offset at which the *next* write to the run log will begin.
+    ///
+    /// Equals the value the next call to `write_step_start` would return.
+    /// Used by the executor / daemon to persist a `StepRun`'s starting log
+    /// offset at step boundaries without waiting for the step to actually
+    /// start writing (e.g. so a crash between steps still records a
+    /// consistent offset).
+    ///
+    /// The default implementation returns `None`, meaning the sink does not
+    /// track a position (e.g. mocks used in tests). Sinks that back onto a
+    /// real file (like `FileLogSink`) override this to report their tracked
+    /// position.
+    async fn current_offset(&self) -> Option<u64> {
+        None
+    }
 }

@@ -108,6 +108,12 @@ impl LogSink for EventEmittingLogSink {
             .write_step_end(step_id, exit_code, finished_at)
             .await
     }
+
+    /// Delegate to the inner sink explicitly (must not fall through to the
+    /// trait's default `None`).
+    async fn current_offset(&self) -> Option<u64> {
+        self.inner.current_offset().await
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -127,6 +133,7 @@ mod tests {
     struct MockInnerSink {
         chunks: Arc<StdMutex<Vec<Vec<u8>>>>,
         set_step_calls: Arc<StdMutex<Vec<(usize, String)>>>,
+        current_offset: Option<u64>,
     }
 
     #[async_trait]
@@ -159,6 +166,10 @@ mod tests {
             _finished_at: DateTime<Utc>,
         ) -> std::io::Result<u64> {
             Ok(0)
+        }
+
+        async fn current_offset(&self) -> Option<u64> {
+            self.current_offset
         }
     }
 
@@ -359,5 +370,47 @@ mod tests {
 
         let end_offset = wrapper.write_step_end("s1", Some(0), t).await.unwrap();
         assert_eq!(end_offset, 0);
+    }
+
+    // ── Test 9: current_offset delegates to inner ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_current_offset_delegates_to_inner() {
+        let inner = MockInnerSink {
+            current_offset: Some(42),
+            ..Default::default()
+        };
+        let (tx, _rx) = broadcast::channel::<WorkflowEvent>(16);
+        let wrapper = EventEmittingLogSink::new(
+            Arc::new(inner) as Arc<dyn LogSink>,
+            tx,
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+
+        assert_eq!(wrapper.current_offset().await, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_current_offset_delegates_to_real_file_sink() {
+        use crate::workflow::log_sink::FileLogSink;
+        use tempfile::NamedTempFile;
+
+        let tmp = NamedTempFile::new().expect("create temp file");
+        let path = tmp.path().to_path_buf();
+        let file_sink = FileLogSink::create(path).await.expect("create FileLogSink");
+        let (tx, _rx) = broadcast::channel::<WorkflowEvent>(16);
+        let wrapper = EventEmittingLogSink::new(
+            Arc::new(file_sink) as Arc<dyn LogSink>,
+            tx,
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+
+        assert_eq!(
+            wrapper.current_offset().await,
+            Some(0),
+            "should pass through the inner FileLogSink's current_offset"
+        );
     }
 }

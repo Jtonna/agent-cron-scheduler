@@ -117,6 +117,10 @@ impl LogSink for FileLogSink {
         // Return offset just AFTER the marker line ended
         Ok(*pos)
     }
+
+    async fn current_offset(&self) -> Option<u64> {
+        Some(*self.pos.lock().await)
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -247,5 +251,57 @@ mod tests {
         assert!(start1 < end1, "s1: start < end");
         assert_eq!(end1, start2, "step-b starts where step-a ended");
         assert!(start2 < end2, "s2: start < end");
+    }
+
+    #[tokio::test]
+    async fn test_current_offset_fresh_file() {
+        let (sink, _tmp) = setup_sink().await;
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+        let predicted = sink.current_offset().await;
+        assert_eq!(predicted, Some(0), "fresh file should report offset 0");
+
+        let start_offset = sink.write_step_start("s1", t).await.expect("write start");
+        assert_eq!(
+            predicted,
+            Some(start_offset),
+            "current_offset should have predicted write_step_start's return"
+        );
+
+        sink.write_chunk(b"hello").await.expect("chunk");
+        let end_offset = sink
+            .write_step_end("s1", Some(0), t)
+            .await
+            .expect("write end");
+        assert_eq!(
+            sink.current_offset().await,
+            Some(end_offset),
+            "current_offset should equal write_step_end's return after flush"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_current_offset_preexisting_nonempty_file() {
+        let tmp = NamedTempFile::new().expect("create temp file");
+        let path = tmp.path().to_path_buf();
+        // Pre-populate the file with some content before opening the sink.
+        std::fs::write(&path, b"preexisting content\n").expect("seed file");
+        let preexisting_len = std::fs::metadata(&path).expect("metadata").len();
+
+        let sink = FileLogSink::create(path).await.expect("create FileLogSink");
+        assert_eq!(
+            sink.current_offset().await,
+            Some(preexisting_len),
+            "current_offset should equal the initial file length"
+        );
+
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let start_offset = sink.write_step_start("s1", t).await.expect("write start");
+        assert_eq!(
+            start_offset, preexisting_len,
+            "write_step_start should begin at the preexisting file length"
+        );
+
+        let _ = tmp;
     }
 }
