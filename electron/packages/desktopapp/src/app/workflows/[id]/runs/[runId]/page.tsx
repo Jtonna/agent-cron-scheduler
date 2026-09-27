@@ -29,7 +29,7 @@ export default function RunDetailPage({
 
   const { run, loading: runLoading, error: runError } = useRun(runId);
   const { logs } = useRunLog(runId);
-  const { job } = useJob(id);
+  const { job, loading: jobLoading, error: jobError } = useJob(id);
 
   const [activeStepIndex, setActiveStepIndex] = useState<number | null>(null);
 
@@ -46,6 +46,10 @@ export default function RunDetailPage({
       scrollToLine = 1;
     }
   }
+
+  // Detect if the workflow is gone: job failed to load (404) while run still exists
+  const workflowMissing = !jobLoading && job === null && jobError !== null;
+  const backHref = workflowMissing ? "/workflows" : `/workflows/${id}`;
 
   const workflowName = run?.workflow_snapshot.name ?? job?.name ?? "";
   const cron = job?.schedule ?? "";
@@ -67,6 +71,8 @@ export default function RunDetailPage({
               totalSteps={totalSteps}
               activeStepIndex={activeStepIndex}
               onSelectStep={setActiveStepIndex}
+              backHref={backHref}
+              workflowMissing={workflowMissing}
             />
           ) : (
             <div className="p-6 flex items-center justify-center text-fg-subtle text-sm">
