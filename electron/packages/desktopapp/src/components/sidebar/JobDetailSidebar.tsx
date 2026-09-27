@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Button as AriaButton,
@@ -27,13 +28,13 @@ import { SidebarSectionHeader } from "./SidebarSectionHeader";
 import { SidebarListItem } from "./SidebarListItem";
 import { FavoriteToggle } from "@/components/jobs/FavoriteToggle";
 import { RunWithCustomizationsModal } from "@/components/jobs/RunWithCustomizationsModal";
+import { useRunWorkflowAndOpen } from "@/components/jobs/useRunWorkflowAndOpen";
 import { CompactActionButton } from "@/components/ui/CompactActionButton";
 import { PropertyRow } from "@/components/ui/PropertyRow";
 import { Toggle } from "@/components/ui/Toggle";
 import { apiStatusToJobState } from "@/components/ui/JobStateIndicator";
 import { useCommandPalette } from "@/components/command-palette/useCommandPalette";
 import { useToggleWorkflowEnabled } from "@/apis/useToggleWorkflowEnabled";
-import { useTriggerWorkflow } from "@/apis/useTriggerWorkflow";
 import { useFavorite } from "@/apis/useFavorite";
 import { useDeleteWorkflow } from "@/apis/useDeleteWorkflow";
 import { useJobRuns } from "@/apis/useJobRuns";
@@ -102,7 +103,7 @@ export function JobDetailSidebar({
   const [customizeOpen, setCustomizeOpen] = useState(false);
 
   const { toggle, toggling, error: toggleError } = useToggleWorkflowEnabled();
-  const { trigger, triggering, error: triggerError } = useTriggerWorkflow();
+  const { run, running, error: runError, activeRunId, openRun } = useRunWorkflowAndOpen(job.id);
   const { favorite, unfavorite } = useFavorite();
   const { deleteWorkflow, deleting, error: deleteError, reset: resetDelete } = useDeleteWorkflow({
     onDeleted: () => router.replace("/workflows"),
@@ -121,10 +122,6 @@ export function JobDetailSidebar({
   function handleToggleEnabled(next: boolean) {
     void next;
     void toggle(job.id, job.enabled).catch(() => {});
-  }
-
-  function handleRunWorkflow() {
-    void trigger(job.id, {}).catch(() => {});
   }
 
   async function handleConfirmDelete() {
@@ -155,7 +152,7 @@ export function JobDetailSidebar({
         label: "Run Workflow",
         icon: <Play size={14} />,
         action: () => {
-          void trigger(job.id, {}).catch(() => {});
+          void run();
         },
       },
       {
@@ -204,7 +201,7 @@ export function JobDetailSidebar({
   }, [
     palette,
     router,
-    trigger,
+    run,
     toggle,
     favorite,
     unfavorite,
@@ -234,13 +231,13 @@ export function JobDetailSidebar({
               aria-label="Run workflow"
               className={[
                 "flex w-full rounded-input overflow-hidden",
-                triggering ? "opacity-90" : "",
+                running ? "opacity-90" : "",
               ].join(" ")}
             >
               <AriaButton
                 type="button"
-                onPress={handleRunWorkflow}
-                isDisabled={triggering}
+                onPress={() => void run()}
+                isDisabled={running}
                 aria-label="Run workflow with default arguments"
                 className={[
                   "flex-1 inline-flex items-center justify-center gap-1.5",
@@ -252,12 +249,12 @@ export function JobDetailSidebar({
                   "rounded-l-input rounded-r-none",
                 ].join(" ")}
               >
-                {triggering ? (
+                {running ? (
                   <Loader2 size={12} className="animate-spin" />
                 ) : (
                   <Play size={12} />
                 )}
-                {triggering ? "Running…" : "Run"}
+                {running ? "Running…" : "Run"}
               </AriaButton>
 
               <div aria-hidden className="w-px bg-brand-hover/60" />
@@ -265,7 +262,7 @@ export function JobDetailSidebar({
               <MenuTrigger>
                 <AriaButton
                   type="button"
-                  isDisabled={triggering}
+                  isDisabled={running}
                   aria-label="More run options"
                   className={[
                     "inline-flex items-center justify-center",
@@ -302,9 +299,25 @@ export function JobDetailSidebar({
                 </Popover>
               </MenuTrigger>
             </div>
-            {(toggleError || triggerError) && (
-              <p className="px-1 text-xs text-status-failed">
-                {toggleError ?? triggerError}
+            {toggleError && (
+              <p className="px-1 text-xs text-status-failed" role="alert">
+                {toggleError}
+              </p>
+            )}
+            {runError && (
+              <p className="px-1 text-xs text-status-failed" role="alert">
+                {runError}
+                {activeRunId && (
+                  <>
+                    {" "}
+                    <Link
+                      href={`/workflows/${job.id}/runs/${activeRunId}`}
+                      className="underline hover:no-underline"
+                    >
+                      View running run
+                    </Link>
+                  </>
+                )}
               </p>
             )}
           </div>
@@ -404,6 +417,7 @@ export function JobDetailSidebar({
         workflow={job}
         isOpen={customizeOpen}
         onOpenChange={setCustomizeOpen}
+        onTriggered={(r) => openRun(r.run_id)}
       />
     </>
   );
