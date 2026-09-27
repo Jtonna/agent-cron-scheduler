@@ -43,7 +43,7 @@ describe("useDeleteWorkflow", () => {
     vi.clearAllMocks();
   });
 
-  it("on success: deletes, calls onDeleted before clearing caches, and updates queries in order", async () => {
+  it("on success: calls onDeleted first, then invalidates only the list and cost summary", async () => {
     let resolveDelete!: () => void;
     mockedDeleteWorkflow.mockImplementationOnce(
       () =>
@@ -84,22 +84,22 @@ describe("useDeleteWorkflow", () => {
     expect(result.current.error).toBeNull();
     expect(onDeleted).toHaveBeenCalledWith("wf-1");
 
-    // onDeleted must fire before the caches are torn down.
+    // onDeleted (navigation) must fire before any cache work.
     const onDeletedOrder = onDeleted.mock.invocationCallOrder[0];
-    const removeQueriesOrder = removeQueriesSpy.mock.invocationCallOrder[0];
-    expect(onDeletedOrder).toBeLessThan(removeQueriesOrder);
+    const firstInvalidateOrder = invalidateQueriesSpy.mock.invocationCallOrder[0];
+    expect(onDeletedOrder).toBeLessThan(firstInvalidateOrder);
 
-    expect(removeQueriesSpy).toHaveBeenCalledWith({ queryKey: ["jobs", "wf-1"] });
-    expect(removeQueriesSpy).toHaveBeenCalledWith({
-      queryKey: ["workflows", "wf-1", "cost"],
-    });
-    expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+    expect(invalidateQueriesSpy).toHaveBeenCalledTimes(2);
+    expect(invalidateQueriesSpy).toHaveBeenNthCalledWith(1, {
       queryKey: ["jobs"],
       exact: true,
     });
-    expect(invalidateQueriesSpy).toHaveBeenCalledWith({ queryKey: ["cost/workflows"] });
+    expect(invalidateQueriesSpy).toHaveBeenNthCalledWith(2, { queryKey: ["cost/workflows"] });
 
-    expect(queryClient.getQueryData(["jobs", "wf-1"])).toBeUndefined();
+    // Per-id caches are left alone: removing them while the detail page is
+    // still mounted makes its observers refetch into 404s.
+    expect(removeQueriesSpy).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(["jobs", "wf-1"])).toEqual({ id: "wf-1" });
   });
 
   it("surfaces a 404 as errorStatus", async () => {

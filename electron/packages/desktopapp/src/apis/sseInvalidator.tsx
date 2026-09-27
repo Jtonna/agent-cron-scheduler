@@ -22,9 +22,29 @@ export function SSEQueryBridge() {
     switch (event.type) {
       // Workflow definition lifecycle (created/updated/deleted/enabled/disabled).
       // v3 equivalent: "job_changed".
-      case "workflow_changed":
-        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      //
+      // A "deleted" change invalidates only the list (exact) and the global
+      // cost summary, never the `["jobs"]` prefix. The daemon broadcasts this
+      // event before it returns the 204, so the deleted workflow's detail page
+      // is usually still mounted; a prefix invalidation would refetch
+      // `["jobs", id]` and `["jobs", id, "runs", ...]` straight into 404s.
+      // Per-id entries for the deleted workflow are left to gcTime.
+      case "workflow_changed": {
+        let changeKind: unknown;
+        try {
+          const parsed = JSON.parse(event.data);
+          changeKind = parsed && typeof parsed === "object" ? parsed.change_kind : undefined;
+        } catch {
+          changeKind = undefined;
+        }
+        if (changeKind === "deleted") {
+          queryClient.invalidateQueries({ queryKey: ["jobs"], exact: true });
+          queryClient.invalidateQueries({ queryKey: ["cost/workflows"] });
+        } else {
+          queryClient.invalidateQueries({ queryKey: ["jobs"] });
+        }
         break;
+      }
 
       // Run lifecycle. v4 has no separate "killed" event — killed runs surface
       // as run_completed with status: "Killed". v3 equivalents:
