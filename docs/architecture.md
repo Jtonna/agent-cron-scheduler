@@ -500,7 +500,7 @@ StepDef (tag = "kind")
 
 | Field | Notes |
 |---|---|
-| `step_index` | 1-based position in the runtime execution sequence, matching the `step_index` in `StepStarted` / `StepCompleted` SSE events |
+| `step_index` | 0-based position in the runtime execution sequence, matching the `step_index` in `StepStarted` / `StepCompleted` SSE events |
 | `kind` | `"shell"` \| `"script"` \| `"http"` \| `"match"` \| `"set_var"` \| `"agent"` |
 | `status` | May be `Running` while the run is in progress: a `Running` row (null `finished_at` / `exit_code` / `log_byte_offset_end` / `cost_usd` / `error`) is written when the step starts and replaced in place with the terminal row when it finishes. A killed step's row is `Failed` with `error: "kill requested"` — `Killed` is only ever the run-level `status`. `MatchStep` rows go straight to `Completed` (no `Running` state) since the match itself resolves synchronously; only its `log_byte_offset_end` is patched after the branch finishes. |
 | `log_byte_offset_start` / `_end` | Byte range in the combined run log file for fast UI indexing. The captured stdout/stderr is only on disk — fetch the slice via `GET /api/runs/{run_id}/log?step_index=N`. `_end` is `null` while `Running`. |

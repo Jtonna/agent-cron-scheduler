@@ -470,7 +470,7 @@ Manually trigger an immediate execution of the workflow, regardless of its cron 
 | `workflow_version` | integer       | The workflow version at trigger time (snapshotted into the run record).     |
 | `run_url`          | string        | Convenience URL for the run: `/api/runs/{run_id}`.                          |
 
-The run record is persisted to the `WorkflowRunStore` with `status: "Running"` **before** the background task begins, so `GET /api/runs/{run_id}` immediately after trigger always returns a result rather than 404. As the run progresses, `steps` is updated at every step boundary (see [`GET /api/runs/{run_id}`](#get-apirunsrun_id)), so a client polling the run sees each step's `StepRun` row appear as `running` and then flip to its terminal status.
+The run record is persisted to the `WorkflowRunStore` with `status: "Running"` **before** the background task begins, so `GET /api/runs/{run_id}` immediately after trigger always returns a result rather than 404. As the run progresses, `steps` is updated at every step boundary (see [`GET /api/runs/{run_id}`](#get-apirunsrun_id)), so a client polling the run sees each step's `StepRun` row appear as `Running` and then flip to its terminal status.
 
 **Example:**
 
