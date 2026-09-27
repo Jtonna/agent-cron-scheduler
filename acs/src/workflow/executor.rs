@@ -499,6 +499,7 @@ async fn run_step_with_policy(
                                 RunStatus::Completed,
                                 &output,
                                 None,
+                                fallback_log_offset_start,
                             );
                             return StepRunResult::Completed(run, output);
                         }
@@ -562,6 +563,7 @@ fn build_step_run_result(
                     RunStatus::Failed,
                     &output,
                     Some(err_msg),
+                    fallback_log_offset_start,
                 );
                 match policy {
                     FailurePolicy::Continue => {
@@ -572,7 +574,14 @@ fn build_step_run_result(
                     _ => StepRunResult::Failed(run),
                 }
             } else {
-                let run = make_step_run(common, started_at, RunStatus::Completed, &output, None);
+                let run = make_step_run(
+                    common,
+                    started_at,
+                    RunStatus::Completed,
+                    &output,
+                    None,
+                    fallback_log_offset_start,
+                );
                 StepRunResult::Completed(run, output)
             }
         }
@@ -622,6 +631,7 @@ fn make_step_run(
     status: RunStatus,
     output: &StepOutput,
     error: Option<String>,
+    fallback_log_offset_start: u64,
 ) -> StepRun {
     StepRun {
         step_index: 0, // patched at call site in execute_steps via mut run.step_index
@@ -631,7 +641,12 @@ fn make_step_run(
         started_at,
         finished_at: Some(Utc::now()),
         exit_code: output.exit_code,
-        log_byte_offset_start: output.log_byte_offset_start.unwrap_or(0),
+        // Symmetric with `make_failed_step_run`: fall back to the log
+        // sink's offset at dispatch time (matching the step's Running row)
+        // rather than 0 when the step itself didn't record a start offset.
+        log_byte_offset_start: output
+            .log_byte_offset_start
+            .unwrap_or(fallback_log_offset_start),
         log_byte_offset_end: output.log_byte_offset_end,
         cost_usd: output.cost.as_ref().and_then(|c| c.total_cost_usd),
         error,
@@ -2415,6 +2430,178 @@ mod tests {
             assert_eq!(
                 running_row.log_byte_offset_start,
                 final_row.log_byte_offset_start
+            );
+        }
+
+        // Make the offset equality meaningful rather than a vacuous 0 == 0:
+        // MockLogSink's `pos` advances on every write_step_start/write_chunk/
+        // write_step_end call, so step "a"'s final log_byte_offset_end must
+        // be > 0 (it wrote a start marker plus its echoed output), and step
+        // "b"'s Running row must start exactly where "a" left off — no gap,
+        // no overlap.
+        let a_final = run.steps.iter().find(|r| r.step_id == "a").unwrap();
+        let b_running = snaps
+            .iter()
+            .find_map(|snap| {
+                snap.iter()
+                    .find(|r| r.step_id == "b" && r.status == RunStatus::Running)
+            })
+            .expect("no Running snapshot found for step b");
+        assert!(
+            a_final.log_byte_offset_end.unwrap_or(0) > 0,
+            "step a's final log_byte_offset_end should be > 0, got {:?}",
+            a_final.log_byte_offset_end
+        );
+        assert_eq!(
+            Some(b_running.log_byte_offset_start),
+            a_final.log_byte_offset_end,
+            "step b's Running row should start exactly where step a's final row ended"
+        );
+    }
+
+    // ── E1.1b: step rows are persisted before their events are emitted ────────
+
+    /// One entry in the shared, monotonically-appended record of what
+    /// happened, in the exact order it happened. Both the persister
+    /// (recording snapshot rows as they're written) and the drain of the
+    /// event broadcast channel (recording events as they're observed)
+    /// append to the *same* `Vec`, so position in the vec is a reliable
+    /// happens-before/happens-after signal — no wall-clock timing involved.
+    #[derive(Debug, Clone)]
+    enum Recorded {
+        /// A `steps` snapshot was handed to the persister; `status` is the
+        /// status of the last (i.e. just-added-or-just-replaced) row.
+        Snapshot {
+            step_id: String,
+            status: RunStatus,
+        },
+        StepStarted {
+            step_id: String,
+        },
+        StepCompleted {
+            step_id: String,
+        },
+    }
+
+    /// [`StepPersister`] that, on every `persist_steps` call, first drains
+    /// whatever `WorkflowEvent`s have arrived on a receiver subscribed
+    /// *before* the run started, appending each to `record`, and only then
+    /// appends the snapshot itself. Because `run_workflow` is single-task
+    /// and always persists a row before emitting the event for it, draining
+    /// inside the persister callback (rather than via a separate task that
+    /// could race the persister) is what makes the ordering deterministic:
+    /// an event for step X can only show up in `record` at or after the
+    /// *next* persist call following the one that wrote X's row, never
+    /// before the call that wrote the row that provoked it.
+    struct OrderCheckPersister {
+        event_rx: Mutex<tokio::sync::broadcast::Receiver<crate::daemon::events::WorkflowEvent>>,
+        record: Arc<Mutex<Vec<Recorded>>>,
+    }
+
+    impl OrderCheckPersister {
+        fn drain_events(&self) {
+            use crate::daemon::events::WorkflowEvent;
+
+            let mut rx = self.event_rx.lock().unwrap();
+            let mut record = self.record.lock().unwrap();
+            loop {
+                match rx.try_recv() {
+                    Ok(WorkflowEvent::StepStarted { step_id, .. }) => {
+                        record.push(Recorded::StepStarted { step_id });
+                    }
+                    Ok(WorkflowEvent::StepCompleted { step_id, .. }) => {
+                        record.push(Recorded::StepCompleted { step_id });
+                    }
+                    Ok(_) => {} // RunStarted/StepOutput/RunCompleted — not under test
+                    Err(_) => break, // Empty or lagged; either way, nothing more to drain now
+                }
+            }
+        }
+    }
+
+    #[async_trait]
+    impl StepPersister for OrderCheckPersister {
+        async fn persist_steps(&self, _run_id: Uuid, steps: &[StepRun]) {
+            // Drain first: any event already emitted by the time this call
+            // was made lands in `record` strictly before the snapshot below.
+            self.drain_events();
+            let last = steps.last().expect("persist_steps called with no rows");
+            self.record.lock().unwrap().push(Recorded::Snapshot {
+                step_id: last.step_id.clone(),
+                status: last.status,
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn test_step_persister_persists_before_emitting_events() {
+        use crate::daemon::events::WorkflowEvent;
+        use tokio::sync::broadcast;
+
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "persist_before_emit",
+            vec![shell_step("a", "echo a"), shell_step("b", "echo b")],
+        );
+
+        let (event_tx, event_rx) = broadcast::channel::<WorkflowEvent>(64);
+        let record = Arc::new(Mutex::new(Vec::new()));
+        let persister = Arc::new(OrderCheckPersister {
+            event_rx: Mutex::new(event_rx),
+            record: Arc::clone(&record),
+        });
+
+        let _run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            Some(event_tx),
+            None,
+            Some(persister.clone() as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        // Final drain: pick up the last StepCompleted (for "b"), which is
+        // emitted after the last persist_steps call and so is never drained
+        // by the persister itself.
+        persister.drain_events();
+
+        let record = record.lock().unwrap().clone();
+
+        let index_of = |pred: &dyn Fn(&Recorded) -> bool| -> usize {
+            record
+                .iter()
+                .position(pred)
+                .unwrap_or_else(|| panic!("expected entry not found in {:?}", record))
+        };
+
+        for step_id in ["a", "b"] {
+            let running_idx = index_of(
+                &|r| matches!(r, Recorded::Snapshot { step_id: s, status: RunStatus::Running } if s == step_id),
+            );
+            let started_idx =
+                index_of(&|r| matches!(r, Recorded::StepStarted { step_id: s } if s == step_id));
+            assert!(
+                started_idx > running_idx,
+                "StepStarted({step_id}) at {started_idx} must come after its Running \
+                 snapshot at {running_idx}: {:?}",
+                record
+            );
+
+            let terminal_idx = index_of(&|r| {
+                matches!(
+                    r,
+                    Recorded::Snapshot { step_id: s, status } if s == step_id && *status != RunStatus::Running
+                )
+            });
+            let completed_idx =
+                index_of(&|r| matches!(r, Recorded::StepCompleted { step_id: s } if s == step_id));
+            assert!(
+                completed_idx > terminal_idx,
+                "StepCompleted({step_id}) at {completed_idx} must come after its terminal \
+                 snapshot at {terminal_idx}: {:?}",
+                record
             );
         }
     }

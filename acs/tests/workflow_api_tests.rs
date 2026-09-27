@@ -5530,11 +5530,11 @@ async fn test_run_steps_persist_mid_run() {
     let b_log_start = steps[1]["log_byte_offset_start"]
         .as_i64()
         .expect("step b log_byte_offset_start should be a number");
-    assert!(
-        b_log_start >= a_log_end,
-        "step b's log start ({}) should be >= step a's log end ({})",
-        b_log_start,
-        a_log_end
+    assert_eq!(
+        b_log_start, a_log_end,
+        "step b's log start ({}) should equal step a's log end ({}) exactly \
+         (b picks up immediately where a left off, no gap)",
+        b_log_start, a_log_end
     );
 
     // The per-step log endpoint should already be servable for the running
@@ -5670,9 +5670,24 @@ async fn test_run_steps_kill_mid_step_persisted() {
             continue;
         }
         let run_json: serde_json::Value = run_resp.json().await.unwrap();
-        match run_json["status"].as_str().unwrap_or("") {
-            "Killed" | "Failed" | "Completed" => break run_json,
-            _ => {}
+        let run_terminal = matches!(
+            run_json["status"].as_str().unwrap_or(""),
+            "Killed" | "Failed" | "Completed"
+        );
+        // The kill route flips the run's status to Killed before the
+        // executor has necessarily replaced step b's Running row with its
+        // terminal one (kill_process_tree waits for the process tree to
+        // exit, which can take a beat). Don't treat the run as settled for
+        // the purposes of this test until step b's row is no longer
+        // Running too, otherwise we can race the persister and read a
+        // stale "Running" step under a "Killed" run.
+        let steps = run_json["steps"].as_array().cloned().unwrap_or_default();
+        let step_b_settled = steps
+            .get(1)
+            .map(|s| s["status"].as_str() != Some("Running"))
+            .unwrap_or(false);
+        if run_terminal && step_b_settled {
+            break run_json;
         }
     };
 

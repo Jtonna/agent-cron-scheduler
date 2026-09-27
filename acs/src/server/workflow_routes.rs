@@ -1338,17 +1338,18 @@ pub async fn get_workflow_run(
 // ---------------------------------------------------------------------------
 //
 // Terminates a running workflow run:
-//   1. Looks up the kill_signals registry and sends `true` so that the
+//   1. Checks that the run exists (404 if not).
+//   2. Looks up the kill_signals registry and sends `true` so that the
 //      running step's select! loop terminates the process tree immediately.
-//   2. Updates the persisted run record to status=Killed so that polling
+//   3. Updates the persisted run record to status=Killed so that polling
 //      callers see the right state right away.
 //
-// Race note: if the run finishes between step 1 and step 2, the executor may
+// Race note: if the run finishes between step 2 and step 3, the executor may
 // have already written the final status (Completed/Failed) by the time this
 // handler calls `mark_run_killed`. That call only flips the row to Killed
 // when it is still `Running`, so a run that already reached a terminal
 // state is left untouched rather than being overwritten. The executor also
-// removes the registry entry before writing its final status, so step 1
+// removes the registry entry before writing its final status, so step 2
 // (the kill signal send) would have been a no-op in that scenario.
 
 #[derive(Serialize)]
@@ -1408,7 +1409,15 @@ pub async fn kill_workflow_run(
                 .mark_run_killed(run_id, Utc::now())
                 .await
             {
-                Ok(_) => {}
+                Ok(true) => {
+                    tracing::info!(run_id = %run_id, "workflow run killed");
+                }
+                Ok(false) => {
+                    tracing::info!(
+                        run_id = %run_id,
+                        "kill requested for run that was no longer running"
+                    );
+                }
                 Err(e) => {
                     tracing::error!("Failed to persist kill status for run {}: {}", run_id, e);
                     return error_response(
@@ -1419,7 +1428,6 @@ pub async fn kill_workflow_run(
                     .into_response();
                 }
             }
-            tracing::info!(run_id = %run_id, "workflow run killed");
             (
                 StatusCode::ACCEPTED,
                 Json(KillResponse {
