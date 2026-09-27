@@ -58,3 +58,78 @@ describe("SSEQueryBridge workflow_changed", () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ["jobs"] });
   });
 });
+
+describe("SSEQueryBridge step_started", () => {
+  it("with valid run_id: invalidates the exact run key", () => {
+    const spy = setup();
+    emit({
+      type: "step_started",
+      data: JSON.stringify({
+        run_id: "r1",
+        workflow_id: "wf-1",
+        step_index: 0,
+        step_id: "step-1",
+        kind: "Task",
+        started_at: "2026-09-27T00:00:00Z",
+      }),
+    });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["runs", "r1"],
+      exact: true,
+    });
+  });
+
+  it("with unparseable data: does not call invalidateQueries", () => {
+    const spy = setup();
+    emit({ type: "step_started", data: "not json" });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("with no run_id: does not call invalidateQueries", () => {
+    const spy = setup();
+    emit({
+      type: "step_started",
+      data: JSON.stringify({
+        workflow_id: "wf-1",
+        step_index: 0,
+      }),
+    });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("does not refetch the log buffer (exact: true only fetches the run key)", () => {
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SSEQueryBridge />
+      </QueryClientProvider>
+    );
+    // Pre-populate the log cache
+    queryClient.setQueryData(["runs", "r1", "log"], ["line 1", "line 2"]);
+    // Emit step_started
+    emit({
+      type: "step_started",
+      data: JSON.stringify({ run_id: "r1" }),
+    });
+    // Verify ["runs", "r1", "log"] is not invalidated
+    expect(
+      queryClient.getQueryState(["runs", "r1", "log"])?.isInvalidated
+    ).toBe(false);
+  });
+});
+
+describe("SSEQueryBridge step_output", () => {
+  it("does not call invalidateQueries (handled inline by consumers)", () => {
+    const spy = setup();
+    emit({
+      type: "step_output",
+      data: JSON.stringify({
+        run_id: "r1",
+        step_index: 0,
+        text: "hello",
+      }),
+    });
+    expect(spy).not.toHaveBeenCalled();
+  });
+});

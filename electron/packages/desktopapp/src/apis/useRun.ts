@@ -5,8 +5,8 @@ import { api } from "@/apis/client";
 
 /**
  * Fetches a single run by id. Cache invalidation on `run_started` /
- * `run_completed` / `run_failed` / `step_completed` SSE events is handled
- * centrally by SSEQueryBridge.
+ * `run_completed` / `run_failed` / `step_started` / `step_completed` SSE
+ * events is handled centrally by SSEQueryBridge.
  */
 export function useRun(runId: string) {
   const query = useQuery({
