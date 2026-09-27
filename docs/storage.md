@@ -296,6 +296,8 @@ the UPDATE so the conflict path is symmetric.
 pub trait WorkflowRunStore: Send + Sync {
     async fn create_run(&self, run: WorkflowRun) -> Result<(), AcsError>;
     async fn update_run(&self, run: &WorkflowRun) -> Result<(), AcsError>;
+    async fn update_run_steps(&self, run_id: Uuid, steps: &[StepRun]) -> Result<(), AcsError>;
+    async fn mark_run_killed(&self, run_id: Uuid, finished_at: DateTime<Utc>) -> Result<bool, AcsError>;
     async fn get_run(&self, run_id: Uuid) -> Result<Option<WorkflowRun>, AcsError>;
     async fn list_runs(
         &self,
@@ -316,6 +318,8 @@ pub trait WorkflowRunStore: Send + Sync {
 |---|---|
 | `create_run` | INSERTs the initial run record. |
 | `update_run` | UPSERTs (`INSERT … ON CONFLICT(run_id) DO UPDATE`); returns `NotFound` if the row is not already present. |
+| `update_run_steps` | Narrow `UPDATE workflow_runs SET steps_json = ? WHERE run_id = ?`, touching only the `steps_json` column. Called by `RunStoreStepPersister` (`acs/src/workflow/persist.rs`) at every step boundary during execution, so `steps_json` reflects progress while the run is still `Running` without a full read-modify-write of the run record. |
+| `mark_run_killed` | Conditional `UPDATE workflow_runs SET status = 'Killed', finished_at = ? WHERE run_id = ? AND status = 'Running'`. Returns `Ok(true)` if a row was updated, `Ok(false)` if the run exists but was not `Running` (e.g. it already finished), and `NotFound` if no row exists for `run_id`. Used by the kill route in place of a full read-modify-write, so a late kill write can no longer overwrite an already-finalized run's `steps`. |
 | `get_run` | Single-row SELECT by primary key; returns `None` if the row is absent. |
 | `list_runs` | `SELECT … WHERE workflow_id = ? ORDER BY run_id DESC LIMIT ? OFFSET ?`. `limit=0` is translated to `-1` (SQLite "no limit"). |
 | `count_runs` | `SELECT COUNT(*) … WHERE workflow_id = ?`. |

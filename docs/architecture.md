@@ -101,12 +101,18 @@ acs/src/
                                    #   wait_for_kill()
     executor.rs                    # run_workflow() — the step loop entry point;
                                    #   MatchStep is handled inline in execute_steps()
-                                   #   rather than as a separate Step impl
+                                   #   rather than as a separate Step impl; persists a
+                                   #   Running StepRun at step start and the terminal
+                                   #   row at step end via an optional StepPersister
+    persist.rs                     # StepPersister trait + RunStoreStepPersister —
+                                   #   best-effort mid-run persistence of the in-
+                                   #   progress `steps` list at every step boundary
     finalize.rs                    # finalize_run() — shared post-run plumbing called by
                                    #   both the scheduler dispatch path and the
                                    #   /api/workflows/{id}/trigger route to persist the
                                    #   terminal WorkflowRun and stamp last_run_* on the
-                                   #   parent workflow
+                                   #   parent workflow; remains the authoritative
+                                   #   write of the completed run record
     template.rs                    # substitute() — ${input.*} and ${steps.*.*}
     log_sink.rs                    # FileLogSink (concrete LogSink for combined run log)
     event_log_sink.rs              # EventEmittingLogSink (LogSink wrapper for SSE chunks)
@@ -149,7 +155,7 @@ See [CLI Reference](cli-reference.md) for the full command documentation.
 
 #### `daemon::scheduler` -- Cron Scheduling Engine
 
-- **`WorkflowScheduler`**: Long-lived async task that polls enabled workflows from the `WorkflowStore`, computes next run times using `compute_next_run()`, sleeps until the earliest due time, and dispatches due workflows by calling `run_workflow()` directly (no intermediate dispatch channel). Each dispatch spawns a Tokio task, creates a `FileLogSink` wrapped in `EventEmittingLogSink`, persists an initial `Running` run record, and awaits the final `WorkflowRun` result for persistence.
+- **`WorkflowScheduler`**: Long-lived async task that polls enabled workflows from the `WorkflowStore`, computes next run times using `compute_next_run()`, sleeps until the earliest due time, and dispatches due workflows by calling `run_workflow()` directly (no intermediate dispatch channel). Each dispatch spawns a Tokio task, creates a `FileLogSink` wrapped in `EventEmittingLogSink`, persists an initial `Running` run record, passes a `StepPersister` (see `workflow::persist`) into `run_workflow()` so the run's `steps` are kept live at every step boundary, and awaits the final `WorkflowRun` result for persistence via `finalize_run()`.
 - **`Clock` trait**: Abstracts system time. Implementations: `SystemClock` (production), `FakeClock` (testing with controllable time).
 - **`compute_next_run()`**: Evaluates a cron expression using the `croner` crate. Supports optional IANA timezone via `chrono-tz` — converts to local time, finds next occurrence, then converts back to UTC.
 
@@ -194,8 +200,8 @@ See [Storage](storage.md) for implementation details.
 
 #### `workflow` -- Workflow Runtime
 
-- **`run_workflow()`** (`acs/src/workflow/executor.rs`): Public entry point. Takes a `&Workflow`, a pre-generated `run_id`, `TriggerParams`, an `Arc<dyn LogSink>`, an optional `broadcast::Sender<WorkflowEvent>`, and an optional kill-signals registry. Returns a fully-populated `WorkflowRun`. Emits `RunStarted` before execution; emits `RunCompleted` for `Completed` status, `RunFailed` for both `Failed` AND `Killed` status.
-- **`execute_steps()`**: Internal recursive function. Walks steps in order, evaluating `always_run` / `aborted` / `killed` flags. Handles `MatchStep` inline by evaluating the expression template and recursing into the chosen branch. Emits `StepStarted` and `StepCompleted` events per step.
+- **`run_workflow()`** (`acs/src/workflow/executor.rs`): Public entry point. Takes a `&Workflow`, a pre-generated `run_id`, `TriggerParams`, an `Arc<dyn LogSink>`, an optional `broadcast::Sender<WorkflowEvent>`, an optional kill-signals registry, and an optional `Arc<dyn StepPersister>`. Returns a fully-populated `WorkflowRun`. Emits `RunStarted` before execution; emits `RunCompleted` for `Completed` status, `RunFailed` for both `Failed` AND `Killed` status.
+- **`execute_steps()`**: Internal recursive function. Walks steps in order, evaluating `always_run` / `aborted` / `killed` flags. Handles `MatchStep` inline by evaluating the expression template and recursing into the chosen branch. Emits `StepStarted` and `StepCompleted` events per step; when a `StepPersister` is supplied, persists the in-progress `step_runs` list at every step boundary, before the matching event (see `workflow::persist::StepPersister`).
 - **`run_step_with_policy()`**: Wraps `dispatch_step()` with retry logic. Retry exhaustion is treated as `Abort`.
 - **`Step` trait** (`acs/src/workflow/step.rs`): `fn kind() -> &'static str; async fn execute(ctx: &mut StepContext) -> Result<StepOutput, StepError>`. Implemented by each step kind.
 - **`StepContext`**: Mutable execution context passed to each step. Carries `input`, `steps: IndexMap<String, StepOutput>` (accumulated step outputs keyed by step id; insertion-ordered so `pass_stdin` selects the immediately-prior step deterministically), `log_sink`, `env`, `working_dir`, `event_tx`, and `kill_rx`.
@@ -350,7 +356,7 @@ Scheduler-dispatched runs register in the shared `kill_signals` registry, so `PO
 `run_workflow()` in `acs/src/workflow/executor.rs`:
 
 ```
-run_workflow(workflow, run_id, trigger, log_sink, event_tx, kill_signals)
+run_workflow(workflow, run_id, trigger, log_sink, event_tx, kill_signals, step_persister)
     |
     1. Clone workflow as snapshot for WorkflowRun.workflow_snapshot
     2. Create watch::channel(false) for kill signal (KillSender/KillReceiver)
@@ -362,21 +368,29 @@ run_workflow(workflow, run_id, trigger, log_sink, event_tx, kill_signals)
                            event_tx, kill_rx }
     |
     execute_steps(workflow.steps, ..., &mut ctx, &mut step_runs,
-                  &mut aborted, &mut killed)
+                  &mut aborted, &mut killed, step_persister)
         |
         For each StepDef:
           a. Check should_run: if aborted||killed, only run if always_run=true
+             (skipped steps are omitted from step_runs entirely, not persisted)
           b. Increment ctx.step_index
-          c. If MatchStep: evaluate expr template, look up branch, recurse;
-             emit StepStarted + StepCompleted for synthetic MatchStep entry
-          d. Else: emit StepStarted; call log_sink.set_current_step();
+          c. If MatchStep: evaluate expr template, look up branch; push a
+             Completed synthetic MatchStep row and persist (before) emitting
+             StepStarted + StepCompleted; recurse into the branch; patch the
+             row's log_byte_offset_end from the last child and persist again
+          d. Else: push a Running StepRun row (started_at, log_byte_offset_start,
+             finished_at/exit_code/log_byte_offset_end/cost_usd/error all null),
+             persist via step_persister, THEN emit StepStarted; call
+             log_sink.set_current_step();
              run_step_with_policy(step_def, ctx, effective_policy, started_at)
                → dispatch_step() → step.execute(ctx)
-             On Completed: insert StepOutput into ctx.steps; push StepRun
-             On Failed (Abort): push StepRun; set aborted=true
-             On Failed (Continue): insert output into ctx.steps; push StepRun
-             On Killed: push StepRun; set killed=true; set aborted=true
-             Emit StepCompleted event
+             Replace the Running row in place with the terminal row, persist
+             via step_persister, THEN emit StepCompleted:
+               On Completed: insert StepOutput into ctx.steps
+               On Failed (Abort): set aborted=true
+               On Failed (Continue): insert output into ctx.steps
+               On Killed: terminal row is Failed with error "kill requested";
+                          set killed=true; set aborted=true
     |
     8. Remove KillSender from registry (drops sender; receivers see RecvError)
     9. Determine final status: Killed > Failed (aborted) > Completed
@@ -385,6 +399,8 @@ run_workflow(workflow, run_id, trigger, log_sink, event_tx, kill_signals)
     12. Return WorkflowRun { run_id, workflow_snapshot, steps, status,
                              total_cost_usd, total_duration_ms, ... }
 ```
+
+`step_persister` (an `Option<Arc<dyn StepPersister>>`, typically a `RunStoreStepPersister` wrapping the `WorkflowRunStore`) is called with the full `step_runs` list at every step boundary — always BEFORE the matching `StepStarted` / `StepCompleted` event, so a client that refetches the run on the event sees the row that produced it. Persistence is best-effort: a failed write is logged and the run continues regardless; `finalize_run()` writes the authoritative final record when the run completes.
 
 ### 3.4 Step Execution (Shell/Script)
 
@@ -486,8 +502,9 @@ StepDef (tag = "kind")
 |---|---|
 | `step_index` | 1-based position in the runtime execution sequence, matching the `step_index` in `StepStarted` / `StepCompleted` SSE events |
 | `kind` | `"shell"` \| `"script"` \| `"http"` \| `"match"` \| `"set_var"` \| `"agent"` |
-| `log_byte_offset_start` / `_end` | Byte range in the combined run log file for fast UI indexing. The captured stdout/stderr is only on disk — fetch the slice via `GET /api/runs/{run_id}/log?step_index=N`. |
-| `cost_usd` | Populated only by `AgentStep` |
+| `status` | May be `Running` while the run is in progress: a `Running` row (null `finished_at` / `exit_code` / `log_byte_offset_end` / `cost_usd` / `error`) is written when the step starts and replaced in place with the terminal row when it finishes. A killed step's row is `Failed` with `error: "kill requested"` — `Killed` is only ever the run-level `status`. `MatchStep` rows go straight to `Completed` (no `Running` state) since the match itself resolves synchronously; only its `log_byte_offset_end` is patched after the branch finishes. |
+| `log_byte_offset_start` / `_end` | Byte range in the combined run log file for fast UI indexing. The captured stdout/stderr is only on disk — fetch the slice via `GET /api/runs/{run_id}/log?step_index=N`. `_end` is `null` while `Running`. |
+| `cost_usd` | Populated only by `AgentStep`, once the step has finished |
 
 ### `RunStatus`
 
