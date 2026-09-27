@@ -18,8 +18,8 @@ import { useJobRuns } from "@/apis/useJobRuns";
  *
  * Layout mirrors `/workflows`: sticky JobDetailSidebar + main grid. Main shows
  * three widgets (Cost, Health, Cost trend) side-by-side, then a denser
- * runs table beneath. All action callbacks are non-functional placeholders
- * for now — the buttons render but don't talk to the backend yet.
+ * runs table beneath. Run, edit, toggle cron, favorite, and delete actions are
+ * live and handled inside `JobDetailSidebar`.
  */
 export default function JobDetailPage({
   params,
