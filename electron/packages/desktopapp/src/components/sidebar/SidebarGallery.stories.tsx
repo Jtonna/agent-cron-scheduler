@@ -24,7 +24,7 @@ const fakePaletteCtx = {
 
 const meta: Meta = {
   title: "Components/Sidebar/_Gallery",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen", nextjs: { appDirectory: true } },
 };
 export default meta;
 
