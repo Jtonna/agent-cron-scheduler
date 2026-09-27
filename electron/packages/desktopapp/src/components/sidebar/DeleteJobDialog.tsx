@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/Button";
  * DeleteJobDialog
  *
  * Destructive confirmation modal for deleting a workflow. The user must
- * type the job name verbatim to enable the confirm button — a soft
+ * type the workflow name exactly to enable the confirm button — a soft
  * tripwire that prevents accidental destruction.
  *
  * Controlled by the parent: pass `isOpen` + `onOpenChange` and the dialog

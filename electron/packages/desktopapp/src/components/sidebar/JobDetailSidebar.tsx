@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Button as AriaButton,
   Menu,
@@ -95,6 +96,7 @@ export function JobDetailSidebar({
 }: JobDetailSidebarProps) {
   const router = useRouter();
   const palette = useCommandPalette();
+  const queryClient = useQueryClient();
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [customizeOpen, setCustomizeOpen] = useState(false);
@@ -130,6 +132,8 @@ export function JobDetailSidebar({
       await deleteWorkflow(job.id);
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
+        resetDelete();
+        queryClient.invalidateQueries({ queryKey: ["jobs"], exact: true });
         router.replace("/workflows");
         return;
       }
