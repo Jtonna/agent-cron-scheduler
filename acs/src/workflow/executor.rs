@@ -941,8 +941,9 @@ mod tests {
     use crate::models::workflow::ScheduleMode;
     use crate::models::workflow::{
         CaptureSpec, FailurePolicy, MatchStep, RunStatus, SetVarStep, ShellStep, StepDef,
-        StepDefCommon, TriggerParams, Workflow,
+        StepDefCommon, StepRun, TriggerParams, Workflow,
     };
+    use crate::workflow::persist::StepPersister;
     use crate::workflow::step::LogSink;
 
     use super::run_workflow;
@@ -2332,5 +2333,448 @@ mod tests {
             run.steps.iter().any(|r| r.step_id == "branch_a"),
             "branch_a should still execute"
         );
+    }
+
+    // ── RecordingPersister + snapshot-sequence helper (ACS-35 E1) ─────────────
+
+    /// [`StepPersister`] that records a clone of every `steps` slice passed
+    /// to it, in call order, so tests can assert the exact sequence of
+    /// mid-run snapshots the executor persists at each step boundary.
+    #[derive(Clone, Default)]
+    struct RecordingPersister {
+        snapshots: Arc<Mutex<Vec<Vec<StepRun>>>>,
+    }
+
+    #[async_trait]
+    impl StepPersister for RecordingPersister {
+        async fn persist_steps(&self, _run_id: Uuid, steps: &[StepRun]) {
+            self.snapshots.lock().unwrap().push(steps.to_vec());
+        }
+    }
+
+    /// Reduce a recorded snapshot sequence to `(step_id, status)` pairs per
+    /// snapshot, for readable assertions independent of timestamps/offsets.
+    fn seq(snapshots: &[Vec<StepRun>]) -> Vec<Vec<(String, RunStatus)>> {
+        snapshots
+            .iter()
+            .map(|snap| snap.iter().map(|r| (r.step_id.clone(), r.status)).collect())
+            .collect()
+    }
+
+    // ── E1.1: two sequential echo steps ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_step_persister_two_echo_steps() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "persist_two_echo",
+            vec![shell_step("a", "echo a"), shell_step("b", "echo b")],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("a".to_string(), Running)],
+                vec![("a".to_string(), Completed)],
+                vec![("a".to_string(), Completed), ("b".to_string(), Running)],
+                vec![("a".to_string(), Completed), ("b".to_string(), Completed)],
+            ]
+        );
+        assert_eq!(&run.steps, snaps.last().unwrap());
+
+        // Every Running row has finished_at/exit_code/log_byte_offset_end all
+        // None, and (for these non-retry steps) the Running row's
+        // log_byte_offset_start equals the final row's.
+        for step_id in ["a", "b"] {
+            let running_row = snaps
+                .iter()
+                .find_map(|snap| {
+                    snap.iter()
+                        .find(|r| r.step_id == step_id && r.status == RunStatus::Running)
+                })
+                .unwrap_or_else(|| panic!("no Running snapshot found for step {step_id}"));
+            assert_eq!(running_row.finished_at, None);
+            assert_eq!(running_row.exit_code, None);
+            assert_eq!(running_row.log_byte_offset_end, None);
+
+            let final_row = run.steps.iter().find(|r| r.step_id == step_id).unwrap();
+            assert_eq!(
+                running_row.log_byte_offset_start,
+                final_row.log_byte_offset_start
+            );
+        }
+    }
+
+    // ── E1.2: Abort failure, then an always_run cleanup step ──────────────────
+
+    #[tokio::test]
+    async fn test_step_persister_abort_then_always_run() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "persist_abort_always_run",
+            vec![
+                shell_step_with_policy("a", exit_one_cmd(), FailurePolicy::Abort),
+                shell_step("b", "echo never"),
+                shell_step_always_run("c", "echo cleanup"),
+            ],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("a".to_string(), Running)],
+                vec![("a".to_string(), Failed)],
+                vec![("a".to_string(), Failed), ("c".to_string(), Running)],
+                vec![("a".to_string(), Failed), ("c".to_string(), Completed)],
+            ]
+        );
+        assert!(
+            !run.steps.iter().any(|r| r.step_id == "b"),
+            "skipped step 'b' must never appear in a persisted snapshot or the final run"
+        );
+        assert_eq!(&run.steps, snaps.last().unwrap());
+    }
+
+    // ── E1.3: Continue policy runs the subsequent step ────────────────────────
+
+    #[tokio::test]
+    async fn test_step_persister_continue_policy() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "persist_continue",
+            vec![
+                shell_step_with_policy("a", exit_one_cmd(), FailurePolicy::Continue),
+                shell_step("b", "echo after"),
+            ],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("a".to_string(), Running)],
+                vec![("a".to_string(), Failed)],
+                vec![("a".to_string(), Failed), ("b".to_string(), Running)],
+                vec![("a".to_string(), Failed), ("b".to_string(), Completed)],
+            ]
+        );
+        assert_eq!(&run.steps, snaps.last().unwrap());
+    }
+
+    // ── E1.4: Retry-exhausted step persists only Running + final Failed ───────
+
+    #[tokio::test]
+    async fn test_step_persister_retry_three_attempts() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "persist_retry",
+            vec![shell_step_with_policy(
+                "a",
+                exit_one_cmd(),
+                FailurePolicy::Retry {
+                    attempts: 3,
+                    backoff_ms: 0,
+                },
+            )],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("a".to_string(), Running)],
+                vec![("a".to_string(), Failed)],
+            ],
+            "per-attempt rows must not be persisted; only the Running row and the final outcome"
+        );
+        assert_eq!(
+            snaps[0][0].started_at, snaps[1][0].started_at,
+            "started_at must be stable across retry attempts"
+        );
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(&run.steps, snaps.last().unwrap());
+    }
+
+    // ── E1.5: MatchStep taking a branch with two children ─────────────────────
+
+    #[tokio::test]
+    async fn test_step_persister_match_with_branch() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+
+        let mut cases = HashMap::new();
+        cases.insert(
+            "A".to_string(),
+            vec![shell_step("x", "echo x"), shell_step("y", "echo y")],
+        );
+
+        let workflow = make_workflow(
+            "persist_match_branch",
+            vec![StepDef::Match(MatchStep {
+                common: StepDefCommon {
+                    id: "m".to_string(),
+                    on_failure: None,
+                    always_run: false,
+                    timeout_secs: None,
+                    working_dir: None,
+                    env_vars: None,
+                    capture: CaptureSpec::default(),
+                },
+                expr: "A".to_string(),
+                cases,
+                default: None,
+            })],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("m".to_string(), Completed)],
+                vec![("m".to_string(), Completed), ("x".to_string(), Running)],
+                vec![("m".to_string(), Completed), ("x".to_string(), Completed)],
+                vec![
+                    ("m".to_string(), Completed),
+                    ("x".to_string(), Completed),
+                    ("y".to_string(), Running),
+                ],
+                vec![
+                    ("m".to_string(), Completed),
+                    ("x".to_string(), Completed),
+                    ("y".to_string(), Completed),
+                ],
+                vec![
+                    ("m".to_string(), Completed),
+                    ("x".to_string(), Completed),
+                    ("y".to_string(), Completed),
+                ],
+            ]
+        );
+
+        // First snapshot's match row: finite start offset, end not yet patched.
+        let first_m = &snaps[0][0];
+        assert_ne!(first_m.log_byte_offset_start, u64::MAX);
+        assert_eq!(first_m.log_byte_offset_end, None);
+
+        // Final match row's end equals the last child (y)'s end.
+        let final_m = run.steps.iter().find(|r| r.step_id == "m").unwrap();
+        let final_y = run.steps.iter().find(|r| r.step_id == "y").unwrap();
+        assert_eq!(
+            final_m.log_byte_offset_end,
+            Some(final_y.log_byte_offset_end.unwrap())
+        );
+
+        // No snapshot contains a sentinel u64::MAX offset anywhere.
+        for snap in &snaps {
+            for row in snap {
+                assert_ne!(row.log_byte_offset_start, u64::MAX);
+                assert_ne!(row.log_byte_offset_end, Some(u64::MAX));
+            }
+        }
+        assert_eq!(&run.steps, snaps.last().unwrap());
+    }
+
+    // ── E1.6: MatchStep with no matching case and no default ──────────────────
+
+    #[tokio::test]
+    async fn test_step_persister_match_no_branch() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+
+        let mut cases = HashMap::new();
+        cases.insert("A".to_string(), vec![shell_step("never", "echo never")]);
+
+        let workflow = make_workflow(
+            "persist_match_noop",
+            vec![StepDef::Match(MatchStep {
+                common: StepDefCommon {
+                    id: "m".to_string(),
+                    on_failure: None,
+                    always_run: false,
+                    timeout_secs: None,
+                    working_dir: None,
+                    env_vars: None,
+                    capture: CaptureSpec::default(),
+                },
+                expr: "Z".to_string(),
+                cases,
+                default: None,
+            })],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("m".to_string(), Completed)],
+                vec![("m".to_string(), Completed)],
+            ]
+        );
+
+        let final_m = run.steps.iter().find(|r| r.step_id == "m").unwrap();
+        assert_eq!(
+            final_m.log_byte_offset_end,
+            Some(final_m.log_byte_offset_start)
+        );
+        assert!(
+            !run.steps.iter().any(|r| r.step_id == "never"),
+            "no branch steps should have run"
+        );
+        assert_eq!(&run.steps, snaps.last().unwrap());
+    }
+
+    // ── E1.7: Kill mid-step, persisted via a Running row then final Failed ────
+
+    #[tokio::test]
+    async fn test_step_persister_kill_mid_step() {
+        use std::collections::HashMap as StdHashMap;
+        use tokio::sync::RwLock;
+
+        #[cfg(windows)]
+        let sleep_cmd = "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"";
+        #[cfg(not(windows))]
+        let sleep_cmd = "sleep 30";
+
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow("persist_kill", vec![shell_step("a", sleep_cmd)]);
+        let run_id = Uuid::now_v7();
+
+        let registry: Arc<RwLock<StdHashMap<Uuid, crate::workflow::step::KillSender>>> =
+            Arc::new(RwLock::new(StdHashMap::new()));
+        let recorder = RecordingPersister::default();
+
+        let registry_for_run = Arc::clone(&registry);
+        let recorder_for_run = recorder.clone();
+        let handle = tokio::spawn(async move {
+            run_workflow(
+                &workflow,
+                run_id,
+                empty_trigger(),
+                sink,
+                None,
+                Some(registry_for_run),
+                Some(Arc::new(recorder_for_run) as Arc<dyn StepPersister>),
+            )
+            .await
+        });
+
+        // Poll the recorder until a Running snapshot for the step appears,
+        // bounded by a 10s timeout, instead of a fixed sleep.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let has_running = recorder
+                .snapshots
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|snap| snap.iter().any(|r| r.status == RunStatus::Running));
+            if has_running {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for a Running snapshot to be persisted"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        if let Some(tx) = registry.read().await.get(&run_id) {
+            let _ = tx.send(true);
+        }
+
+        let run = handle.await.unwrap();
+
+        assert_eq!(run.status, RunStatus::Killed, "run should be Killed");
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("a".to_string(), Running)],
+                vec![("a".to_string(), Failed)],
+            ]
+        );
+        let final_row = &snaps[1][0];
+        assert_eq!(final_row.error.as_deref(), Some("kill requested"));
+        assert_eq!(&run.steps, snaps.last().unwrap());
     }
 }
