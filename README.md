@@ -202,7 +202,7 @@ acs/                     # Rust project root
     daemon/              # Daemon bootstrap, scheduler, workflow executor, events, service registration
     server/              # Axum router, REST routes, SSE handler, health endpoint
     cli/                 # Clap CLI definitions and subcommand handlers
-    workflow/            # Multi-step execution engine: executor, steps, agents, template, log_sink, finalize
+    workflow/            # Multi-step execution engine: executor, steps, agents, template, log_sink, persist, finalize
     pty/                 # Process spawning abstraction
   web/                   # Swagger UI + openapi.yaml (embedded via rust-embed)
   tests/                 # Integration tests (workflow_api_tests, cli_tests, migration_tests)

@@ -124,7 +124,7 @@ Returns daemon health status, including uptime, workflow counts, version, and pl
   "uptime_seconds": 3600,
   "active_jobs": 5,
   "total_jobs": 8,
-  "version": "4.2.14",
+  "version": "5.0.1",
   "data_dir": "/home/user/.local/share/agent-cron-scheduler",
   "service": {
     "registered": true,
@@ -470,7 +470,7 @@ Manually trigger an immediate execution of the workflow, regardless of its cron 
 | `workflow_version` | integer       | The workflow version at trigger time (snapshotted into the run record).     |
 | `run_url`          | string        | Convenience URL for the run: `/api/runs/{run_id}`.                          |
 
-The run record is persisted to the `WorkflowRunStore` with `status: "Running"` **before** the background task begins, so `GET /api/runs/{run_id}` immediately after trigger always returns a result rather than 404.
+The run record is persisted to the `WorkflowRunStore` with `status: "Running"` **before** the background task begins, so `GET /api/runs/{run_id}` immediately after trigger always returns a result rather than 404. As the run progresses, `steps` is updated at every step boundary (see [`GET /api/runs/{run_id}`](#get-apirunsrun_id)), so a client polling the run sees each step's `StepRun` row appear as `Running` and then flip to its terminal status.
 
 **Example:**
 
@@ -585,6 +585,8 @@ List recent execution runs across **all** workflows in a single chronologically-
 }
 ```
 
+(`steps` is abbreviated to `[]` here for brevity; a real response includes the full array shown under [`GET /api/runs/{run_id}`](#get-apirunsrun_id), populated live while the run is `Running`.)
+
 | Field   | Type    | Description                                              |
 |---------|---------|----------------------------------------------------------|
 | `runs`  | array   | Array of [WorkflowRun](#workflowrun) objects, ordered latest-first across all workflows. |
@@ -614,6 +616,49 @@ Retrieve a single run record with full step-level detail.
 | 500 Internal Server Error | Storage failure. |
 
 The response body is a [WorkflowRun](#workflowrun) object including the full `workflow_snapshot` (the complete workflow definition as it was at trigger time).
+
+**Mid-run example:** while the run is still `Running`, `steps` reflects progress so far — finished steps carry their terminal status, and the currently-executing step appears with `status: "Running"` and null `finished_at` / `exit_code` / `log_byte_offset_end` / `cost_usd` / `error`:
+
+```json
+{
+  "run_id": "01941234-bbbb-7abc-def0-123456789abc",
+  "workflow_id": "01941234-5678-7abc-def0-123456789abc",
+  "workflow_version": 1,
+  "started_at": "2025-01-16T02:00:00Z",
+  "finished_at": null,
+  "status": "Running",
+  "steps": [
+    {
+      "step_index": 0,
+      "step_id": "fetch",
+      "kind": "shell",
+      "status": "Completed",
+      "started_at": "2025-01-16T02:00:01Z",
+      "finished_at": "2025-01-16T02:00:12Z",
+      "exit_code": 0,
+      "log_byte_offset_start": 0,
+      "log_byte_offset_end": 512,
+      "cost_usd": null,
+      "error": null
+    },
+    {
+      "step_index": 1,
+      "step_id": "build",
+      "kind": "shell",
+      "status": "Running",
+      "started_at": "2025-01-16T02:00:12Z",
+      "finished_at": null,
+      "exit_code": null,
+      "log_byte_offset_start": 512,
+      "log_byte_offset_end": null,
+      "cost_usd": null,
+      "error": null
+    }
+  ]
+}
+```
+
+This row is written to the store before the corresponding `step_started` / `step_completed` SSE event is emitted, so a client that refetches the run on the event always sees the matching state.
 
 ---
 
@@ -646,9 +691,10 @@ Request cancellation of a running workflow run. Sends a kill signal to the curre
 
 1. Looks up the run in the persistent store; returns 404 if not found.
 2. Sends `true` on the per-run kill channel, causing the executor's `select!` loop to call `kill_process_tree` on the running step's PID. `HttpStep` cancels its in-flight `reqwest` request by dropping the future.
-3. If the run is still `Running`, updates the persisted record to `status: "Killed"` and sets `finished_at` to now.
+3. Calls `WorkflowRunStore::mark_run_killed`, a conditional `UPDATE ... SET status = 'Killed', finished_at = ? WHERE run_id = ? AND status = 'Running'`. The write only takes effect if the row is still `Running` at the moment it runs.
+4. The killed step itself is recorded as `Failed` with `error: "kill requested"` (see [`StepRun`](#steprun)); the run-level `status` is `Killed`.
 
-**Race note:** If a run finishes between the kill lookup and the status update, the handler may overwrite the executor's final `Completed` or `Failed` status with `Killed`. This is documented and accepted behavior.
+**Race note:** `mark_run_killed`'s `WHERE status = 'Running'` guard means a late kill write can no longer overwrite a run that `finalize_run` has already written as `Completed` or `Failed` — the conditional update simply affects zero rows in that case. This replaces the older full read-modify-write, which was subject to exactly that race.
 
 ---
 
@@ -669,7 +715,7 @@ Fetch the on-disk run log as `text/plain`. The log holds the concatenated stdout
 | `step_index` | integer | No       | If supplied, return only the bytes belonging to the StepRun with this `step_index`.        |
 
 When `step_index` is omitted the entire log file is returned.
-When the requested step's `log_byte_offset_end` is `null` the response tails to end-of-file. `_end` is `null` only for the currently-running step or for steps that errored before their `write_step_start`/`write_step_end` markers landed (e.g. template-substitution or spawn failures); for Killed, Failed, and Timeout outcomes where the END marker was written, `_end` is populated and the slice is exact.
+When the requested step's `log_byte_offset_end` is `null` the response tails to end-of-file. `_end` is `null` only for the currently-running step or for steps that errored before their `write_step_start`/`write_step_end` markers landed (e.g. template-substitution or spawn failures); it is populated for Completed and Failed outcomes (failed includes killed and timed-out steps) where the END marker was written, and the slice is exact.
 
 **Response:**
 
@@ -1402,14 +1448,20 @@ Represents the execution record for one step within a run.
 | `step_index`           | integer (usize)         | No       | Position in the runtime execution timeline (0-based).                        |
 | `step_id`              | string                  | No       | Matches `StepDefCommon.id` from the workflow definition.                     |
 | `kind`                 | string                  | No       | Step kind: `"shell"`, `"script"`, `"http"`, `"match"`, `"set_var"`, `"agent"`. |
-| `status`               | [RunStatus](#runstatus) | No       | Execution status of this step.                                               |
+| `status`               | [RunStatus](#runstatus) | No       | Execution status of this step. `Running` while the step is in progress; a `Running` row is written when the step starts and replaced in place by the terminal row when it finishes. A killed step's terminal status is `Failed` (see `error` below), not `Killed` — `Killed` is a run-level status only. |
 | `started_at`           | string (ISO 8601)       | No       | When the step started.                                                       |
-| `finished_at`          | string (ISO 8601)       | Yes      | When the step finished, or `null` if still running.                          |
-| `exit_code`            | integer (i32)           | Yes      | Process exit code, or `null` for non-process steps (`set_var`, `match`).     |
+| `finished_at`          | string (ISO 8601)       | Yes      | When the step finished, or `null` while the step is `Running`.               |
+| `exit_code`            | integer (i32)           | Yes      | Process exit code, or `null` for non-process steps (`set_var`) and while `Running`. A `match` step's synthetic record always carries `exit_code: 0`, not `null`. |
 | `log_byte_offset_start`| integer (u64)           | No       | Byte offset into the combined run log file where this step's output begins.  |
-| `log_byte_offset_end`  | integer (u64)           | Yes      | Byte offset where this step's output ends. `null` while the step is running and also for steps that errored before their END marker landed (e.g. template-substitution or spawn failures); populated for Completed, Killed, Failed, and Timeout outcomes that reached `write_step_end`. |
-| `cost_usd`             | number (f64)            | Yes      | Cost for this step in USD. Non-null only for `AgentStep`.                    |
-| `error`                | string                  | Yes      | Human-readable error description on failure, or `null`.                      |
+| `log_byte_offset_end`  | integer (u64)           | Yes      | Byte offset where this step's output ends. `null` while the step is `Running` and also for steps that errored before their END marker landed (e.g. template-substitution or spawn failures); populated for Completed and Failed outcomes (failed includes killed and timed-out steps) that reached `write_step_end`. |
+| `cost_usd`             | number (f64)            | Yes      | Cost for this step in USD. Non-null only for `AgentStep`, and only once the step has finished.                    |
+| `error`                | string                  | Yes      | Human-readable error description on failure, or `null`. A killed step is recorded with `status: "Failed"` and `error: "kill requested"`. |
+
+**Match steps:** a `match` step is recorded with `status: "Completed"` as soon as it is dispatched (matching the `step_started` + `step_completed` SSE pair emitted for it before its branch runs), not `Running`. Its `log_byte_offset_end` is `null` until the chosen branch's children finish, then patched to the last child's end offset; a match with no executed children (no case matched and no default, or an empty branch) ends with `log_byte_offset_end == log_byte_offset_start`.
+
+**Retried steps:** a step under a `Retry` failure policy keeps a single `StepRun` record across all attempts — `Running` for the duration of the retries, then replaced once with the final attempt's result. Per-attempt rows are not recorded.
+
+**Skipped steps:** steps skipped after an abort or kill (steps without `always_run`) are never listed in `steps`.
 
 The captured stdout/stderr is not stored on the `StepRun`. Each record's
 `log_byte_offset_start` / `log_byte_offset_end` pair frames its bytes inside

@@ -5402,3 +5402,397 @@ async fn test_soft_delete_preserves_custom_working_dir() {
         "a custom working_dir must never be deleted on soft-delete"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Mid-run step persistence tests (ACS-35)
+// ---------------------------------------------------------------------------
+
+/// Two-step workflow: a fast echo step ("a"), then a step ("b") that sleeps
+/// for a few seconds. Used by the mid-run persistence and kill tests below.
+fn two_step_workflow(name: &str, second_step_sleep_secs: u64) -> NewWorkflow {
+    #[cfg(windows)]
+    let sleep_cmd = format!(
+        "powershell -NoProfile -Command \"Start-Sleep -Seconds {}\"",
+        second_step_sleep_secs
+    );
+    #[cfg(not(windows))]
+    let sleep_cmd = format!("sleep {}", second_step_sleep_secs);
+
+    NewWorkflow {
+        name: name.to_string(),
+        schedule: "*/5 * * * *".to_string(),
+        timezone: None,
+        schedule_mode: Default::default(),
+        enabled: true,
+        steps: vec![shell_step("a", "echo hello"), shell_step("b", &sleep_cmd)],
+        default_input: None,
+        working_dir: None,
+        env_vars: None,
+        allow_concurrent: None,
+        on_failure: FailurePolicy::default(),
+    }
+}
+
+/// ACS-35 E2.1: while step "b" is running, GET /api/runs/{id} shows a live
+/// `Running` StepRun for it (with the expected null/non-null field split),
+/// and step "a" is already `Completed` with a consistent log byte range.
+/// Once the run finishes, both steps end up `Completed` with no duplicates.
+#[tokio::test]
+async fn test_run_steps_persist_mid_run() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let wf = two_step_workflow("mid-run-persist", 5);
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&wf).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+    let run_id = trigger_json["run_id"].as_str().unwrap();
+
+    // Poll until step "b" shows up as Running (step a should already be
+    // Completed by then).
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+    let mid_run_json: serde_json::Value = loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("Run {} never reached a mid-run state with 2 steps", run_id);
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let run_resp = client
+            .get(format!("{}/api/runs/{}", base_url, run_id))
+            .send()
+            .await
+            .expect("GET /api/runs/{run_id}");
+        if run_resp.status() != 200 {
+            continue;
+        }
+        let run_json: serde_json::Value = run_resp.json().await.unwrap();
+        let steps = run_json["steps"].as_array().cloned().unwrap_or_default();
+        if steps.len() == 2 && steps[1]["status"].as_str() == Some("Running") {
+            break run_json;
+        }
+    };
+
+    assert_eq!(mid_run_json["status"], "Running");
+
+    let steps = mid_run_json["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2);
+
+    // Step "a" is already complete.
+    assert_eq!(steps[0]["status"], "Completed");
+    assert_eq!(steps[0]["exit_code"], 0);
+    assert!(
+        !steps[0]["finished_at"].is_null(),
+        "completed step 'a' must have finished_at set"
+    );
+    let a_log_end = steps[0]["log_byte_offset_end"]
+        .as_i64()
+        .expect("step a log_byte_offset_end should be a number");
+
+    // Step "b" is live: finished_at/exit_code/log_byte_offset_end are null,
+    // log_byte_offset_start is a real number that picks up where "a" left off.
+    assert!(
+        steps[1]["finished_at"].is_null(),
+        "running step 'b' must have null finished_at"
+    );
+    assert!(
+        steps[1]["exit_code"].is_null(),
+        "running step 'b' must have null exit_code"
+    );
+    assert!(
+        steps[1]["log_byte_offset_end"].is_null(),
+        "running step 'b' must have null log_byte_offset_end"
+    );
+    let b_log_start = steps[1]["log_byte_offset_start"]
+        .as_i64()
+        .expect("step b log_byte_offset_start should be a number");
+    assert_eq!(
+        b_log_start, a_log_end,
+        "step b's log start ({}) should equal step a's log end ({}) exactly \
+         (b picks up immediately where a left off, no gap)",
+        b_log_start, a_log_end
+    );
+
+    // The per-step log endpoint should already be servable for the running
+    // step (query param is `step_index` per the route).
+    let log_resp = client
+        .get(format!("{}/api/runs/{}/log?step_index=1", base_url, run_id))
+        .send()
+        .await
+        .expect("GET run log for step_index=1");
+    assert_eq!(log_resp.status(), 200);
+
+    // Now poll to terminal completion; both steps should be Completed, no
+    // duplicates, correct step_index ordering.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("Run {} did not reach a terminal state in time", run_id);
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        let run_resp = client
+            .get(format!("{}/api/runs/{}", base_url, run_id))
+            .send()
+            .await
+            .expect("GET /api/runs/{run_id}");
+        if run_resp.status() != 200 {
+            continue;
+        }
+        let run_json: serde_json::Value = run_resp.json().await.unwrap();
+        match run_json["status"].as_str().unwrap_or("") {
+            "Completed" => {
+                let steps = run_json["steps"].as_array().unwrap();
+                assert_eq!(steps.len(), 2, "no duplicate step rows expected");
+                assert_eq!(steps[0]["step_index"], 0);
+                assert_eq!(steps[1]["step_index"], 1);
+                assert_eq!(steps[0]["status"], "Completed");
+                assert_eq!(steps[1]["status"], "Completed");
+                break;
+            }
+            "Failed" | "Killed" => {
+                panic!("Run {} ended unexpectedly: {:?}", run_id, run_json);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// ACS-35 E2.2: kill a run while step "b" is running. The run ends up
+/// `Killed`, step "a" stays `Completed`, and step "b" is persisted as
+/// `Failed` with `error` containing "kill requested" (per the documented
+/// StepRun.status contract — `Killed` is only ever a run-level status).
+#[tokio::test]
+async fn test_run_steps_kill_mid_step_persisted() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) = spawn_test_server(
+        Arc::clone(&wf_store),
+        Arc::clone(&run_store),
+        tmp.path().to_path_buf(),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let wf = two_step_workflow("mid-run-kill", 30);
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&wf).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+    let run_id = trigger_json["run_id"].as_str().unwrap();
+
+    // Poll until step "b" is Running.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("Run {} never reached step 'b' running", run_id);
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let run_resp = client
+            .get(format!("{}/api/runs/{}", base_url, run_id))
+            .send()
+            .await
+            .expect("GET run");
+        if run_resp.status() != 200 {
+            continue;
+        }
+        let run_json: serde_json::Value = run_resp.json().await.unwrap();
+        let steps = run_json["steps"].as_array().cloned().unwrap_or_default();
+        if steps.len() == 2 && steps[1]["status"].as_str() == Some("Running") {
+            break;
+        }
+    }
+
+    // Kill it.
+    let kill_resp = client
+        .post(format!("{}/api/runs/{}/kill", base_url, run_id))
+        .send()
+        .await
+        .expect("POST /kill");
+    assert_eq!(kill_resp.status(), 202);
+
+    // Poll to terminal state.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+    let final_json: serde_json::Value = loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("Run {} did not finish within 10s after kill", run_id);
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        let run_resp = client
+            .get(format!("{}/api/runs/{}", base_url, run_id))
+            .send()
+            .await
+            .expect("GET run");
+        if run_resp.status() != 200 {
+            continue;
+        }
+        let run_json: serde_json::Value = run_resp.json().await.unwrap();
+        let run_terminal = matches!(
+            run_json["status"].as_str().unwrap_or(""),
+            "Killed" | "Failed" | "Completed"
+        );
+        // The kill route flips the run's status to Killed before the
+        // executor has necessarily replaced step b's Running row with its
+        // terminal one (kill_process_tree waits for the process tree to
+        // exit, which can take a beat). Don't treat the run as settled for
+        // the purposes of this test until step b's row is no longer
+        // Running too, otherwise we can race the persister and read a
+        // stale "Running" step under a "Killed" run.
+        let steps = run_json["steps"].as_array().cloned().unwrap_or_default();
+        let step_b_settled = steps
+            .get(1)
+            .map(|s| s["status"].as_str() != Some("Running"))
+            .unwrap_or(false);
+        if run_terminal && step_b_settled {
+            break run_json;
+        }
+    };
+
+    assert_eq!(final_json["status"], "Killed");
+    assert!(
+        !final_json["finished_at"].is_null(),
+        "killed run should have finished_at set"
+    );
+
+    let steps = final_json["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0]["status"], "Completed");
+    assert_eq!(steps[1]["status"], "Failed");
+    let error = steps[1]["error"]
+        .as_str()
+        .expect("killed step should have an error string");
+    assert!(
+        error.contains("kill requested"),
+        "expected step error to mention 'kill requested', got: {}",
+        error
+    );
+}
+
+/// ACS-35 E2.3: POSTing /kill for a run that has already reached a terminal
+/// state is a no-op with respect to run status — the store's conditional
+/// `mark_run_killed` write only flips rows that are still `Running`, so a
+/// completed run's status and steps must be left untouched.
+#[tokio::test]
+async fn test_kill_after_completion_is_noop() {
+    let (wf_store, run_store, tmp) = make_stores().await;
+    let (base_url, _state, _handle) =
+        spawn_test_server(wf_store, run_store, tmp.path().to_path_buf()).await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&make_new_workflow("kill-noop-test")).unwrap())
+        .send()
+        .await
+        .expect("POST workflow")
+        .json()
+        .await
+        .unwrap();
+    let wf_id = created["id"].as_str().unwrap();
+
+    let trigger_json: serde_json::Value = client
+        .post(format!("{}/api/workflows/{}/trigger", base_url, wf_id))
+        .header("Content-Type", "application/json")
+        .body(r#"{"input": null}"#)
+        .send()
+        .await
+        .expect("trigger")
+        .json()
+        .await
+        .unwrap();
+    let run_id = trigger_json["run_id"].as_str().unwrap();
+
+    // Wait for the (fast, single echo step) run to reach Completed.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("Run {} did not complete within 10s", run_id);
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let run_resp = client
+            .get(format!("{}/api/runs/{}", base_url, run_id))
+            .send()
+            .await
+            .expect("GET run");
+        if run_resp.status() != 200 {
+            continue;
+        }
+        let run_json: serde_json::Value = run_resp.json().await.unwrap();
+        match run_json["status"].as_str().unwrap_or("") {
+            "Completed" => break,
+            "Failed" | "Killed" => panic!("Run {} ended unexpectedly: {:?}", run_id, run_json),
+            _ => {}
+        }
+    }
+
+    // Kill an already-completed run: the handler still returns 202 (it's a
+    // best-effort send + conditional write), but the run's persisted status
+    // and steps must remain untouched.
+    let kill_resp = client
+        .post(format!("{}/api/runs/{}/kill", base_url, run_id))
+        .send()
+        .await
+        .expect("POST /kill on completed run");
+    assert_eq!(kill_resp.status(), 202);
+
+    let after: serde_json::Value = client
+        .get(format!("{}/api/runs/{}", base_url, run_id))
+        .send()
+        .await
+        .expect("GET run after no-op kill")
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        after["status"], "Completed",
+        "kill on a terminal run must not flip status to Killed"
+    );
+    let steps = after["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0]["status"], "Completed");
+}

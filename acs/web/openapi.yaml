@@ -7,7 +7,7 @@ info:
     ACS is a multi-step workflow scheduler with a built-in HTTP API and web UI.
     Workflows can be identified by either their UUID or their unique name in all
     endpoints that accept an `{id}` path parameter.
-  version: "5.0.0"
+  version: "5.0.1"
   license:
     name: MIT
 
@@ -49,7 +49,7 @@ paths:
                 uptime_seconds: 3600
                 active_jobs: 5
                 total_jobs: 8
-                version: "5.0.0"
+                version: "5.0.1"
                 data_dir: "C:\\Users\\J\\AppData\\Local\\acs\\data"
                 service:
                   registered: true
@@ -689,7 +689,12 @@ paths:
       description: |
         Sends a kill signal to the specified active workflow run. Returns 202
         Accepted if the kill signal was dispatched. Has no effect if the run
-        is already finished.
+        is already finished: the run's status is updated via a conditional
+        write (`status = 'Killed' WHERE status = 'Running'`), so a kill that
+        arrives after the run already finalized as Completed or Failed does
+        not overwrite that outcome. The step that was killed is recorded as
+        `Failed` with `error: "kill requested"`; the run-level status is
+        `Killed`.
       tags: [WorkflowRuns]
       parameters:
         - name: run_id
@@ -1084,7 +1089,7 @@ components:
         version:
           type: string
           description: Daemon version string.
-          example: "5.0.0"
+          example: "5.0.1"
         data_dir:
           type: string
           description: Filesystem path to the data directory.
@@ -2063,7 +2068,16 @@ components:
           description: The step variant kind (e.g. "shell", "agent").
           example: shell
         status:
-          $ref: "#/components/schemas/RunStatus"
+          allOf:
+            - $ref: "#/components/schemas/RunStatus"
+          description: >-
+            Execution status of this step. May be `Running`: a `Running` row is written
+            (with null `finished_at`/`exit_code`/`log_byte_offset_end`/`cost_usd`/`error`)
+            when the step starts, and replaced in place with the terminal row when it
+            finishes. A killed step's terminal status is `Failed` with
+            `error: "kill requested"` — `Killed` is only ever the run-level status. Match
+            steps go straight to `Completed` (no `Running` state); their
+            `log_byte_offset_end` is patched once their branch finishes.
         started_at:
           type: string
           format: date-time
@@ -2073,13 +2087,13 @@ components:
           type: string
           format: date-time
           nullable: true
-          description: Timestamp when this step finished, or null if still running.
+          description: Timestamp when this step finished, or null while status is Running.
           example: "2026-05-12T03:00:05Z"
         exit_code:
           type: integer
           format: int32
           nullable: true
-          description: Process exit code for shell/script/agent steps.
+          description: Process exit code for shell/script/agent steps. Null while status is Running.
           example: 0
         log_byte_offset_start:
           type: integer
@@ -2090,18 +2104,23 @@ components:
           type: integer
           format: int64
           nullable: true
-          description: Byte offset in the run's combined log file where this step's output ends.
+          description: >-
+            Byte offset in the run's combined log file where this step's output ends.
+            Null while status is Running (the log slice tails to EOF), and also for a
+            match step until its branch finishes.
           example: 1024
         cost_usd:
           type: number
           format: double
           nullable: true
-          description: Cost in USD reported by the agent CLI (agent steps only).
+          description: Cost in USD reported by the agent CLI (agent steps only). Null while status is Running.
           example: 0.0042
         error:
           type: string
           nullable: true
-          description: Error message if the step failed to start or errored.
+          description: >-
+            Error message if the step failed to start or errored. A killed step is
+            recorded with `error: "kill requested"`.
           example: null
 
     WorkflowRun:
@@ -2159,7 +2178,11 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/StepRun"
-          description: Per-step execution results in order.
+          description: >-
+            Per-step execution results in order. Populated live while the run's status
+            is Running: a StepRun row is added when a step starts (status Running) and
+            replaced in place with its terminal row when the step finishes, so a client
+            that refetches this run mid-execution sees each step's progress.
         total_cost_usd:
           type: number
           format: double

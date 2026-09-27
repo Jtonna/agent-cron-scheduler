@@ -10,6 +10,7 @@ use crate::daemon::events::WorkflowEvent;
 use crate::models::workflow::{
     FailurePolicy, RunStatus, StepDef, StepRun, TriggerParams, Workflow, WorkflowRun,
 };
+use crate::workflow::persist::StepPersister;
 use crate::workflow::step::{KillSender, LogSink, Step, StepContext, StepError, StepOutput};
 use crate::workflow::template;
 
@@ -52,6 +53,15 @@ fn step_common(def: &StepDef) -> &crate::models::workflow::StepDefCommon {
     }
 }
 
+/// Persist the current `step_runs` list through `persister`, if any.
+///
+/// No-op when `persister` is `None` (tests, contexts without a store).
+async fn persist(persister: Option<&dyn StepPersister>, run_id: Uuid, step_runs: &[StepRun]) {
+    if let Some(p) = persister {
+        p.persist_steps(run_id, step_runs).await;
+    }
+}
+
 // ── Core step-sequence runner ─────────────────────────────────────────────────
 
 /// Walk `steps` in order, executing each or skipping based on `aborted`.
@@ -62,6 +72,13 @@ fn step_common(def: &StepDef) -> &crate::models::workflow::StepDefCommon {
 /// On Abort policy failure, `*aborted` is set to true and the loop continues
 /// so that `always_run` cleanup steps can still execute.
 ///
+/// When `persister` is `Some`, the full `step_runs` list is persisted at every
+/// step boundary: once when a step starts (with a `Running` row) and once
+/// when it finishes (with the final row replacing the `Running` one).
+/// Ordering rule: persist BEFORE emitting the corresponding `StepStarted` /
+/// `StepCompleted` event, so a client that refetches the run on the event
+/// sees the new row.
+///
 /// Returns `true` if a `StepError::Killed` was encountered (the caller should
 /// set the final `RunStatus` to `Killed`).
 async fn execute_steps(
@@ -71,6 +88,7 @@ async fn execute_steps(
     step_runs: &mut Vec<StepRun>,
     aborted: &mut bool,
     killed: &mut bool,
+    persister: Option<&dyn StepPersister>,
 ) {
     for step_def in steps {
         let common = step_common(step_def);
@@ -84,7 +102,8 @@ async fn execute_steps(
 
         if !should_run {
             // Skipped steps are omitted from step_runs.
-            // Skipped steps do NOT emit StepStarted / StepCompleted events.
+            // Skipped steps do NOT emit StepStarted / StepCompleted events
+            // and are not persisted.
             continue;
         }
 
@@ -101,26 +120,6 @@ async fn execute_steps(
         if let StepDef::Match(m) = step_def {
             let run_id = ctx.run_id;
             let workflow_id = ctx.workflow_id;
-
-            // Emit StepStarted for the synthetic match step.
-            emit(
-                ctx.event_tx.as_ref(),
-                WorkflowEvent::StepStarted {
-                    run_id,
-                    workflow_id,
-                    step_index,
-                    step_id: m.common.id.clone(),
-                    kind: "match".to_string(),
-                    started_at: Utc::now(),
-                },
-            );
-            tracing::info!(
-                run_id = %run_id,
-                step_index = step_index,
-                step_id = %m.common.id,
-                kind = "match",
-                "step started"
-            );
 
             let sub = template::substitute(&m.expr, &ctx.input, &ctx.steps);
             for warn in &sub.warnings {
@@ -153,21 +152,16 @@ async fn execute_steps(
                 "match step decision"
             );
             // The match step itself does NOT write to the log, but the child
-            // steps in the chosen branch do. Record offsets that span the
-            // first-child-START through last-child-END so a slice query on
-            // the match step returns the branch's bytes.
+            // steps in the chosen branch do. The recorded range spans the
+            // branch's bytes: `log_byte_offset_start` is the log sink's
+            // current offset when the match row is pushed (i.e. where the
+            // first child's START marker will land), and `log_byte_offset_end`
+            // is patched AFTER the branch finishes to the last child's end
+            // offset.
             //
-            // We push the synthetic match_run BEFORE the branch executes (so
-            // step_runs is in execution order), then patch its
-            // `log_byte_offset_start` / `_end` AFTER the branch finishes by
-            // tracking the first / last child step that was pushed during
-            // the recursion.
-            // `log_byte_offset_start` is initialised to `u64::MAX` as an
-            // obvious sentinel: if a branch executes, the patch below
-            // overwrites it with the first child's start offset. If no
-            // children run, the patch below replaces the sentinel with 0 so
-            // the slice endpoint returns the whole file (the match step
-            // itself emits no log bytes, so this is the best we can do).
+            // The row is pushed BEFORE the branch executes (so step_runs is
+            // in execution order) with status Completed, matching the
+            // StepStarted + StepCompleted pair emitted for the match step.
             let match_run = StepRun {
                 step_index,
                 step_id: m.common.id.clone(),
@@ -176,13 +170,35 @@ async fn execute_steps(
                 started_at,
                 finished_at: Some(Utc::now()),
                 exit_code: Some(0),
-                log_byte_offset_start: u64::MAX,
+                log_byte_offset_start: ctx.log_sink.current_offset().await.unwrap_or(0),
                 log_byte_offset_end: None,
                 cost_usd: None,
                 error: None,
             };
 
-            // Emit StepCompleted for the match step.
+            let match_run_idx = step_runs.len();
+            step_runs.push(match_run);
+            persist(persister, run_id, step_runs).await;
+
+            // Emit StepStarted + StepCompleted for the synthetic match step.
+            emit(
+                ctx.event_tx.as_ref(),
+                WorkflowEvent::StepStarted {
+                    run_id,
+                    workflow_id,
+                    step_index,
+                    step_id: m.common.id.clone(),
+                    kind: "match".to_string(),
+                    started_at,
+                },
+            );
+            tracing::info!(
+                run_id = %run_id,
+                step_index = step_index,
+                step_id = %m.common.id,
+                kind = "match",
+                "step started"
+            );
             emit(
                 ctx.event_tx.as_ref(),
                 WorkflowEvent::StepCompleted {
@@ -204,9 +220,6 @@ async fn execute_steps(
                 "step completed"
             );
 
-            let match_run_idx = step_runs.len();
-            step_runs.push(match_run);
-
             // Insert a placeholder so ${steps.<id>.*} can resolve.
             ctx.steps.insert(
                 m.common.id.clone(),
@@ -221,6 +234,9 @@ async fn execute_steps(
             );
 
             // Recurse into branch steps if a branch was matched.
+            // `last_child_end` is Some(end) when at least one child row was
+            // pushed during the recursion.
+            let mut last_child_end: Option<Option<u64>> = None;
             if let Some(branch) = branch_steps {
                 // We need to clone to avoid borrow issues since execute_steps is recursive
                 let branch_owned: Vec<StepDef> = branch.clone();
@@ -232,33 +248,26 @@ async fn execute_steps(
                     step_runs,
                     aborted,
                     killed,
+                    persister,
                 ))
                 .await;
                 let post_len = step_runs.len();
-
-                // Patch the match_run's byte offsets to span the children that
-                // were just pushed. The first child's _start becomes the match
-                // step's _start; the last child's _end (or None if it never
-                // finished) becomes the match step's _end.
                 if post_len > pre_len {
-                    let first_start = step_runs[pre_len].log_byte_offset_start;
-                    let last_end = step_runs[post_len - 1].log_byte_offset_end;
-                    if let Some(slot) = step_runs.get_mut(match_run_idx) {
-                        slot.log_byte_offset_start = first_start;
-                        slot.log_byte_offset_end = last_end;
-                    }
-                } else if let Some(slot) = step_runs.get_mut(match_run_idx) {
-                    // No children ran (branch_steps was empty or all skipped):
-                    // replace the `u64::MAX` sentinel with 0 so the slice
-                    // endpoint returns the whole file rather than treating
-                    // the sentinel as a real offset.
-                    slot.log_byte_offset_start = 0;
+                    last_child_end = Some(step_runs[post_len - 1].log_byte_offset_end);
                 }
-            } else if let Some(slot) = step_runs.get_mut(match_run_idx) {
-                // No branch was matched (no `cases` hit and no `default`):
-                // replace the sentinel with 0 for the same reason.
-                slot.log_byte_offset_start = 0;
             }
+
+            // Patch ONLY the match row's `log_byte_offset_end`; the start was
+            // fixed when the row was pushed. If children ran, the last
+            // child's end (or None if it never wrote an END marker) becomes
+            // the match step's end. If no children ran (no branch matched, or
+            // the branch was empty / fully skipped), the match step covers an
+            // empty range: end = start.
+            if let Some(slot) = step_runs.get_mut(match_run_idx) {
+                slot.log_byte_offset_end =
+                    last_child_end.unwrap_or(Some(slot.log_byte_offset_start));
+            }
+            persist(persister, run_id, step_runs).await;
 
             continue;
         }
@@ -269,25 +278,9 @@ async fn execute_steps(
         let workflow_id = ctx.workflow_id;
         let step_kind = step_kind_str(step_def);
 
-        // Emit StepStarted before executing the step.
-        emit(
-            ctx.event_tx.as_ref(),
-            WorkflowEvent::StepStarted {
-                run_id,
-                workflow_id,
-                step_index,
-                step_id: common.id.clone(),
-                kind: step_kind.to_string(),
-                started_at: Utc::now(),
-            },
-        );
-        tracing::info!(
-            run_id = %run_id,
-            step_index = step_index,
-            step_id = %common.id,
-            kind = %step_kind,
-            "step started"
-        );
+        // Taken once and reused for the StepStarted event, the Running row
+        // and the final row built by `run_step_with_policy`.
+        let started_at = Utc::now();
 
         // Inform the log sink which step is active so that chunk events carry
         // the correct step_index and step_id.  Errors are logged but do not
@@ -300,7 +293,6 @@ async fn execute_steps(
             );
         }
 
-        let started_at = Utc::now();
         let effective_policy = common
             .on_failure
             .clone()
@@ -309,140 +301,115 @@ async fn execute_steps(
         // Clear the per-step log offset slots before dispatching. Step impls
         // populate these after their `write_step_start` / `write_step_end`
         // succeed; if the step returns Err before that, the slot remains None
-        // and the executor falls back to `log_byte_offset_start = 0` /
-        // `log_byte_offset_end = None` for the failed StepRun.
+        // and the executor falls back to `log_byte_offset_start = start_offset`
+        // / `log_byte_offset_end = None` for the failed StepRun.
         ctx.current_step_log_offset_start = None;
         ctx.current_step_log_offset_end = None;
 
-        let result = run_step_with_policy(step_def, ctx, effective_policy, started_at).await;
+        // Predicted offset of this step's START marker. Sinks that don't
+        // track a position report None; fall back to 0.
+        let start_offset = ctx.log_sink.current_offset().await.unwrap_or(0);
 
-        match result {
-            StepRunResult::Completed(mut run, output) => {
-                run.step_index = step_index;
-                run.kind = step_kind.to_string();
-                // Emit StepCompleted after successful execution.
-                emit(
-                    ctx.event_tx.as_ref(),
-                    WorkflowEvent::StepCompleted {
-                        run_id,
-                        workflow_id,
-                        step_index,
-                        step_id: common.id.clone(),
-                        exit_code: run.exit_code,
-                        cost_usd: run.cost_usd,
-                        finished_at: Utc::now(),
-                    },
-                );
-                let duration_ms = run
-                    .finished_at
-                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
-                tracing::info!(
-                    run_id = %run_id,
-                    step_index = step_index,
-                    step_id = %common.id,
-                    status = ?run.status,
-                    exit_code = ?run.exit_code,
-                    duration_ms = ?duration_ms,
-                    "step completed"
-                );
-                ctx.steps.insert(common.id.clone(), output);
-                step_runs.push(run);
-            }
-            StepRunResult::Failed(mut run) => {
-                run.step_index = step_index;
-                run.kind = step_kind.to_string();
-                // Emit StepCompleted with non-zero exit code or None.
-                emit(
-                    ctx.event_tx.as_ref(),
-                    WorkflowEvent::StepCompleted {
-                        run_id,
-                        workflow_id,
-                        step_index,
-                        step_id: common.id.clone(),
-                        exit_code: run.exit_code,
-                        cost_usd: run.cost_usd,
-                        finished_at: Utc::now(),
-                    },
-                );
-                let duration_ms = run
-                    .finished_at
-                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
-                tracing::info!(
-                    run_id = %run_id,
-                    step_index = step_index,
-                    step_id = %common.id,
-                    status = ?run.status,
-                    exit_code = ?run.exit_code,
-                    duration_ms = ?duration_ms,
-                    "step completed"
-                );
-                step_runs.push(run);
-                *aborted = true;
-            }
-            StepRunResult::FailedContinue(mut run, output) => {
-                run.step_index = step_index;
-                run.kind = step_kind.to_string();
-                // Insert the actual output (even though the step failed) so that
-                // downstream template references like ${steps.<id>.exit_code} resolve.
-                emit(
-                    ctx.event_tx.as_ref(),
-                    WorkflowEvent::StepCompleted {
-                        run_id,
-                        workflow_id,
-                        step_index,
-                        step_id: common.id.clone(),
-                        exit_code: run.exit_code,
-                        cost_usd: run.cost_usd,
-                        finished_at: Utc::now(),
-                    },
-                );
-                let duration_ms = run
-                    .finished_at
-                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
-                tracing::info!(
-                    run_id = %run_id,
-                    step_index = step_index,
-                    step_id = %common.id,
-                    status = ?run.status,
-                    exit_code = ?run.exit_code,
-                    duration_ms = ?duration_ms,
-                    "step completed"
-                );
-                ctx.steps.insert(common.id.clone(), output);
-                step_runs.push(run);
-                // Do NOT set aborted — continue policy means keep going.
-            }
-            StepRunResult::Killed(mut run) => {
-                run.step_index = step_index;
-                run.kind = step_kind.to_string();
-                emit(
-                    ctx.event_tx.as_ref(),
-                    WorkflowEvent::StepCompleted {
-                        run_id,
-                        workflow_id,
-                        step_index,
-                        step_id: common.id.clone(),
-                        exit_code: run.exit_code,
-                        cost_usd: run.cost_usd,
-                        finished_at: Utc::now(),
-                    },
-                );
-                let duration_ms = run
-                    .finished_at
-                    .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
-                tracing::info!(
-                    run_id = %run_id,
-                    step_index = step_index,
-                    step_id = %common.id,
-                    status = ?run.status,
-                    exit_code = ?run.exit_code,
-                    duration_ms = ?duration_ms,
-                    "step completed"
-                );
-                step_runs.push(run);
-                *killed = true;
-                *aborted = true; // stop further steps
-            }
+        // Push a Running row for this step and persist it, then announce the
+        // step. The row at `slot` is replaced by the final row when the step
+        // finishes.
+        let running = StepRun {
+            step_index,
+            step_id: common.id.clone(),
+            kind: step_kind.to_string(),
+            status: RunStatus::Running,
+            started_at,
+            finished_at: None,
+            exit_code: None,
+            log_byte_offset_start: start_offset,
+            log_byte_offset_end: None,
+            cost_usd: None,
+            error: None,
+        };
+        let slot = step_runs.len();
+        step_runs.push(running);
+        persist(persister, run_id, step_runs).await;
+
+        emit(
+            ctx.event_tx.as_ref(),
+            WorkflowEvent::StepStarted {
+                run_id,
+                workflow_id,
+                step_index,
+                step_id: common.id.clone(),
+                kind: step_kind.to_string(),
+                started_at,
+            },
+        );
+        tracing::info!(
+            run_id = %run_id,
+            step_index = step_index,
+            step_id = %common.id,
+            kind = %step_kind,
+            "step started"
+        );
+
+        let result =
+            run_step_with_policy(step_def, ctx, effective_policy, started_at, start_offset).await;
+
+        // Unpack the outcome: the final row, the output to expose to
+        // downstream templates (if any), and the flags to set afterwards.
+        let (mut run, output, set_aborted, set_killed) = match result {
+            StepRunResult::Completed(run, output) => (run, Some(output), false, false),
+            // Abort policy (or retries exhausted): stop further steps.
+            StepRunResult::Failed(run) => (run, None, true, false),
+            // Continue policy: insert the actual output (even though the step
+            // failed) so that downstream template references like
+            // ${steps.<id>.exit_code} resolve. Do NOT set aborted.
+            StepRunResult::FailedContinue(run, output) => (run, Some(output), false, false),
+            // Killed: stop further steps.
+            StepRunResult::Killed(run) => (run, None, true, true),
+        };
+        run.step_index = step_index;
+        run.kind = step_kind.to_string();
+
+        let exit_code = run.exit_code;
+        let cost_usd = run.cost_usd;
+        let status = run.status;
+        let duration_ms = run
+            .finished_at
+            .map(|f| (f - run.started_at).num_milliseconds().max(0) as u64);
+
+        if let Some(output) = output {
+            ctx.steps.insert(common.id.clone(), output);
+        }
+
+        // Replace the Running row with the final row, persist, then emit.
+        step_runs[slot] = run;
+        persist(persister, run_id, step_runs).await;
+
+        emit(
+            ctx.event_tx.as_ref(),
+            WorkflowEvent::StepCompleted {
+                run_id,
+                workflow_id,
+                step_index,
+                step_id: common.id.clone(),
+                exit_code,
+                cost_usd,
+                finished_at: Utc::now(),
+            },
+        );
+        tracing::info!(
+            run_id = %run_id,
+            step_index = step_index,
+            step_id = %common.id,
+            status = ?status,
+            exit_code = ?exit_code,
+            duration_ms = ?duration_ms,
+            "step completed"
+        );
+
+        if set_killed {
+            *killed = true;
+        }
+        if set_aborted {
+            *aborted = true;
         }
     }
 }
@@ -477,6 +444,7 @@ async fn run_step_with_policy(
     ctx: &mut StepContext,
     policy: FailurePolicy,
     started_at: chrono::DateTime<Utc>,
+    fallback_log_offset_start: u64,
 ) -> StepRunResult {
     let common = step_common(step_def);
 
@@ -492,6 +460,7 @@ async fn run_step_with_policy(
                 started_at,
                 partial_offset_start,
                 partial_offset_end,
+                fallback_log_offset_start,
             )
         }
         FailurePolicy::Retry {
@@ -530,6 +499,7 @@ async fn run_step_with_policy(
                                 RunStatus::Completed,
                                 &output,
                                 None,
+                                fallback_log_offset_start,
                             );
                             return StepRunResult::Completed(run, output);
                         }
@@ -542,6 +512,7 @@ async fn run_step_with_policy(
                             "kill requested",
                             ctx.current_step_log_offset_start,
                             ctx.current_step_log_offset_end,
+                            fallback_log_offset_start,
                         );
                         return StepRunResult::Killed(run);
                     }
@@ -561,6 +532,7 @@ async fn run_step_with_policy(
                 &err_msg,
                 ctx.current_step_log_offset_start,
                 ctx.current_step_log_offset_end,
+                fallback_log_offset_start,
             );
             StepRunResult::Failed(run)
         }
@@ -574,6 +546,7 @@ fn build_step_run_result(
     started_at: chrono::DateTime<Utc>,
     partial_log_offset_start: Option<u64>,
     partial_log_offset_end: Option<u64>,
+    fallback_log_offset_start: u64,
 ) -> StepRunResult {
     match result {
         Ok(output) => {
@@ -590,6 +563,7 @@ fn build_step_run_result(
                     RunStatus::Failed,
                     &output,
                     Some(err_msg),
+                    fallback_log_offset_start,
                 );
                 match policy {
                     FailurePolicy::Continue => {
@@ -600,7 +574,14 @@ fn build_step_run_result(
                     _ => StepRunResult::Failed(run),
                 }
             } else {
-                let run = make_step_run(common, started_at, RunStatus::Completed, &output, None);
+                let run = make_step_run(
+                    common,
+                    started_at,
+                    RunStatus::Completed,
+                    &output,
+                    None,
+                    fallback_log_offset_start,
+                );
                 StepRunResult::Completed(run, output)
             }
         }
@@ -611,6 +592,7 @@ fn build_step_run_result(
                 "kill requested",
                 partial_log_offset_start,
                 partial_log_offset_end,
+                fallback_log_offset_start,
             );
             StepRunResult::Killed(run)
         }
@@ -622,6 +604,7 @@ fn build_step_run_result(
                 &err_msg,
                 partial_log_offset_start,
                 partial_log_offset_end,
+                fallback_log_offset_start,
             );
             match policy {
                 FailurePolicy::Continue => {
@@ -648,6 +631,7 @@ fn make_step_run(
     status: RunStatus,
     output: &StepOutput,
     error: Option<String>,
+    fallback_log_offset_start: u64,
 ) -> StepRun {
     StepRun {
         step_index: 0, // patched at call site in execute_steps via mut run.step_index
@@ -657,7 +641,12 @@ fn make_step_run(
         started_at,
         finished_at: Some(Utc::now()),
         exit_code: output.exit_code,
-        log_byte_offset_start: output.log_byte_offset_start.unwrap_or(0),
+        // Symmetric with `make_failed_step_run`: fall back to the log
+        // sink's offset at dispatch time (matching the step's Running row)
+        // rather than 0 when the step itself didn't record a start offset.
+        log_byte_offset_start: output
+            .log_byte_offset_start
+            .unwrap_or(fallback_log_offset_start),
         log_byte_offset_end: output.log_byte_offset_end,
         cost_usd: output.cost.as_ref().and_then(|c| c.total_cost_usd),
         error,
@@ -670,6 +659,7 @@ fn make_failed_step_run(
     error: &str,
     partial_log_offset_start: Option<u64>,
     partial_log_offset_end: Option<u64>,
+    fallback_log_offset_start: u64,
 ) -> StepRun {
     // `partial_log_offset_start` is the offset returned by
     // `LogSink::write_step_start` for this step, captured on the
@@ -678,8 +668,10 @@ fn make_failed_step_run(
     // marker landed (timeout, kill mid-execution, IO error in the read loop,
     // non-zero exit). It is `None` when the step erred before
     // `write_step_start` ran (e.g. a template-substitution or template-fed
-    // spawn failure), in which case we fall back to 0 so the slice endpoint
-    // serves bytes from the beginning of the file.
+    // spawn failure), in which case we fall back to
+    // `fallback_log_offset_start`: the log sink's current offset read by the
+    // executor just before dispatching the step (0 for sinks that don't
+    // track a position). This matches the offset on the step's Running row.
     //
     // `partial_log_offset_end` is the offset returned by
     // `LogSink::write_step_end`, captured the same way after the END marker
@@ -697,7 +689,7 @@ fn make_failed_step_run(
         started_at,
         finished_at: Some(Utc::now()),
         exit_code: None,
-        log_byte_offset_start: partial_log_offset_start.unwrap_or(0),
+        log_byte_offset_start: partial_log_offset_start.unwrap_or(fallback_log_offset_start),
         log_byte_offset_end: partial_log_offset_end,
         cost_usd: None,
         error: Some(error.to_string()),
@@ -725,6 +717,11 @@ fn kind_from_common(_common: &crate::models::workflow::StepDefCommon) -> String 
 ///   When provided, a new `watch::channel(false)` is inserted at the start and
 ///   removed when the run completes.  Pass `None` in tests or contexts that
 ///   don't require kill support.
+/// `step_persister` is an optional best-effort sink for the in-progress
+///   `StepRun` list, called at every step start and end (the persist happens
+///   before the matching `StepStarted` / `StepCompleted` event is emitted).
+///   Pass `None` in tests or contexts without a run store. The returned
+///   `WorkflowRun` (written by `finalize_run`) remains authoritative.
 ///
 /// Note: `StepOutput` chunk events (`WorkflowEvent::StepOutput`) are deferred to
 /// phase 6, where they will be wired into the log sink's streaming path.
@@ -735,6 +732,7 @@ pub async fn run_workflow(
     log_sink: Arc<dyn LogSink>,
     event_tx: Option<broadcast::Sender<WorkflowEvent>>,
     kill_signals: Option<Arc<RwLock<HashMap<Uuid, KillSender>>>>,
+    step_persister: Option<Arc<dyn StepPersister>>,
 ) -> WorkflowRun {
     let snapshot = workflow.clone();
     let started_at = Utc::now();
@@ -814,6 +812,7 @@ pub async fn run_workflow(
         &mut step_runs,
         &mut aborted,
         &mut killed,
+        step_persister.as_deref(),
     )
     .await;
 
@@ -957,8 +956,9 @@ mod tests {
     use crate::models::workflow::ScheduleMode;
     use crate::models::workflow::{
         CaptureSpec, FailurePolicy, MatchStep, RunStatus, SetVarStep, ShellStep, StepDef,
-        StepDefCommon, TriggerParams, Workflow,
+        StepDefCommon, StepRun, TriggerParams, Workflow,
     };
+    use crate::workflow::persist::StepPersister;
     use crate::workflow::step::LogSink;
 
     use super::run_workflow;
@@ -1011,6 +1011,10 @@ mod tests {
             let mut pos = self.pos.lock().unwrap();
             *pos += 32; // sentinel marker size
             Ok(*pos)
+        }
+
+        async fn current_offset(&self) -> Option<u64> {
+            Some(*self.pos.lock().unwrap())
         }
     }
 
@@ -1156,7 +1160,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed, "expected Completed");
         assert_eq!(run.steps.len(), 3, "expected 3 step runs");
@@ -1184,7 +1197,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Failed, "expected Failed");
         // The failing step is recorded; the skipped step is NOT recorded.
@@ -1210,7 +1232,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         // Overall status is Failed (aborted=true), but cleanup ran.
         assert_eq!(run.status, RunStatus::Failed);
@@ -1233,7 +1264,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         // No abort happened, so overall Completed.
         assert_eq!(
@@ -1289,7 +1329,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
         // Expected step_runs: set_choice, m1 (synthetic), branch_a
@@ -1346,7 +1395,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
 
@@ -1396,7 +1454,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
 
@@ -1440,7 +1507,16 @@ mod tests {
             })],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Failed);
         let step = &run.steps[0];
@@ -1464,7 +1540,16 @@ mod tests {
             make_workflow("default_input", vec![shell_step("s1", "echo ${input.x}")]);
         workflow.default_input = Some(json!({"x": 42}));
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
         // The step should have run with x=42
@@ -1485,7 +1570,7 @@ mod tests {
         workflow.default_input = Some(json!({"x": 42}));
 
         let trigger = input_trigger(json!({"x": 99}));
-        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.trigger_input, Some(json!({"x": 99})));
@@ -1526,6 +1611,7 @@ mod tests {
             Uuid::now_v7(),
             trigger,
             Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
             None,
             None,
         )
@@ -1570,7 +1656,7 @@ mod tests {
             target_step: None,
         };
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None, None).await;
+        let run = run_workflow(&workflow, Uuid::now_v7(), trigger, sink, None, None, None).await;
 
         assert_eq!(run.status, RunStatus::Completed);
     }
@@ -1583,7 +1669,7 @@ mod tests {
         let workflow = make_workflow("meta", vec![shell_step("s1", "echo hi")]);
         let run_id = Uuid::now_v7();
 
-        let run = run_workflow(&workflow, run_id, empty_trigger(), sink, None, None).await;
+        let run = run_workflow(&workflow, run_id, empty_trigger(), sink, None, None, None).await;
 
         assert_eq!(run.run_id, run_id);
         assert_eq!(run.workflow_id, workflow.id);
@@ -1599,7 +1685,16 @@ mod tests {
         let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
         let workflow = make_workflow("cost_none", vec![shell_step("s1", "echo hi")]);
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert!(
             run.total_cost_usd.is_none(),
@@ -1649,6 +1744,7 @@ mod tests {
             empty_trigger(),
             wrapped_sink,
             Some(event_tx),
+            None,
             None,
         )
         .await;
@@ -1767,6 +1863,7 @@ mod tests {
             sink,
             None,
             Some(registry),
+            None,
         )
         .await;
         let elapsed = start.elapsed();
@@ -1826,6 +1923,7 @@ mod tests {
                 sink_a,
                 None,
                 Some(registry_a),
+                None,
             ),
             run_workflow(
                 &workflow_b,
@@ -1834,6 +1932,7 @@ mod tests {
                 sink_b,
                 None,
                 Some(registry_b),
+                None,
             ),
         );
 
@@ -1859,7 +1958,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.steps.len(), 3);
@@ -1893,7 +2001,16 @@ mod tests {
             )],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Failed);
         assert_eq!(run.steps.len(), 1);
@@ -1919,7 +2036,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.steps.len(), 3);
@@ -1950,7 +2076,16 @@ mod tests {
             ],
         );
 
-        let run = run_workflow(&workflow, Uuid::now_v7(), empty_trigger(), sink, None, None).await;
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.steps.len(), 2);
@@ -2005,6 +2140,7 @@ mod tests {
             sink,
             None,
             Some(Arc::clone(&registry)),
+            None,
         )
         .await;
 
@@ -2060,6 +2196,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn LogSink>,
             None,
             None,
+            None,
         )
         .await;
 
@@ -2085,6 +2222,7 @@ mod tests {
             Uuid::now_v7(),
             trigger,
             Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
             None,
             None,
         )
@@ -2119,6 +2257,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn LogSink>,
             None,
             None,
+            None,
         )
         .await;
 
@@ -2144,6 +2283,7 @@ mod tests {
             Uuid::now_v7(),
             trigger,
             Arc::clone(&sink) as Arc<dyn LogSink>,
+            None,
             None,
             None,
         )
@@ -2198,6 +2338,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn LogSink>,
             None,
             None,
+            None,
         )
         .await;
 
@@ -2207,5 +2348,620 @@ mod tests {
             run.steps.iter().any(|r| r.step_id == "branch_a"),
             "branch_a should still execute"
         );
+    }
+
+    // ── RecordingPersister + snapshot-sequence helper (ACS-35 E1) ─────────────
+
+    /// [`StepPersister`] that records a clone of every `steps` slice passed
+    /// to it, in call order, so tests can assert the exact sequence of
+    /// mid-run snapshots the executor persists at each step boundary.
+    #[derive(Clone, Default)]
+    struct RecordingPersister {
+        snapshots: Arc<Mutex<Vec<Vec<StepRun>>>>,
+    }
+
+    #[async_trait]
+    impl StepPersister for RecordingPersister {
+        async fn persist_steps(&self, _run_id: Uuid, steps: &[StepRun]) {
+            self.snapshots.lock().unwrap().push(steps.to_vec());
+        }
+    }
+
+    /// Reduce a recorded snapshot sequence to `(step_id, status)` pairs per
+    /// snapshot, for readable assertions independent of timestamps/offsets.
+    fn seq(snapshots: &[Vec<StepRun>]) -> Vec<Vec<(String, RunStatus)>> {
+        snapshots
+            .iter()
+            .map(|snap| snap.iter().map(|r| (r.step_id.clone(), r.status)).collect())
+            .collect()
+    }
+
+    // ── E1.1: two sequential echo steps ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_step_persister_two_echo_steps() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "persist_two_echo",
+            vec![shell_step("a", "echo a"), shell_step("b", "echo b")],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("a".to_string(), Running)],
+                vec![("a".to_string(), Completed)],
+                vec![("a".to_string(), Completed), ("b".to_string(), Running)],
+                vec![("a".to_string(), Completed), ("b".to_string(), Completed)],
+            ]
+        );
+        assert_eq!(&run.steps, snaps.last().unwrap());
+
+        // Every Running row has finished_at/exit_code/log_byte_offset_end all
+        // None, and (for these non-retry steps) the Running row's
+        // log_byte_offset_start equals the final row's.
+        for step_id in ["a", "b"] {
+            let running_row = snaps
+                .iter()
+                .find_map(|snap| {
+                    snap.iter()
+                        .find(|r| r.step_id == step_id && r.status == RunStatus::Running)
+                })
+                .unwrap_or_else(|| panic!("no Running snapshot found for step {step_id}"));
+            assert_eq!(running_row.finished_at, None);
+            assert_eq!(running_row.exit_code, None);
+            assert_eq!(running_row.log_byte_offset_end, None);
+
+            let final_row = run.steps.iter().find(|r| r.step_id == step_id).unwrap();
+            assert_eq!(
+                running_row.log_byte_offset_start,
+                final_row.log_byte_offset_start
+            );
+        }
+
+        // Make the offset equality meaningful rather than a vacuous 0 == 0:
+        // MockLogSink's `pos` advances on every write_step_start/write_chunk/
+        // write_step_end call, so step "a"'s final log_byte_offset_end must
+        // be > 0 (it wrote a start marker plus its echoed output), and step
+        // "b"'s Running row must start exactly where "a" left off — no gap,
+        // no overlap.
+        let a_final = run.steps.iter().find(|r| r.step_id == "a").unwrap();
+        let b_running = snaps
+            .iter()
+            .find_map(|snap| {
+                snap.iter()
+                    .find(|r| r.step_id == "b" && r.status == RunStatus::Running)
+            })
+            .expect("no Running snapshot found for step b");
+        assert!(
+            a_final.log_byte_offset_end.unwrap_or(0) > 0,
+            "step a's final log_byte_offset_end should be > 0, got {:?}",
+            a_final.log_byte_offset_end
+        );
+        assert_eq!(
+            Some(b_running.log_byte_offset_start),
+            a_final.log_byte_offset_end,
+            "step b's Running row should start exactly where step a's final row ended"
+        );
+    }
+
+    // ── E1.1b: step rows are persisted before their events are emitted ────────
+
+    /// One entry in the shared, monotonically-appended record of what
+    /// happened, in the exact order it happened. Both the persister
+    /// (recording snapshot rows as they're written) and the drain of the
+    /// event broadcast channel (recording events as they're observed)
+    /// append to the *same* `Vec`, so position in the vec is a reliable
+    /// happens-before/happens-after signal — no wall-clock timing involved.
+    #[derive(Debug, Clone)]
+    enum Recorded {
+        /// A `steps` snapshot was handed to the persister; `status` is the
+        /// status of the last (i.e. just-added-or-just-replaced) row.
+        Snapshot {
+            step_id: String,
+            status: RunStatus,
+        },
+        StepStarted {
+            step_id: String,
+        },
+        StepCompleted {
+            step_id: String,
+        },
+    }
+
+    /// [`StepPersister`] that, on every `persist_steps` call, first drains
+    /// whatever `WorkflowEvent`s have arrived on a receiver subscribed
+    /// *before* the run started, appending each to `record`, and only then
+    /// appends the snapshot itself. Because `run_workflow` is single-task
+    /// and always persists a row before emitting the event for it, draining
+    /// inside the persister callback (rather than via a separate task that
+    /// could race the persister) is what makes the ordering deterministic:
+    /// an event for step X can only show up in `record` at or after the
+    /// *next* persist call following the one that wrote X's row, never
+    /// before the call that wrote the row that provoked it.
+    struct OrderCheckPersister {
+        event_rx: Mutex<tokio::sync::broadcast::Receiver<crate::daemon::events::WorkflowEvent>>,
+        record: Arc<Mutex<Vec<Recorded>>>,
+    }
+
+    impl OrderCheckPersister {
+        fn drain_events(&self) {
+            use crate::daemon::events::WorkflowEvent;
+
+            let mut rx = self.event_rx.lock().unwrap();
+            let mut record = self.record.lock().unwrap();
+            loop {
+                match rx.try_recv() {
+                    Ok(WorkflowEvent::StepStarted { step_id, .. }) => {
+                        record.push(Recorded::StepStarted { step_id });
+                    }
+                    Ok(WorkflowEvent::StepCompleted { step_id, .. }) => {
+                        record.push(Recorded::StepCompleted { step_id });
+                    }
+                    Ok(_) => {} // RunStarted/StepOutput/RunCompleted — not under test
+                    Err(_) => break, // Empty or lagged; either way, nothing more to drain now
+                }
+            }
+        }
+    }
+
+    #[async_trait]
+    impl StepPersister for OrderCheckPersister {
+        async fn persist_steps(&self, _run_id: Uuid, steps: &[StepRun]) {
+            // Drain first: any event already emitted by the time this call
+            // was made lands in `record` strictly before the snapshot below.
+            self.drain_events();
+            let last = steps.last().expect("persist_steps called with no rows");
+            self.record.lock().unwrap().push(Recorded::Snapshot {
+                step_id: last.step_id.clone(),
+                status: last.status,
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn test_step_persister_persists_before_emitting_events() {
+        use crate::daemon::events::WorkflowEvent;
+        use tokio::sync::broadcast;
+
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "persist_before_emit",
+            vec![shell_step("a", "echo a"), shell_step("b", "echo b")],
+        );
+
+        let (event_tx, event_rx) = broadcast::channel::<WorkflowEvent>(64);
+        let record = Arc::new(Mutex::new(Vec::new()));
+        let persister = Arc::new(OrderCheckPersister {
+            event_rx: Mutex::new(event_rx),
+            record: Arc::clone(&record),
+        });
+
+        let _run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            Some(event_tx),
+            None,
+            Some(persister.clone() as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        // Final drain: pick up the last StepCompleted (for "b"), which is
+        // emitted after the last persist_steps call and so is never drained
+        // by the persister itself.
+        persister.drain_events();
+
+        let record = record.lock().unwrap().clone();
+
+        let index_of = |pred: &dyn Fn(&Recorded) -> bool| -> usize {
+            record
+                .iter()
+                .position(pred)
+                .unwrap_or_else(|| panic!("expected entry not found in {:?}", record))
+        };
+
+        for step_id in ["a", "b"] {
+            let running_idx = index_of(
+                &|r| matches!(r, Recorded::Snapshot { step_id: s, status: RunStatus::Running } if s == step_id),
+            );
+            let started_idx =
+                index_of(&|r| matches!(r, Recorded::StepStarted { step_id: s } if s == step_id));
+            assert!(
+                started_idx > running_idx,
+                "StepStarted({step_id}) at {started_idx} must come after its Running \
+                 snapshot at {running_idx}: {:?}",
+                record
+            );
+
+            let terminal_idx = index_of(&|r| {
+                matches!(
+                    r,
+                    Recorded::Snapshot { step_id: s, status } if s == step_id && *status != RunStatus::Running
+                )
+            });
+            let completed_idx =
+                index_of(&|r| matches!(r, Recorded::StepCompleted { step_id: s } if s == step_id));
+            assert!(
+                completed_idx > terminal_idx,
+                "StepCompleted({step_id}) at {completed_idx} must come after its terminal \
+                 snapshot at {terminal_idx}: {:?}",
+                record
+            );
+        }
+    }
+
+    // ── E1.2: Abort failure, then an always_run cleanup step ──────────────────
+
+    #[tokio::test]
+    async fn test_step_persister_abort_then_always_run() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "persist_abort_always_run",
+            vec![
+                shell_step_with_policy("a", exit_one_cmd(), FailurePolicy::Abort),
+                shell_step("b", "echo never"),
+                shell_step_always_run("c", "echo cleanup"),
+            ],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("a".to_string(), Running)],
+                vec![("a".to_string(), Failed)],
+                vec![("a".to_string(), Failed), ("c".to_string(), Running)],
+                vec![("a".to_string(), Failed), ("c".to_string(), Completed)],
+            ]
+        );
+        assert!(
+            !run.steps.iter().any(|r| r.step_id == "b"),
+            "skipped step 'b' must never appear in a persisted snapshot or the final run"
+        );
+        assert_eq!(&run.steps, snaps.last().unwrap());
+    }
+
+    // ── E1.3: Continue policy runs the subsequent step ────────────────────────
+
+    #[tokio::test]
+    async fn test_step_persister_continue_policy() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "persist_continue",
+            vec![
+                shell_step_with_policy("a", exit_one_cmd(), FailurePolicy::Continue),
+                shell_step("b", "echo after"),
+            ],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("a".to_string(), Running)],
+                vec![("a".to_string(), Failed)],
+                vec![("a".to_string(), Failed), ("b".to_string(), Running)],
+                vec![("a".to_string(), Failed), ("b".to_string(), Completed)],
+            ]
+        );
+        assert_eq!(&run.steps, snaps.last().unwrap());
+    }
+
+    // ── E1.4: Retry-exhausted step persists only Running + final Failed ───────
+
+    #[tokio::test]
+    async fn test_step_persister_retry_three_attempts() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow(
+            "persist_retry",
+            vec![shell_step_with_policy(
+                "a",
+                exit_one_cmd(),
+                FailurePolicy::Retry {
+                    attempts: 3,
+                    backoff_ms: 0,
+                },
+            )],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("a".to_string(), Running)],
+                vec![("a".to_string(), Failed)],
+            ],
+            "per-attempt rows must not be persisted; only the Running row and the final outcome"
+        );
+        assert_eq!(
+            snaps[0][0].started_at, snaps[1][0].started_at,
+            "started_at must be stable across retry attempts"
+        );
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(&run.steps, snaps.last().unwrap());
+    }
+
+    // ── E1.5: MatchStep taking a branch with two children ─────────────────────
+
+    #[tokio::test]
+    async fn test_step_persister_match_with_branch() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+
+        let mut cases = HashMap::new();
+        cases.insert(
+            "A".to_string(),
+            vec![shell_step("x", "echo x"), shell_step("y", "echo y")],
+        );
+
+        let workflow = make_workflow(
+            "persist_match_branch",
+            vec![StepDef::Match(MatchStep {
+                common: StepDefCommon {
+                    id: "m".to_string(),
+                    on_failure: None,
+                    always_run: false,
+                    timeout_secs: None,
+                    working_dir: None,
+                    env_vars: None,
+                    capture: CaptureSpec::default(),
+                },
+                expr: "A".to_string(),
+                cases,
+                default: None,
+            })],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("m".to_string(), Completed)],
+                vec![("m".to_string(), Completed), ("x".to_string(), Running)],
+                vec![("m".to_string(), Completed), ("x".to_string(), Completed)],
+                vec![
+                    ("m".to_string(), Completed),
+                    ("x".to_string(), Completed),
+                    ("y".to_string(), Running),
+                ],
+                vec![
+                    ("m".to_string(), Completed),
+                    ("x".to_string(), Completed),
+                    ("y".to_string(), Completed),
+                ],
+                vec![
+                    ("m".to_string(), Completed),
+                    ("x".to_string(), Completed),
+                    ("y".to_string(), Completed),
+                ],
+            ]
+        );
+
+        // First snapshot's match row: finite start offset, end not yet patched.
+        let first_m = &snaps[0][0];
+        assert_ne!(first_m.log_byte_offset_start, u64::MAX);
+        assert_eq!(first_m.log_byte_offset_end, None);
+
+        // Final match row's end equals the last child (y)'s end.
+        let final_m = run.steps.iter().find(|r| r.step_id == "m").unwrap();
+        let final_y = run.steps.iter().find(|r| r.step_id == "y").unwrap();
+        assert_eq!(
+            final_m.log_byte_offset_end,
+            Some(final_y.log_byte_offset_end.unwrap())
+        );
+
+        // No snapshot contains a sentinel u64::MAX offset anywhere.
+        for snap in &snaps {
+            for row in snap {
+                assert_ne!(row.log_byte_offset_start, u64::MAX);
+                assert_ne!(row.log_byte_offset_end, Some(u64::MAX));
+            }
+        }
+        assert_eq!(&run.steps, snaps.last().unwrap());
+    }
+
+    // ── E1.6: MatchStep with no matching case and no default ──────────────────
+
+    #[tokio::test]
+    async fn test_step_persister_match_no_branch() {
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+
+        let mut cases = HashMap::new();
+        cases.insert("A".to_string(), vec![shell_step("never", "echo never")]);
+
+        let workflow = make_workflow(
+            "persist_match_noop",
+            vec![StepDef::Match(MatchStep {
+                common: StepDefCommon {
+                    id: "m".to_string(),
+                    on_failure: None,
+                    always_run: false,
+                    timeout_secs: None,
+                    working_dir: None,
+                    env_vars: None,
+                    capture: CaptureSpec::default(),
+                },
+                expr: "Z".to_string(),
+                cases,
+                default: None,
+            })],
+        );
+        let recorder = RecordingPersister::default();
+
+        let run = run_workflow(
+            &workflow,
+            Uuid::now_v7(),
+            empty_trigger(),
+            sink,
+            None,
+            None,
+            Some(Arc::new(recorder.clone()) as Arc<dyn StepPersister>),
+        )
+        .await;
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("m".to_string(), Completed)],
+                vec![("m".to_string(), Completed)],
+            ]
+        );
+
+        let final_m = run.steps.iter().find(|r| r.step_id == "m").unwrap();
+        assert_eq!(
+            final_m.log_byte_offset_end,
+            Some(final_m.log_byte_offset_start)
+        );
+        assert!(
+            !run.steps.iter().any(|r| r.step_id == "never"),
+            "no branch steps should have run"
+        );
+        assert_eq!(&run.steps, snaps.last().unwrap());
+    }
+
+    // ── E1.7: Kill mid-step, persisted via a Running row then final Failed ────
+
+    #[tokio::test]
+    async fn test_step_persister_kill_mid_step() {
+        use std::collections::HashMap as StdHashMap;
+        use tokio::sync::RwLock;
+
+        #[cfg(windows)]
+        let sleep_cmd = "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"";
+        #[cfg(not(windows))]
+        let sleep_cmd = "sleep 30";
+
+        let sink = Arc::new(MockLogSink::default()) as Arc<dyn LogSink>;
+        let workflow = make_workflow("persist_kill", vec![shell_step("a", sleep_cmd)]);
+        let run_id = Uuid::now_v7();
+
+        let registry: Arc<RwLock<StdHashMap<Uuid, crate::workflow::step::KillSender>>> =
+            Arc::new(RwLock::new(StdHashMap::new()));
+        let recorder = RecordingPersister::default();
+
+        let registry_for_run = Arc::clone(&registry);
+        let recorder_for_run = recorder.clone();
+        let handle = tokio::spawn(async move {
+            run_workflow(
+                &workflow,
+                run_id,
+                empty_trigger(),
+                sink,
+                None,
+                Some(registry_for_run),
+                Some(Arc::new(recorder_for_run) as Arc<dyn StepPersister>),
+            )
+            .await
+        });
+
+        // Poll the recorder until a Running snapshot for the step appears,
+        // bounded by a 10s timeout, instead of a fixed sleep.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let has_running = recorder
+                .snapshots
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|snap| snap.iter().any(|r| r.status == RunStatus::Running));
+            if has_running {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for a Running snapshot to be persisted"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        if let Some(tx) = registry.read().await.get(&run_id) {
+            let _ = tx.send(true);
+        }
+
+        let run = handle.await.unwrap();
+
+        assert_eq!(run.status, RunStatus::Killed, "run should be Killed");
+
+        use RunStatus::*;
+        let snaps = recorder.snapshots.lock().unwrap().clone();
+        assert_eq!(
+            seq(&snaps),
+            vec![
+                vec![("a".to_string(), Running)],
+                vec![("a".to_string(), Failed)],
+            ]
+        );
+        let final_row = &snaps[1][0];
+        assert_eq!(final_row.error.as_deref(), Some("kill requested"));
+        assert_eq!(&run.steps, snaps.last().unwrap());
     }
 }

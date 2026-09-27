@@ -367,6 +367,20 @@ mod tests {
         async fn update_run(&self, _run: &WorkflowRun) -> Result<(), AcsError> {
             unimplemented!()
         }
+        async fn update_run_steps(
+            &self,
+            _run_id: Uuid,
+            _steps: &[crate::models::workflow::StepRun],
+        ) -> Result<(), AcsError> {
+            Ok(())
+        }
+        async fn mark_run_killed(
+            &self,
+            _run_id: Uuid,
+            _finished_at: chrono::DateTime<Utc>,
+        ) -> Result<bool, AcsError> {
+            Ok(false)
+        }
         async fn get_run(&self, _run_id: Uuid) -> Result<Option<WorkflowRun>, AcsError> {
             unimplemented!()
         }

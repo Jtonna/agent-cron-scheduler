@@ -1262,6 +1262,9 @@ pub async fn trigger_workflow(
             log_sink,
             Some(event_tx),
             Some(kill_signals),
+            Some(Arc::new(crate::workflow::RunStoreStepPersister::new(
+                run_store.clone(),
+            )) as Arc<dyn crate::workflow::StepPersister>),
         )
         .await;
 
@@ -1335,18 +1338,19 @@ pub async fn get_workflow_run(
 // ---------------------------------------------------------------------------
 //
 // Terminates a running workflow run:
-//   1. Looks up the kill_signals registry and sends `true` so that the
+//   1. Checks that the run exists (404 if not).
+//   2. Looks up the kill_signals registry and sends `true` so that the
 //      running step's select! loop terminates the process tree immediately.
-//   2. Updates the persisted run record to status=Killed so that polling
+//   3. Updates the persisted run record to status=Killed so that polling
 //      callers see the right state right away.
 //
-// Race note: if the run finishes between step 1 and step 2, the executor
-// will have already written the final status (Completed/Failed).  The
-// handler's update_run call here would then overwrite that with Killed.
-// This is an acceptable race — the kill was requested while the run was
-// believed to be running and arrived marginally late.  The executor also
-// removes the registry entry before writing its final status, so step 1
-// would have been a no-op in that scenario.
+// Race note: if the run finishes between step 2 and step 3, the executor may
+// have already written the final status (Completed/Failed) by the time this
+// handler calls `mark_run_killed`. That call only flips the row to Killed
+// when it is still `Running`, so a run that already reached a terminal
+// state is left untouched rather than being overwritten. The executor also
+// removes the registry entry before writing its final status, so step 2
+// (the kill signal send) would have been a no-op in that scenario.
 
 #[derive(Serialize)]
 struct KillResponse {
@@ -1371,7 +1375,7 @@ pub async fn kill_workflow_run(
 
     // 1. Check that the run exists (and return 404 early if not).
     match state.workflow_run_store.get_run(run_id).await {
-        Ok(Some(mut run)) => {
+        Ok(Some(_run)) => {
             // 2. Send kill signal to the executor (best-effort — the entry may
             //    be absent if the run already finished between the get_run call
             //    and here).
@@ -1386,9 +1390,11 @@ pub async fn kill_workflow_run(
                 );
             }
 
-            // 3. Update the persisted record if it is still Running, so that
-            //    pollers see Killed immediately without waiting for the executor
-            //    to write its final status.
+            // 3. Conditionally mark the run Killed: this only flips the row
+            //    when it is still `Running`, so pollers see Killed
+            //    immediately without waiting for the executor to write its
+            //    final status, and a run that already finished (Completed /
+            //    Failed) between step 1 and here is left untouched.
             //
             //    The parent workflow's `last_run_*` fields are intentionally
             //    NOT updated here. The executor's finalization path is the
@@ -1398,10 +1404,21 @@ pub async fn kill_workflow_run(
             //    race). Letting one writer own the field eliminates the
             //    possibility of `run.status` and `workflow.last_run_status`
             //    disagreeing.
-            if run.status == RunStatus::Running {
-                run.status = RunStatus::Killed;
-                run.finished_at = Some(Utc::now());
-                if let Err(e) = state.workflow_run_store.update_run(&run).await {
+            match state
+                .workflow_run_store
+                .mark_run_killed(run_id, Utc::now())
+                .await
+            {
+                Ok(true) => {
+                    tracing::info!(run_id = %run_id, "workflow run killed");
+                }
+                Ok(false) => {
+                    tracing::info!(
+                        run_id = %run_id,
+                        "kill requested for run that was no longer running"
+                    );
+                }
+                Err(e) => {
                     tracing::error!("Failed to persist kill status for run {}: {}", run_id, e);
                     return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1411,7 +1428,6 @@ pub async fn kill_workflow_run(
                     .into_response();
                 }
             }
-            tracing::info!(run_id = %run_id, "workflow run killed");
             (
                 StatusCode::ACCEPTED,
                 Json(KillResponse {
@@ -2020,6 +2036,39 @@ mod tests {
             }
             map.insert(run.run_id, run.clone());
             Ok(())
+        }
+        async fn update_run_steps(
+            &self,
+            run_id: Uuid,
+            steps: &[crate::models::workflow::StepRun],
+        ) -> Result<(), AcsError> {
+            let mut map = self.runs.lock().await;
+            match map.get_mut(&run_id) {
+                Some(run) => {
+                    run.steps = steps.to_vec();
+                    Ok(())
+                }
+                None => Err(AcsError::NotFound(format!("Run '{}' not found", run_id))),
+            }
+        }
+        async fn mark_run_killed(
+            &self,
+            run_id: Uuid,
+            finished_at: chrono::DateTime<Utc>,
+        ) -> Result<bool, AcsError> {
+            let mut map = self.runs.lock().await;
+            match map.get_mut(&run_id) {
+                Some(run) => {
+                    if run.status == crate::models::workflow::RunStatus::Running {
+                        run.status = crate::models::workflow::RunStatus::Killed;
+                        run.finished_at = Some(finished_at);
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                }
+                None => Err(AcsError::NotFound(format!("Run '{}' not found", run_id))),
+            }
         }
         async fn get_run(&self, run_id: Uuid) -> Result<Option<WorkflowRun>, AcsError> {
             Ok(self.runs.lock().await.get(&run_id).cloned())

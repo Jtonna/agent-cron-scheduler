@@ -4,7 +4,7 @@ use chrono_tz::Tz;
 use uuid::Uuid;
 
 use crate::errors::AcsError;
-use crate::models::workflow::{CostSummary, DailyBucket, WorkflowRun};
+use crate::models::workflow::{CostSummary, DailyBucket, StepRun, WorkflowRun};
 
 // ─── WorkflowRunStore trait ───────────────────────────────────────────────────
 
@@ -15,6 +15,26 @@ pub trait WorkflowRunStore: Send + Sync {
 
     /// Update an existing run record.
     async fn update_run(&self, run: &WorkflowRun) -> Result<(), AcsError>;
+
+    /// Replace only the `steps` field of a run record.
+    ///
+    /// Never touches `status` or any other run-level field. Returns
+    /// [`AcsError::NotFound`] if the run does not exist. Used by the
+    /// executor to persist progress at step boundaries.
+    async fn update_run_steps(&self, run_id: Uuid, steps: &[StepRun]) -> Result<(), AcsError>;
+
+    /// Mark a run as killed, but only if it is currently `Running`.
+    ///
+    /// Sets `status = Killed` and `finished_at` only when the existing row's
+    /// status is `Running`. Returns `Ok(true)` if a row was updated,
+    /// `Ok(false)` if the run exists but was not `Running`, and
+    /// [`AcsError::NotFound`] if no row exists for `run_id`. Used by the
+    /// kill route so a late kill write cannot overwrite a finalized run.
+    async fn mark_run_killed(
+        &self,
+        run_id: Uuid,
+        finished_at: DateTime<Utc>,
+    ) -> Result<bool, AcsError>;
 
     /// Get a single run by id.
     async fn get_run(&self, run_id: Uuid) -> Result<Option<WorkflowRun>, AcsError>;
