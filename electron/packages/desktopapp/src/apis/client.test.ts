@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, getBaseUrl } from "./client";
+import { ApiError, api, getActiveRunId, getBaseUrl } from "./client";
 
 describe("getBaseUrl", () => {
   const ORIGINAL_ENV = process.env.NEXT_PUBLIC_API_URL;
@@ -52,6 +52,17 @@ describe("ApiError", () => {
     expect(err.status).toBe(404);
     expect(err.code).toBe("NOT_FOUND");
     expect(err.message).toBe("Job missing");
+  });
+
+  it("captures details when provided", () => {
+    const details = { active_run_id: "r-123" };
+    const err = new ApiError(409, "concurrent_run_active", "A run is already active", details);
+    expect(err.details).toBe(details);
+  });
+
+  it("has undefined details when not provided", () => {
+    const err = new ApiError(404, "NOT_FOUND", "Job missing");
+    expect(err.details).toBeUndefined();
   });
 });
 
@@ -131,5 +142,105 @@ describe("api.deleteWorkflow", () => {
     await expect(api.deleteWorkflow("test-id")).rejects.toMatchObject({
       code: "PREFERRED_CODE",
     });
+  });
+
+  it("parses details from JSON error body for concurrent_run_active", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: "concurrent_run_active",
+          message: "A run is already active",
+          active_run_id: "r-123",
+        }),
+        {
+          status: 409,
+          statusText: "Conflict",
+          headers: { "content-type": "application/json" },
+        }
+      )
+    );
+
+    await expect(api.deleteWorkflow("test-id")).rejects.toMatchObject({
+      status: 409,
+      code: "concurrent_run_active",
+      details: {
+        error: "concurrent_run_active",
+        message: "A run is already active",
+        active_run_id: "r-123",
+      },
+    });
+  });
+
+  it("sets details to undefined for non-JSON error body", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response("Internal Server Error", {
+        status: 500,
+        statusText: "Internal Server Error",
+        headers: { "content-type": "text/plain" },
+      })
+    );
+
+    await expect(api.deleteWorkflow("test-id")).rejects.toMatchObject({
+      status: 500,
+      code: "UNKNOWN",
+      details: undefined,
+    });
+  });
+
+  it("does not pass array bodies as details", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ error: "something" }]), {
+        status: 400,
+        statusText: "Bad Request",
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    await expect(api.deleteWorkflow("test-id")).rejects.toMatchObject({
+      status: 400,
+      details: undefined,
+    });
+  });
+});
+
+describe("getActiveRunId", () => {
+  it("returns active_run_id from concurrent_run_active 409 error", () => {
+    const err = new ApiError(409, "concurrent_run_active", "A run is already active", {
+      active_run_id: "r-123",
+    });
+    expect(getActiveRunId(err)).toBe("r-123");
+  });
+
+  it("returns null for non-ApiError", () => {
+    const err = new Error("Generic error");
+    expect(getActiveRunId(err)).toBeNull();
+  });
+
+  it("returns null for ApiError with non-409 status", () => {
+    const err = new ApiError(500, "internal_error", "Server error", {
+      active_run_id: "r-123",
+    });
+    expect(getActiveRunId(err)).toBeNull();
+  });
+
+  it("returns null for 409 ApiError with different code", () => {
+    const err = new ApiError(409, "workflow_run_active", "Workflow run active", {
+      active_run_id: "r-123",
+    });
+    expect(getActiveRunId(err)).toBeNull();
+  });
+
+  it("returns null when active_run_id is missing", () => {
+    const err = new ApiError(409, "concurrent_run_active", "A run is already active", {
+      message: "A run is already active",
+    });
+    expect(getActiveRunId(err)).toBeNull();
+  });
+
+  it("returns null when active_run_id is not a string", () => {
+    const err = new ApiError(409, "concurrent_run_active", "A run is already active", {
+      active_run_id: 123,
+    });
+    expect(getActiveRunId(err)).toBeNull();
   });
 });

@@ -15,7 +15,7 @@ const fakePaletteCtx = {
 const meta: Meta<typeof JobDetailSidebar> = {
   title: "Components/Sidebar/JobDetailSidebar",
   component: JobDetailSidebar,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen", nextjs: { appDirectory: true } },
   decorators: [
     (Story) => (
       <CommandPaletteContext.Provider value={fakePaletteCtx}>

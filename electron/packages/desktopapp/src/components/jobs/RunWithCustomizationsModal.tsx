@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import {
   Dialog,
   Heading,
@@ -10,6 +11,7 @@ import {
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { useTriggerWorkflow } from "@/apis/useTriggerWorkflow";
+import { getActiveRunId } from "@/apis/client";
 import type { Job, TriggerParams, WorkflowTriggerResponse } from "@/apis/types";
 
 /**
@@ -82,7 +84,7 @@ export function RunWithCustomizationsModal({
   onOpenChange,
   onTriggered,
 }: RunWithCustomizationsModalProps) {
-  const { trigger, triggering, error: triggerError } = useTriggerWorkflow();
+  const { trigger, triggering, error: triggerError, reset: resetTrigger } = useTriggerWorkflow();
 
   const inputPlaceholder = useMemo(
     () => '{\n  "key": "value"\n}',
@@ -92,6 +94,7 @@ export function RunWithCustomizationsModal({
   const [useInput, setUseInput] = useState(false);
   const [inputText, setInputText] = useState(() => defaultInputText(workflow));
   const [parseError, setParseError] = useState<string | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
   const [useEnv, setUseEnv] = useState(false);
   const [envRows, setEnvRows] = useState<EnvRow[]>(() => defaultEnvRows(workflow));
@@ -118,6 +121,8 @@ export function RunWithCustomizationsModal({
       setUseInput(false);
       setInputText(defaultInputText(workflow));
       setParseError(null);
+      setActiveRunId(null);
+      resetTrigger();
       setUseEnv(false);
       setEnvRows(defaultEnvRows(workflow));
       setUseTargetStep(false);
@@ -128,6 +133,7 @@ export function RunWithCustomizationsModal({
 
   async function handleSubmit() {
     setParseError(null);
+    setActiveRunId(null);
     const params: TriggerParams = {};
 
     if (useInput) {
@@ -171,7 +177,11 @@ export function RunWithCustomizationsModal({
       const response = await trigger(workflow.id, params);
       onTriggered?.(response);
       handleOpenChange(false);
-    } catch {
+    } catch (e) {
+      const runId = getActiveRunId(e);
+      if (runId) {
+        setActiveRunId(runId);
+      }
       // Error surfaces via triggerError below.
     }
   }
@@ -355,6 +365,18 @@ export function RunWithCustomizationsModal({
             {(parseError || triggerError) && (
               <div className="p-3 text-sm bg-status-failed-bg border border-status-failed-border text-status-failed rounded-card">
                 {parseError ?? triggerError}
+                {activeRunId && (
+                  <>
+                    {" "}
+                    <Link
+                      href={`/workflows/${workflow.id}/runs/${activeRunId}`}
+                      onClick={() => handleOpenChange(false)}
+                      className="underline hover:no-underline"
+                    >
+                      View running run
+                    </Link>
+                  </>
+                )}
               </div>
             )}
           </div>
