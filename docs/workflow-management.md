@@ -657,16 +657,18 @@ Each execution creates a `WorkflowRun` row in the `workflow_runs` table of `<dat
 | `step_index` | `usize` | 0-based position in the runtime execution sequence. The first executed step has `step_index: 0`, the second has `step_index: 1`, and so on. Branch steps inside a `MatchStep` continue the counter from where the match step left off. Matches the `step_index` carried in `StepStarted` / `StepCompleted` SSE events and the `step_index` query parameter on `GET /api/runs/{run_id}/log`. |
 | `step_id` | `String` | Matches `StepDefCommon.id`. |
 | `kind` | `String` | `"shell"`, `"script"`, `"http"`, `"match"`, `"set_var"`, or `"agent"`. |
-| `status` | `RunStatus` | `Running`, `Completed`, `Failed`, or `Killed`. |
+| `status` | `RunStatus` | `Running`, `Completed`, or `Failed`. A killed step is recorded as `Failed` with `error: "kill requested"` — steps are never recorded as `Killed`; that status is run-level only. |
 | `started_at` | `DateTime<Utc>` | When the step began. |
-| `finished_at` | `Option<DateTime<Utc>>` | When the step ended. |
-| `exit_code` | `Option<i32>` | Process exit code (shell/script/agent steps). `null` for non-process steps or on kill/timeout. |
+| `finished_at` | `Option<DateTime<Utc>>` | When the step ended. `null` while the step is `Running`. |
+| `exit_code` | `Option<i32>` | Process exit code (shell/script/agent steps). `null` for non-process steps and while `Running`. |
 | `log_byte_offset_start` | `u64` | Byte offset in the run's combined log file where this step's START marker begins. |
-| `log_byte_offset_end` | `Option<u64>` | Byte offset just after this step's END marker. Populated for `Completed`, `Failed`, `Killed`, and timed-out steps — every subprocess step writes the END marker before surfacing its error. `null` only when the step errored before `write_step_end` ran (e.g. a spawn failure with no run loop, or template-substitution failure before START). For a synthetic `MatchStep` record, the offsets are patched to span its child branch; if no children ran, end stays `null` (the slice endpoint treats `null` as "tail to EOF"). |
+| `log_byte_offset_end` | `Option<u64>` | Byte offset just after this step's END marker. Populated for `Completed` and `Failed` steps (`Failed` includes killed and timed-out steps) — every subprocess step writes the END marker before surfacing its error. `null` only when the step errored before `write_step_end` ran (e.g. a spawn failure with no run loop, or template-substitution failure before START). For a synthetic `MatchStep` record, the offsets are patched to span its child branch; if no children ran, end equals start. |
 | `cost_usd` | `Option<f64>` | Cost in USD extracted from the agent's streaming output. Present for `AgentStep` only. |
-| `error` | `Option<String>` | Error description for `Failed` or `Killed` steps. |
+| `error` | `Option<String>` | Error description for `Failed` steps (including killed and timed-out steps). |
 
 Per-step stdout/stderr is captured on disk in the combined run log file (see [`storage.md`](./storage.md)). Each `StepRun`'s `log_byte_offset_*` pair frames its slice; fetch the bytes via `GET /api/runs/{run_id}/log?step_index=N`.
+
+**Match steps:** match steps are pushed with `status: "Completed"` before their branch executes; `log_byte_offset_start` is taken from the log sink's current offset at push time, and only `log_byte_offset_end` is patched after the branch finishes to the last child's end offset. With no executed children, `log_byte_offset_end` equals `log_byte_offset_start`.
 
 ### Run status values
 

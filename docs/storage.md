@@ -427,8 +427,9 @@ impls write the END marker before surfacing the error. The only cases where
 * The step is still running (the live tail case).
 * The step erred **before** `write_step_start` ran — for example a
   template-substitution failure or a spawn failure where no run loop ever
-  started. In that scenario `log_byte_offset_start` is also unset and the
-  slice endpoint falls back to `0` for the start and "tail to EOF" for the end.
+  started. `log_byte_offset_start` is never unset in this case: it is the log
+  sink's offset at the moment the step was dispatched. The slice endpoint
+  still tails to EOF for the end.
 
 Per-step output lives only in this log file — the SQLite `workflow_runs.steps_json`
 blob carries the byte offsets but not the bytes themselves. Clients fetch step

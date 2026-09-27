@@ -124,7 +124,7 @@ Returns daemon health status, including uptime, workflow counts, version, and pl
   "uptime_seconds": 3600,
   "active_jobs": 5,
   "total_jobs": 8,
-  "version": "4.2.14",
+  "version": "5.0.1",
   "data_dir": "/home/user/.local/share/agent-cron-scheduler",
   "service": {
     "registered": true,
@@ -715,7 +715,7 @@ Fetch the on-disk run log as `text/plain`. The log holds the concatenated stdout
 | `step_index` | integer | No       | If supplied, return only the bytes belonging to the StepRun with this `step_index`.        |
 
 When `step_index` is omitted the entire log file is returned.
-When the requested step's `log_byte_offset_end` is `null` the response tails to end-of-file. `_end` is `null` only for the currently-running step or for steps that errored before their `write_step_start`/`write_step_end` markers landed (e.g. template-substitution or spawn failures); for Killed, Failed, and Timeout outcomes where the END marker was written, `_end` is populated and the slice is exact.
+When the requested step's `log_byte_offset_end` is `null` the response tails to end-of-file. `_end` is `null` only for the currently-running step or for steps that errored before their `write_step_start`/`write_step_end` markers landed (e.g. template-substitution or spawn failures); it is populated for Completed and Failed outcomes (failed includes killed and timed-out steps) where the END marker was written, and the slice is exact.
 
 **Response:**
 
@@ -1451,9 +1451,9 @@ Represents the execution record for one step within a run.
 | `status`               | [RunStatus](#runstatus) | No       | Execution status of this step. `Running` while the step is in progress; a `Running` row is written when the step starts and replaced in place by the terminal row when it finishes. A killed step's terminal status is `Failed` (see `error` below), not `Killed` — `Killed` is a run-level status only. |
 | `started_at`           | string (ISO 8601)       | No       | When the step started.                                                       |
 | `finished_at`          | string (ISO 8601)       | Yes      | When the step finished, or `null` while the step is `Running`.               |
-| `exit_code`            | integer (i32)           | Yes      | Process exit code, or `null` for non-process steps (`set_var`, `match`) and while `Running`. |
+| `exit_code`            | integer (i32)           | Yes      | Process exit code, or `null` for non-process steps (`set_var`) and while `Running`. A `match` step's synthetic record always carries `exit_code: 0`, not `null`. |
 | `log_byte_offset_start`| integer (u64)           | No       | Byte offset into the combined run log file where this step's output begins.  |
-| `log_byte_offset_end`  | integer (u64)           | Yes      | Byte offset where this step's output ends. `null` while the step is `Running` and also for steps that errored before their END marker landed (e.g. template-substitution or spawn failures); populated for Completed, Killed, Failed, and Timeout outcomes that reached `write_step_end`. |
+| `log_byte_offset_end`  | integer (u64)           | Yes      | Byte offset where this step's output ends. `null` while the step is `Running` and also for steps that errored before their END marker landed (e.g. template-substitution or spawn failures); populated for Completed and Failed outcomes (failed includes killed and timed-out steps) that reached `write_step_end`. |
 | `cost_usd`             | number (f64)            | Yes      | Cost for this step in USD. Non-null only for `AgentStep`, and only once the step has finished.                    |
 | `error`                | string                  | Yes      | Human-readable error description on failure, or `null`. A killed step is recorded with `status: "Failed"` and `error: "kill requested"`. |
 
