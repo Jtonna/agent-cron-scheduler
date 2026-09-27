@@ -25,7 +25,7 @@
  * this component only orchestrates rotation and chrome.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Pause } from "lucide-react";
 import { useGlobalCostSummary } from "@/apis/useGlobalCostSummary";
 import { useJobs } from "@/apis/useJobs";
@@ -36,23 +36,25 @@ import { HeroTokensSlide } from "@/components/widgets/HeroTokensSlide";
 import { HeroWorkflowInventorySlide } from "@/components/widgets/HeroWorkflowInventorySlide";
 
 const ROTATE_MS = 5000;
+const QUERY = "(prefers-reduced-motion: reduce)";
+
+function subscribe(cb: () => void) {
+  const mql = window.matchMedia(QUERY);
+  mql.addEventListener("change", cb);
+  return () => mql.removeEventListener("change", cb);
+}
+
+function usePrefersReducedMotion(): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => window.matchMedia(QUERY).matches,
+    () => false,
+  );
+}
 
 interface SystemHeroCarouselProps {
   /** Optional fixed height. Defaults to 420px to match the previous placeholder. */
   minHeight?: number;
-}
-
-function usePrefersReducedMotion(): boolean {
-  const [prefers, setPrefers] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mql = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setPrefers(mql.matches);
-    const handler = (e: MediaQueryListEvent) => setPrefers(e.matches);
-    mql.addEventListener("change", handler);
-    return () => mql.removeEventListener("change", handler);
-  }, []);
-  return prefers;
 }
 
 export function SystemHeroCarousel({ minHeight = 420 }: SystemHeroCarouselProps = {}) {

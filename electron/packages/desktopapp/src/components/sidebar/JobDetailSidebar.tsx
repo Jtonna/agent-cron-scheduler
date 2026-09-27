@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Button as AriaButton,
   Menu,
@@ -34,8 +35,10 @@ import { useCommandPalette } from "@/components/command-palette/useCommandPalett
 import { useToggleWorkflowEnabled } from "@/apis/useToggleWorkflowEnabled";
 import { useTriggerWorkflow } from "@/apis/useTriggerWorkflow";
 import { useFavorite } from "@/apis/useFavorite";
+import { useDeleteWorkflow } from "@/apis/useDeleteWorkflow";
 import { useJobRuns } from "@/apis/useJobRuns";
 import { formatTimeAgo, formatTimeUntil } from "@/apis/format";
+import { ApiError } from "@/apis/client";
 import type { Job, JobRun } from "@/apis/types";
 
 /**
@@ -78,8 +81,6 @@ import type { Job, JobRun } from "@/apis/types";
 
 interface JobDetailSidebarProps {
   job: Job;
-  /** Called from inside DeleteJobDialog after the user confirms. */
-  onDelete?: () => void;
   /**
    * Inject runs for stories/tests. When omitted, the sidebar fetches the
    * 6 most-recent runs itself via `useJobRuns`.
@@ -87,16 +88,15 @@ interface JobDetailSidebarProps {
   runsOverride?: JobRun[];
 }
 
-const NOOP = () => {};
 const RECENT_RUNS_LIMIT = 6;
 
 export function JobDetailSidebar({
   job,
-  onDelete,
   runsOverride,
 }: JobDetailSidebarProps) {
   const router = useRouter();
   const palette = useCommandPalette();
+  const queryClient = useQueryClient();
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [customizeOpen, setCustomizeOpen] = useState(false);
@@ -104,6 +104,9 @@ export function JobDetailSidebar({
   const { toggle, toggling, error: toggleError } = useToggleWorkflowEnabled();
   const { trigger, triggering, error: triggerError } = useTriggerWorkflow();
   const { favorite, unfavorite } = useFavorite();
+  const { deleteWorkflow, deleting, error: deleteError, reset: resetDelete } = useDeleteWorkflow({
+    onDeleted: () => router.replace("/workflows"),
+  });
 
   // Recent runs (fetched here so the sidebar is self-contained). Stories
   // can override by passing `runsOverride`.
@@ -123,6 +126,25 @@ export function JobDetailSidebar({
   function handleRunWorkflow() {
     void trigger(job.id, {}).catch(() => {});
   }
+
+  async function handleConfirmDelete() {
+    try {
+      await deleteWorkflow(job.id);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        resetDelete();
+        queryClient.invalidateQueries({ queryKey: ["jobs"], exact: true });
+        router.replace("/workflows");
+        return;
+      }
+      throw e;
+    }
+  }
+
+  const openDeleteDialog = useCallback(() => {
+    resetDelete();
+    setDeleteOpen(true);
+  }, [resetDelete]);
 
   // ── Palette registration ──────────────────────────────────────────
   useEffect(() => {
@@ -175,7 +197,7 @@ export function JobDetailSidebar({
         group: "Workflow Actions",
         label: "Delete Workflow…",
         icon: <Trash2 size={14} />,
-        action: () => setDeleteOpen(true),
+        action: () => openDeleteDialog(),
       },
     ]);
     return () => palette.unregisterCommands(id);
@@ -186,6 +208,7 @@ export function JobDetailSidebar({
     toggle,
     favorite,
     unfavorite,
+    openDeleteDialog,
     job.id,
     job.enabled,
     favorited,
@@ -292,7 +315,7 @@ export function JobDetailSidebar({
               intent="destructive"
               className="w-9 px-0 shrink-0"
               icon={<Trash2 size={12} />}
-              onPress={() => setDeleteOpen(true)}
+              onPress={openDeleteDialog}
               ariaLabel="Delete workflow"
             >
               {null}
@@ -372,7 +395,9 @@ export function JobDetailSidebar({
         isOpen={deleteOpen}
         onOpenChange={setDeleteOpen}
         jobName={job.name}
-        onConfirm={onDelete ?? NOOP}
+        onConfirm={handleConfirmDelete}
+        isPending={deleting}
+        error={deleteError}
       />
 
       <RunWithCustomizationsModal

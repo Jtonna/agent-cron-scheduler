@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, getBaseUrl } from "./client";
+import { ApiError, api, getBaseUrl } from "./client";
 
 describe("getBaseUrl", () => {
   const ORIGINAL_ENV = process.env.NEXT_PUBLIC_API_URL;
@@ -52,5 +52,84 @@ describe("ApiError", () => {
     expect(err.status).toBe(404);
     expect(err.code).toBe("NOT_FOUND");
     expect(err.message).toBe("Job missing");
+  });
+});
+
+describe("api.deleteWorkflow", () => {
+  let mockFetch: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    mockFetch = vi.fn();
+    vi.stubGlobal("fetch", mockFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("resolves to undefined on a 204 with no content-type", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(null, {
+        status: 204,
+        statusText: "No Content",
+        headers: {},
+      })
+    );
+
+    const result = await api.deleteWorkflow("test-id");
+    expect(result).toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledWith(`${getBaseUrl()}/api/workflows/test-id`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  });
+
+  it("rejects with ApiError on a 409 with workflow_run_active code", async () => {
+    const errorMessage = "Cannot delete workflow 'x' while run y is still running. Kill the run or wait for it to finish, then retry.";
+    const makeResponse = () =>
+      new Response(
+        JSON.stringify({
+          error: "workflow_run_active",
+          message: errorMessage,
+        }),
+        {
+          status: 409,
+          statusText: "Conflict",
+          headers: { "content-type": "application/json" },
+        }
+      );
+
+    mockFetch.mockResolvedValueOnce(makeResponse());
+    await expect(api.deleteWorkflow("test-id")).rejects.toBeInstanceOf(ApiError);
+
+    mockFetch.mockResolvedValueOnce(makeResponse());
+    await expect(api.deleteWorkflow("test-id")).rejects.toMatchObject({
+      status: 409,
+      code: "workflow_run_active",
+      message: errorMessage,
+    });
+  });
+
+  it("uses code when both code and error are present", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: "PREFERRED_CODE",
+          error: "fallback_error",
+          message: "Test message",
+        }),
+        {
+          status: 400,
+          statusText: "Bad Request",
+          headers: { "content-type": "application/json" },
+        }
+      )
+    );
+
+    await expect(api.deleteWorkflow("test-id")).rejects.toMatchObject({
+      code: "PREFERRED_CODE",
+    });
   });
 });

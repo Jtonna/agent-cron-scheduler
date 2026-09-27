@@ -42,6 +42,10 @@ export interface RunDetailSidebarProps {
   /** Currently selected step index (into `runSteps`), or null when none. */
   activeStepIndex: number | null;
   onSelectStep: (stepIndex: number) => void;
+  /** Back link href. Optional; defaults to `/workflows/${jobId}` behavior if not provided. */
+  backHref?: string;
+  /** Whether the workflow is missing (deleted). When true, back link shows "Back to workflows". */
+  workflowMissing?: boolean;
 }
 
 function formatStepCost(cost: number | null | undefined): string {
@@ -67,16 +71,22 @@ export function RunDetailSidebar({
   totalSteps,
   activeStepIndex,
   onSelectStep,
+  backHref,
+  workflowMissing,
 }: RunDetailSidebarProps) {
   const ranCount = runSteps.length;
   const showSuffix = totalSteps !== null && totalSteps !== ranCount;
+
+  // Compute back link href and label
+  const finalBackHref = backHref ?? `/workflows/${jobId}`;
+  const backLabel = workflowMissing ? "Back to workflows" : `Back to ${workflowName}`;
 
   return (
     <aside className="h-full flex flex-col">
       <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-4">
         {/* 1. Back link */}
-        <SidebarBackLink href={`/workflows/${jobId}`}>
-          Back to {workflowName}
+        <SidebarBackLink href={finalBackHref}>
+          {backLabel}
         </SidebarBackLink>
 
         {/* 2. Search trigger */}

@@ -37,7 +37,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     let message = `Request failed with status ${res.status}`;
     try {
       const body = await res.json();
-      code = body.code || code;
+      code = body.code || body.error || code;
       message = body.message || body.error || message;
     } catch {
       // ignore parse errors
@@ -61,7 +61,7 @@ async function requestText(path: string, options: RequestInit = {}): Promise<str
     let message = `Request failed with status ${res.status}`;
     try {
       const body = await res.json();
-      code = body.code || code;
+      code = body.code || body.error || code;
       message = body.message || body.error || message;
     } catch {
       // ignore parse errors
@@ -158,6 +158,16 @@ export const api = {
 
   unfavoriteWorkflow(id: string): Promise<Job> {
     return request<Job>(`/api/workflows/${id}/favorite`, { method: "DELETE" });
+  },
+
+  /**
+   * Delete a workflow. Returns 204 on success.
+   * Returns 404 if workflow not found.
+   * Returns 409 with code `workflow_run_active` if a run is Running
+   * (soft delete; run and cost history are preserved).
+   */
+  deleteWorkflow(id: string): Promise<void> {
+    return request<void>(`/api/workflows/${id}`, { method: "DELETE" }) as Promise<void>;
   },
 
   /**
