@@ -190,6 +190,72 @@ impl WorkflowRunStore for SqliteWorkflowRunStore {
             .await
     }
 
+    async fn update_run_steps(&self, run_id: Uuid, steps: &[StepRun]) -> Result<(), AcsError> {
+        let steps_json =
+            serde_json::to_string(steps).map_err(|e| AcsError::Storage(e.to_string()))?;
+        let id_s = run_id.to_string();
+        self.db
+            .with_conn(move |c| {
+                let rows_affected = c
+                    .execute(
+                        "UPDATE workflow_runs SET steps_json = ?1 WHERE run_id = ?2",
+                        params![steps_json, id_s],
+                    )
+                    .map_err(|e| AcsError::Storage(format!("update_run_steps failed: {}", e)))?;
+                if rows_affected == 0 {
+                    return Err(AcsError::NotFound(format!(
+                        "Run '{}' not found in index",
+                        id_s
+                    )));
+                }
+                Ok(())
+            })
+            .await
+    }
+
+    async fn mark_run_killed(
+        &self,
+        run_id: Uuid,
+        finished_at: DateTime<Utc>,
+    ) -> Result<bool, AcsError> {
+        let killed_s = run_status_str(&RunStatus::Killed)?;
+        let running_s = run_status_str(&RunStatus::Running)?;
+        let finished_at_s = finished_at.to_rfc3339();
+        let id_s = run_id.to_string();
+        self.db
+            .with_conn(move |c| {
+                let rows_affected = c
+                    .execute(
+                        "UPDATE workflow_runs SET status = ?1, finished_at = ?2 \
+                         WHERE run_id = ?3 AND status = ?4",
+                        params![killed_s, finished_at_s, id_s, running_s],
+                    )
+                    .map_err(|e| AcsError::Storage(format!("mark_run_killed failed: {}", e)))?;
+                if rows_affected > 0 {
+                    return Ok(true);
+                }
+                // No rows updated: either the run doesn't exist, or it
+                // exists but wasn't Running. Distinguish the two.
+                let exists: bool = c
+                    .query_row(
+                        "SELECT 1 FROM workflow_runs WHERE run_id = ?",
+                        [&id_s],
+                        |_| Ok(true),
+                    )
+                    .optional()
+                    .map_err(|e| AcsError::Storage(e.to_string()))?
+                    .unwrap_or(false);
+                if !exists {
+                    return Err(AcsError::NotFound(format!(
+                        "Run '{}' not found in index",
+                        id_s
+                    )));
+                }
+                Ok(false)
+            })
+            .await
+    }
+
     async fn get_run(&self, run_id: Uuid) -> Result<Option<WorkflowRun>, AcsError> {
         let id_s = run_id.to_string();
         self.db
@@ -728,6 +794,151 @@ mod tests {
         let run = make_run(&parent);
         // Run was never created — update must fail with NotFound.
         let err = run_store.update_run(&run).await.expect_err("must error");
+        assert!(matches!(err, AcsError::NotFound(_)), "got: {:?}", err);
+    }
+
+    // ── update_run_steps ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_update_run_steps_replaces_steps_only() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let parent = seed_workflow(&wf_store, "steps-only").await;
+        let run = make_run(&parent);
+        let run_id = run.run_id;
+        run_store.create_run(run.clone()).await.expect("create");
+
+        let now = Utc::now();
+        let new_steps = vec![StepRun {
+            step_index: 0,
+            step_id: "step-1".to_string(),
+            kind: "shell".to_string(),
+            status: RunStatus::Running,
+            started_at: now,
+            finished_at: None,
+            exit_code: None,
+            log_byte_offset_start: 0,
+            log_byte_offset_end: None,
+            cost_usd: None,
+            error: None,
+        }];
+        run_store
+            .update_run_steps(run_id, &new_steps)
+            .await
+            .expect("update_run_steps");
+
+        let got = run_store
+            .get_run(run_id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got.steps, new_steps);
+        // Round trip preserves order and Option fields.
+        assert_eq!(got.steps[0].finished_at, None);
+        assert_eq!(got.steps[0].exit_code, None);
+        assert_eq!(got.steps[0].log_byte_offset_end, None);
+        // Everything else on the run row is untouched.
+        assert_eq!(got.status, run.status);
+        assert_eq!(got.finished_at, run.finished_at);
+        assert_eq!(got.total_cost_usd, run.total_cost_usd);
+        assert_eq!(got.trigger_input, run.trigger_input);
+        assert_eq!(got.started_at, run.started_at);
+    }
+
+    #[tokio::test]
+    async fn test_update_run_steps_unknown_run_not_found() {
+        let store = SqliteWorkflowRunStore::in_memory_for_tests();
+        let err = store
+            .update_run_steps(Uuid::now_v7(), &[])
+            .await
+            .expect_err("must error");
+        assert!(matches!(err, AcsError::NotFound(_)), "got: {:?}", err);
+    }
+
+    #[tokio::test]
+    async fn test_update_run_steps_keeps_killed_status() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let parent = seed_workflow(&wf_store, "steps-after-kill").await;
+        let mut run = make_run(&parent);
+        let run_id = run.run_id;
+        run_store.create_run(run.clone()).await.expect("create");
+
+        run.status = RunStatus::Killed;
+        run.finished_at = Some(Utc::now());
+        run_store.update_run(&run).await.expect("update to killed");
+
+        run_store
+            .update_run_steps(run_id, &[])
+            .await
+            .expect("update_run_steps");
+
+        let got = run_store
+            .get_run(run_id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got.status, RunStatus::Killed);
+    }
+
+    // ── mark_run_killed ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_mark_run_killed_on_running_run() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let parent = seed_workflow(&wf_store, "kill-running").await;
+        let run = make_run(&parent);
+        let run_id = run.run_id;
+        run_store.create_run(run.clone()).await.expect("create");
+
+        let finished_at = Utc::now();
+        let updated = run_store
+            .mark_run_killed(run_id, finished_at)
+            .await
+            .expect("mark_run_killed");
+        assert!(updated);
+
+        let got = run_store
+            .get_run(run_id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got.status, RunStatus::Killed);
+        assert_eq!(
+            got.finished_at.map(|d| d.timestamp_millis()),
+            Some(finished_at.timestamp_millis())
+        );
+        assert_eq!(got.steps, run.steps);
+        assert_eq!(got.total_cost_usd, run.total_cost_usd);
+    }
+
+    #[tokio::test]
+    async fn test_mark_run_killed_on_completed_run_is_noop() {
+        let (wf_store, run_store, _db) = SqliteWorkflowRunStore::paired_for_tests();
+        let parent = seed_workflow(&wf_store, "kill-completed").await;
+        let run = make_completed_run(&parent);
+        let run_id = run.run_id;
+        run_store.create_run(run.clone()).await.expect("create");
+
+        let updated = run_store
+            .mark_run_killed(run_id, Utc::now())
+            .await
+            .expect("mark_run_killed");
+        assert!(!updated);
+
+        let got = run_store
+            .get_run(run_id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got, run);
+    }
+
+    #[tokio::test]
+    async fn test_mark_run_killed_unknown_run_not_found() {
+        let store = SqliteWorkflowRunStore::in_memory_for_tests();
+        let err = store
+            .mark_run_killed(Uuid::now_v7(), Utc::now())
+            .await
+            .expect_err("must error");
         assert!(matches!(err, AcsError::NotFound(_)), "got: {:?}", err);
     }
 

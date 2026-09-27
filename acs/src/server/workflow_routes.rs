@@ -2021,6 +2021,39 @@ mod tests {
             map.insert(run.run_id, run.clone());
             Ok(())
         }
+        async fn update_run_steps(
+            &self,
+            run_id: Uuid,
+            steps: &[crate::models::workflow::StepRun],
+        ) -> Result<(), AcsError> {
+            let mut map = self.runs.lock().await;
+            match map.get_mut(&run_id) {
+                Some(run) => {
+                    run.steps = steps.to_vec();
+                    Ok(())
+                }
+                None => Err(AcsError::NotFound(format!("Run '{}' not found", run_id))),
+            }
+        }
+        async fn mark_run_killed(
+            &self,
+            run_id: Uuid,
+            finished_at: chrono::DateTime<Utc>,
+        ) -> Result<bool, AcsError> {
+            let mut map = self.runs.lock().await;
+            match map.get_mut(&run_id) {
+                Some(run) => {
+                    if run.status == crate::models::workflow::RunStatus::Running {
+                        run.status = crate::models::workflow::RunStatus::Killed;
+                        run.finished_at = Some(finished_at);
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                }
+                None => Err(AcsError::NotFound(format!("Run '{}' not found", run_id))),
+            }
+        }
         async fn get_run(&self, run_id: Uuid) -> Result<Option<WorkflowRun>, AcsError> {
             Ok(self.runs.lock().await.get(&run_id).cloned())
         }
