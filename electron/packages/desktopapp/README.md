@@ -65,6 +65,7 @@ src/
 │   ├── useJobRuns.ts              # GET /api/workflows/{id}/runs
 │   ├── useRecentRuns.ts           # GET /api/runs/recent (with grow-limit pagination)
 │   ├── useFavorite.ts             # POST/DELETE /api/workflows/{id}/favorite (mutation)
+│   ├── useDeleteWorkflow.ts       # DELETE /api/workflows/{id} (soft-delete mutation)
 │   └── useSystemLogs.ts           # GET /api/logs (with SSE-driven append + 1MB cap)
 │
 ├── app/                           # Next.js App Router
@@ -255,7 +256,7 @@ export const Empty: Story = { args: { ... } };
 
 ## Testing
 
-- Test files are co-located: `format.test.ts`, `jobStatus.test.ts`, `client.test.ts`, `useJobs.test.tsx`, `JobStateIndicator.test.tsx`.
+- Test files are co-located: `format.test.ts`, `jobStatus.test.ts`, `client.test.ts`, `useJobs.test.tsx`, `useDeleteWorkflow.test.tsx`, `JobStateIndicator.test.tsx`.
 - Run with `npm test` (watch) or `npm run test:run` (single).
 - `vitest.config.ts` provides `jsdom` + the `@/` alias + the `vitest.setup.ts` setup file.
 - Use `vi.useFakeTimers()` + `vi.setSystemTime()` for any time-relative assertion.
