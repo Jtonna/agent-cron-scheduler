@@ -14,6 +14,7 @@ use crate::models::ScheduleMode;
 use crate::storage::workflow_runs::WorkflowRunStore;
 use crate::storage::workflows::WorkflowStore;
 use crate::workflow::step::KillSender;
+use crate::workflow::{RunStoreStepPersister, StepPersister};
 
 // ---------------------------------------------------------------------------
 // Clock trait + implementations
@@ -348,6 +349,8 @@ impl WorkflowScheduler {
                                     sink,
                                     Some(event_tx),
                                     Some(kill_signals),
+                                    Some(Arc::new(RunStoreStepPersister::new(run_store.clone()))
+                                        as Arc<dyn StepPersister>),
                                 ).await;
 
                                 // Persist the final run state and stamp the
